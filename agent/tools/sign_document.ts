@@ -123,7 +123,7 @@ const sameTaskReply = {
   no_places:
     "No place to sign is marked. Continue the SAME task (same agentId): ask it to mark the person's own signature places (and initials, and the date beside the signature) with `brokit pdf sign-mark` and share_file the result again; then prepare with the new link.",
   unreadable:
-    "Could not read this PDF; continue the SAME task (same agentId) to re-save it (`brokit pdf pages merge`) and share it again.",
+    "Could not read this PDF; continue the SAME task (same agentId) to re-save it (`brokit pdf merge FILE -o OUT`) and share it again.",
   xfa: "An XFA form cannot be signed: continue the SAME task (same agentId) to produce a flat PDF with the same content and mark places.",
 } as const;
 
@@ -341,6 +341,14 @@ async function prepare(
       png.kind === "ok" ? [{ path, ...png }] : []
     );
     const [photo] = usable;
+    // With the kit down the photo is not to blame: asking for another
+    // would not help.
+    if (
+      usable.length === 0 &&
+      found.some(({ png }) => png.kind === "unavailable")
+    ) {
+      return refuse("unavailable");
+    }
     if (usable.length !== 1 || photo === undefined) {
       return refuse("no_signature");
     }
@@ -417,11 +425,9 @@ async function prepare(
     question,
     rootSessionId: root,
     // A file Bro already sent before the offer counts as seen.
-    shownAt:
+    shown:
       source.sourceShareId !== null &&
-      facts.shownIds.includes(source.sourceShareId)
-        ? new Date()
-        : null,
+      facts.shownIds.includes(source.sourceShareId),
     signatureId: signature.id,
     signatureKind: signature.kind,
     signaturePhotoPath: signature.source === "photo" ? signature.path : null,
@@ -530,7 +536,12 @@ async function confirm(
 ) {
   const started = Date.now();
   const scope = personRoot(context, input);
-  if (scope === null || facts.said === null || facts.compacted) {
+  if (
+    scope === null ||
+    facts.turn !== "person" ||
+    facts.said === null ||
+    facts.compacted
+  ) {
     logSign("confirm", "not_allowed", started);
     return notAllowed;
   }
@@ -582,7 +593,12 @@ async function confirm(
   ) {
     return answer("confirmation_required", notConfirmed);
   }
-  if (row.sourceKind === "shared" && row.shownAt === null) {
+  // The file they agree to sign reached them no later than the question:
+  // one sent only after it, even before this confirm, was not seen first.
+  if (
+    row.sourceKind === "shared" &&
+    (row.shownAt === null || row.shownAt.getTime() > row.askedAt.getTime())
+  ) {
     return answer("not_shown", {
       attachUrl: row.sourceRef,
       question: row.question,

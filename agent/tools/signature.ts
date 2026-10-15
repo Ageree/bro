@@ -23,6 +23,7 @@ import {
   signRefusal,
 } from "@agent/lib/signatures/consent";
 import { signEnabled, signOfCaller } from "@agent/lib/signatures/pilot";
+import { turnKind } from "@agent/lib/turn-kind/kind";
 import {
   stepIdentity,
   stepStartedEventSchema,
@@ -116,15 +117,15 @@ export default defineDynamic({
       const messages = context.messages.filter(
         (message) => !approvalResponseSchema.safeParse(message).success
       );
-      const words = personWordsThisTurn(
-        messages,
-        stepIdentity(
-          stepStartedEventSchema.safeParse(event).data,
-          context.session.id
-        )
+      const step = stepIdentity(
+        stepStartedEventSchema.safeParse(event).data,
+        context.session.id
       );
+      const words = personWordsThisTurn(messages, step);
       const said = words.said;
       const compacted = words.compacted === true;
+      // A report, a schedule or a task's turn never changes the sample.
+      const personTurn = turnKind({ ...context, messages }, step) === "person";
       const images = currentBurstImages(messages);
       return {
         signature: defineTool({
@@ -155,7 +156,9 @@ export default defineDynamic({
                   };
             }
             const scope = personRoot(ctx, input);
-            if (scope === null || said === null || compacted) return notAllowed;
+            if (scope === null || !personTurn || said === null || compacted) {
+              return notAllowed;
+            }
             const previewOwner = {
               sessionId: ctx.session.id,
               workspaceId: scope.workspaceId,

@@ -773,6 +773,16 @@ export function quotedFromPerson(
 }
 
 /**
+ * Whether the text ends with the quote, word for word as
+ * {@link quotedFromPerson} compares them: Bro's signing question as the
+ * last words of its message up to its last «?».
+ */
+export function endsWithQuote(quote: string, text: string) {
+  const said = comparable(quote);
+  return said.length > 0 && ` ${comparable(text)}`.endsWith(` ${said}`);
+}
+
+/**
  * A message that only asks how things stand — «ну что там?», «как дела с
  * билетами?», «есть новости?» — and gives the errand nothing new.
  */

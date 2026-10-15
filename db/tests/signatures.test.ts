@@ -68,7 +68,7 @@ function offer(fingerprint = "fingerprint:1", sourceSha256 = "a".repeat(64)) {
     prepareCallId: "call:prepare",
     question: "Ставлю твою сохранённую подпись на «anketa.pdf». Подписываю?",
     rootSessionId: "session:alice",
-    shownAt: null,
+    shown: false,
     signatureId: randomUUID(),
     signatureKind: "image" as const,
     signaturePhotoPath: null,
@@ -237,6 +237,17 @@ describe("signing offers", () => {
     await store.releaseSigning({ callId: "call:a", id });
     expect(await store.prepareSigning(alice, offer())).toMatchObject({
       id,
+      status: "signed",
+    });
+    // Past its offer's day too: the audit of a signing is never reopened.
+    await store.database
+      .update(schema.documentSignings)
+      .set({ expiresAt: sql`now() - interval '1 minute'` })
+      .where(eq(schema.documentSignings.id, id));
+    expect(await store.prepareSigning(alice, offer())).toMatchObject({
+      consentText: "да",
+      id,
+      outputUrl: "https://x/y",
       status: "signed",
     });
   }, 30_000);

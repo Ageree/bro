@@ -60,10 +60,12 @@ async function unseal(scope: AccessScope, id: string, value: string) {
     throw new Error("The stored signature uses an unsupported format.");
   }
   const { secretEncryptionKey } = await getInstallationSecrets();
+  // A full 16-byte tag only: a cut one would be easier to forge.
   const decipher = createDecipheriv(
     "aes-256-gcm",
     Buffer.from(secretEncryptionKey, "base64"),
-    Buffer.from(iv, "base64url")
+    Buffer.from(iv, "base64url"),
+    { authTagLength: 16 }
   );
   decipher.setAAD(sampleAad(scope, id));
   decipher.setAuthTag(Buffer.from(tag, "base64url"));

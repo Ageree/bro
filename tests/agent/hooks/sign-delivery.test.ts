@@ -74,7 +74,7 @@ async function withOffer() {
     question:
       "Ставлю твою сохранённую подпись на «anketa.pdf»: подпись — стр. 1. Это картинка подписи, а не электронная подпись (КЭП). Подписываю?",
     rootSessionId: "session-1",
-    shownAt: null,
+    shown: false,
     signatureId: "6f6f5d78-641b-4c80-aacf-eec05af14e53",
     signatureKind: "image",
     signaturePhotoPath: null,
@@ -161,7 +161,11 @@ describe("noting what Bro's sends did to an open signing", () => {
         askedTurn: "session-1\nturn_3",
         askedVerbatim: true,
       });
-      expect(row?.shownAt).not.toBeNull();
+      // The file counts as seen with the question it came with (confirm
+      // takes a file shown no later than the question).
+      expect(row?.shownAt?.getTime()).toBeLessThanOrEqual(
+        row?.askedAt?.getTime() ?? 0
+      );
 
       // A later question of Bro's is what the person's «да» answers.
       await offer.send(toolResult({ kind: "message", text: "Что-то ещё?" }));

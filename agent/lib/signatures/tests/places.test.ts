@@ -105,6 +105,19 @@ describe("which places a signing fills", () => {
       candidates: [{ field: "bro_sign_signature_9", foreign: true }],
       kind: "choose_fields",
     });
+    // A token on one widget of a field does not vouch for its other ones.
+    expect(
+      choosePlaces(
+        inventory([
+          mark("signature", 1),
+          mark("signature", 1, { marked: false, page: 3 }),
+        ]),
+        shared
+      )
+    ).toMatchObject({
+      candidates: [{ foreign: true, pages: [1, 3] }],
+      kind: "choose_fields",
+    });
   });
 
   it("asks when a marked place is labelled as a counterparty's", () => {

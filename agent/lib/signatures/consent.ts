@@ -7,7 +7,7 @@ import type { AccessScope } from "@shared/identity/access-scope";
 import type { sendMessageOutputSchema } from "@shared/chat/message-delivery";
 import { directModelActive } from "@shared/model/provider";
 import { personBrowserFiles } from "@agent/lib/browser-use/files";
-import { isPersonMessage, quotedFromPerson } from "@agent/lib/browser-use/said";
+import { endsWithQuote, isPersonMessage } from "@agent/lib/browser-use/said";
 import { sendReachedPerson, startsTurn } from "@agent/lib/delivery/turn-sends";
 import { directModelSelection } from "@agent/lib/model/direct";
 import { phoneActionTurn } from "@agent/lib/phone/policy";
@@ -211,31 +211,48 @@ export function deliveredShareIds(
   return [...ids];
 }
 
+/** The text up to and with its last «?»: what the person's answer answers. */
+function latestQuestion(text: string) {
+  const end = Math.max(text.lastIndexOf("?"), text.lastIndexOf("？"));
+  return end < 0 ? undefined : text.slice(0, end + 1);
+}
+
 /**
- * What one delivered send of Bro's means for an open signing: whether it
- * carried the unsigned file, and whether it asked to sign — the stored
- * question within it, word for word (a line before or after is fine), or a
- * question of its own that ends by asking to sign. Any other question
- * clears what was asked: the person's «да» answers the latest question.
+ * What one delivered send of Bro's means for each open signing of the
+ * conversation: whether it carried that signing's unsigned file, and what
+ * its latest question asked, since the person's «да» answers the latest
+ * question. The stored question counts word for word when the message's
+ * last «?» ends it (a line before it, or one after that asks nothing, is
+ * fine); a question in Bro's own words that asks to sign counts for the
+ * judge, unless the message asked another open signing's stored question;
+ * any other question clears what was asked; a send without one changes
+ * nothing.
  */
-export function deliveryVerdict(
-  row: Pick<DocumentSigning, "question" | "sourceShareId">,
+export function deliveryVerdicts(
+  rows: readonly Pick<DocumentSigning, "id" | "question" | "sourceShareId">[],
   message: SentMessage
 ) {
   const sent = sentSchema.parse(message);
-  const shown =
-    row.sourceShareId !== null &&
-    sentLinks(sent).some((link) => sharedFileId(link) === row.sourceShareId);
+  const links = sentLinks(sent);
   const text = sent.text ?? "";
-  const asked: { text: string; verbatim: boolean } | "clear" | undefined =
-    quotedFromPerson(row.question, [text])
-      ? { text, verbatim: true }
-      : /[?？]\s*$/u.test(text)
-        ? signQuestionPattern.test(text.trim())
-          ? { text, verbatim: false }
-          : "clear"
-        : undefined;
-  return { asked, shown };
+  const latest = latestQuestion(text);
+  const asks = (row: Pick<DocumentSigning, "question">) =>
+    latest !== undefined && endsWithQuote(row.question, latest);
+  const askedAnother = rows.some(asks);
+  return rows.map((row) => {
+    const asked: { text: string; verbatim: boolean } | "clear" | undefined =
+      latest === undefined
+        ? undefined
+        : asks(row)
+          ? { text, verbatim: true }
+          : !askedAnother && signQuestionPattern.test(latest.trim())
+            ? { text, verbatim: false }
+            : "clear";
+    const shown =
+      row.sourceShareId !== null &&
+      links.some((link) => sharedFileId(link) === row.sourceShareId);
+    return { asked, id: row.id, shown };
+  });
 }
 
 const signatureWords = {

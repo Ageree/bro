@@ -74,6 +74,10 @@ function groupedPlaces(
     const role = eligibleRole(place);
     if (role === undefined) continue;
     const counterparty = counterpartyLabel.test(foldedLabel(place.label));
+    // A file the person sends back is checked by them, whatever marks it
+    // carries; a field is trusted only when every widget of it is.
+    const trusted =
+      place.bro !== null && place.marked && sourceKind === "shared";
     const known = fields.get(place.field);
     if (known === undefined) {
       fields.set(place.field, {
@@ -83,9 +87,7 @@ function groupedPlaces(
         mark: place.bro !== null,
         pages: [place.page],
         role,
-        // A file the person sends back is checked by them, whatever marks
-        // it carries.
-        trusted: place.bro !== null && place.marked && sourceKind === "shared",
+        trusted,
       });
       continue;
     }
@@ -94,6 +96,7 @@ function groupedPlaces(
       ...known,
       counterparty: known.counterparty || counterparty,
       label: known.label ?? questionLabel(place.label),
+      trusted: known.trusted && trusted,
     });
   }
   const grouped = [...fields.values()];

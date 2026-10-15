@@ -1,7 +1,7 @@
 import { defineHook } from "eve/hooks";
 import { sendMessageToolResultSchema } from "@shared/chat/message-delivery";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
-import { deliveryVerdict } from "@agent/lib/signatures/consent";
+import { deliveryVerdicts } from "@agent/lib/signatures/consent";
 import { signOfCaller } from "@agent/lib/signatures/pilot";
 import {
   clearSigningAsked,
@@ -41,13 +41,15 @@ export default defineHook({
           scopeFromPrincipal(caller),
           ctx.session.id
         );
-        for (const row of rows) {
-          const { asked, shown } = deliveryVerdict(row, sent.output);
+        for (const { asked, id, shown } of deliveryVerdicts(
+          rows,
+          sent.output
+        )) {
           /* oxlint-disable eslint/no-await-in-loop -- A few rows, one statement each. */
-          if (shown) await markSigningShown(row.id);
-          if (asked === "clear") await clearSigningAsked(row.id);
+          if (shown) await markSigningShown(id);
+          if (asked === "clear") await clearSigningAsked(id);
           else if (asked !== undefined) {
-            await markSigningAsked(row.id, { ...asked, turn });
+            await markSigningAsked(id, { ...asked, turn });
           }
           /* oxlint-enable eslint/no-await-in-loop */
         }

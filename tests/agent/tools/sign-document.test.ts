@@ -148,9 +148,11 @@ const inventory = {
 };
 
 function row(overrides: Partial<DocumentSigning> = {}): DocumentSigning {
+  // One message of Bro's carried the file and the question.
+  const delivered = Date.now() - 60_000;
   return {
     ...scope,
-    askedAt: new Date(Date.now() - 60_000),
+    askedAt: new Date(delivered),
     askedText: question,
     askedTurn: "session-1\nturn-0",
     askedVerbatim: true,
@@ -169,7 +171,7 @@ function row(overrides: Partial<DocumentSigning> = {}): DocumentSigning {
     prepareCallId: "call-0",
     question,
     rootSessionId: "session-1",
-    shownAt: new Date(Date.now() - 60_000),
+    shownAt: new Date(delivered),
     signatureId: sampleId,
     signatureKind: "image",
     signaturePhotoPath: null,
@@ -529,6 +531,18 @@ describe("preparing a signing", () => {
     expect(prepared.result).toMatchObject({ status: "no_signature" });
     expect(services.prepare).not.toHaveBeenCalled();
   });
+
+  it("does not ask for another photo when the kit cannot run", async () => {
+    services.summary.mockResolvedValue(null);
+    services.kit.mockRejectedValue(new Error("The kit did not start"));
+    const prepared = await call(
+      [person("Подпись моя на фотке", [photoPath]), taskReport],
+      { action: "prepare", file: link },
+      { opened: "background-message" }
+    );
+    expect(prepared.result).toMatchObject({ status: "unavailable" });
+    expect(services.prepare).not.toHaveBeenCalled();
+  });
 });
 
 describe("confirming a signing", () => {
@@ -593,12 +607,18 @@ describe("confirming a signing", () => {
     expect(stampRuns()).toHaveLength(0);
   });
 
-  it("asks to send the file first when it never reached the person", async () => {
+  it("asks to send the file with the question when it did not reach the person first", async () => {
     services.read.mockResolvedValue(row({ shownAt: null }));
     expect((await call(yes, confirmInput)).result).toMatchObject({
       attachUrl: link,
       status: "not_shown",
     });
+    // Sent only after the question, as late as this turn.
+    services.read.mockResolvedValue(row({ shownAt: new Date() }));
+    expect((await call(yes, confirmInput)).result).toMatchObject({
+      status: "not_shown",
+    });
+    expect(stampRuns()).toHaveLength(0);
   });
 
   it.each([

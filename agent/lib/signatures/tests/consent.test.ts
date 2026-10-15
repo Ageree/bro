@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 // Share links are signed with the sandbox key, read when the modules load.
 vi.stubEnv("SANDBOX_SIGNING_KEY", "33".repeat(32));
 const { signAnswer } = await import("@agent/lib/browser-use/said");
-const { deliveredShareIds, deliveryVerdict, signaturePhotoCandidates } =
+const { deliveredShareIds, deliveryVerdicts, signaturePhotoCandidates } =
   await import("@agent/lib/signatures/consent");
 const { sandboxFileLinkSignature } = await import("@agent/lib/sandbox/keys");
 
@@ -74,7 +74,21 @@ function sent(
 
 const question =
   "Ставлю твою сохранённую подпись на «anketa.pdf»: подпись — стр. 1 и 2. Это картинка подписи, а не электронная подпись (КЭП). Подписываю?";
-const row = { question, sourceShareId: shareId };
+const row = {
+  id: "1f6f5d78-641b-4c80-aacf-eec05af14e53",
+  question,
+  sourceShareId: shareId,
+};
+
+/** What one send did to the open signings (by default, the one above). */
+function verdicts(
+  message: Parameters<typeof deliveryVerdicts>[1],
+  rows: Parameters<typeof deliveryVerdicts>[0] = [row]
+) {
+  return deliveryVerdicts(rows, message);
+}
+
+const asked = (text: string) => verdicts({ kind: "message", text })[0]?.asked;
 
 describe("the person's answer to the signing question", () => {
   it("is yes only when it is nothing but a yes", () => {
@@ -102,32 +116,42 @@ describe("the person's answer to the signing question", () => {
 describe("what a delivered send did to an open signing", () => {
   it("asked the stored question word for word, with a line before and after", () => {
     const text = `Вот анкета.\n${question}\nОтветь «да» или «нет».`;
-    expect(deliveryVerdict(row, { kind: "message", text })).toEqual({
-      asked: { text, verbatim: true },
-      shown: false,
-    });
+    expect(verdicts({ kind: "message", text })).toEqual([
+      { asked: { text, verbatim: true }, id: row.id, shown: false },
+    ]);
   });
 
   it("asked in its own words when it ends by asking to sign", () => {
     const text = "Поставлю подпись на анкету, стр. 1 и 2. Подписываю?";
-    expect(deliveryVerdict(row, { kind: "message", text }).asked).toEqual({
-      text,
-      verbatim: false,
-    });
+    expect(asked(text)).toEqual({ text, verbatim: false });
   });
 
-  it("clears what was asked with another question", () => {
+  it("clears what was asked with another question, even one after the stored question", () => {
+    expect(asked("Что-то ещё?")).toBe("clear");
     expect(
-      deliveryVerdict(row, { kind: "message", text: "Что-то ещё?" }).asked
+      asked(`${question}\nИли сначала показать анкету юристу? Файл ниже.`)
     ).toBe("clear");
+  });
+
+  it("asks only the offer whose stored question it is", () => {
+    const other = {
+      id: "2f6f5d78-641b-4c80-aacf-eec05af14e53",
+      question: question.replace("anketa.pdf", "zayavlenie.pdf"),
+      sourceShareId: null,
+    };
+    expect(
+      verdicts({ kind: "message", text: question }, [row, other]).map(
+        (verdict) => verdict.asked
+      )
+    ).toEqual([{ text: question, verbatim: true }, "clear"]);
   });
 
   it("showed the unsigned file when it carried its link", () => {
     expect(
-      deliveryVerdict(row, {
+      verdicts({
         attachments: [{ kind: "file", url: shareLink() }],
         kind: "message",
-      }).shown
+      })[0]?.shown
     ).toBe(true);
   });
 

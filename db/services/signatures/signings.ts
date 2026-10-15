@@ -53,7 +53,10 @@ type PreparedSigning = Pick<
   | "sourceRef"
   | "sourceSha256"
   | "sourceShareId"
-> & { readonly shownAt: Date | null };
+> & {
+  /** The file reached the person before the offer: shown from now on. */
+  readonly shown: boolean;
+};
 
 /** A claim that a hung confirm left behind is taken over after this. */
 const claimTakeover = sql`now() - interval '10 minutes'`;
@@ -75,13 +78,17 @@ function ownedSigning(scope: AccessScope, rootSessionId: string, id: string) {
  * document: an older offer still open for the same bytes is cancelled, and
  * the same offer again (the same fingerprint) is the row already there —
  * revived with its consent cleared when it was cancelled or expired, kept as
- * it is while it is live or signed.
+ * it is while it is live, and always once signed.
  */
 export async function prepareSigning(
   scope: AccessScope,
   input: PreparedSigning
 ) {
-  const plan = signingPlanSchema.parse(input.plan);
+  const { shown, ...offer } = input;
+  const plan = signingPlanSchema.parse(offer.plan);
+  // The database's clock, as the delivery notes use: shown no later than
+  // the question asked after it.
+  const shownAt = shown ? sql`now()` : null;
   await ensureScope(scope);
   await db
     .update(documentSignings)
@@ -97,9 +104,10 @@ export async function prepareSigning(
   const [written] = await db
     .insert(documentSignings)
     .values({
-      ...input,
+      ...offer,
       id: randomUUID(),
       plan,
+      shownAt,
       userId: scope.userId,
       workspaceId: scope.workspaceId,
     })
@@ -122,12 +130,13 @@ export async function prepareSigning(
         outputUrl: null,
         prepareCallId: input.prepareCallId,
         question: input.question,
-        shownAt: input.shownAt,
+        shownAt,
         signedAt: null,
         status: "prepared",
         updatedAt: sql`now()`,
       },
-      setWhere: sql`${documentSignings.status} = 'cancelled' OR ${documentSignings.expiresAt} < now()`,
+      // A signed row is the audit of a signing: never reopened.
+      setWhere: sql`${documentSignings.status} <> 'signed' AND (${documentSignings.status} = 'cancelled' OR ${documentSignings.expiresAt} < now())`,
     })
     .returning();
   if (written !== undefined) return written;
