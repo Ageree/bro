@@ -24,6 +24,8 @@ export function keptData(
     /** The workspace is in the cross-channel pilot (`conversation_log`). */
     readonly conversationLog?: boolean;
     readonly phone?: boolean;
+    /** Signing with the person's signature is on (`signEnabled`). */
+    readonly signature?: boolean;
   } = {}
 ) {
   return [
@@ -34,6 +36,11 @@ export function keptData(
       : []),
     `Память (факты, предпочтения, правила), сохранённые дела, личные данные (имя, телефон, почта, адрес), расписания, сейф, заказы и итоги поручений${yooKassaConfigured() ? ", история оплат подписки" : ""}${browserUseConfigured() ? ", сайты, где облачный браузер держит вход, со ссылкой на страницу аккаунта на каждом" : ""} — в управляемой базе Postgres Selectel (Россия).`,
     "Пароли и карты из сейфа лежат там же в зашифрованном виде (AES-256-GCM): языковая модель их не видит.",
+    ...(options.signature === true
+      ? [
+          "Образец подписи (картинка с фото или имя для рукописного шрифта), если человек попросил его сохранить, — в той же базе Postgres в зашифрованном виде (AES-256-GCM). Его просмотр («Подпись (образец)») и подписанные документы — обычные файлы, как другие, что присылает Бро: в Object Storage Selectel, по ссылке. Для каждого подписания Бро хранит название и хэш документа, места, свой вопрос и ответ человека — чтобы было видно, на что дано согласие.",
+        ]
+      : []),
     // Without the bucket nothing is stored (`artifactStorageConfigured`).
     ...(artifactStorageConfigured()
       ? [

@@ -411,25 +411,118 @@ const noWords = new Set([
 ]);
 
 /**
+ * A plain answer to one question of Bro's: `yes` for a message of nothing
+ * but words of `yes`, one of them more than a filler («бро», «пожалуйста»);
+ * `no` for one of nothing but words of `no`; undefined for anything else,
+ * which is a new message and answers nothing. Yes is checked first, so a
+ * word in both sets («подписывай» alone) reads as yes.
+ */
+function plainAnswer(
+  words: readonly string[] | null,
+  sets: {
+    readonly fillers: ReadonlySet<string>;
+    readonly no: ReadonlySet<string>;
+    readonly yes: ReadonlySet<string>;
+  }
+): "no" | "yes" | undefined {
+  const tokens = (words ?? []).flatMap((text) =>
+    comparable(text).split(" ").filter(Boolean)
+  );
+  if (tokens.length === 0) return undefined;
+  if (
+    tokens.every((token) => sets.yes.has(token)) &&
+    tokens.some((token) => !sets.fillers.has(token))
+  ) {
+    return "yes";
+  }
+  return tokens.every((token) => sets.no.has(token)) ? "no" : undefined;
+}
+
+const paymentSets = {
+  fillers: new Set(["бро", "пожалуйста", "please"]),
+  no: noWords,
+  yes: yesWords,
+};
+
+/**
  * How the person answered Bro's question before a payment: `yes` only for
  * a message that is nothing but a yes — «да», «оплачивай», «давай»,
  * "go ahead"; `no` for one that is nothing but a no — «нет», «не надо»;
  * undefined for anything else, which is a new message and confirms
  * nothing: «а дешевле нет?», «да, но с багажом».
  */
-export function paymentAnswer(
-  words: readonly string[] | null
-): "no" | "yes" | undefined {
-  const tokens = (words ?? []).flatMap((text) =>
-    comparable(text).split(" ").filter(Boolean)
-  );
-  if (tokens.length === 0) return undefined;
-  if (tokens.every((token) => noWords.has(token))) return "no";
-  const fillers = new Set(["бро", "пожалуйста", "please"]);
-  return tokens.every((token) => yesWords.has(token)) &&
-    tokens.some((token) => !fillers.has(token))
-    ? "yes"
-    : undefined;
+export function paymentAnswer(words: readonly string[] | null) {
+  return plainAnswer(words, paymentSets);
+}
+
+/**
+ * The person's answer to Bro's question before signing a document
+ * (`sign_document`): «да», «да, подписывай», «хорошо, подписывай»,
+ * «согласен», "sign it" are yes; «нет», «не подписывай», «нет, подпишу сам
+ * ручкой», "I'll sign it myself" are no; «да, но дату вчерашнюю» and «👍»
+ * answer nothing.
+ */
+const signSets = {
+  fillers: new Set(["бро", "пожалуйста", "please", "it"]),
+  no: new Set([
+    ...noWords,
+    "i",
+    "it",
+    "ll",
+    "myself",
+    "sign",
+    "will",
+    "вручную",
+    "подписать",
+    "подписывай",
+    "подписывать",
+    "подпиши",
+    "подпишу",
+    "ручкой",
+    "сам",
+    "сама",
+    "сами",
+    "я",
+  ]),
+  yes: new Set([
+    "ага",
+    "ahead",
+    "go",
+    "it",
+    "ok",
+    "okay",
+    "please",
+    "sign",
+    "sure",
+    "yeah",
+    "yep",
+    "yes",
+    "бро",
+    "да",
+    "давай",
+    "действуй",
+    "конечно",
+    "ладно",
+    "ок",
+    "окей",
+    "подписать",
+    "подписывай",
+    "подписывайте",
+    "подпиши",
+    "подпишите",
+    "подтверждаю",
+    "пожалуйста",
+    "согласен",
+    "согласна",
+    "ставь",
+    "ставьте",
+    "угу",
+    "хорошо",
+  ]),
+};
+
+export function signAnswer(words: readonly string[] | null) {
+  return plainAnswer(words, signSets);
 }
 
 /** A word that makes a number next to it a one-time code: «SMS», "OTP". */
