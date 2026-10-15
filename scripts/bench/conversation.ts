@@ -11,6 +11,8 @@ import { z } from "zod";
 import { decideInputRequest } from "./approvals.ts";
 import type { BenchCase } from "./cases.ts";
 import { isNight } from "./clock.ts";
+import { FilesCollector } from "./files/collect.ts";
+import type { TurnGate } from "./files/suite.ts";
 import {
   CaseJournal,
   deliveredText,
@@ -28,9 +30,11 @@ import { TurnTracker } from "./tracker.ts";
 /**
  * Drives one benchmark case through the eve client the web chat uses: opens
  * the conversation, sends each scripted message, answers approval cards by
- * the benchmark's rules, and, when a browser errand is still running, follows
- * the session for its result — asking «ну что там?» (a counted hint) only if
- * the result does not arrive on its own.
+ * the benchmark's rules, and, when a browser errand or a background task is
+ * still running, follows the session for its result — asking «ну что там?»
+ * (a counted hint) only if the result does not arrive on its own. A files
+ * case also keeps every file Bro sends and sends a gated turn only when its
+ * condition holds (`files/collect.ts`).
  */
 
 export interface DriverSettings {
@@ -41,7 +45,14 @@ export interface DriverSettings {
    * the owner (`--confirm-payment-up-to`); undefined keeps every payment
    * card cancelled, as before the flag existed. */
   readonly confirmPaymentUpToRub: number | undefined;
+  /**
+   * The session cookie, for downloading Bro's own `/artifacts/…` in a files
+   * case; never sent anywhere else.
+   */
+  readonly downloadCookie: string | undefined;
   readonly extraFiles: readonly OutgoingFile[];
+  /** Where the files suite's fixtures were built (`fixtures.py`). */
+  readonly filesDir: string;
   /** Tools whose approval card the driver leaves for the owner (`--hold`). */
   readonly heldTools: readonly string[];
   readonly hintText: string;
@@ -111,6 +122,10 @@ class CaseRun {
   readonly tracker: TurnTracker;
   /** The scripted step the run stopped before because it is due later. */
   deferred: { readonly at: string; readonly dueAt: Date } | undefined;
+  /** A files case's replies, conditions and downloads (`caseRun`). */
+  files: FilesCollector | undefined;
+  /** Why a gated turn was not sent: the case waits for the tester. */
+  gateStop: string | undefined;
   // A response moves its session's cursor only once its turn is read, so
   // the record takes the cursors from the handles when it is saved.
   readonly #handles = new Set<ClientSession>();
@@ -129,7 +144,8 @@ class CaseRun {
       record.driver.status === "failed"
         ? (record.driver.statusDetail ?? "Ход Бро завершился ошибкой")
         : undefined,
-      record.driver.supersededRuns
+      record.driver.supersededRuns,
+      record.driver.backgroundTasks
     );
   }
 
@@ -150,7 +166,14 @@ class CaseRun {
   async observe(session: ClientSession, event: MessageStreamEvent) {
     this.#handles.add(session);
     this.tracker.observe(event);
+    this.files?.observe(session.state.sessionId, event);
     await this.journal.event(session.state.sessionId, event);
+    if (this.tracker.unknownWake) {
+      this.tracker.unknownWake = false;
+      await this.journal.line(
+        "== драйвер: фоновое пробуждение неизвестного вида — фоновые задачи больше не ждёт"
+      );
+    }
   }
 
   /**
@@ -241,10 +264,19 @@ class CaseRun {
 
   async save(status: DriverStatus, detail: string | null = null) {
     const { driver } = this.record;
+    if (this.files) {
+      await this.files.flush((line) => this.journal.line(line));
+      // The checks keep their last result until they run again.
+      driver.files = {
+        ...this.files.summary(),
+        checks: driver.files?.checks ?? null,
+      };
+    }
     driver.status = status;
     driver.statusDetail = detail;
     driver.pendingInputs = [...this.tracker.pending.values()];
     driver.backgroundRuns = this.tracker.backgroundRuns();
+    driver.backgroundTasks = this.tracker.backgroundTasks();
     driver.supersededRuns = this.tracker.supersededRuns();
     driver.approvedTools = [...this.settings.approvedTools];
     driver.confirmPaymentUpToRub = this.settings.confirmPaymentUpToRub ?? null;
@@ -268,6 +300,10 @@ class CaseRun {
   async settle() {
     if (this.tracker.turnFailure) {
       await this.save("failed", this.tracker.turnFailure);
+      return;
+    }
+    if (this.gateStop) {
+      await this.save("waiting-for-tester", this.gateStop);
       return;
     }
     const blocked = this.tracker.blocked(this.heldTools);
@@ -309,6 +345,16 @@ class CaseRun {
       );
       return;
     }
+    // A files case that outwaited a turn's background work (then `follow`)
+    // has not sent the next turn: it is no finished case, and `next` sends
+    // the turn after its condition.
+    if (this.record.driver.suite === "files" && nextStep) {
+      await this.save(
+        "scheduled",
+        `«${nextStep.at}» ещё не отправлен: pnpm bench next --out ${this.settings.outDir} --case ${this.record.caseId}`
+      );
+      return;
+    }
     await this.save("completed");
   }
 
@@ -316,15 +362,14 @@ class CaseRun {
     session: ClientSession,
     kind: TesterTurnKind,
     at: string,
-    text: string
+    text: string,
+    /** A files case's turn index, for a scripted step. */
+    turn?: number
   ) {
-    this.record.driver.turns.push({
-      at,
-      kind,
-      sentAt: isoWithOffset(new Date(), this.settings.timeZone),
-      sessionId: session.state.sessionId,
-      text,
-    });
+    const sentAt = isoWithOffset(new Date(), this.settings.timeZone);
+    const { sessionId } = session.state;
+    this.record.driver.turns.push({ at, kind, sentAt, sessionId, text });
+    this.files?.noteTurn({ kind, sentAt, sessionId, text, turn });
     if (kind === "hint") this.record.hints += 1;
     if (kind === "code") this.record.codesRequested += 1;
     await this.journal.line(`== тестировщик (${kind}, ${at}): ${text}`);
@@ -339,10 +384,57 @@ class CaseRun {
 const savedStep = (step: PlannedStep) => ({
   at: step.at,
   files: [...step.files],
+  gate: step.gate,
   manual: step.manual,
   newConversation: step.newConversation,
   text: step.text,
+  turn: step.turn,
+  voice: [...(step.voice ?? [])],
+  waitBefore: step.waitBefore ?? false,
 });
+
+/**
+ * A case in flight; a files case gets its collector, which picks up the
+ * case's `files-run.json` when a later command continues it.
+ */
+async function caseRun(
+  journal: CaseJournal,
+  record: RunRecord,
+  settings: DriverSettings
+) {
+  const run = new CaseRun(journal, record, settings);
+  if (record.driver.suite === "files") {
+    run.files = await FilesCollector.open(
+      { caseId: record.caseId, dir: journal.paths.files },
+      {
+        cookie: settings.downloadCookie,
+        fixturesDir: settings.filesDir,
+        host: settings.host,
+        mask: (text) => journal.mask(text),
+        startedAt: record.startedAt,
+        timeZone: settings.timeZone,
+      }
+    );
+  }
+  return run;
+}
+
+/**
+ * Why a gated turn stays unsent, and how the tester sends it by hand: the
+ * answer then counts as that turn and the rest of the script follows.
+ */
+function gateStopDetail(
+  run: CaseRun,
+  step: PlannedStep,
+  gate: TurnGate,
+  question: string | null
+) {
+  const why =
+    gate.kind === "consent"
+      ? `Бро не спросил согласия на подпись (${question === null ? "вопросов не было" : `последний вопрос: «${question}»`})`
+      : `${step.at}: ответа, которого ждёт условие хода, не было`;
+  return `${why}; ответить вручную: pnpm bench send --kind answer --out ${run.settings.outDir} --case ${run.record.caseId} --text ${JSON.stringify(step.text)}`;
+}
 
 const plannedSteps = (
   saved: RunRecord["driver"]["remainingSteps"]
@@ -666,13 +758,19 @@ function newRecord(
     driver: {
       approvedTools: [...settings.approvedTools],
       backgroundRuns: [],
+      backgroundTasks: [],
       supersededRuns: [],
       confirmPaymentUpToRub: settings.confirmPaymentUpToRub ?? null,
       decisions: [],
       declinedTools: [],
-      fixtures: steps.flatMap((step) =>
-        step.files.map((file) => ({ file: file.path, shows: file.shows }))
-      ),
+      files: null,
+      fixtures: steps.flatMap((step) => [
+        ...step.files.map((file) => ({ file: file.path, shows: file.shows })),
+        ...(step.voice ?? []).map((file) => ({
+          file,
+          shows: "голосовое (уходит строкой «[голосовое] …»)",
+        })),
+      ]),
       heldTools: [...settings.heldTools],
       host: settings.host,
       observations: [],
@@ -746,8 +844,11 @@ async function failRun(run: CaseRun, error: Error) {
  * after each. Stops at a question for the tester and keeps the steps still
  * to send, so `send --kind answer` can pick the script up after the answer.
  * A paced run also stops before a step due later than `inlineWaitMs` from
- * now and keeps it for `next`. Returns the session the last message went
- * to, or undefined when the case stopped on a question.
+ * now and keeps it for `next`. A files case's later turn first waits for
+ * Bro's background work and then for its condition (`gate`): unmet, an
+ * optional turn is skipped and any other stops the case for the tester.
+ * Returns the session the last message went to, or undefined when the case
+ * stopped before its last step.
  */
 async function sendSteps(
   run: CaseRun,
@@ -784,6 +885,47 @@ async function sendSteps(
       // oxlint-disable-next-line eslint/no-await-in-loop -- a short «T+10мин» wait is kept in place
       await sleep(wait);
     }
+    if (step.waitBefore === true && session !== undefined) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- the next turn goes after the last one's background work
+      await finishBackground(run, session);
+      if (run.tracker.turnFailure || run.tracker.blocked(run.heldTools)) {
+        run.record.driver.remainingSteps = steps.slice(index).map(savedStep);
+        // oxlint-disable-next-line eslint/no-await-in-loop -- the case ends here
+        await run.settle();
+        return undefined;
+      }
+      // Still running after the wait: settled `timed-out`, `follow` waits
+      // on, and `next` sends this step after its condition.
+      if (run.tracker.awaitingBackground()) {
+        run.record.driver.remainingSteps = steps.slice(index).map(savedStep);
+        return undefined;
+      }
+    }
+    if (step.gate !== undefined && run.files !== undefined) {
+      const turn = step.turn ?? index;
+      const verdict = run.files.gate(step.gate, turn);
+      if (!verdict.met) {
+        run.record.driver.remainingSteps = steps
+          .slice(index + 1)
+          .map(savedStep);
+        if (step.gate.optional) {
+          // oxlint-disable-next-line eslint/no-await-in-loop -- the log follows the script
+          await run.journal.line(
+            `== драйвер: ${step.at} пропущен: условие не выполнено`
+          );
+          continue;
+        }
+        run.files.stopAt(turn, step.text);
+        run.gateStop = gateStopDetail(run, step, step.gate, verdict.question);
+        // oxlint-disable-next-line eslint/no-await-in-loop -- the case ends here
+        await run.journal.line(`== драйвер: ${run.gateStop}`);
+        return undefined;
+      }
+      // oxlint-disable-next-line eslint/no-await-in-loop -- the log follows the script
+      await run.journal.line(
+        `== драйвер: условие «${step.at}» выполнено${verdict.question === null ? "" : `: «${verdict.question}»`}`
+      );
+    }
     if (step.manual) {
       // oxlint-disable-next-line eslint/no-await-in-loop -- the log follows the script
       await run.journal.line(`   вручную (драйвер пропускает): ${step.manual}`);
@@ -793,11 +935,13 @@ async function sendSteps(
     const message = await messageContent(
       step.text,
       [...step.files, ...(extras ? settings.extraFiles : [])],
-      extras ? settings.voice : []
+      [...(extras ? settings.voice : []), ...(step.voice ?? [])]
     );
     const opened = step.newConversation ? undefined : session;
-    // oxlint-disable-next-line eslint/no-await-in-loop -- the log follows the script
-    if (opened) await run.noteTurn(opened, "script", step.at, step.text);
+    if (opened) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- the log follows the script
+      await run.noteTurn(opened, "script", step.at, step.text, step.turn);
+    }
     // oxlint-disable-next-line eslint/no-await-in-loop -- steps of one case are sequential
     session = await exchange(
       run,
@@ -811,7 +955,13 @@ async function sendSteps(
         }
         const created = await client.sessions.create({ message, signal });
         // Only after eve took it: a create sent again is noted once.
-        await run.noteTurn(created.session, "script", step.at, step.text);
+        await run.noteTurn(
+          created.session,
+          "script",
+          step.at,
+          step.text,
+          step.turn
+        );
         return { events: created.response, session: created.session };
       }
     );
@@ -846,7 +996,7 @@ export async function runCase(
     settings.timeZone
   );
   await journal.open();
-  const run = new CaseRun(
+  const run = await caseRun(
     journal,
     newRecord(benchCase, settings, journal, steps, scriptNotes),
     settings
@@ -904,7 +1054,7 @@ export async function continueCase(
   );
   if (input.code) journal.rememberCodes(input.code, true);
   if (input.kind === "code") journal.rememberCodes(input.text, true);
-  const run = new CaseRun(journal, record, extendSettings(record, settings));
+  const run = await caseRun(journal, record, extendSettings(record, settings));
   const cursor = record.driver.sessions.at(-1);
   if (!cursor) throw new Error(`${record.caseId} has no session to continue.`);
   const session = client.sessions.attach(cursor.sessionId, {
@@ -972,6 +1122,39 @@ export async function continueCase(
   return run.record;
 }
 
+/**
+ * Sends the case's cleanup, one message after another, as `cleanup` turns
+ * (no hint): «удали мою сохранённую подпись», «забудь …». The run's
+ * `--attach` and `--voice` stay with its first message. `cleanupDone` is set
+ * once every message went and the case settled `completed`.
+ */
+export async function cleanupCase(
+  client: Client,
+  benchCase: BenchCase,
+  record: RunRecord,
+  settings: DriverSettings
+) {
+  const plain = { ...settings, extraFiles: [], voice: [] };
+  let current = record;
+  for (const text of benchCase.cleanup) {
+    // oxlint-disable-next-line eslint/no-await-in-loop -- cleanup messages go one after another
+    current = await continueCase(client, current, plain, {
+      code: undefined,
+      kind: "cleanup",
+      respond: () => undefined,
+      text,
+    });
+    if (current.driver.status !== "completed") return current;
+  }
+  current.cleanupDone = true;
+  await new CaseJournal(
+    settings.outDir,
+    current.caseId,
+    settings.timeZone
+  ).save(current);
+  return current;
+}
+
 /** Catches up on a case's session and follows it for background results. */
 export async function followCase(
   client: Client,
@@ -983,7 +1166,7 @@ export async function followCase(
     record.caseId,
     settings.timeZone
   );
-  const run = new CaseRun(journal, record, extendSettings(record, settings));
+  const run = await caseRun(journal, record, extendSettings(record, settings));
   const cursor = record.driver.sessions.at(-1);
   if (!cursor) throw new Error(`${record.caseId} has no session to follow.`);
   const session = client.sessions.attach(cursor.sessionId, {
@@ -1036,7 +1219,7 @@ export async function nextCase(
     record.caseId,
     settings.timeZone
   );
-  const run = new CaseRun(journal, record, extendSettings(record, settings));
+  const run = await caseRun(journal, record, extendSettings(record, settings));
   const cursor = record.driver.sessions.at(-1);
   const session = cursor
     ? client.sessions.attach(cursor.sessionId, {
@@ -1109,10 +1292,10 @@ async function observationRun(
     settings.timeZone
   );
   if (existing) {
-    return new CaseRun(journal, existing, extendSettings(existing, settings));
+    return caseRun(journal, existing, extendSettings(existing, settings));
   }
   await journal.open();
-  const run = new CaseRun(
+  const run = await caseRun(
     journal,
     newRecord(benchCase, settings, journal, [], notes),
     settings

@@ -25,9 +25,10 @@ const base64DataUrl = /^data:[^,]*;base64,/u;
  * `data:` URL only for images within the thumbnails' budget, otherwise as
  * the bare base64 after the comma, which eve does not echo. A file the
  * browser left untyped goes as `application/octet-stream` (eve refuses an
- * empty type) and is told apart by its name.
+ * empty type) and is told apart by its name. The benchmark driver sends its
+ * files through this too (`scripts/bench/media.ts`), as a browser would.
  */
-function messageFileParts(
+export function messageFileParts(
   files: readonly Pick<FileUIPart, "filename" | "mediaType" | "url">[]
 ): FilePart[] {
   let previewBudget = previewImageBytes;

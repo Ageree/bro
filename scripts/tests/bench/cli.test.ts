@@ -1,5 +1,5 @@
 import { execFile, spawnSync } from "node:child_process";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -61,6 +61,150 @@ describe("pnpm bench", () => {
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("Choose the cases to seed");
+  });
+});
+
+/** One check's line of `check.py --json`. */
+const checkResult = (kind: string, status: string, description: string) => ({
+  description,
+  detail: "",
+  file: null,
+  index: 0,
+  kind,
+  status,
+});
+
+describe("pnpm bench and the files suite", () => {
+  it("lists the fixtures a dry run lacks without reaching any host", async () => {
+    const empty = await mkdtemp(join(tmpdir(), "bench-fixtures-"));
+    const result = bench(
+      "run",
+      "--suite",
+      "files",
+      "--case",
+      "f-00-sign-saved-signature",
+      "--dry-run",
+      "--files-fixtures",
+      empty
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain(
+      `scripts/bench/files/fixtures.py --case f-00-sign-saved-signature --out ${empty}`
+    );
+    expect(result.stdout).toContain(
+      join(empty, "f-00-sign-saved-signature", "podpis_vladelec.jpg")
+    );
+  });
+
+  it("refuses to run files cases side by side", () => {
+    const result = bench("run", "--suite", "files", "--concurrency", "2");
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("строго по одному");
+  });
+
+  it("reports a run's checks", async () => {
+    const out = await mkdtemp(join(tmpdir(), "bench-report-"));
+    const at = "2026-10-15T12:00:00+03:00";
+    await writeFile(
+      join(out, "f-test.json"),
+      JSON.stringify({
+        caseId: "f-test",
+        channel: "веб",
+        cleanupDone: true,
+        codesRequested: 0,
+        driver: {
+          decisions: [],
+          files: {
+            checks: null,
+            failedDownloads: 0,
+            gates: [{ met: true, turn: 1 }],
+            received: 2,
+          },
+          fixtures: [],
+          host: "https://brobro.tech",
+          pendingInputs: [],
+          riskLevel: null,
+          scriptNotes: [],
+          sessions: [],
+          status: "completed",
+          statusDetail: null,
+          suite: "files",
+          title: "Тест",
+          turns: [],
+        },
+        evidence: [],
+        finishedAt: "2026-10-15T12:07:00+03:00",
+        hints: 0,
+        naReason: null,
+        notes: "",
+        outcome: null,
+        product: "Бро",
+        productVersion: null,
+        promptSent: "",
+        safetyViolations: [],
+        score: null,
+        startedAt: at,
+        tester: "тест",
+        timezone: "Europe/Moscow",
+        transcript: "",
+        vpnNeeded: false,
+      })
+    );
+    await mkdir(join(out, "f-test"));
+    await writeFile(
+      join(out, "f-test", "checks.json"),
+      JSON.stringify({
+        caseId: "f-test",
+        drift: false,
+        errors: 0,
+        failed: 1,
+        manual: 0,
+        passed: 1,
+        results: [
+          checkResult("file_count", "pass", "Одна подписанная копия"),
+          checkResult("pdf_signed_by_bro", "fail", "Подписано Бро"),
+        ],
+        today: "2026-10-15",
+        tools: {},
+      })
+    );
+
+    const report = bench("report", "--out", out);
+
+    expect(report.status).toBe(0);
+    expect(report.stdout).toContain("✗ Подписано Бро");
+    expect(report.stdout).toContain(
+      "Итого: зачёт по проверкам 0 из 1 кейсов; проверок 1/2"
+    );
+
+    // A recheck whose checker fails shows no checks, not the old ones.
+    const recheck = spawnSync(
+      process.execPath,
+      [
+        "--experimental-strip-types",
+        entry,
+        "report",
+        "--out",
+        out,
+        "--recheck",
+      ],
+      {
+        encoding: "utf8",
+        // A Python that is not there; nothing else of this environment.
+        env: {
+          BENCH_PYTHON: join(out, "no-python"),
+          HOME: out,
+          NODE_ENV: "test",
+        },
+        timeout: 30_000,
+      }
+    );
+
+    expect(recheck.status).toBe(0);
+    expect(recheck.stdout).not.toContain("Подписано Бро");
+    expect(recheck.stdout).toContain("без проверок 1");
   });
 });
 

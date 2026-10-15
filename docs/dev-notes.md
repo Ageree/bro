@@ -1931,3 +1931,7 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   функцию модуля и объявляет захваченные переменные `const` в её начале: имя
   локальной переменной `execute`, совпавшее с переменной резолвера, — повторное
   объявление и падение сборки (`dynamic-tool-transform.js`).
+- Набор f-* (`docs/benchmarks/files/README.md`) идёт строго по одному: одна
+  сохранённая подпись на воркспейс; ссылки на файлы драйвер берёт из потока до
+  маскировки (`<out>/<case>/files-run.json`); `cases.json` — выход
+  `scripts/bench/files/build_cases.py`, затем `oxfmt`.
