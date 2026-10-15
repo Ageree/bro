@@ -1888,6 +1888,94 @@ describe("sendRefusal on what the location tools did", () => {
   });
 });
 
+/**
+ * Prod, 15.10: three refused `place_reminder` calls, then a question about
+ * which «Центральный телеграф», and in the very next step, before the person
+ * could answer, the same question again in other words.
+ */
+describe("sendRefusal on a question the person has not answered yet", () => {
+  const telegraph = [
+    userMessage(
+      "Когда буду у Центрального телеграфа, напомни отправить письмо"
+    ),
+    ...toolStep(
+      "place_reminder",
+      {
+        created: false,
+        reply:
+          "The address matches several places (Центральный телеграф, Тверская улица, 7, Москва; Центральный телеграф, Ташкент). Nothing was set up.",
+      },
+      {
+        action: "create",
+        place: "Центральный телеграф",
+        text: "отправить письмо",
+      }
+    ),
+    ...sendMessage(
+      "asked",
+      "Хочу повесить напоминание на «Центральный телеграф», но под этим адресом нашлось несколько мест — московский на Тверской 7 и ташкентский. Напомнить, когда будешь у московского, на Тверской?"
+    ),
+  ];
+
+  it.each([
+    [
+      "rephrased with a request for the same detail (prod)",
+      "Так и не понял, к какому ты: уточни — московский на Тверской 7 или нет?\n\nА точнее, скинь геометку или адрес, где напоминать…",
+    ],
+    ["as a bare nudge", "Ну так какой?"],
+  ])("drops the question asked again %s", (_case, text) => {
+    expect(refusal(telegraph, text)).toEqual({ skipped: "asked" });
+  });
+
+  it("ends the turn once the question asked again was dropped", () => {
+    expect(turnMustEnd(telegraph)).toBe(false);
+    expect(
+      turnMustEnd([
+        ...telegraph,
+        ...sendMessage(
+          "again",
+          "Ну так какой?",
+          textOutput(skippedSendNotice("asked"))
+        ),
+      ])
+    ).toBe(true);
+  });
+
+  it.each([
+    ["another place", "Или ты про телеграф на Мясницкой?"],
+    ["another question", "И что за письмо — маме?"],
+  ])("delivers a message that asks with %s", (_case, text) => {
+    expect(refusal(telegraph, text)).toBeUndefined();
+  });
+
+  it("delivers what a tool found after the question", () => {
+    const retried = [
+      ...telegraph,
+      ...toolStep(
+        "place_reminder",
+        { created: false, reply: "The map does not know this address." },
+        { action: "create", place: "Тверская 7", text: "отправить письмо" }
+      ),
+    ];
+
+    expect(
+      refusal(
+        retried,
+        "Карта не знает Тверскую 7 как место: скинь геометку, где напоминать?"
+      )
+    ).toBeUndefined();
+  });
+
+  it("delivers a question after an answer that asked nothing", () => {
+    const answered = [
+      userMessage("где поужинать?"),
+      ...sendMessage("answer", "Есть столик в «Пушкине» на 20:00."),
+    ];
+
+    expect(refusal(answered, "Бронировать на двоих?")).toBeUndefined();
+  });
+});
+
 describe("sendRefusal on claims no tool made", () => {
   const codeHandedOver = [
     userMessage("код от госуслуг: 123456"),

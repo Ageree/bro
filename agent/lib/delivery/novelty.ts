@@ -782,3 +782,63 @@ export function retellsAroundQuestion(
     names.every((name) => knownWord(name, toldWords))
   );
 }
+
+/**
+ * Whether a message ends by asking the person something: its last sentence
+ * is a question or a request — an address, a code, a choice.
+ */
+export function endsAsking(text: string) {
+  const last = sentencesOf(text).findLast(
+    (sentence) => normalizedText(sentence).length > 0
+  );
+  return (
+    last !== undefined &&
+    (questionsOf(last).length > 0 || requestsOf(last).length > 0)
+  );
+}
+
+/**
+ * Words that ask for an answer without saying what about: «какой», «когда»,
+ * «уточни», «пожалуйста». An ask made only of these and short words can be
+ * about nothing but the question already put.
+ */
+const answerWords = new Set(
+  "какой какая какое какие какого какому каком какую каким какими каких который которая которое которые которого которому котором которую которым которых когда куда откуда сколько почему зачем тебе тебя тобой твой твоя твоё твое твои вами ваша ваше ваши пожалуйста давай давайте тогда ладно итак значит точнее таки просто вообще будет будешь будете хочешь хотите нужно можно уточни уточните ответь ответьте скажи скажите подскажи подскажите напиши напишите выбери выберите which what where when please tell".split(
+    " "
+  )
+);
+
+/**
+ * Whether a message only asks the person again what `open` asked: `open` is
+ * the turn's last message, which ended asking them, and nothing was done
+ * since, so the model knows nothing it did not know then. The message asks
+ * something, names no number, link, picture or name that `known` — the
+ * turn's messages and the person's own — did not, and each thing it asks is
+ * about `open`: one of its words occurs there in some form, or it names
+ * nothing of its own («Ну так какой?»). In prod (15.10) «Напомнить, когда
+ * будешь у московского, на Тверской?» was followed in the next step by «Так
+ * и не понял, к какому ты: уточни — московский на Тверской 7 или нет? А
+ * точнее, скинь геометку или адрес…». Another place to choose or a question
+ * about something else is no such repeat.
+ */
+export function asksAgain(
+  message: SentMessage,
+  open: SentMessage,
+  known: readonly SentMessage[],
+  options: NameMatching
+) {
+  const asks = [...message.questions, ...message.requests];
+  if (asks.length === 0) return false;
+  if (!namesNothingNew(message, known, options)) return false;
+  const openWords = wordsOf([open]);
+  return asks.every((ask) => {
+    const topic = ask
+      .split(" ")
+      .filter(
+        (word) => word.length >= contentWordLength && !answerWords.has(word)
+      );
+    return (
+      topic.length === 0 || topic.some((word) => knownWord(word, openWords))
+    );
+  });
+}

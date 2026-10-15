@@ -22,10 +22,12 @@ import {
   namesNothingNew,
   announcesErrand,
   announcesWork,
+  asksAgain,
   asksOrShowsNew,
   carriesFacts,
   codesOf,
   distinctStems,
+  endsAsking,
   mentionsErrand,
   namesOf,
   namesShared,
@@ -93,6 +95,7 @@ const rewritesBeforeYield = 2;
 type OutgoingMessage = z.infer<typeof sendMessageOutputSchema>;
 
 const skipReasonSchema = z.enum([
+  "asked",
   "duplicate",
   "heads-up",
   "limit",
@@ -158,6 +161,7 @@ const unseenDraft =
   "The person never saw this draft, so the rewrite corrects nothing they read: no apology and no «ошибся» about it, now or later.";
 
 const skipNotices = {
+  asked: `${skippedPrefix} your last message of this turn asked the person something, and they have not answered yet; this one only asks the same again — in other words, or for the same detail. The question is already in front of them, and asking it twice only hurries them. Wait for their answer: end the turn now without calling any tool.`,
   duplicate: `${skippedPrefix} the person already received this message in this turn. Do not send it again: the reply is complete, so end the turn now without calling any tool.`,
   "heads-up": `${skippedPrefix} the person already has your heads-up that you are on it, and this message only says that again. They are waiting for the answer itself, so write no other status. If the work has not started, start it now with its tool, without writing; once its result is in — a tool you called in the same step as the heads-up has returned by now — send what it shows in one message.`,
   limit: `${skippedPrefix} this turn already delivered ${String(turnMessageLimit)} messages, the most one reply may take. End the turn now without calling any tool.`,
@@ -471,6 +475,10 @@ function announcesReport(
  * In the early-reply pilot (`earlyReply`) a person's turn may open with one
  * short heads-up before slow work (`opensWithHeadsUp`); saying it again
  * before the answer is dropped as `heads-up`, which leaves the turn open.
+ *
+ * A message that ended asking the person something waits for their answer:
+ * asking it again before any work, in other words or for the same detail,
+ * is dropped as `asked` (`asksAgain`).
  */
 export function sendRefusal(
   outgoing: OutgoingMessage,
@@ -544,6 +552,17 @@ export function sendRefusal(
       )
       ? { rewrite: "announced" }
       : { skipped: held };
+  }
+  if (
+    turn.openQuestion &&
+    asksAgain(
+      message,
+      turn.openQuestion,
+      [...delivered, ...(turn.request ? [turn.request] : [])],
+      turn
+    )
+  ) {
+    return { skipped: "asked" };
   }
   if (yields) return undefined;
   if (announcesReport(message, turn)) return { rewrite: "report" };
@@ -817,6 +836,8 @@ export function turnSends(messages: readonly ModelMessage[]) {
   const errandKnown = () =>
     withoutFound(errandSent(errandTexts), errandSent(foundTexts));
   const delivered: SentMessage[] = [];
+  // The last delivered message, when it ended asking the person something.
+  let asking: SentMessage | undefined;
   // The early-reply pilot's heads-up: the person read it, but the answer is
   // still owed, so it is no delivery the answer is judged against.
   const headsUps: SentMessage[] = [];
@@ -908,6 +929,10 @@ export function turnSends(messages: readonly ModelMessage[]) {
         continue;
       }
       delivered.push(sent);
+      asking =
+        input.kind === "message" && endsAsking(input.text ?? "")
+          ? sent
+          : undefined;
       // A message that follows other work — a search in the same step as the
       // errand, a calendar entry — may tell that work's result rather than
       // the errand; it uses up the errand's one message only when it talks
@@ -982,6 +1007,11 @@ export function turnSends(messages: readonly ModelMessage[]) {
     headsUps,
     /** How many sends were dropped as the heads-up said again. */
     headsUpSkips,
+    /**
+     * The turn's last message when it ended asking the person something and
+     * nothing was done since: they have yet to answer it.
+     */
+    openQuestion: workSinceDelivery ? undefined : asking,
     otherWorkSinceDelivery,
     /** Whether a finished browser run's report opened the turn. */
     report: reportedRun !== undefined,
