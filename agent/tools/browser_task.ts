@@ -3558,6 +3558,8 @@ async function directPaymentFor(
   const chargeRub = submission.chargeRub ?? 0;
   if (
     !errand?.completedAt ||
+    // An order Bro's own worker staged is never the person's to pay here.
+    errand.startedByPerson === false ||
     reportsPlacedOrder(errand.outcome) ||
     chargeRub <= 0 ||
     mentionsRecurringCharge(input.task, submission.what, submission.amount)
@@ -3925,8 +3927,14 @@ async function consentFromInput(
     consent.by === "errand" || consent.submission.paymentCapRub === undefined
       ? undefined
       : consent.submission.directRequest;
+  // The errand pays it: its runs and a replayed call keep it, another
+  // errand on the same request is refused.
   if (paidRequest !== undefined)
-    await spendDirectRequest(scope, paidRequest.key, context.callId);
+    await spendDirectRequest(
+      scope,
+      paidRequest.key,
+      errand?.id ?? context.callId
+    );
   return consent.by === "errand" ? undefined : consent;
 }
 
@@ -3934,18 +3942,18 @@ const directRequestSpentRefusal =
   "Nothing was started: the person's request in this turn is already being paid by another purchase, and one request pays one. Check that purchase with status first; do not start another for the same request. Only if they want something more, ask them one short question with what it is and its total.";
 
 /**
- * One request pays one purchase: the call that pays takes it — the same
- * call replayed keeps it — and another call on the same request is refused.
+ * One request pays one purchase: the errand that pays takes it, and another
+ * on the same request is refused.
  */
 async function spendDirectRequest(
   scope: AccessScope,
   consentKey: string,
-  callId: string
+  ref: string
 ) {
   if (
     !(await claimDirectPurchase(scope, {
       consentKey,
-      ref: `browser:${callId}`,
+      ref: `browser:${ref}`,
     }))
   )
     throw new Error(directRequestSpentRefusal);

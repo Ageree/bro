@@ -447,10 +447,15 @@ export default telegramChannel({
     // because eve's lazy resolver drops a photo the Bot API serves without an
     // image content type and never reads a voice note at all. Spreadsheets
     // and documents reach the model only where task or browser files are on.
-    const media = await telegramMediaTurn(message, {
-      browserFiles: browserFilesEnabled(scope.workspaceId),
-      documents: taskFilesEnabled(scope.workspaceId),
-    });
+    const media = await telegramMediaTurn(
+      forwarded
+        ? { ...message, caption: `${forwardedMarker} ${message.caption}` }
+        : message,
+      {
+        browserFiles: browserFilesEnabled(scope.workspaceId),
+        documents: taskFilesEnabled(scope.workspaceId),
+      }
+    );
     if (media?.notice) await context.telegram.sendMessage(media.notice);
     // A voice note nobody could transcribe leaves nothing to answer, so the
     // retry line above is the whole reply and no model turn starts.

@@ -131,6 +131,8 @@ export function writtenBudgetRub(request: string) {
   )) {
     const { currency, lead, number, thousands } = match.groups ?? {};
     if (lead === undefined && currency === undefined) continue;
+    // «штраф за 18810177250101234567» is a number, not a price.
+    if ((number ?? "").replace(/[.,]\d*$/u, "").length > 7) continue;
     const amount = Number(number?.replace(",", "."));
     const value = Math.floor(thousands === undefined ? amount : amount * 1000);
     if (value > 0 && (budget === undefined || value < budget)) budget = value;

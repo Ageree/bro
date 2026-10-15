@@ -99,6 +99,9 @@ describe("a person's request to buy, read in code", () => {
     expect(await requestOf(["Оплати счёт 123456 за интернет"])).toMatchObject({
       budgetRub: undefined,
     });
+    expect(
+      await requestOf(["Оплати штраф за 18810177250101234567"])
+    ).toMatchObject({ budgetRub: undefined });
   });
 
   it("gives one turn one key, a message steered into it the same, and another turn another", async () => {
