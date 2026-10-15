@@ -56,21 +56,39 @@ export async function requestYoomoneyPayment(
       token,
     })
   );
-  if (!parsed.success) return { kind: "refused" as const, error: "unknown" };
+  if (!parsed.success) {
+    console.warn("[yoomoney] request-payment unreadable", {
+      issues: parsed.error.issues.map((issue) => issue.path.join(".")),
+      test: mode.test,
+    });
+    return { kind: "refused" as const, error: "unknown" };
+  }
   const answer = parsed.data;
+  // YooMoney's own words for a refusal, never the token or the payment's
+  // details: what a refusal the person only hears as «отказал» was.
+  const refused = (error: string) => {
+    console.warn("[yoomoney] request-payment refused", {
+      status: answer.status,
+      error: answer.error,
+      requestId: answer.request_id !== undefined,
+      contractAmount: answer.contract_amount !== undefined,
+      walletAllowed: answer.money_source?.wallet?.allowed,
+      test: mode.test,
+    });
+    return { kind: "refused" as const, error };
+  };
   // `hold_for_pickup`: the recipient has no wallet, and the money would
   // wait for one. Bro sends money only to a wallet that exists.
-  if (answer.status === "hold_for_pickup")
-    return { kind: "refused" as const, error: "hold_for_pickup" };
+  if (answer.status === "hold_for_pickup") return refused("hold_for_pickup");
   if (
     answer.status !== "success" ||
     answer.request_id === undefined ||
     answer.contract_amount === undefined
   )
-    return { kind: "refused" as const, error: answer.error ?? "unknown" };
+    return refused(answer.error ?? "unknown");
   // The test mode's answer may say nothing of the wallet.
   if (answer.money_source?.wallet?.allowed === false && !mode.test)
-    return { kind: "refused" as const, error: "wallet_not_allowed" };
+    return refused("wallet_not_allowed");
   return {
     kind: "ready" as const,
     requestId: answer.request_id,
@@ -119,6 +137,11 @@ export async function processYoomoneyPayment(
       kind: "pending" as const,
       nextRetryMs: answer.next_retry ?? 5_000,
     };
+  console.warn("[yoomoney] process-payment refused", {
+    status: answer.status,
+    error: answer.error,
+    test: mode.test,
+  });
   return { kind: "refused" as const, error: answer.error ?? answer.status };
 }
 
