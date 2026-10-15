@@ -669,6 +669,9 @@ export async function routerGroupsOfStep(
               failure: "failure" in settled ? settled.failure : undefined,
               model: "model" in settled ? settled.model : undefined,
               ms: settled.ms,
+              // What `on` would have hidden of the skills' groups: the
+              // shadow set keeps them all, so its `missed` cannot see it.
+              narrowed: choice.finish(settled).narrowed,
               provider: "provider" in settled ? settled.provider : undefined,
               turnId,
             });

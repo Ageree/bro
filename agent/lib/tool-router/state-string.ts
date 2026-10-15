@@ -4,43 +4,14 @@ import { z } from "zod";
 import { answersThisTurn } from "@agent/lib/browser-use/said";
 import { placeMarker, positionMarker } from "@agent/lib/location/markers";
 import { isLocationLine } from "@agent/lib/location/note";
+import { speaksOfOwnPlace } from "@agent/lib/location/phrases";
 import { withoutSecrets } from "@agent/lib/privacy/secrets";
 import { splitTurn } from "@agent/lib/skills/tools";
-import { mediaMarkers, stems, turnWords } from "@agent/lib/skills/triggers";
+import { mediaMarkers, turnWords } from "@agent/lib/skills/triggers";
 import { routerStateLimits } from "./questions";
 
 /** The location pilot's markers of a point the person sent. */
 const locationMarkers = [positionMarker, placeMarker] as const;
-
-/**
- * What a place after «приду в/на/к» must not be: «когда буду в настроении»,
- * «приду к выводу», «вернусь к работе», «выйду из себя» speak of no place,
- * and neither do a time («в пятницу», «к 10», «к обеду», «в мае») or a
- * state («в шоке», «на созвоне», «к этому вопросу»): reminders are mostly
- * worded that way.
- */
-const notAPlace = String.raw`(?!\s+(\d|(себя|себе|it|this|that|them|know|see|meet|think|do|terms|a decision|a conclusion|the point|the meeting|работе|этому|тому|нему|ней|ночь|ночи|ночью|ма[йюея]|март[ау]?)(?!\p{L})|норм|форм|настроени|курсе|связи|сети|силах|состояни|отпуск|вывод|решени|согласи|мнени|пониман|итог|цел[иь]|финал|общему|делу|теме|вопрос|шоке|созвон|встреч|понедельник|вторник|сред[уеы]|четверг|пятниц|суббот|воскресень|утр|вечер(?!ин)|обед|полдень|полдн|полноч|выходн|январ|феврал|апрел|июн|июл|август|сентябр|октябр|ноябр|декабр))`;
-
-/**
- * The person's words of where they are or will be, or of a reminder bound
- * to a place (`L`, with the markers): the decision model gave no group to
- * «напомни купить хлеб, когда приду на Тверскую 7» (15.10). Only words that
- * clearly mean the person's own place: «рядом с текстом», «ближайший
- * понедельник» and «когда буду свободен» are none of it.
- */
-const placeBound = stems(
-  String.raw`когда\s+(я\s+)?(приду|приеду|доеду|доберусь|окажусь|вернусь|буду|подойду|подъеду)\s+((в|во|на|до|к|ко)(?!\p{L})${notAPlace}|(домой|дома|сюда|туда|там)(?!\p{L}))`,
-  String.raw`как\s+(только\s+)?(я\s+)?(приду|приеду|окажусь|доеду|доберусь|вернусь домой)(?!\p{L})`,
-  String.raw`когда\s+(я\s+)?(уйду|выйду|уеду)\s+(из|с|со|от)(?!\p{L})${notAPlace}`,
-  String.raw`(уйду|выйду|уеду|ухожу|выхожу)\s+из\s+дома`,
-  String.raw`где\s+я\s+(сейчас|нахожусь|находил\p{L}*|припарковал\p{L}*|парковал\p{L}*|поставил\p{L}*\s+машин|оставил\p{L}*\s+машин)(?!\p{L})`,
-  String.raw`где\s+я\s+был[аи]?(\s*\?|\s+(вчера|сегодня|утром|дн[её]м|вечером|ночью|в\s+\d|час\p{L}*\s+назад)(?!\p{L}))`,
-  String.raw`где\s+я\s*\?|где\s+(сейчас\s+)?нахожусь|где\s+моя\s+машин`,
-  String.raw`рядом\s+со\s+мной|поблизости|неподал[её]ку|недалеко\s+от\s+меня`,
-  String.raw`when\s+i\s+(get|arrive|come)\s+((home|back|there|here)(?!\p{L})|(to|at)(?!\p{L})${notAPlace})`,
-  String.raw`when\s+i\s+leave(?!\s+(a|an|it|this|that|feedback|comments?|reviews?|notes?)(?!\p{L}))`,
-  String.raw`where\s+am\s+i|where\s+did\s+i\s+park|where\s+i\s+parked|near\s+me|(?<!the\s+)nearby|close\s+to\s+me`
-);
 
 /**
  * A run of four digits or more, spaces, dashes, dots and brackets between
@@ -128,7 +99,9 @@ function lastSend(history: readonly ModelMessage[]) {
  *   paying, its ask for readings, its answer to a schedule's report.
  * - `mediaOnly`: the turn sent a photo or a file with no words of its own.
  * - `located`: the turn carries the location pilot's marker of a point, or
- *   the person's words of their own place (`placeBound`).
+ *   the person's words of their own place (`speaksOfOwnPlace`): the
+ *   decision model gave no group to «напомни купить хлеб, когда приду на
+ *   Тверскую 7» (15.10).
  * - `answers`: the person's answers to `ask_question` in this turn, typed
  *   or picked: eve resumes the same turn with them as tool results, and
  *   «Позвонить» may want a group the opening words did not. They change
@@ -168,7 +141,7 @@ export function routerTurnText(messages: readonly ModelMessage[]) {
     input,
     located:
       locationMarkers.some((marker) => words.includes(marker)) ||
-      placeBound.test(words),
+      speaksOfOwnPlace(words),
     mediaOnly:
       (filesSent || mediaPresence.test(words)) && bare.trim().length < 15,
     prevCall: previous?.message,

@@ -268,7 +268,12 @@ function actOutcomes(
       if (!actTools[act].includes(part.toolName)) continue;
       const outcome = callOutcome(part);
       if (outcome === "read") continue;
-      outcomes[act].earlierCall = true;
+      // A flagged tool that changed nothing made nothing a later claim could
+      // be about: a place reminder that asked for the house does not excuse
+      // «поставил напоминание» on another request with no call.
+      if (outcome === "done" || !flaggedWriteTools.has(part.toolName)) {
+        outcomes[act].earlierCall = true;
+      }
       if (outcome === "done") outcomes[act].earlierDone = true;
       outcomes[act].lastRefused =
         outcome === "failed" && previousCalls.has(part.toolCallId);

@@ -7,7 +7,8 @@ import { readWorkspaceTimeZone } from "@db/services/user-profile";
 import type { AccessScope } from "@shared/identity/access-scope";
 import { webShareText } from "@shared/location/share";
 import { pointAddress } from "./address";
-import { sharedLine, whereLine } from "./note";
+import { placeReminderLine, sharedLine, whereLine } from "./note";
+import { asksReminderAtPlace } from "./phrases";
 
 /**
  * Words of a message about places around the person: «что рядом», «где я»,
@@ -32,10 +33,10 @@ const whereFreshMs = 2 * 60 * 60_000;
  * two hours. Otherwise nothing, and the model asks `location_now` or the
  * person. A failed read is no line.
  */
-export async function locationContext(
+async function whereContext(
   scope: AccessScope,
   words: string,
-  now = new Date()
+  now: Date
 ): Promise<string[]> {
   if (!speaksOfPlaces(words)) return [];
   try {
@@ -54,6 +55,22 @@ export async function locationContext(
     });
     return [];
   }
+}
+
+/**
+ * The context lines of a message that brings no point of its own: for a
+ * request to be reminded at a place, the line naming `place_reminder`; for
+ * a message about places near the person, where they last were.
+ */
+export async function locationContext(
+  scope: AccessScope,
+  words: string,
+  now = new Date()
+): Promise<string[]> {
+  return [
+    ...(asksReminderAtPlace(words) ? [placeReminderLine] : []),
+    ...(await whereContext(scope, words, now)),
+  ];
 }
 
 /** The button's message reads a point shared this recently. */
