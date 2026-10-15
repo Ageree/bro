@@ -78,7 +78,7 @@ function paidDaysUsed(paidUntil: Date) {
 }
 
 export default async function Page({ searchParams }: PageProps<"/workspace">) {
-  const { google, status, mail, mailStatus } = await searchParams;
+  const { google, status, mail, mailStatus, yoomoney } = await searchParams;
   const shownApps = cabinetAppSchema.options.filter((app) =>
     connectedAppConfigured(app)
   );
@@ -214,6 +214,22 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
           Доступ Бро к этому ящику отключён, сохранённые токены удалены. Письма
           и черновики остались в почте. Чтобы отозвать разрешение самому
           OAuth-приложению, отключи его в настройках Mail.ru или Яндекс ID.
+        </Flash>
+      ) : null}
+
+      {yoomoney === "connected" ? (
+        <Flash>
+          Кошелёк ЮMoney подключён: Бро видит его баланс и историю операций.
+          Вернись в чат с Бро.
+        </Flash>
+      ) : null}
+      {yoomoney === "declined" ? (
+        <Flash>Доступ к кошельку ЮMoney не выдан: подключение отменено.</Flash>
+      ) : null}
+      {yoomoney === "failed" ? (
+        <Flash>
+          Кошелёк ЮMoney не подключён: ссылка истекла или ЮMoney не ответил.
+          Попроси у Бро новую ссылку.
         </Flash>
       ) : null}
 

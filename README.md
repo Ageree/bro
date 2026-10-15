@@ -441,6 +441,21 @@ durable replay protection; an uncertain delivery is never automatically sent
 again. Disconnecting deletes the local tokens, not the mailbox or the
 provider's consent; revoke that consent in the provider's account settings.
 
+## YooMoney wallet
+
+Bro reads a person's YooMoney wallet — the balance and the operation history —
+and pays from its balance through the wallet API, with the person's OAuth
+consent: transfers to other wallets and the services of YooMoney's catalogue
+(mobile top-ups, internet, utilities). Every payment waits for the person's
+yes to a question with its exact total. Register an app at
+`https://yoomoney.ru/myservices/new` with the Redirect URI
+`<origin>/api/yoomoney/callback` and "verify authenticity" (`client_secret`)
+on, then set `YOOMONEY_CLIENT_ID`, `YOOMONEY_CLIENT_SECRET` and the pilot
+`YOOMONEY_WORKSPACES` (workspace ids or `*`). `YOOMONEY_TEST_PAYMENTS=on`
+makes every payment YooMoney's test one, which charges nothing. The person
+opens the link Bro sends in a browser signed in to the cabinet; Bro asks for
+`account-info operation-history payment-p2p payment-shop`.
+
 ## Local development
 
 The **Deploy with Vercel** flow above is the simplest way to run OpenInstinct. It

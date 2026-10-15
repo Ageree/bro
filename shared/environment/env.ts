@@ -714,6 +714,14 @@ export const env = createEnv({
     YANDEX_MAIL_CLIENT_ID: trimmedValue.optional(),
     YANDEX_MAIL_CLIENT_SECRET: trimmedValue.optional(),
     MAIL_WORKSPACES: workspaceListSchema.optional(),
+    // The YooMoney wallet a person connects by OAuth (`agent/tools/yoomoney.ts`):
+    // the app registered at yoomoney.ru/myservices, its Redirect URI
+    // `<origin>/api/yoomoney/callback`. The pilot takes workspace ids or `*`.
+    YOOMONEY_CLIENT_ID: trimmedValue.optional(),
+    YOOMONEY_CLIENT_SECRET: trimmedValue.optional(),
+    YOOMONEY_WORKSPACES: workspaceListSchema.optional(),
+    // `on`: every wallet payment is YooMoney's test one — checked, not charged.
+    YOOMONEY_TEST_PAYMENTS: z.enum(["on", "off"]).default("off"),
     // Which Drizzle driver `db/index.ts` builds. Deployments keep the pooled
     // TCP client; `neon-http` exists for a maintenance run from a machine that
     // can only reach the database over HTTPS.

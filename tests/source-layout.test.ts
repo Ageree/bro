@@ -54,6 +54,7 @@ describe("source layout", () => {
       "user-profile",
       "vault",
       "workstreams",
+      "yoomoney",
     ]);
     expect(files("shared")).toEqual([]);
     expect(existsSync("shared/environment/env.ts")).toBe(true);
