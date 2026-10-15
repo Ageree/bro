@@ -124,8 +124,13 @@ def form_pdf(path):
     from reportlab.lib.colors import black, white
     from reportlab.pdfgen import canvas
 
+    fonts()
     buffer = io.BytesIO()
     c = canvas.Canvas(buffer, pagesize=A4)
+    c.setFont("TestSans", 10)
+    c.drawString(180, 593, "Согласен с условиями")
+    c.drawString(180, 563, "мужской")
+    c.drawString(240, 563, "женский")
     c.setFont("Helvetica", 10)
     form = c.acroForm
     form.textfield(name="fio", x=160, y=782, width=300, height=20, fontName="Helvetica", fontSize=0, borderColor=black, fillColor=white)

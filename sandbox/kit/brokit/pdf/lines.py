@@ -108,13 +108,15 @@ def _count_images(writer):
         stack = [resources]
         while stack:
             current = stack.pop()
-            if current is None:
+            current = current.get_object() if current is not None else None
+            xobjects = current.get("/XObject") if isinstance(current, dict) else None
+            xobjects = xobjects.get_object() if xobjects is not None else None
+            if not isinstance(xobjects, dict):
                 continue
-            xobjects = current.get_object().get("/XObject")
-            if xobjects is None:
-                continue
-            for entry in xobjects.get_object().values():
+            for entry in xobjects.values():
                 target = entry.get_object()
+                if not isinstance(target, dict):
+                    continue
                 key = entry.idnum if hasattr(entry, "idnum") else id(target)
                 if target.get("/Subtype") == "/Image":
                     seen.add(key)
@@ -143,9 +145,10 @@ def retext(argv):
     if not known:
         raise KitError("no_text", "the PDF has no text layer", "scans: read with look, then write a new document")
     writer = crypt.writer_from(reader)
-    before = _count_images(writer)
-    writer.remove_text()
-    drawn, kept, untranslated, overflow = _redraw(writer, found, mapping)
+    with crypt.parsing():
+        before = _count_images(writer)
+        writer.remove_text()
+        drawn, kept, untranslated, overflow = _redraw(writer, found, mapping)
     crypt.write_pdf(writer, output)
     return {
         "output": output,

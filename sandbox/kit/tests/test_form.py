@@ -5,7 +5,7 @@ import shutil
 import tempfile
 import unittest
 
-from tests.pdf_fixtures import kit, form_pdf, pdftotext, write_json
+from tests.pdf_fixtures import TOKEN, form_pdf, kit, pdftotext, write_json
 
 VALUES = {
     "fio": "Иванов-Щедрин Александр Владимирович",
@@ -92,3 +92,19 @@ class Fill(unittest.TestCase):
         self.assertEqual(fields["agree"]["/V"], "/Yes")
         widget = next(a.get_object() for a in reader.pages[0]["/Annots"] if a.get_object().get("/T") == "fio")
         self.assertIn("/N", widget["/AP"])
+
+    def test_info_names_fields_and_flags_foreign_marks(self):
+        home = os.path.join(self.directory, "home")
+        os.makedirs(home, exist_ok=True)
+        with open(os.path.join(home, "mark-token"), "w") as handle:
+            handle.write(TOKEN)
+        code, info = kit("pdf", "info", self.form, home=home)
+        self.assertEqual(code, 0, info)
+        fields = {field["name"]: field for field in info["fields"]}
+        self.assertEqual((fields["passport"]["comb"], fields["passport"]["maxlen"]), (True, 10))
+        self.assertEqual(fields["agree"]["label"], "Согласен с условиями")
+        self.assertEqual([button["label"] for button in fields["gender"]["widgets"]], ["мужской", "женский"])
+        self.assertEqual([(s["name"], s["signed"]) for s in info["signature_fields"]], [("Подпись заявителя", False), ("bro_sign_signature_1", False)])
+        self.assertEqual(info["foreign_marks"], [])
+        code, elsewhere = kit("pdf", "info", self.form)
+        self.assertEqual((code, elsewhere["foreign_marks"]), (0, ["bro_sign_signature_1"]))

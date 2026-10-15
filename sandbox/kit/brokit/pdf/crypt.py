@@ -5,6 +5,7 @@ PDF whose user password is empty without asking (with a warning: the output is n
 encrypted). Passwords never appear in the JSON or in errors.
 """
 
+import contextlib
 import os
 
 from brokit.util import KitError, need_file, out_path, parser
@@ -30,6 +31,15 @@ def _pdf_errors():
 
 def unreadable(error):
     return KitError("unreadable", "the PDF cannot be read: %s" % (type(error).__name__,), "re-save it (print to PDF) or render it")
+
+
+@contextlib.contextmanager
+def parsing():
+    """Inside it, a parse error of a broken PDF becomes the `unreadable` refusal (exit 2), not a bug."""
+    try:
+        yield
+    except _pdf_errors() as error:
+        raise unreadable(error)
 
 
 def open_pdf(path, password=None, warnings=None, max_pages=None, decrypt=True):
@@ -94,6 +104,8 @@ def write_pdf(writer, output, producer=None):
         with open(temporary, "wb") as handle:
             writer.write(handle)
         os.replace(temporary, output)
+    except _pdf_errors() as error:
+        raise unreadable(error)
     finally:
         if os.path.exists(temporary):
             os.remove(temporary)

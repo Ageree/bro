@@ -1,6 +1,7 @@
 """Signature places: sign-mark, sign-places, stamp-sign — the contract Bro's signer relies on (W2 spec §5.2, §5.3)."""
 
 import os
+import re
 import shutil
 import tempfile
 import unittest
@@ -206,3 +207,88 @@ class Sign(unittest.TestCase):
         self.assertIn("15.10.2026", pdftotext(signed))
         code, again, _ = self.stamp(signed, [{"field": "комментарий", "role": "signature"}])
         self.assertEqual((code, again["code"]), (2, "signed_by_bro"))
+
+    def test_signed_file_keeps_no_scaffolding_and_no_token(self):
+        from pypdf import PdfReader, PdfWriter
+        from pypdf.generic import NameObject, TextStringObject
+
+        code, marked, output = self.mark(self.contract, [{"page": 1, "box": self.boxes["tenant"], "role": "signature"}])
+        self.assertEqual(code, 0, marked)
+        writer = PdfWriter(clone_from=output)
+        # A look-alike name (Arabic-Indic digit) is not a mark, and a mark without a widget on any page (left by a script).
+        lookalike = sig_field("bro_sign_signature_١", [60, 400, 200, 430])
+        lookalike[NameObject("/BroMark")] = TextStringObject(TOKEN)
+        add_field(writer, 0, lookalike)
+        orphan = writer._add_object(sig_field("bro_sign_initials_7", [60, 500, 200, 530]))
+        orphan.get_object()[NameObject("/BroMark")] = TextStringObject(TOKEN)
+        writer._root_object["/AcroForm"]["/Fields"].append(orphan)
+        writer.write(output)
+        listed = {place["raw_name"]: place for place in self.places(output)["places"]}
+        self.assertEqual(sorted(listed), ["bro_sign_signature_1", "bro_sign_signature_١"])
+        self.assertEqual((listed["bro_sign_signature_١"]["bro"], listed["bro_sign_signature_١"]["marked"]), (None, False))
+        code, result, signed = self.stamp(output, [{"field": "bro_sign_signature_1", "role": "signature"}])
+        self.assertEqual(code, 0, result)
+        reader = PdfReader(signed)
+        self.assertEqual(reader.trailer["/Root"]["/AcroForm"]["/Fields"], [])
+        self.assertEqual(widgets(signed), [])
+        with open(signed, "rb") as handle:
+            self.assertNotIn(TOKEN.encode("ascii"), handle.read())
+
+    def test_date_fits_a_narrow_box(self):
+        narrow = [362.0, 688.0, 406.0, 702.0]
+        code, marked, output = self.mark(
+            self.contract, [{"page": 1, "box": self.boxes["tenant"], "role": "signature"}, {"page": 1, "box": narrow, "role": "date"}]
+        )
+        self.assertEqual(code, 0, marked)
+        code, result, signed = self.stamp(
+            output, [{"field": "bro_sign_signature_1", "role": "signature"}, {"field": "bro_sign_date_1", "role": "date"}]
+        )
+        self.assertEqual(code, 0, result)
+        self.assert_ink_only_in(output, signed, [self.boxes["tenant"], narrow])
+        # The stamp clips to its box, so a date wider than the box would lose its last digits.
+        found = re.search(r'xMin="([\d.]+)" yMin="[\d.]+" xMax="([\d.]+)" yMax="[\d.]+">15\.10\.2026<', pdftotext(signed, "-bbox"))
+        self.assertIsNotNone(found)
+        self.assertTrue(narrow[0] <= float(found.group(1)) and float(found.group(2)) <= narrow[2], found.groups())
+
+    def test_mark_stays_on_its_page_when_pages_share_annotations(self):
+        from pypdf import PdfWriter
+        from pypdf.generic import ArrayObject, NameObject
+
+        writer = PdfWriter()
+        for _ in range(2):
+            writer.add_blank_page(width=595, height=842)
+        shared = writer._add_object(ArrayObject())
+        for page in writer.pages:
+            page[NameObject("/Annots")] = shared
+        source = self.path("shared-annots.pdf")
+        writer.write(source)
+        code, marked, output = self.mark(source, [{"page": 1, "box": BOX, "role": "signature"}])
+        self.assertEqual(code, 0, marked)
+        self.assertEqual([(p["field"], p["page"]) for p in self.places(output)["places"]], [("bro_sign_signature_1", 1)])
+
+    def test_mark_by_layout_id_takes_its_page(self):
+        cache = self.path("cache")
+        code, layout = kit("pdf", "layout", self.contract, cache=cache)
+        self.assertEqual(code, 0, layout)
+        blank = next(b for b in layout["pages"][0]["blanks"] if b["label"].startswith("НАНИМАТЕЛЬ"))
+        output = self.path("marked-at.pdf")
+        spec = write_json(output + ".json", [{"at": blank["id"], "role": "signature"}])
+        code, result = kit("pdf", "sign-mark", self.contract, spec, "-o", output, home=self.home, cache=cache)
+        self.assertEqual(code, 0, result)
+        mark = result["marks"][0]
+        self.assertEqual((mark["page"], mark["label"]), (1, blank["label"]))
+        self.assertTrue(near(mark["view_box"], blank["box"], 0.1), (mark["view_box"], blank["box"]))
+
+    def test_labels_follow_the_text_on_rotated_pages(self):
+        from brokit.pdf import geom
+        from pypdf import PdfReader
+
+        for angle in (90, 180, 270):
+            with self.subTest(angle=angle):
+                source = self.path("labels-%d.pdf" % angle)
+                contract_pdf(source, rotate=angle, crop_offset=50)
+                page = PdfReader(source).pages[0]
+                spec = [{"page": 1, "box": geom.user_to_view(page, box), "role": "signature"} for box in ([60, 182, 180, 210], [330, 182, 450, 210])]
+                code, result, _ = self.mark(source, spec)
+                self.assertEqual(code, 0, result)
+                self.assertEqual([mark["label"] for mark in result["marks"]], ["НАЙМОДАТЕЛЬ: · (подпись)", "НАНИМАТЕЛЬ: · (подпись)"])

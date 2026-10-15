@@ -83,6 +83,8 @@ def plan_text(item, box, font_name, on_rule):
     wanted = item.get("size", "auto")
     if wanted not in (None, "auto"):
         wanted = _number(wanted, "size")
+        if not 2 <= wanted <= 200:
+            raise KitError("bad_spec", "size must be 2-200 pt or \"auto\"")
     if item.get("comb"):
         cells = int(_number(item["comb"], "comb"))
         if cells < 1:
@@ -139,7 +141,8 @@ def main(argv):
             {"n": n, "page": number, "box": box, "angle": angle, "rule": rule, "item": item, "font": font_name, "align": align, "plan": plan}
         )
     writer = crypt.writer_from(reader)
-    _draw(writer, placed)
+    with crypt.parsing():
+        _draw(writer, placed)
     crypt.write_pdf(writer, output)
     items = [
         {

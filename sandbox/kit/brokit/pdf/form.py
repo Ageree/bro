@@ -28,15 +28,19 @@ TRUE_WORDS = {"true", "yes", "on", "1", "x", "v", "✓", "✔", "да", "ист�
 FALSE_WORDS = {"false", "no", "off", "0", "", "нет", "ложь"}
 
 
+def annotations(page):
+    """The page's /Annots array, or [] when it is missing or not an array (a broken file)."""
+    annots = page.get("/Annots")
+    annots = annots.get_object() if annots is not None else None
+    return annots if isinstance(annots, list) else []
+
+
 def widgets(doc):
     """(page index, page, annotation entry, widget dict) for every widget in page /Annots."""
     for index, page in enumerate(doc.pages):
-        annots = page.get("/Annots")
-        if annots is None:
-            continue
-        for entry in annots.get_object():
+        for entry in annotations(page):
             widget = entry.get_object()
-            if hasattr(widget, "get") and widget.get("/Subtype") == "/Widget":
+            if isinstance(widget, dict) and widget.get("/Subtype") == "/Widget":
                 yield index, page, entry, widget
 
 
@@ -112,14 +116,25 @@ def hidden(widget):
         bits = int(widget.get("/F", 0) or 0)
     except (TypeError, ValueError):
         bits = 0
-    box = geom.rect(widget.get("/Rect", [0, 0, 0, 0]))
+    box = geom.widget_rect(widget)
     return bool(bits & (F_HIDDEN | F_NOVIEW)) or geom.area(box) <= 0
+
+
+def max_length(field):
+    """/MaxLen as a positive int, or None (missing or broken)."""
+    try:
+        value = int(inherited(field, "/MaxLen"))
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
 
 
 def options(field):
     """[(export value, display text)] of a choice field's /Opt."""
+    listed = inherited(field, "/Opt")
+    listed = listed.get_object() if listed is not None else None
     out = []
-    for item in inherited(field, "/Opt") or []:
+    for item in listed if isinstance(listed, list) else []:
         item = item.get_object()
         if isinstance(item, list) and len(item) >= 2:
             out.append((str(item[0].get_object()), str(item[1].get_object())))
@@ -140,10 +155,10 @@ def value_of(field):
 
 
 def is_reserved(field):
-    """Signature fields and Bro's sign marks: never filled, flattened or removed by fill."""
-    from brokit.pdf.sign import MARK_RE
+    """Signature fields and Bro's sign scaffolding (`bro_sign_*`): never filled, flattened or removed by fill."""
+    from brokit.pdf.sign import is_scaffold
 
-    return kind(field) == "signature" or bool(MARK_RE.match(raw_name(field)))
+    return kind(field) == "signature" or is_scaffold(field)
 
 
 def fields(doc):
@@ -159,8 +174,39 @@ def fields(doc):
 
 def acroform(writer_or_reader):
     root = writer_or_reader._root_object if hasattr(writer_or_reader, "_root_object") else writer_or_reader.trailer["/Root"]
-    form = root.get("/AcroForm")
-    return form.get_object() if form is not None else None
+    form = root.get_object().get("/AcroForm")
+    form = form.get_object() if form is not None else None
+    return form if isinstance(form, dict) else None
+
+
+def field_list(form):
+    """The AcroForm's /Fields array, or None when it is missing or not an array."""
+    fields = form.get("/Fields") if form is not None else None
+    fields = fields.get_object() if fields is not None else None
+    return fields if isinstance(fields, list) else None
+
+
+def prune_fields(array, dropped, drop=None, seen=None):
+    """/Fields (or /Kids) without the nodes whose id() is in `dropped` or for which `drop(node)`
+    is true (each with its subtree); a parent whose kids all went goes too. Cycles end."""
+    from pypdf.generic import ArrayObject, NameObject
+
+    seen = set() if seen is None else seen
+    keep = ArrayObject()
+    for entry in array:
+        node = entry.get_object()
+        if not isinstance(node, dict) or id(node) in dropped or id(node) in seen or (drop is not None and drop(node)):
+            continue
+        seen.add(id(node))
+        kids = node.get("/Kids")
+        kids = kids.get_object() if kids is not None else None
+        if isinstance(kids, list) and len(kids):
+            remaining = prune_fields(kids, dropped, drop, seen)
+            if not remaining:
+                continue
+            node[NameObject("/Kids")] = remaining
+        keep.append(entry)
+    return keep
 
 
 def _da(field):
@@ -181,9 +227,10 @@ def _da(field):
 
 
 def _mk_colour(values):
-    if values is None:
+    try:
+        numbers = [float(v) for v in values.get_object()] if values is not None else []
+    except (TypeError, ValueError):
         return None
-    numbers = [float(v) for v in values.get_object()]
     if len(numbers) == 1:
         return (numbers[0],) * 3
     if len(numbers) == 3:
@@ -232,9 +279,8 @@ def layout_text(field, text, width, height):
     except (TypeError, ValueError):
         alignment = 0
     plan = {"font": font_name, "colour": colour, "align": alignment, "lines": [text], "size": da_size or 10.0}
-    max_length = inherited(field, "/MaxLen")
-    if kind(field) == "text" and field_flags & FF_COMB and max_length:
-        cells = int(max_length)
+    cells = max_length(field)
+    if kind(field) == "text" and field_flags & FF_COMB and cells:
         if len(text) > cells and len(re.sub(r"\s+", "", text)) <= cells:
             text = re.sub(r"\s+", "", text)
         if len(text) > cells:
@@ -356,16 +402,17 @@ def main(argv):
     warnings = []
     reader = crypt.open_pdf(options_.file, warnings=warnings)
     writer = crypt.writer_from(reader)
-    form = acroform(writer)
-    found = fields(writer)
-    if form is not None and "/XFA" in form:
-        if not found:
-            raise KitError("xfa", "an XFA-only form: no AcroForm fields to fill", "use brokit pdf layout, then brokit pdf write")
-        del form["/XFA"]
-        warnings.append("xfa_dropped: the form also had XFA; filled the AcroForm fields, viewers will show those")
-    if form is None or not found:
-        raise KitError("no_fields", "the PDF has no form fields", "use brokit pdf layout, then brokit pdf write")
-    return fill(writer, form, found, values, output, options_.keep_fields, warnings)
+    with crypt.parsing():
+        form = acroform(writer)
+        found = fields(writer)
+        if form is not None and "/XFA" in form:
+            if not found:
+                raise KitError("xfa", "an XFA-only form: no AcroForm fields to fill", "use brokit pdf layout, then brokit pdf write")
+            del form["/XFA"]
+            warnings.append("xfa_dropped: the form also had XFA; filled the AcroForm fields, viewers will show those")
+        if form is None or not found:
+            raise KitError("no_fields", "the PDF has no form fields", "use brokit pdf layout, then brokit pdf write")
+        return fill(writer, form, found, values, output, options_.keep_fields, warnings)
 
 
 def fill(writer, form, found, values, output, keep_fields, warnings):
@@ -412,12 +459,13 @@ def fill(writer, form, found, values, output, keep_fields, warnings):
                 export, text = match if match else (text, text)
                 field[NameObject("/V")] = TextStringObject(export)
             else:
-                max_length = inherited(field, "/MaxLen")
-                compact = re.sub(r"\s+", "", text) if flags(field) & FF_COMB else text
-                if max_length is not None and len(compact) > int(max_length):
-                    problems.append({"field": name, "problem": "overflow", "max_length": int(max_length)})
+                limit = max_length(field)
+                if flags(field) & FF_COMB and limit and len(text) > limit:
+                    text = re.sub(r"\s+", "", text)  # «0015 246813» into 10 cells; the value and the cells agree
+                if limit is not None and len(text) > limit:
+                    problems.append({"field": name, "problem": "overflow", "max_length": limit})
                     continue
-                field[NameObject("/V")] = TextStringObject(compact if flags(field) & FF_COMB else text)
+                field[NameObject("/V")] = TextStringObject(text)
             for *_, widget in record["widgets"]:
                 drawn.append((widget, field, text, "text", None))
         filled.append(name)
@@ -425,7 +473,7 @@ def fill(writer, form, found, values, output, keep_fields, warnings):
     # One reportlab document for every appearance.
     jobs, sizes = [], []
     for widget, field, text, job_kind, state in drawn:
-        x0, y0, x1, y1 = geom.rect(widget.get("/Rect", [0, 0, 0, 0]))
+        x0, y0, x1, y1 = geom.widget_rect(widget)
         angle = _rotation(widget)
         width, height = (y1 - y0, x1 - x0) if angle in (90, 270) else (x1 - x0, y1 - y0)
         plan, problem = (layout_text(field, text, width, height) if job_kind == "text" else (None, None))
@@ -503,8 +551,6 @@ def fill(writer, form, found, values, output, keep_fields, warnings):
 
 
 def _flatten(writer, form, names, found):
-    from pypdf.generic import ArrayObject, NameObject
-
     stamper = geom.Stamper(writer, "BroFlat")
     dropped = set()
     for name in names:
@@ -516,30 +562,21 @@ def _flatten(writer, form, names, found):
             if appearance is None:
                 continue
             reference, target = appearance
-            stamper.add(page, reference, _flatten_matrix(target, geom.rect(widget["/Rect"])))
+            stamper.add(page, reference, _flatten_matrix(target, geom.widget_rect(widget)))
     stamper.apply()
+    drop_widgets(writer, form, dropped)
+
+
+def drop_widgets(writer, form, dropped, drop=None):
+    """Takes the annotations whose id() is in `dropped` off every page, and those nodes (and the
+    ones `drop(node)` names) out of the AcroForm's /Fields."""
+    from pypdf.generic import ArrayObject, NameObject
+
     for page in writer.pages:
-        annots = page.get("/Annots")
-        if annots is None:
-            continue
-        kept = ArrayObject(entry for entry in annots.get_object() if id(entry.get_object()) not in dropped)
-        if len(kept) != len(annots.get_object()):
+        annots = annotations(page)
+        kept = ArrayObject(entry for entry in annots if id(entry.get_object()) not in dropped)
+        if len(kept) != len(annots):
             page[NameObject("/Annots")] = kept
-
-    def prune(array):
-        keep = ArrayObject()
-        for entry in array:
-            node = entry.get_object()
-            if id(node) in dropped:
-                continue
-            kids = node.get("/Kids")
-            if kids is not None and len(kids.get_object()):
-                remaining = prune(kids.get_object())
-                if not remaining:
-                    continue
-                node[NameObject("/Kids")] = remaining
-            keep.append(entry)
-        return keep
-
-    if "/Fields" in form:
-        form[NameObject("/Fields")] = prune(form["/Fields"].get_object())
+    listed = field_list(form)
+    if listed is not None:
+        form[NameObject("/Fields")] = prune_fields(listed, dropped, drop)

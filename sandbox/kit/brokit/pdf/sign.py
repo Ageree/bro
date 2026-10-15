@@ -19,10 +19,13 @@ from brokit import labels
 from brokit.pdf import crypt, form, geom
 from brokit.util import KitError, out_path, parse_pages, parser, read_json
 
-MARK_RE = re.compile(r"^bro_sign_(signature|initials|date)_(\d+)$")
-SIGNING_ID_RE = re.compile(r"^[\w-]{1,64}$")
-TOKEN_RE = re.compile(r"^[0-9a-f]{8,64}$")
-DATE_RE = re.compile(r"^\d{2}\.\d{2}\.\d{4}$")
+# Matched with fullmatch and re.ASCII, so they mean what the same patterns mean in JavaScript
+# (W3): Python's `$` also matches before a trailing newline and its `\d`/`\w` take any script.
+MARK_RE = re.compile(r"^bro_sign_(signature|initials|date)_(\d+)$", re.ASCII)
+SCAFFOLD_PREFIX = "bro_sign_"
+SIGNING_ID_RE = re.compile(r"^[\w-]{1,64}$", re.ASCII)
+TOKEN_RE = re.compile(r"^[0-9a-f]{8,64}$", re.ASCII)
+DATE_RE = re.compile(r"^\d{2}\.\d{2}\.\d{4}$", re.ASCII)
 MAX_PAGES = 500
 MAX_PLACES = 200
 ROLES = ("signature", "initials", "date")
@@ -55,7 +58,7 @@ def mark_token(explicit):
     """The workspace's mark token: --mark-token, else $BROKIT_HOME/mark-token (never printed)."""
     if explicit:
         token = explicit.strip().lower()
-        if not TOKEN_RE.match(token):
+        if not TOKEN_RE.fullmatch(token):
             raise KitError("bad_args", "--mark-token must be hex")
         return token
     path = os.path.join(os.environ.get("BROKIT_HOME", "/workspace/.bro"), "mark-token")
@@ -64,12 +67,17 @@ def mark_token(explicit):
             token = handle.read().strip().lower()
     except (OSError, UnicodeDecodeError):
         return None
-    return token if TOKEN_RE.match(token) else None
+    return token if TOKEN_RE.fullmatch(token) else None
 
 
 def mark_of(field):
-    match = MARK_RE.match(form.raw_name(field))
+    match = MARK_RE.fullmatch(form.raw_name(field))
     return {"role": match.group(1), "n": int(match.group(2))} if match else None
+
+
+def is_scaffold(field):
+    """Any field named `bro_sign_…` — marks and look-alikes: never filled, never left in a signed file."""
+    return isinstance(field, dict) and form.raw_name(field).startswith(SCAFFOLD_PREFIX)
 
 
 def stored(widget, key):
@@ -79,16 +87,28 @@ def stored(widget, key):
 
 
 class Words:
-    """Text pieces per page (pdftotext), read once per page."""
+    """labels.PageWords per page (pdftotext), read once per page."""
 
     def __init__(self, path):
         self.path = path
         self.pages = {}
 
+    def prefetch(self, numbers, gap=3):
+        """Reads runs of nearby pages with one pdftotext call each (a long form has fields on every page)."""
+        runs = []
+        for number in sorted(set(numbers) - set(self.pages)):
+            if runs and number - runs[-1][1] <= gap:
+                runs[-1][1] = number
+            else:
+                runs.append([number, number])
+        for first, last in runs:
+            layout = labels.page_layout(self.path, first, last)
+            for number in range(first, last + 1):
+                self.pages.setdefault(number, labels.PageWords(layout.get(number, [])))
+
     def __call__(self, number):
         if number not in self.pages:
-            layout = labels.page_layout(self.path, number)
-            self.pages[number] = labels.text_words(layout.get(number, []))
+            self.prefetch([number])
         return self.pages[number]
 
 
@@ -142,6 +162,12 @@ def inventory(path, reader, token):
     found = form.fields(reader)
     base["signed_fields"] = signed_fields(found)
     words = Words(path)
+    words.prefetch(
+        index + 1
+        for record in found.values()
+        if record["kind"] in ("signature", "text") and not mark_of(record["field"])
+        for index, *_ in record["widgets"]
+    )
     listed = []
     for name, record in found.items():
         field, field_kind = record["field"], record["kind"]
@@ -151,9 +177,9 @@ def inventory(path, reader, token):
         if field_kind == "signature" and form.inherited(field, "/V") is not None:
             continue
         for index, page, _, widget in record["widgets"]:
-            box = geom.rect(widget.get("/Rect", [0, 0, 0, 0]))
+            box = geom.widget_rect(widget)
             view = geom.user_to_view(page, box)
-            label = stored(widget, "/BroLabel") if mark else labels.label_for(words(index + 1), view)
+            label = stored(widget, "/BroLabel") if mark else words(index + 1).label(view)
             hint = mark["role"] if mark else hint_for(form.raw_name(field) + " " + label, field_kind == "text")
             if field_kind == "text" and mark is None and hint is None:
                 continue
@@ -190,7 +216,7 @@ def _plan(path):
     if not isinstance(plan, dict):
         raise KitError("plan_mismatch", "PLAN.json must be an object")
     signing_id = str(plan.get("signing_id", ""))
-    if not SIGNING_ID_RE.match(signing_id):
+    if not SIGNING_ID_RE.fullmatch(signing_id):
         raise KitError("plan_mismatch", "signing_id must match ^[\\w-]{1,64}$")
     chosen = plan.get("places")
     if not isinstance(chosen, list) or not chosen:
@@ -203,7 +229,7 @@ def _plan(path):
             raise KitError("plan_mismatch", "field %s is planned twice" % item["field"])
         roles[item["field"]] = item["role"]
     date = str(plan.get("date", ""))
-    if "date" in roles.values() and not DATE_RE.match(date):
+    if "date" in roles.values() and not DATE_RE.fullmatch(date):
         raise KitError("plan_mismatch", "date must be dd.mm.yyyy")
     signature = plan.get("signature")
     if not isinstance(signature, dict) or signature.get("kind") not in ("image", "typed"):
@@ -270,7 +296,7 @@ def stamp(argv):
     reader = crypt.open_pdf(options.file, decrypt=False)
     if reader.is_encrypted:
         raise KitError("encrypted", "the PDF is encrypted", "ask for a copy without a password")
-    try:
+    with crypt.parsing():
         if _xfa(reader):
             raise KitError("xfa", "an XFA form cannot be signed here")
         found = form.fields(reader)
@@ -290,9 +316,7 @@ def stamp(argv):
             typed = _typed_font(signature)
         writer = crypt.writer_from(reader)
         result = _stamp(writer, roles, date, png, aspect, typed)
-    except crypt.PDF_ERRORS as error:
-        raise crypt.unreadable(error)
-    _add_keywords(writer, signing_id)
+        _add_keywords(writer, signing_id)
     size = crypt.write_pdf(writer, output, producer="Бро")
     with open(output, "rb") as handle:
         digest = hashlib.sha256(handle.read()).hexdigest()
@@ -307,7 +331,6 @@ def _add_keywords(writer, signing_id):
 
 
 def _stamp(writer, roles, date, png, aspect, typed):
-    from pypdf.generic import ArrayObject, NameObject
     from reportlab.lib.utils import ImageReader
     from reportlab.pdfbase import pdfmetrics
 
@@ -318,7 +341,7 @@ def _stamp(writer, roles, date, png, aspect, typed):
         for index, page, _, widget in found[name]["widgets"]:
             if form.hidden(widget):
                 continue
-            box = geom.rect(widget["/Rect"])
+            box = geom.widget_rect(widget)
             matrix, width, height = geom.frame(box, geom.rotation(page))
             jobs.append((name, role, index, page, box, matrix, width, height))
     image = ImageReader(png) if png else None
@@ -327,7 +350,9 @@ def _stamp(writer, roles, date, png, aspect, typed):
     def draw(canvas, job_index, width, height):
         role = jobs[job_index][1]
         if role == "date":
-            size = max(6.0, min(11.0, 0.7 * height))
+            # clamp(0.7·h, 6, 11), and narrow enough for the box (a 40 pt box takes «15.10.2026» at 7 pt).
+            fitting = (width - 3) / max(pdfmetrics.stringWidth(date, date_font, 1), 0.01)
+            size = max(6.0, min(11.0, 0.7 * height, fitting))
             canvas.setFont(date_font, size)
             canvas.setFillColorRGB(0.05, 0.05, 0.25)
             canvas.drawString(2, (height - size * 0.72) / 2, date)
@@ -364,11 +389,11 @@ def _stamp(writer, roles, date, png, aspect, typed):
     removed = set(roles)
     for name, record in found.items():
         field = record["field"]
-        if mark_of(field):
+        if is_scaffold(field):
             removed.add(name)
         elif record["kind"] == "signature" and form.inherited(field, "/V") is None:
             for index, _, _, widget in record["widgets"]:
-                box = geom.rect(widget.get("/Rect", [0, 0, 0, 0]))
+                box = geom.widget_rect(widget)
                 for place_index, place_box, ink_box in signed_boxes:
                     covered = geom.intersection(box, ink_box) / geom.area(ink_box) if geom.area(ink_box) > 0 else 0
                     if place_index == index and (geom.iou(box, place_box) > 0.5 or covered > 0.5):
@@ -378,38 +403,13 @@ def _stamp(writer, roles, date, png, aspect, typed):
         record = found[name]
         dropped.add(id(record["field"]))
         dropped.update(id(widget) for *_, widget in record["widgets"])
-    for page in writer.pages:
-        annots = page.get("/Annots")
-        if annots is not None:
-            remaining = ArrayObject(entry for entry in annots.get_object() if id(entry.get_object()) not in dropped)
-            if len(remaining) != len(annots.get_object()):
-                page[NameObject("/Annots")] = remaining
     acro = form.acroform(writer)
-    if acro is not None:
-        if "/Fields" in acro:
-            acro[NameObject("/Fields")] = _pruned(acro["/Fields"].get_object(), dropped)
-        if "/SigFlags" in acro and not any(r["kind"] == "signature" for n, r in found.items() if n not in removed):
-            del acro["/SigFlags"]
+    # `bro_sign_*` fields without a widget on any page (left by a script) go too: they may carry the token.
+    form.drop_widgets(writer, acro, dropped, drop=is_scaffold)
+    if acro is not None and "/SigFlags" in acro and not any(r["kind"] == "signature" for n, r in found.items() if n not in removed):
+        del acro["/SigFlags"]
     writer.compress_identical_objects(remove_duplicates=True, remove_unreferenced=True)
     return {"drawn": drawn, "removed": sorted(removed)}
-
-
-def _pruned(array, dropped):
-    from pypdf.generic import ArrayObject, NameObject
-
-    keep = ArrayObject()
-    for entry in array:
-        node = entry.get_object()
-        if id(node) in dropped:
-            continue
-        kids = node.get("/Kids")
-        if kids is not None and len(kids.get_object()):
-            remaining = _pruned(kids.get_object(), dropped)
-            if not remaining:
-                continue
-            node[NameObject("/Kids")] = remaining
-        keep.append(entry)
-    return keep
 
 
 # --- sign-mark ----------------------------------------------------------------------------
@@ -470,10 +470,11 @@ def mark(argv):
     token = mark_token(options.mark_token)
     warnings = []
     reader = crypt.open_pdf(options.file, warnings=warnings)
-    if _xfa(reader):
-        raise KitError("xfa", "an XFA form cannot carry sign marks")
-    writer = crypt.writer_from(reader)
-    marks = _mark(options.file, writer, items, token, warnings)
+    with crypt.parsing():
+        if _xfa(reader):
+            raise KitError("xfa", "an XFA form cannot carry sign marks")
+        writer = crypt.writer_from(reader)
+        marks = _mark(options.file, writer, items, token, warnings)
     if not token:
         warnings.append("no_mark_token: Bro will ask the person to choose fields")
     crypt.write_pdf(writer, output)
@@ -487,7 +488,7 @@ def _acroform(writer):
     if acro is None:
         acro = DictionaryObject({NameObject("/Fields"): ArrayObject()})
         writer._root_object[NameObject("/AcroForm")] = writer._add_object(acro)
-    if "/Fields" not in acro:
+    if form.field_list(acro) is None:
         acro[NameObject("/Fields")] = ArrayObject()
     return acro
 
@@ -533,7 +534,7 @@ def _mark(path, writer, items, token, warnings):
                 return name
 
     native = [
-        (index, geom.rect(widget.get("/Rect", [0, 0, 0, 0])), name)
+        (index, geom.widget_rect(widget), name)
         for name, record in found.items()
         if record["kind"] == "signature" and not mark_of(record["field"]) and form.inherited(record["field"], "/V") is None
         for index, _, _, widget in record["widgets"]
@@ -548,6 +549,10 @@ def _mark(path, writer, items, token, warnings):
         role = _role(item.get("role"))
         if "pages" in item:
             numbers = parse_pages(str(item["pages"]), len(writer.pages))
+        elif item.get("page") is None and "at" in item:
+            from brokit.pdf import layout
+
+            numbers = [layout.blank_by_id(path, str(item["at"]))[0]]  # "p2b5" names its page
         else:
             try:
                 numbers = [int(item.get("page"))]
@@ -568,7 +573,7 @@ def _mark(path, writer, items, token, warnings):
                 view = _box(page, item.get("box"), number)
             user = geom.view_to_user(page, view)
             name = next_name(role)
-            label = labels.label_for(words(number), view)
+            label = words(number).label(view)
             widget = DictionaryObject(
                 {
                     NameObject("/Type"): NameObject("/Annot"),
@@ -589,12 +594,9 @@ def _mark(path, writer, items, token, warnings):
             else:
                 acro[NameObject("/SigFlags")] = NumberObject(1)
             reference = writer._add_object(widget)
-            annots = page.get("/Annots")
-            if annots is None:
-                page[NameObject("/Annots")] = ArrayObject([reference])
-            else:
-                annots.get_object().append(reference)
-            acro["/Fields"].get_object().append(reference)
+            # A new array per page: pages may share one /Annots array, and the mark belongs to this page only.
+            page[NameObject("/Annots")] = ArrayObject(list(form.annotations(page)) + [reference])
+            form.field_list(acro).append(reference)
             width, height = view[2] - view[0], view[3] - view[1]
             if role != "date" and (width < 60 or height < 18):
                 warnings.append("small_box: %s is %.0f×%.0f pt; a signature needs about 150×30" % (name, width, height))
@@ -621,8 +623,8 @@ def _adopt(writer, found, wanted, token, words, next_name):
     if form.inherited(field, "/V") is not None:
         raise KitError("adopt_signed", "the field %s is already signed" % wanted)
     index, page, _, widget = record["widgets"][0]
-    view = geom.user_to_view(page, geom.rect(widget.get("/Rect", [0, 0, 0, 0])))
-    label = labels.label_for(words(index + 1), view)
+    view = geom.user_to_view(page, geom.widget_rect(widget))
+    label = words(index + 1).label(view)
     role = "initials" if re.search(r"инициал|параф|initial", normalised(label + " " + str(field.get("/TU", "")))) else "signature"
     name = next_name(role)
     field[NameObject("/T")] = TextStringObject(name)
@@ -644,34 +646,34 @@ def spots(argv):
     warnings = []
     reader = crypt.open_pdf(options.file, warnings=warnings)
     numbers = parse_pages(options.pages, len(reader.pages))
-    try:
-        found = form.fields(reader)
-    except crypt.PDF_ERRORS as error:
-        raise crypt.unreadable(error)
     token = mark_token(None)
     words = Words(options.file)
-    found_spots, existing, covered = [], [], {}
-    for name, record in found.items():
-        field = record["field"]
-        if mark_of(field):
-            continue
-        for index, page, _, widget in record["widgets"]:
-            if index + 1 not in numbers:
+    words.prefetch(numbers)
+    with crypt.parsing():
+        found = form.fields(reader)
+        found_spots, existing, covered = [], [], {}
+        for name, record in found.items():
+            field = record["field"]
+            if mark_of(field):
                 continue
-            view = geom.user_to_view(page, geom.rect(widget.get("/Rect", [0, 0, 0, 0])))
-            covered.setdefault(index + 1, []).append(view)
-            label = labels.label_for(words(index + 1), view)
-            if record["kind"] == "signature":
-                signed = form.inherited(field, "/V") is not None
-                existing.append({"field": name, "page": index + 1, "box": geom.rounded(view), "label": label, "signed": signed})
-            elif record["kind"] == "text":
-                role = hint_for(form.raw_name(field) + " " + str(field.get("/TU", "")) + " " + label, True)
-                if role:
-                    found_spots.append(
-                        {"role": role, "page": index + 1, "box": geom.rounded(view), "label": label, "source": "field", "field": name, "confidence": 0.9}
-                    )
-    for number in numbers:
-        found_spots.extend(_layout_spots(options.file, reader.pages[number - 1], number, words(number), covered.get(number, [])))
+            for index, page, _, widget in record["widgets"]:
+                if index + 1 not in numbers:
+                    continue
+                view = geom.user_to_view(page, geom.widget_rect(widget))
+                covered.setdefault(index + 1, []).append(view)
+                label = words(index + 1).label(view)
+                if record["kind"] == "signature":
+                    signed = form.inherited(field, "/V") is not None
+                    existing.append({"field": name, "page": index + 1, "box": geom.rounded(view), "label": label, "signed": signed})
+                elif record["kind"] == "text" and form.value_of(field) in (None, ""):
+                    # A filled text field is not a place to sign or date any more.
+                    role = hint_for(form.raw_name(field) + " " + str(field.get("/TU", "")) + " " + label, True)
+                    if role:
+                        found_spots.append(
+                            {"role": role, "page": index + 1, "box": geom.rounded(view), "label": label, "source": "field", "field": name, "confidence": 0.9}
+                        )
+        for number in numbers:
+            found_spots.extend(_layout_spots(options.file, reader.pages[number - 1], number, words(number), covered.get(number, [])))
     anchors = [(s["page"], s["box"]) for s in found_spots if s["role"] in ("signature", "initials")]
     anchors += [(e["page"], e["box"]) for e in existing]
     # A date or a name (расшифровка) is a signing spot only next to a signature place.
@@ -680,18 +682,23 @@ def spots(argv):
     ]
     for index, spot in enumerate(found_spots, start=1):
         spot["id"] = "s%d" % index
-    foreign = [
+    return {"spots": found_spots, "existing": existing, "foreign_marks": foreign_marks(found, token), "warnings": warnings}
+
+
+def foreign_marks(found, token):
+    """Names of sign marks that do not carry this workspace's token (another workspace's, or forged)."""
+    return [
         name
         for name, record in found.items()
         if mark_of(record["field"]) and (token is None or stored(record["widgets"][0][3], "/BroMark") != token)
     ]
-    return {"spots": found_spots, "existing": existing, "foreign_marks": foreign, "warnings": warnings}
 
 
-def _layout_spots(path, page, number, words, covered):
+def _layout_spots(path, page, number, text_layer, covered):
     """Spots named by printed words («Подпись ____», «(подпись)», «М.П.») and the blank they point at."""
     from brokit.pdf import layout
 
+    words = text_layer.view
     blanks = None
     out = []
     for phrase in _phrases(words):
@@ -734,7 +741,7 @@ def _layout_spots(path, page, number, words, covered):
             continue  # a form field is there: it is listed from the field
         if sum(geom.intersection(spot_box, w["box"]) for w in words) > 0.3 * geom.area(spot_box):
             continue  # already filled in
-        label = labels.label_for(words, spot_box) or text
+        label = text_layer.label(spot_box) or text
         out.append({"role": role, "page": number, "box": geom.rounded(spot_box), "label": label, "source": "layout", "confidence": confidence})
     kept = []
     for spot in out:

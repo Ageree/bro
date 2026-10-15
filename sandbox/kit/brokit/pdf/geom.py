@@ -25,6 +25,15 @@ def rect(values):
     return [min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)]
 
 
+def widget_rect(annotation):
+    """The /Rect of an annotation; a missing or broken one is an empty box (a hidden place)."""
+    try:
+        values = annotation.get("/Rect").get_object()
+        return rect(value.get_object() for value in values)
+    except (AttributeError, TypeError, ValueError):
+        return [0.0, 0.0, 0.0, 0.0]
+
+
 def crop(page):
     return rect(page.cropbox)
 

@@ -40,8 +40,9 @@ def pieces(text, box):
 
 
 def page_layout(path, first, last=None):
-    """{page: [line]} for pages first..last; line = {"box", "words": [{"t", "box", "kind"}]}.
+    """{page: [line]} for pages first..last; line = {"box", "words": [{"t", "box", "kind"}], "raw": [(text, box)]}.
 
+    "words" are pieces split along the view's x axis; "raw" keeps pdftotext's whole words.
     Pages without a text layer (scans) give no lines. A pdftotext failure gives {}.
     """
     last = last or first
@@ -57,16 +58,17 @@ def page_layout(path, first, last=None):
     for offset, page in enumerate(root.iter(_NAMESPACE + "page")):
         lines = []
         for line in page.iter(_NAMESPACE + "line"):
-            words = []
+            words, raw = [], []
             for word in line.iter(_NAMESPACE + "word"):
                 text = (word.text or "").strip()
                 if not text:
                     continue
                 box = [float(word.get(key, 0)) for key in ("xMin", "yMin", "xMax", "yMax")]
+                raw.append((text, box))
                 for kind, piece, piece_box in pieces(text, box):
                     words.append({"t": piece, "box": piece_box, "kind": kind})
             if words:
-                lines.append({"box": [float(line.get(key, 0)) for key in ("xMin", "yMin", "xMax", "yMax")], "words": words})
+                lines.append({"box": [float(line.get(key, 0)) for key in ("xMin", "yMin", "xMax", "yMax")], "words": words, "raw": raw})
         pages[first + offset] = lines
     return pages
 
@@ -74,6 +76,62 @@ def page_layout(path, first, last=None):
 def text_words(lines):
     """The text pieces of a page's lines, without blanks and bare punctuation (/, |, «»)."""
     return [word for line in lines for word in line["words"] if word["kind"] == "text" and re.search(r"[\w№]", word["t"])]
+
+
+def reading_turn(lines):
+    """How far the page's text is turned in the view: 0, or 90/180/270 when it runs down, right
+    to left or up (upright text on a /Rotate'd page). Voted by the lines of two or more words."""
+    votes = {0: 0, 90: 0, 180: 0, 270: 0}
+    for line in lines:
+        raw = line.get("raw", [])
+        if len(raw) < 2:
+            continue
+        (ax, ay), (bx, by) = _centre(raw[0][1]), _centre(raw[-1][1])
+        dx, dy = bx - ax, by - ay
+        if abs(dx) >= abs(dy):
+            votes[0 if dx > 0 else 180] += 1
+        else:
+            votes[90 if dy > 0 else 270] += 1
+    best = max(votes, key=lambda turn: votes[turn])
+    return best if votes[best] > votes[0] else 0
+
+
+def turn_box(box, turn):
+    """A view box in the frame where text turned by `turn` reads left to right, top to bottom."""
+    x0, y0, x1, y1 = box
+    if turn == 90:  # text runs down: (x, y) → (y, −x)
+        return [y0, -x1, y1, -x0]
+    if turn == 180:
+        return [-x1, -y1, -x0, -y0]
+    if turn == 270:  # text runs up: (x, y) → (−y, x)
+        return [-y1, x0, -y0, x1]
+    return list(box)
+
+
+class PageWords:
+    """The printed words of one page: `view` in view pt (for rasters and blanks), and labels of
+    places read along the text — on a /Rotate'd page of upright text «left of» and «above» follow
+    the text, not the screen, so a column header still names its box."""
+
+    def __init__(self, lines):
+        self.view = text_words(lines)
+        self.turn = reading_turn(lines)
+        self.reading = self.view
+        if self.turn:
+            # Split «Дата:____» again along the text, now that the frame reads left to right.
+            turned = [
+                {"t": piece, "box": piece_box, "kind": kind}
+                for line in lines
+                for text, box in line.get("raw", [])
+                for kind, piece, piece_box in pieces(text, turn_box(box, self.turn))
+            ]
+            self.reading = text_words([{"words": turned}])
+
+    def label(self, box):
+        return label_for(self.reading, turn_box(box, self.turn))
+
+    def right_label(self, box):
+        return right_label(self.reading, turn_box(box, self.turn))[0]
 
 
 def _centre(box):

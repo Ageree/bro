@@ -198,10 +198,13 @@ def rotate(argv):
     warnings = []
     reader = _open(options.file, warnings)
     numbers = set(parse_pages(options.pages, len(reader.pages)))
+    from pypdf.generic import NameObject, NumberObject
+
     writer = crypt.writer_from(reader)
     for number, page in enumerate(writer.pages, start=1):
         if number in numbers:
-            page.rotate(options.angle % 360)
+            # geom.rotation reads a broken /Rotate as 0, as viewers do (pypdf's page.rotate would fail on it).
+            page[NameObject("/Rotate")] = NumberObject((geom.rotation(page) + options.angle) % 360)
     return dict(_save(writer, output), rotated=sorted(numbers), warnings=warnings)
 
 

@@ -391,11 +391,15 @@ def analyse(path, number, page, lines):
 def _big_image(page):
     """True when the page holds a raster of at least 1000 px on a side (a scan with an OCR layer)."""
     resources = page.get("/Resources")
-    xobjects = resources.get_object().get("/XObject") if resources is not None else None
-    if xobjects is None:
+    resources = resources.get_object() if resources is not None else None
+    xobjects = resources.get("/XObject") if isinstance(resources, dict) else None
+    xobjects = xobjects.get_object() if xobjects is not None else None
+    if not isinstance(xobjects, dict):
         return False
-    for entry in xobjects.get_object().values():
+    for entry in xobjects.values():
         target = entry.get_object()
+        if not isinstance(target, dict):
+            continue
         try:
             if target.get("/Subtype") == "/Image" and max(int(target.get("/Width", 0)), int(target.get("/Height", 0))) >= 1000:
                 return True

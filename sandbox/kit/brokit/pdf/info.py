@@ -34,13 +34,15 @@ def has_images(page):
     stack = [(resources, 0)]
     while stack:
         current, depth = stack.pop()
-        if current is None:
+        current = current.get_object() if current is not None else None
+        xobjects = current.get("/XObject") if isinstance(current, dict) else None
+        xobjects = xobjects.get_object() if xobjects is not None else None
+        if not isinstance(xobjects, dict):
             continue
-        xobjects = current.get_object().get("/XObject")
-        if xobjects is None:
-            continue
-        for entry in xobjects.get_object().values():
+        for entry in xobjects.values():
             target = entry.get_object()
+            if not isinstance(target, dict):
+                continue
             subtype = target.get("/Subtype")
             if subtype == "/Image":
                 return True
@@ -89,21 +91,33 @@ def page_sizes(reader):
 
 def form_kind(reader):
     acro = form.acroform(reader)
-    has_fields = bool(acro is not None and acro.get("/Fields") and len(acro["/Fields"].get_object()))
+    has_fields = bool(form.field_list(acro))
     has_xfa = acro is not None and "/XFA" in acro
     if has_xfa:
         return "hybrid" if has_fields else "xfa"
     return "acroform" if has_fields else "none"
 
 
-def field_entries(reader, found, page_words):
-    from brokit.pdf.sign import MARK_RE
+def _label(text, box, field_kind):
+    """A checkbox or a radio button is named by the words right after it («☐ Согласен»)."""
+    if field_kind in ("checkbox", "radio"):
+        right = text.right_label(box)
+        if right:
+            return right
+    return text.label(box)
+
+
+def field_entries(reader, found, page_text):
+    """Field entries and signature fields; `page_text(n)` gives the labels.PageWords of page n."""
+    from brokit.pdf.sign import mark_of
 
     entries, signatures = [], []
     for name, record in found.items():
         field, field_kind = record["field"], record["kind"]
         index, page, _, widget = record["widgets"][0]
-        box = geom.user_to_view(page, geom.rect(widget.get("/Rect", [0, 0, 0, 0])))
+        box = geom.user_to_view(page, geom.widget_rect(widget))
+        text = page_text(index + 1)
+        group = field_kind == "radio" and len(record["widgets"]) > 1
         if field_kind == "signature":
             signatures.append(
                 {"name": name, "page": index + 1, "box": geom.rounded(box), "signed": form.inherited(field, "/V") is not None}
@@ -115,24 +129,25 @@ def field_entries(reader, found, page_words):
             "readonly": bool(field_flags & form.FF_READONLY),
             "multiline": field_kind == "text" and bool(field_flags & form.FF_MULTILINE),
             "comb": field_kind == "text" and bool(field_flags & form.FF_COMB),
-            "maxlen": int(form.inherited(field, "/MaxLen")) if form.inherited(field, "/MaxLen") is not None else None,
+            "maxlen": form.max_length(field),
             "options": [display for _, display in form.options(field)] if field_kind == "choice" else None,
             "states": sorted({s for *_, w in record["widgets"] for s in form.on_states(w)}) if field_kind in ("checkbox", "radio") else None,
             "tooltip": str(field.get("/TU", "")) or None,
-            "label": labels.label_for(page_words.get(index + 1, []), box) or None,
+            # A radio group is named from the left or above; each of its buttons by its own words.
+            "label": (text.label(box) if group else _label(text, box, field_kind)) or None,
             "hidden": form.hidden(widget) or None,
-            "bro_mark": bool(MARK_RE.match(form.raw_name(field))) or None,
+            "bro_mark": bool(mark_of(field)) or None,
         }
         entry.update({key: value for key, value in optional.items() if value})
-        if field_kind == "radio" and len(record["widgets"]) > 1:
-            entry["widgets"] = [
-                {
-                    "state": (form.on_states(w) or ["?"])[0],
-                    "page": i + 1,
-                    "box": geom.rounded(geom.user_to_view(p, geom.rect(w.get("/Rect", [0, 0, 0, 0])))),
-                }
-                for i, p, _, w in record["widgets"]
-            ]
+        if group:
+            entry["widgets"] = []
+            for i, p, _, w in record["widgets"]:
+                view = geom.user_to_view(p, geom.widget_rect(w))
+                button = {"state": (form.on_states(w) or ["?"])[0], "page": i + 1, "box": geom.rounded(view)}
+                right = page_text(i + 1).right_label(view)
+                if right:
+                    button["label"] = right
+                entry["widgets"].append(button)
         entries.append(entry)
     return entries, signatures
 
@@ -145,56 +160,49 @@ def main(argv):
     limits()
     warnings = []
     reader = crypt.open_pdf(options.file, warnings=warnings, decrypt=False, max_pages=500)
-    method = crypt.algorithm(reader)
-    if reader.is_encrypted:
-        opened = reader.decrypt(options.password) if options.password else 0
-        if not opened and reader.decrypt(""):
-            opened = 1
-            warnings.append("encrypted_empty_password: opens without a password; outputs are not encrypted")
-        if not opened:
-            if options.password:
-                raise KitError("bad_password", "the password does not open this PDF", "check it with the person")
-            try:
-                count = len(reader.pages)
-            except Exception:  # noqa: BLE001 — an encrypted page tree may not be countable
-                count = None
-            return {
-                "pages": count,
-                "encrypted": True,
-                "needs_password": True,
-                "algorithm": method,
-                "warnings": warnings + ["needs_password: ask the person for the password, then brokit pdf decrypt"],
-            }
-    return describe(options.file, reader, method, options.password, warnings)
+    with crypt.parsing():
+        method = crypt.algorithm(reader)
+        if reader.is_encrypted:
+            opened = reader.decrypt(options.password) if options.password else 0
+            if not opened and reader.decrypt(""):
+                opened = 1
+                warnings.append("encrypted_empty_password: opens without a password; outputs are not encrypted")
+            if not opened:
+                if options.password:
+                    raise KitError("bad_password", "the password does not open this PDF", "check it with the person")
+                try:
+                    count = len(reader.pages)
+                except Exception:  # noqa: BLE001 — an encrypted page tree may not be countable
+                    count = None
+                return {
+                    "pages": count,
+                    "encrypted": True,
+                    "needs_password": True,
+                    "algorithm": method,
+                    "warnings": warnings + ["needs_password: ask the person for the password, then brokit pdf decrypt"],
+                }
+        return describe(options.file, reader, method, options.password, warnings)
 
 
 def describe(path, reader, method, password, warnings):
-    from brokit.pdf.sign import MARK_RE, mark_token
+    from brokit.pdf.sign import Words, foreign_marks, mark_token
 
-    try:
-        count = len(reader.pages)
-        found = form.fields(reader)
-        metadata = reader.metadata or {}
-        title = str(metadata.get("/Title") or "") or None
-    except crypt.PDF_ERRORS as error:
-        raise crypt.unreadable(error)
+    count = len(reader.pages)
+    found = form.fields(reader)
+    metadata = reader.metadata or {}
+    title = str(metadata.get("/Title") or "") or None
     texts = page_texts(path, password=password)
     numbers = list(range(1, count + 1))
     scans = scan_pages(reader, texts, numbers)
     text_pages = [n for n in numbers if n - 1 < len(texts) and len("".join(texts[n - 1].split())) >= SCAN_CHARS]
-    widget_pages = sorted({record["widgets"][0][0] + 1 for record in found.values()})
-    page_words = {}
-    if widget_pages and not password:
-        layout = labels.page_layout(path, widget_pages[0], widget_pages[-1])
-        page_words = {number: labels.text_words(lines) for number, lines in layout.items()}
-    entries, signatures = field_entries(reader, found, page_words)
-    token = mark_token(None)
-    foreign = [
-        name
-        for name, record in found.items()
-        if MARK_RE.match(form.raw_name(record["field"]))
-        and (token is None or str(record["widgets"][0][3].get("/BroMark", "")) != token)
-    ]
+    if password:  # labels read the page text without a password: a locked PDF gives none
+        no_text = labels.PageWords([])
+        entries, signatures = field_entries(reader, found, lambda number: no_text)
+    else:
+        words = Words(path)
+        words.prefetch(index + 1 for record in found.values() for index, *_ in record["widgets"])
+        entries, signatures = field_entries(reader, found, words)
+    foreign = foreign_marks(found, mark_token(None))
     return {
         "pages": count,
         "sizes": page_sizes(reader),
