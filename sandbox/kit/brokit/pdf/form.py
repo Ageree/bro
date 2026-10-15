@@ -451,7 +451,9 @@ def fill(writer, form, found, values, output, keep_fields, warnings):
             states = sorted({s for *_, widget in record["widgets"] for s in on_states(widget)}) or ["Yes"]
             truth = _truthy(value)
             chosen = _state_for(states, value)
-            if chosen is None and truth is True and (field_kind == "checkbox" or len(states) == 1):
+            # A bare «true» ticks a field of one on-state; buttons that share a name with
+            # several (male/female) are told apart by the state's name.
+            if chosen is None and truth is True and len(states) == 1:
                 chosen = states[0]
             if chosen is None and truth is not False:
                 problems.append({"field": name, "problem": "no_option", "options": states})

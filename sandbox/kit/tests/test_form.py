@@ -80,6 +80,26 @@ class Fill(unittest.TestCase):
         self.assertEqual(sorted(problems["gender"]["options"]), ["female", "male"])
         self.assertNotIn("gender", result["filled"])
 
+    def test_checkboxes_sharing_a_name_are_told_apart(self):
+        from pypdf import PdfWriter
+        from pypdf.generic import NameObject, NumberObject
+
+        # «gender» with its radio flag cleared: one checkbox field, two buttons, on-states male and female.
+        writer = PdfWriter(clone_from=self.form)
+        field = next(f.get_object() for f in writer._root_object["/AcroForm"]["/Fields"] if f.get_object().get("/T") == "gender")
+        field[NameObject("/Ff")] = NumberObject(0)
+        pair = os.path.join(self.directory, "pair.pdf")
+        writer.write(pair)
+        code, info = kit("pdf", "info", pair)
+        self.assertEqual(code, 0, info)
+        entry = next(f for f in info["fields"] if f["name"] == "gender")
+        self.assertEqual(entry["type"], "checkbox")
+        self.assertEqual([(w["state"], w["label"]) for w in entry["widgets"]], [("male", "мужской"), ("female", "женский")])
+        output = os.path.join(self.directory, "pair-out.pdf")
+        code, result = kit("pdf", "fill", pair, write_json(output + ".json", {"gender": True}), "-o", output)
+        self.assertEqual(code, 0, result)
+        self.assertEqual(result["problems"], [{"field": "gender", "problem": "no_option", "options": ["female", "male"]}])
+
     def test_keep_fields_sets_values_and_appearances(self):
         from pypdf import PdfReader
 
