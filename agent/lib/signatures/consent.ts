@@ -108,29 +108,49 @@ const ownSignatureWords = new RegExp(
 );
 
 const signatureName = /podpis|rospis|sign|avtograf|autograph/iu;
-const photosLooked = 20;
+const burstsLooked = 5;
 const photosTried = 4;
 
 /**
+ * The person's messages in runs with nothing of Bro's or of a report
+ * between them, newest run first: a messenger brings a PDF and a photo as
+ * two messages, the words with one of them.
+ */
+function personBursts(messages: readonly ModelMessage[]) {
+  const bursts: ModelMessage[][] = [];
+  let burst: ModelMessage[] = [];
+  for (const message of messages) {
+    if (startsTurn(message) && isPersonMessage(message)) {
+      burst.push(message);
+    } else if (message.role !== "user" || startsTurn(message)) {
+      if (burst.length > 0) bursts.push(burst);
+      burst = [];
+    }
+  }
+  if (burst.length > 0) bursts.push(burst);
+  return bursts.toReversed();
+}
+
+/**
  * The photos of the person's own signature that a signing may take when no
- * sample is saved: those of their newest message among the last twenty that
- * says the signature on it is theirs — «Подпись моя на фотке, если нужна» —
- * and says nothing of someone else's. Of several, the one whose name says
- * it is a signature, when exactly one does; otherwise up to four, and
- * `prepare` keeps the only one the kit cuts a signature out of.
+ * sample is saved: those of their newest run of messages, of the last five,
+ * that says the signature on it is theirs — «Подпись моя на фотке, если
+ * нужна», the photo in the same message or the next — and says nothing of
+ * someone else's. Of several, the one whose name says it is a signature,
+ * when exactly one does; otherwise up to four, and `prepare` keeps the only
+ * one the kit cuts a signature out of.
  */
 export function signaturePhotoCandidates(messages: readonly ModelMessage[]) {
-  const message = messages.slice(-photosLooked).findLast((candidate) => {
-    if (!startsTurn(candidate) || !isPersonMessage(candidate)) return false;
-    const text = textOf(candidate);
-    return (
-      ownSignatureWords.test(text) &&
-      !otherPersonSignature.test(text) &&
-      currentImages([candidate]).length > 0
-    );
-  });
-  if (message === undefined) return [];
-  const images = currentImages([message]);
+  const images =
+    personBursts(messages)
+      .slice(0, burstsLooked)
+      .map((burst) => {
+        const text = burst.map(textOf).join("\n");
+        return ownSignatureWords.test(text) && !otherPersonSignature.test(text)
+          ? currentImages(burst)
+          : [];
+      })
+      .find((found) => found.length > 0) ?? [];
   const named = images.filter((image) => signatureName.test(image.name));
   return (named.length === 1 ? named : images)
     .slice(0, photosTried)

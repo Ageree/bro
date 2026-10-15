@@ -225,6 +225,25 @@ describe("photos a signing may take the person's signature from", () => {
     ).toEqual(["/workspace/attachments/0123456789abcdef/IMG_1.jpg"]);
   });
 
+  it("takes the photo that came as the next message after the words, not after Bro's reply", () => {
+    const words = person("Заполни анкету и подпиши, подпись моя на фото", [
+      staged(
+        "/workspace/attachments/fedcba9876543210/anketa.pdf",
+        "application/pdf"
+      ),
+    ]);
+    expect(
+      signaturePhotoCandidates([words, person("", [photo("IMG_1.jpg")])])
+    ).toEqual(["/workspace/attachments/0123456789abcdef/IMG_1.jpg"]);
+    expect(
+      signaturePhotoCandidates([
+        words,
+        { content: "Сейчас заполню.", role: "assistant" },
+        person("", [photo("IMG_1.jpg")]),
+      ])
+    ).toEqual([]);
+  });
+
   it("never takes someone else's signature", () => {
     expect(
       signaturePhotoCandidates([
