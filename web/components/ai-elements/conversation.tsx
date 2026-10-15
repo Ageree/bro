@@ -286,10 +286,7 @@ export const ConversationDownload = ({
 
   return (
     <Button
-      className={cn(
-        "absolute top-4 right-4 size-11 rounded-full",
-        className
-      )}
+      className={cn("absolute top-4 right-4 size-11 rounded-full", className)}
       onClick={handleDownload}
       size="icon"
       type="button"
