@@ -230,6 +230,41 @@ describe("shared locations", { timeout: 30_000 }, () => {
     expect(shared).toMatchObject({ kind: "position", source: "web" });
   });
 
+  it("thins a live track older than a week to a point per 10 minutes", async () => {
+    const { db, location } = await openDatabase();
+    const liveKey = "42:77";
+    const old = now.getTime() - 8 * day;
+    // Two 10-minute slots of an old share, three edits each, and a fresh one.
+    for (const [index, offset] of [0, 1, 2, 10, 11, 12].entries()) {
+      await location.insertPoint(
+        alice,
+        point({
+          externalId: `telegram:42:77:${String(index)}`,
+          liveKey,
+          recordedAt: new Date(old + offset * minute),
+          source: "telegram_live",
+        })
+      );
+    }
+    await location.insertPoint(
+      alice,
+      point({
+        externalId: "telegram:42:77:fresh",
+        liveKey,
+        recordedAt: new Date(now.getTime() - minute),
+        source: "telegram_live",
+      })
+    );
+    expect(await location.recentLiveWrite(alice, liveKey)).toMatchObject({
+      recordedAt: new Date(now.getTime() - minute),
+    });
+    await location.expireLocationPoints(now);
+    const left = await db.select().from(schema.locationPoints);
+    expect(
+      left.map((row) => row.recordedAt.getTime()).toSorted((a, b) => a - b)
+    ).toEqual([old, old + 10 * minute, now.getTime() - minute]);
+  });
+
   it("sweeps points past 90 days and reminders ended a month ago", async () => {
     const { db, location, subscriptions } = await openDatabase();
     await location.insertPoint(

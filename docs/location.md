@@ -64,9 +64,26 @@
 инструментов геолокации в транскрипте — `{"redacted":"location"}`; ответы Бро
 (`[message] bro`) могут назвать адрес.
 
-## P1
+## Живая трансляция Telegram
 
-Живая трансляция Telegram (маршрут `/eve/v1/telegram-location`, мост с
-`edited_message`), `location_history`, кнопка `request_location`, веб-кнопка,
-прореживание трека. Признак «трансляция идёт» — правка `telegram_live` ≤ 10 мин
-(`latestPosition().live`, `liveSharingSeen`).
+Правки трансляции (`edited_message`) eve выбрасывает, поэтому их несёт мост
+(`scripts/cloudru-app-host/tg-bridge/`, `TG_BRIDGE_LIVE_LOCATION=on`, раздел README
+«Живая геопозиция») на маршрут `/eve/v1/telegram-location`
+(`agent/channels/telegram-location.ts`, `agent/lib/location/live.ts`): секрет вебхука
+(не задан — 401), только личный чат человека из пилота (иначе 200 и выброс), без хода
+модели и квоты. Геозона — `evaluatePlaceReminders(…, { via: "live" })` не чаще раза в
+15 с по времени правки, отчёт — минутным тиком; запись в трек — раз в минуту или при
+сдвиге ≥ 50 м и последняя правка (без `live_period`). Старше недели трек прореживается
+до точки на 10 минут. Признак «трансляция идёт» — правка `telegram_live` ≤ 10 мин
+(`latestPosition().live`, `liveSharingSeen`). Режим вебхука трансляции не просит.
+
+## История и веб
+
+- `location_history` — остановки (≥ 5 мин в 150 м), поездки (вид по скорости:
+  пешком < 8 км/ч, велосипед < 28, иначе машина) и «вероятно, машина осталась здесь»
+  после последней поездки на машине (`agent/lib/location/stays.ts`); до трёх запросов
+  `nearbyPlace` (слой POI Nominatim) за вызов — имя ближайшего заведения только
+  полем результата, не в контексте.
+- Веб-кнопка (`location.share` в `web/trpc/router.ts`) пишет точку `web` (не чаще
+  раза в 10 с), чат шлёт `webShareText`, канал веба читает его как присланную точку
+  (`webLocationContext`).

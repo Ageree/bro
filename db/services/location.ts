@@ -36,6 +36,13 @@ import { readWorkspaceTimeZone } from "./user-profile";
 
 /** How long a shared point is kept. */
 export const locationRetentionDays = 90;
+/**
+ * A live share's raw track is kept this long; older, one point per
+ * `liveThinSeconds` of each share is left, enough for where the person
+ * stayed and went.
+ */
+const liveTrackRawDays = 7;
+const liveThinSeconds = 600;
 /** How long a reminder that ended keeps its job, runs and their addresses. */
 const endedReminderDays = 30;
 /** Rows one delete takes, so a sweep never holds the table for long. */
@@ -153,6 +160,29 @@ export async function listLocationPoints(
     points: rows.slice(0, range.limit).toReversed(),
     truncated: rows.length > range.limit,
   };
+}
+
+/**
+ * The latest stored point of one Telegram live share (its first point from
+ * the message, or an edit): what the next edit is compared with.
+ */
+export async function recentLiveWrite(scope: AccessScope, liveKey: string) {
+  const [point] = await db
+    .select({
+      lat: locationPoints.lat,
+      lon: locationPoints.lon,
+      recordedAt: locationPoints.recordedAt,
+    })
+    .from(locationPoints)
+    .where(
+      and(
+        eq(locationPoints.workspaceId, scope.workspaceId),
+        eq(locationPoints.liveKey, liveKey)
+      )
+    )
+    .orderBy(desc(locationPoints.recordedAt))
+    .limit(1);
+  return point;
 }
 
 /** The latest point the web chat's button shared since `since`. */
@@ -408,7 +438,8 @@ async function deleteEndedReminders(workspaceId?: string, before?: Date) {
 
 /**
  * The hourly sweep (`agent/schedules/memory-history.ts`): points older than
- * 90 days, in batches until none is left, and the jobs of place reminders
+ * 90 days, in batches until none is left, a live share's track older than
+ * a week thinned to a point per 10 minutes, and the jobs of place reminders
  * that ended more than 30 days ago.
  */
 export async function expireLocationPoints(now: Date): Promise<void> {
@@ -429,6 +460,29 @@ export async function expireLocationPoints(now: Date): Promise<void> {
       )
       .returning({ id: locationPoints.id });
     if (removed.length < expiryBatch) break;
+  }
+  const rawBefore = new Date(now.getTime() - liveTrackRawDays * dayMs);
+  for (;;) {
+    // oxlint-disable-next-line eslint/no-await-in-loop -- One batch at a time keeps each delete short.
+    const thinned = await db.execute(sql`
+      DELETE FROM ${locationPoints}
+      WHERE ${locationPoints.id} IN (
+        SELECT ranked.id FROM (
+          SELECT ${locationPoints.id} AS id, row_number() OVER (
+            PARTITION BY ${locationPoints.workspaceId}, ${locationPoints.liveKey},
+              floor(extract(epoch FROM ${locationPoints.recordedAt}) / ${liveThinSeconds})
+            ORDER BY ${locationPoints.recordedAt}
+          ) AS place
+          FROM ${locationPoints}
+          WHERE ${locationPoints.source} = 'telegram_live'
+            AND ${locationPoints.recordedAt} < ${rawBefore}
+        ) ranked
+        WHERE ranked.place > 1
+        LIMIT ${expiryBatch}
+      )
+      RETURNING ${locationPoints.id}
+    `);
+    if (thinned.rows.length < expiryBatch) break;
   }
   const endedBefore = new Date(now.getTime() - endedReminderDays * dayMs);
   for (;;) {
