@@ -62,6 +62,8 @@ def upright_rgb(image):
 
 
 def otsu(values):
+    """Otsu's split: values up to it are dark. Of equal splits — the levels no value takes, as
+    between the ink and the paper of a 1-bit scan — the middle one, not the first."""
     import numpy as np
 
     hist = np.bincount(np.clip(values, 0, 255).astype(np.uint8).ravel(), minlength=256).astype(np.float64)
@@ -69,7 +71,10 @@ def otsu(values):
     weight = np.cumsum(hist)
     mean = np.cumsum(hist * np.arange(256))
     between = (mean[-1] * weight - mean * total) ** 2 / np.maximum(weight * (total - weight), 1)
-    return int(np.argmax(between))
+    first = last = int(np.argmax(between))
+    while last < 255 and between[last + 1] == between[first]:
+        last += 1
+    return (first + last) // 2
 
 
 def border_connected(mask, step=4):
