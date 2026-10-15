@@ -218,7 +218,7 @@ const wordSignals: Partial<Record<SkillName, RegExp>> = {
  * «фото» is not the person's. A voice message's transcript after
  * `[голосовое]` is.
  */
-const mediaMarkers =
+export const mediaMarkers =
   /\[(?:фото|документ|голосовое не распозналось|файл:[^\]]*)\]|\[голосовое\]/giu;
 
 /**
@@ -298,7 +298,7 @@ function turnMessages(input: readonly ModelMessage[]) {
  * the report a browser run brought. eve's context and the memory slots'
  * records are not the turn's words.
  */
-function turnWords(input: readonly ModelMessage[]) {
+export function turnWords(input: readonly ModelMessage[]) {
   return turnMessages(input).map(messageText).join("\n");
 }
 

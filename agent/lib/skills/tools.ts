@@ -102,6 +102,7 @@ const toolGroupEntries = {
   "notion-add-task": "apps",
   "notion-read": "apps",
   "notion-search": "apps",
+  open_tools: "core",
   personal_info__update: "core",
   privacy: "core",
   proactive_messages: "core",
@@ -193,7 +194,7 @@ function turnContext(message: ModelMessage | undefined) {
  * turn's context, then the message that opened it — and the conversation
  * before it.
  */
-function splitTurn(messages: readonly ModelMessage[]) {
+export function splitTurn(messages: readonly ModelMessage[]) {
   const opening = messages.findLastIndex(startsTurn);
   if (opening === -1) return { history: [], input: messages };
   let start = opening;

@@ -92,6 +92,26 @@ async function routedModel(
 }
 
 /**
+ * Whether the task agent's jobs of this workspace reach the decision model:
+ * it is in MODEL_ROUTER_WORKSPACES and some kind has a route. A failed
+ * lookup of an owner's email counts as yes: the person hears of one service
+ * too many rather than one too few.
+ */
+export async function taskJobsDecided(scope: {
+  readonly userId?: string;
+  readonly workspaceId: string;
+}) {
+  const pilot = env.MODEL_ROUTER_WORKSPACES ?? [];
+  if (pilot.length === 0 || !anyRoute()) return false;
+  if (pilot.includes("*")) return true;
+  try {
+    return await listsWorkspaceRemembered(pilot, scope);
+  } catch {
+    return true;
+  }
+}
+
+/**
  * The model of a task agent session (MODEL_ROUTER_WORKSPACES, by workspace
  * id or owner's email, or `*`): the decision model reads the job once, at
  * the session's first step, and the session keeps that model to its end,
