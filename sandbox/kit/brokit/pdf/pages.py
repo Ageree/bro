@@ -33,7 +33,7 @@ def _copy(reader, numbers):
     writer = PdfWriter()
     try:
         writer.append(reader, pages=[number - 1 for number in numbers])
-    except crypt.PDF_ERRORS as error:
+    except crypt.pdf_errors() as error:
         raise crypt.unreadable(error)
     return writer
 
@@ -135,7 +135,7 @@ def merge(argv):
             raise KitError("unsupported", "merge takes PDFs and images: " + os.path.basename(path), "office files: brokit render FILE -o DIR first")
         try:
             writer.append(reader)
-        except crypt.PDF_ERRORS as error:
+        except crypt.pdf_errors() as error:
             raise crypt.unreadable(error)
     return dict(_save(writer, output), warnings=warnings)
 
@@ -330,7 +330,7 @@ def images(argv):
     for number, page in enumerate(reader.pages, start=1):
         try:
             found = list(page.images)
-        except crypt.PDF_ERRORS + (OSError,) as error:
+        except crypt.pdf_errors() + (OSError,) as error:
             warnings.append("page %d: an image could not be decoded (%s)" % (number, type(error).__name__))
             continue
         for index, image in enumerate(found, start=1):

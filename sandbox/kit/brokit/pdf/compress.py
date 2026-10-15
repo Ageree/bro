@@ -62,7 +62,7 @@ def main(argv):
         limit = (max(width, height) / 72 * options.dpi, min(width, height) / 72 * options.dpi)
         try:
             found = list(page.images)
-        except crypt.PDF_ERRORS + (OSError,):
+        except crypt.pdf_errors() + (OSError,):
             warnings.append("an image could not be decoded; left as it was")
             continue
         for image in found:

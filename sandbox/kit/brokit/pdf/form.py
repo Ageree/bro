@@ -186,6 +186,22 @@ def field_list(form):
     return fields if isinstance(fields, list) else None
 
 
+def tree_nodes(doc):
+    """Every field dict reachable from the AcroForm's /Fields (also those with no widget on a page)."""
+    stack = list(field_list(acroform(doc)) or [])
+    seen = set()
+    while stack:
+        node = stack.pop().get_object()
+        if not isinstance(node, dict) or id(node) in seen:
+            continue
+        seen.add(id(node))
+        yield node
+        kids = node.get("/Kids")
+        kids = kids.get_object() if kids is not None else None
+        if isinstance(kids, list):
+            stack.extend(kids)
+
+
 def prune_fields(array, dropped, drop=None, seen=None):
     """/Fields (or /Kids) without the nodes whose id() is in `dropped` or for which `drop(node)`
     is true (each with its subtree); a parent whose kids all went goes too. Cycles end."""

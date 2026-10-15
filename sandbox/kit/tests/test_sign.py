@@ -292,3 +292,15 @@ class Sign(unittest.TestCase):
                 code, result, _ = self.mark(source, spec)
                 self.assertEqual(code, 0, result)
                 self.assertEqual([mark["label"] for mark in result["marks"]], ["НАЙМОДАТЕЛЬ: · (подпись)", "НАНИМАТЕЛЬ: · (подпись)"])
+
+    def test_a_signature_without_a_widget_still_blocks_signing(self):
+        from pypdf import PdfWriter
+
+        code, marked, output = self.mark(self.contract, [{"page": 1, "box": self.boxes["tenant"], "role": "signature"}])
+        self.assertEqual(code, 0, marked)
+        writer = PdfWriter(clone_from=output)
+        writer._root_object["/AcroForm"]["/Fields"].append(writer._add_object(sig_field("notary", [0, 0, 0, 0], signed=True)))
+        writer.write(output)
+        self.assertEqual(self.places(output)["signed_fields"], ["notary"])
+        code, refused, _ = self.stamp(output, [{"field": "bro_sign_signature_1", "role": "signature"}])
+        self.assertEqual((code, refused["code"]), (2, "already_signed"))

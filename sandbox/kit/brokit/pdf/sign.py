@@ -112,14 +112,21 @@ class Words:
         return self.pages[number]
 
 
-def signed_fields(found):
-    return [name for name, record in found.items() if record["kind"] == "signature" and form.inherited(record["field"], "/V") is not None]
+def signed_fields(found, doc):
+    """Every /Sig field with a value: on the pages, and in /Fields without a widget (a rewrite breaks either)."""
+    names = [name for name, record in found.items() if record["kind"] == "signature" and form.inherited(record["field"], "/V") is not None]
+    for node in form.tree_nodes(doc):
+        if "/T" in node and form.kind(node) == "signature" and form.inherited(node, "/V") is not None:
+            name = form.full_name(node)
+            if name not in names:
+                names.append(name)
+    return names
 
 
 def is_signed_by_bro(reader):
     try:
         keywords = str((reader.metadata or {}).get("/Keywords") or "")
-    except crypt.PDF_ERRORS:
+    except crypt.pdf_errors():
         keywords = ""
     return SIGNED_MARKER in keywords
 
@@ -142,12 +149,12 @@ def places(argv):
     if reader.is_encrypted:
         try:
             count = len(reader.pages) if reader.decrypt("") else 0
-        except crypt.PDF_ERRORS:
+        except crypt.pdf_errors():
             count = 0
         return {"status": "encrypted", "pages": count, "signed_by_bro": False, "signed_fields": [], "places": []}
     try:
         return inventory(options.file, reader, token)
-    except crypt.PDF_ERRORS as error:
+    except crypt.pdf_errors() as error:
         raise crypt.unreadable(error)
 
 
@@ -160,7 +167,7 @@ def inventory(path, reader, token):
         base.pop("places")
         return dict(base, status="too_many")
     found = form.fields(reader)
-    base["signed_fields"] = signed_fields(found)
+    base["signed_fields"] = signed_fields(found, reader)
     words = Words(path)
     words.prefetch(
         index + 1
@@ -300,7 +307,7 @@ def stamp(argv):
         if _xfa(reader):
             raise KitError("xfa", "an XFA form cannot be signed here")
         found = form.fields(reader)
-        if signed_fields(found):
+        if signed_fields(found, reader):
             raise KitError("already_signed", "the PDF already carries a digital signature: rewriting would break it")
         if is_signed_by_bro(reader):
             raise KitError("signed_by_bro", "Bro has already signed this PDF")
@@ -406,7 +413,10 @@ def _stamp(writer, roles, date, png, aspect, typed):
     acro = form.acroform(writer)
     # `bro_sign_*` fields without a widget on any page (left by a script) go too: they may carry the token.
     form.drop_widgets(writer, acro, dropped, drop=is_scaffold)
-    if acro is not None and "/SigFlags" in acro and not any(r["kind"] == "signature" for n, r in found.items() if n not in removed):
+    signatures_left = any(r["kind"] == "signature" for n, r in found.items() if n not in removed) or any(
+        "/T" in node and form.kind(node) == "signature" for node in form.tree_nodes(writer)
+    )
+    if acro is not None and "/SigFlags" in acro and not signatures_left:
         del acro["/SigFlags"]
     writer.compress_identical_objects(remove_duplicates=True, remove_unreferenced=True)
     return {"drawn": drawn, "removed": sorted(removed)}

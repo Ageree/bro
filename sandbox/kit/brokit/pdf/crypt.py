@@ -23,7 +23,7 @@ def kit_version():
         return "dev"
 
 
-def _pdf_errors():
+def pdf_errors():
     from pypdf.errors import PyPdfError
 
     return PDF_ERRORS + (PyPdfError,)
@@ -38,7 +38,7 @@ def parsing():
     """Inside it, a parse error of a broken PDF becomes the `unreadable` refusal (exit 2), not a bug."""
     try:
         yield
-    except _pdf_errors() as error:
+    except pdf_errors() as error:
         raise unreadable(error)
 
 
@@ -80,7 +80,7 @@ def open_pdf(path, password=None, warnings=None, max_pages=None, decrypt=True):
         raise
     except MemoryError:
         raise KitError("unreadable", "the PDF needs more memory than the kit allows")
-    except _pdf_errors() as error:
+    except pdf_errors() as error:
         raise unreadable(error)
     if max_pages is not None and count is not None and count > max_pages:
         raise KitError("unreadable", "the PDF has %d pages, more than %d" % (count, max_pages), "split it first")
@@ -92,7 +92,7 @@ def writer_from(reader):
 
     try:
         return PdfWriter(clone_from=reader)
-    except _pdf_errors() as error:
+    except pdf_errors() as error:
         raise unreadable(error)
 
 
@@ -104,7 +104,7 @@ def write_pdf(writer, output, producer=None):
         with open(temporary, "wb") as handle:
             writer.write(handle)
         os.replace(temporary, output)
-    except _pdf_errors() as error:
+    except pdf_errors() as error:
         raise unreadable(error)
     finally:
         if os.path.exists(temporary):

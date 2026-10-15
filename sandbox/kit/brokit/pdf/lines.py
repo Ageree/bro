@@ -31,7 +31,7 @@ def _font_runs(page):
 
     try:
         page.extract_text(visitor_text=visitor)
-    except crypt.PDF_ERRORS:
+    except crypt.pdf_errors():
         return []
     return runs
 
