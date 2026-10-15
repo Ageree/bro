@@ -39,7 +39,7 @@ import { type SkillName, skillNames } from "./catalog";
  * A pattern of word starts: each alternative begins a word (no letter,
  * digit or `_` before it). An alternative ends a word with `(?!\p{L})`.
  */
-function stems(...alternatives: readonly string[]) {
+export function stems(...alternatives: readonly string[]) {
   return new RegExp(
     String.raw`(?<![\p{L}\p{N}_])(?:${alternatives.join("|")})`,
     "iu"

@@ -130,6 +130,67 @@ describe("the router's choice of a turn's groups", () => {
     expect(outcome.warm).toBe(false);
   });
 
+  it("narrows a skill of several groups to those the decision chose", () => {
+    // «Что у меня в календаре в субботу?»: the google skill, Jev — calendar.
+    const choice = chooseRouterGroups(inputs({ triggered: ["google"] }));
+    expect(choice.finish(decided(["calendar"]))).toMatchObject({
+      groups: ["calendar"],
+      narrowed: ["mail", "docs"],
+    });
+    // Jev chose none of the skill's groups: the skill brings all of them.
+    const none = chooseRouterGroups(inputs({ triggered: ["google"] }));
+    expect(none.finish(decided(["phone"]))).toMatchObject({
+      groups: ["phone", "calendar", "mail", "docs"],
+      narrowed: [],
+    });
+    // A group the turn has for another reason stays.
+    const recent = chooseRouterGroups(
+      inputs({
+        state: { ...emptyRouterState, usedAt: { mail: minutes(5) } },
+        triggered: ["google", "schedules"],
+      })
+    ).finish(decided(["calendar"]));
+    expect(recent.groups).toEqual(["calendar", "mail", "schedules"]);
+    expect(recent.narrowed).toEqual(["docs"]);
+  });
+
+  it("keeps every group of the skills without a decision, and of the first contact", () => {
+    const pending = chooseRouterGroups(
+      inputs({ triggered: ["google"] })
+    ).finish(undefined);
+    expect(pending.groups).toEqual(["calendar", "mail", "docs"]);
+    const failure = chooseRouterGroups(
+      inputs({ triggered: ["google"] })
+    ).finish(failed);
+    expect(failure.groups).toEqual([...routerGroups]);
+    const introduced = chooseRouterGroups(
+      inputs({ triggered: ["first-contact"] })
+    ).finish(decided(["calendar"]));
+    expect(introduced.groups).toEqual(["yandex", "phone", "calendar", "mail"]);
+    expect(introduced.narrowed).toEqual([]);
+  });
+
+  it("narrows the skills of words written mid-turn by their decision", () => {
+    const state = after(["phone"], 0, {
+      turnDigest: "digest-1",
+      turnId: "turn_2",
+    });
+    const step = { sessionId: "session-1", stepIndex: 1, turnId: "turn_2" };
+    const choice = chooseRouterGroups(
+      inputs({ state, step, triggered: ["recommendations"] })
+    );
+    expect(choice.ask).toBe("steer");
+    expect(choice.finish(decided(["events"])).groups).toEqual([
+      "phone",
+      "events",
+    ]);
+    expect(choice.finish(undefined).groups).toEqual([
+      "places",
+      "phone",
+      "events",
+    ]);
+  });
+
   it("keeps the last turn's set within the warm window, and drops it past", () => {
     const warm = chooseRouterGroups(inputs({ state: after(["yandex"], 59) }));
     expect(warm.finish(decided(["mail"])).groups).toEqual(["yandex", "mail"]);
@@ -498,6 +559,34 @@ describe("a person's step in the router's pilot", () => {
     );
     expect(decisions.asked).toBe(2);
     expect(groups).toEqual(expect.arrayContaining(["mail", "phone"]));
+  });
+
+  it("gives a calendar question the calendar alone, and a place-bound reminder places", async () => {
+    decisions.groups = ["calendar"];
+    const info = vi.mocked(console.info);
+    const calendar = await routerGroupsOfStep(
+      [person("Что у меня в календаре в субботу?")],
+      { sessionId: "session-1", stepIndex: 0, turnId: "turn_1" },
+      setup,
+      "on"
+    );
+    expect(calendar).toEqual(["calendar"]);
+    expect(info).toHaveBeenCalledWith(
+      "[tool-router]",
+      expect.objectContaining({ narrowed: ["mail", "docs"] })
+    );
+    decisions.groups = [];
+    const reminder = await routerGroupsOfStep(
+      [
+        person(
+          "Напомни мне купить хлеб, когда я приду на Тверскую улицу 7 в Москве"
+        ),
+      ],
+      { sessionId: "session-2", stepIndex: 0 },
+      setup,
+      "on"
+    );
+    expect(reminder).toContain("places");
   });
 
   it("offers the first contact's call and Yandex in the turns after it", async () => {
