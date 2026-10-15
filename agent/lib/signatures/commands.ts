@@ -3,8 +3,10 @@ import type { SandboxSession } from "eve/sandbox";
 import { z } from "zod";
 import { taskFilesShareBytes } from "@agent/lib/sandbox/files";
 import { runFreshKit } from "@agent/lib/sandbox/kit";
-import handFontDataUrl from "./assets/marck-script.ttf?inline";
-import typedPreviewDataUrl from "./assets/typed-preview.pdf?inline";
+// eve takes only modules under agent/lib, so the signing assets live beside
+// the kit; its asset plugin inlines a relative import as a data URL.
+import handFontDataUrl from "../../../sandbox/signature/marck-script.ttf?inline";
+import typedPreviewDataUrl from "../../../sandbox/signature/typed-preview.pdf?inline";
 
 /**
  * The kit's three signing commands in Bro's own sandbox (W2's `brokit`):
@@ -371,7 +373,7 @@ export async function stampDocument(
 
 /**
  * How a typed signature will look: the name in the handwriting font on a
- * one-page PDF (`assets/typed-preview.pdf`, one place
+ * one-page PDF (`sandbox/signature/typed-preview.pdf`, one place
  * `bro_preview_signature`), through the same `stamp-sign` as a document.
  */
 export async function renderTypedPreview(
