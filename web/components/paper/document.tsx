@@ -89,7 +89,7 @@ export function Row({
   return (
     <li
       className={cn(
-        "flex items-baseline justify-between gap-4 border-t border-border py-[0.6rem] first:border-t-0 first:pt-[0.2rem]",
+        "flex items-center justify-between gap-4 border-t border-border py-3 first:border-t-0 first:pt-1",
         className
       )}
     >
