@@ -6,6 +6,7 @@ import type { YandexPurchase } from "@db/schema/yandex-purchases";
 import type { yoomoneyPayments } from "@db/schema/yoomoney";
 import type { listCurrentRules } from "@db/services/memory/records";
 import type * as purchases from "@db/services/yandex-purchases";
+import type * as Card from "@db/services/yoomoney/card";
 import type * as connection from "@db/services/yoomoney/connection";
 import type * as stored from "@db/services/yoomoney/payments";
 import type * as lavka from "@agent/lib/yandex/lavka/checkout";
@@ -22,8 +23,8 @@ import type * as Payments from "@shared/yoomoney/payments";
  */
 
 const services = vi.hoisted(() => {
-  process.env.DIRECT_PURCHASE_WORKSPACES = "workspace:alice";
-  process.env.DIRECT_PURCHASE_MAX_RUB = "5000";
+  vi.stubEnv("DIRECT_PURCHASE_WORKSPACES", "workspace:alice");
+  vi.stubEnv("DIRECT_PURCHASE_MAX_RUB", "5000");
   return {
     connection: vi.fn<typeof connection.readYoomoneyConnection>(),
     judge: vi.fn<
@@ -64,16 +65,16 @@ vi.mock("@db/services/memory/records", () => ({
 }));
 vi.mock("@db/services/yoomoney/payments", () => ({
   claimYoomoneyPayment: services.walletClaim,
-  createYoomoneyPayment: vi.fn(),
+  createYoomoneyPayment: vi.fn<typeof stored.createYoomoneyPayment>(),
   readYoomoneyPayment: services.walletRead,
-  renewYoomoneyPayment: vi.fn(),
+  renewYoomoneyPayment: vi.fn<typeof stored.renewYoomoneyPayment>(),
   settleYoomoneyPayment: services.walletSettle,
-  yoomoneyPaymentInFlight: vi.fn(),
+  yoomoneyPaymentInFlight: vi.fn<typeof stored.yoomoneyPaymentInFlight>(),
 }));
 vi.mock("@db/services/yoomoney/card", () => ({
-  sendYoomoneyCardPayment: vi.fn(),
+  sendYoomoneyCardPayment: vi.fn<typeof Card.sendYoomoneyCardPayment>(),
   yoomoneyCardReturn: async () => "https://bro.example/return",
-  yoomoneyPayLink: vi.fn(),
+  yoomoneyPayLink: vi.fn<typeof Card.yoomoneyPayLink>(),
 }));
 vi.mock("@db/services/yoomoney/connection", () => ({
   readYoomoneyConnection: services.connection,
@@ -89,7 +90,7 @@ vi.mock("@shared/yoomoney/payments", async (original) => ({
 }));
 vi.mock("@db/services/yandex-purchases", () => ({
   claimYandexPurchase: services.purchaseClaim,
-  createYandexPurchase: vi.fn(),
+  createYandexPurchase: vi.fn<typeof purchases.createYandexPurchase>(),
   readYandexPurchase: services.purchaseRead,
   settleYandexPurchase: services.purchaseSettle,
 }));
@@ -405,14 +406,14 @@ describe("a Go ride on the person's own request", () => {
       kind: "ok",
       data: { kind: "booked" },
     });
+    const input = {
+      action: "book" as const,
+      from: "Тверская 1",
+      service: "go" as const,
+      to: "Шереметьево",
+    };
     return tool.execute(
-      {
-        action: "book",
-        from: "Тверская 1",
-        service: "go",
-        to: "Шереметьево",
-        ...(maxPriceRub === undefined ? {} : { maxPriceRub }),
-      },
+      maxPriceRub === undefined ? input : { ...input, maxPriceRub },
       callContext("yandex_purchase")
     );
   }

@@ -3522,9 +3522,8 @@ function directBrowserPayment(
     return Promise.resolve(undefined);
   return directPurchase(scope, said.direct, {
     terms: { purchase: submission, site: input.site ?? null },
-    ...(chargeRub === undefined
-      ? {}
-      : { totalMinor: Math.round(chargeRub * 100) }),
+    totalMinor:
+      chargeRub === undefined ? undefined : Math.round(chargeRub * 100),
   });
 }
 

@@ -70,7 +70,7 @@ async function decide(
   return directPurchase(
     scope,
     { personTurn, said, step: { ...step, turnId } },
-    totalMinor === undefined ? { terms } : { terms, totalMinor }
+    { terms, totalMinor }
   );
 }
 

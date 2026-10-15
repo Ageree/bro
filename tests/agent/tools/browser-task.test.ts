@@ -70,11 +70,32 @@ import {
 } from "@shared/vault/schema";
 import type * as browserUseHost from "@agent/lib/browser-use/host";
 
+/**
+ * What the direct-purchase judge (`agent/lib/payments/direct.ts`) answers,
+ * for a prompt that carries the person's request.
+ */
+const directVerdict = vi.hoisted(() => ({
+  current: {
+    budgetRub: null as number | null,
+    differs: null as string | null,
+    direct: true,
+    matches: true,
+    ruleIndex: null as number | null,
+  },
+}));
+
 vi.mock("ai", async (importOriginal) => ({
   ...(await importOriginal<typeof ai>()),
   generateText: vi.fn<
-    (input: { prompt: string }) => Promise<{ output: { matches: boolean } }>
+    (input: { prompt: string }) => Promise<{
+      output: Readonly<Record<string, boolean | number | string | null>>;
+    }>
   >(async (input) => {
+    if (
+      z.object({ request: z.string() }).safeParse(JSON.parse(input.prompt))
+        .success
+    )
+      return { output: directVerdict.current };
     const { question, staged, submission } = z
       .object({
         question: z.string(),
@@ -10461,6 +10482,60 @@ describe("browser_task signs in with a login the person sent", () => {
   });
 });
 
+/** The pilot with the judge's reading of the request beside the submission. */
+async function directPilot(
+  overrides: Partial<typeof directVerdict.current> = {},
+  pilot = accessScopeForUser("better-auth:alice").workspaceId
+) {
+  vi.resetModules();
+  vi.stubEnv("DIRECT_PURCHASE_WORKSPACES", pilot);
+  vi.stubEnv("DIRECT_PURCHASE_MAX_RUB", "5000");
+  directVerdict.current = {
+    budgetRub: null,
+    differs: null,
+    direct: true,
+    matches: true,
+    ruleIndex: null,
+    ...overrides,
+  };
+  return import("@agent/tools/browser_task");
+}
+
+/** The tool as a step of a turn the person opened with `words`. */
+async function directPersonTool(words: string) {
+  const context = toolContext("better-auth:alice");
+  const { default: dynamic } = await import("@agent/tools/browser_task");
+  const resolve = dynamic.events["step.started"];
+  if (!resolve) throw new Error("browser_task resolves per step.");
+  const tools = await resolve({ data: { stepIndex: 0, turnId: "turn_2" } }, {
+    channel: { kind: "channel:photon", metadata: {} },
+    messages: [{ content: words, role: "user" }],
+    model: null,
+    session: { auth: context.session.auth, id: context.session.id },
+  } satisfies DynamicResolveContext);
+  const tool = tools && !("execute" in tools) ? tools.browser_task : undefined;
+  if (!tool || !("execute" in tool)) {
+    throw new Error("browser_task must resolve for a conversation.");
+  }
+  return tool;
+}
+
+/** A person's turn opened with `words`, at a step with a turn id. */
+function directTurn(words: string) {
+  return {
+    answers: [],
+    paymentAsked: null,
+    said: [words],
+    step: { sessionId, stepIndex: 0, turnId: "turn_2" },
+  };
+}
+
+const denied = (reason: string): unknown =>
+  expect.objectContaining({
+    reason: expect.stringContaining(reason),
+    type: "denied",
+  });
+
 describe("browser_task pays on the person's own request in the direct-purchase pilot", () => {
   const food: BrowserSubmission = {
     amount: "до 5 000 ₽",
@@ -10480,76 +10555,15 @@ describe("browser_task pays on the person's own request in the direct-purchase p
     task: "Купи корм Royal Canin для кошек, 2 кг",
   } as const;
   const said = "Купи корм Royal Canin для кошек 2 кг на озоне";
-
-  /** The judge's reading of the request beside the submission. */
-  async function judged(
-    overrides: Partial<{
-      budgetRub: number | null;
-      differs: string | null;
-      direct: boolean;
-      matches: boolean;
-      ruleIndex: number | null;
-    }> = {},
-    pilot = accessScopeForUser("better-auth:alice").workspaceId
-  ) {
-    vi.resetModules();
-    vi.stubEnv("DIRECT_PURCHASE_WORKSPACES", pilot);
-    vi.stubEnv("DIRECT_PURCHASE_MAX_RUB", "5000");
-    const { generateText } = await import("ai");
-    vi.mocked(generateText).mockResolvedValue({
-      output: {
-        budgetRub: null,
-        differs: null,
-        direct: true,
-        matches: true,
-        ruleIndex: null,
-        ...overrides,
-      },
-    } as unknown as Awaited<ReturnType<typeof generateText>>);
-    return import("@agent/tools/browser_task");
-  }
-
-  /** The tool as a step of a turn the person opened with `words`. */
-  async function personTool(
-    words: string,
-    context = toolContext("better-auth:alice")
-  ) {
-    const { default: dynamic } = await import("@agent/tools/browser_task");
-    const resolve = dynamic.events["step.started"];
-    if (!resolve) throw new Error("browser_task resolves per step.");
-    const tools = await resolve({ data: { stepIndex: 0, turnId: "turn_2" } }, {
-      channel: { kind: "channel:photon", metadata: {} },
-      messages: [{ content: words, role: "user" }],
-      model: null,
-      session: { auth: context.session.auth, id: context.session.id },
-    } satisfies DynamicResolveContext);
-    const tool =
-      tools && !("execute" in tools) ? tools.browser_task : undefined;
-    if (!tool || !("execute" in tool) || !("approval" in tool)) {
-      throw new Error("browser_task must resolve for a conversation.");
-    }
-    return tool;
-  }
-
-  const step = { sessionId, stepIndex: 0, turnId: "turn_2" };
-  const turn = (words: string) => ({
-    answers: [],
-    paymentAsked: null,
-    said: [words],
-    step,
-  });
+  const person = () => approvalSession("photon-imessage");
 
   it("starts a paid errand with no question, held to the request and the ceiling", async () => {
-    const { browserTaskApproval } = await judged();
-    expect(
-      await browserTaskApproval(
-        buy,
-        approvalSession("photon-imessage"),
-        turn(said)
-      )
-    ).toBe("not-applicable");
+    const { browserTaskApproval } = await directPilot();
+    expect(await browserTaskApproval(buy, person(), directTurn(said))).toBe(
+      "not-applicable"
+    );
 
-    const tool = await personTool(said);
+    const tool = await directPersonTool(said);
     await tool.execute(buy, toolContext("better-auth:alice"));
     expect(claimDirectPurchase).toHaveBeenCalledTimes(1);
     expect(createBrowserRun.mock.calls[0]?.[1]).toMatchObject({
@@ -10562,9 +10576,9 @@ describe("browser_task pays on the person's own request in the direct-purchase p
   });
 
   it("starts no second purchase on the same request", async () => {
-    await judged();
+    await directPilot();
     claimDirectPurchase.mockResolvedValue(false);
-    const tool = await personTool(said);
+    const tool = await directPersonTool(said);
     await expect(
       tool.execute(buy, toolContext("better-auth:alice"))
     ).rejects.toThrow("one request pays one");
@@ -10572,67 +10586,43 @@ describe("browser_task pays on the person's own request in the direct-purchase p
   });
 
   it("asks one question when the submission differs or costs more than the ceiling", async () => {
-    const { browserTaskApproval } = await judged({
+    const mismatch = await directPilot({
       differs: "4 кг вместо 2 кг",
       matches: false,
     });
     expect(
-      await browserTaskApproval(
-        buy,
-        approvalSession("photon-imessage"),
-        turn(said)
-      )
-    ).toMatchObject({
-      reason: expect.stringContaining("(4 кг вместо 2 кг)"),
-      type: "denied",
-    });
-    const priced = await judged();
+      await mismatch.browserTaskApproval(buy, person(), directTurn(said))
+    ).toEqual(denied("(4 кг вместо 2 кг)"));
+    const priced = await directPilot();
     expect(
       await priced.browserTaskApproval(
         { ...buy, submission: { ...food, chargeRub: 6200 } },
-        approvalSession("photon-imessage"),
-        turn(said)
+        person(),
+        directTurn(said)
       )
-    ).toMatchObject({
-      reason: expect.stringContaining("above 5"),
-      type: "denied",
-    });
+    ).toEqual(denied("above 5"));
   });
 
   it("asks when a saved rule wants the person asked", async () => {
-    const { browserTaskApproval } = await judged({ ruleIndex: 0 });
-    expect(
-      await browserTaskApproval(
-        buy,
-        approvalSession("photon-imessage"),
-        turn(said)
-      )
-    ).toMatchObject({
-      reason: expect.stringContaining("saved rule"),
-      type: "denied",
-    });
+    const { browserTaskApproval } = await directPilot({ ruleIndex: 0 });
+    expect(await browserTaskApproval(buy, person(), directTurn(said))).toEqual(
+      denied("saved rule")
+    );
   });
 
   it("pays nothing on a report's turn or outside the pilot", async () => {
-    const { browserTaskApproval } = await judged();
+    const { browserTaskApproval } = await directPilot();
     expect(
       await browserTaskApproval(
         buy,
         toolContext("better-auth:alice", "browser-result"),
-        { ...turn(said), said: null }
+        { ...directTurn(said), said: null }
       )
-    ).toMatchObject({ type: "denied" });
-    const off = await judged({}, "");
+    ).toEqual(denied(""));
+    const off = await directPilot({}, "");
+    // As before the pilot: a purchase still to be found searches first.
     expect(
-      await off.browserTaskApproval(
-        buy,
-        approvalSession("photon-imessage"),
-        turn(said)
-      )
-    ).toMatchObject({
-      // As before the pilot: a purchase still to be found searches first.
-      reason: expect.stringContaining("instead of the one option"),
-      type: "denied",
-    });
+      await off.browserTaskApproval(buy, person(), directTurn(said))
+    ).toEqual(denied("instead of the one option"));
   });
 });

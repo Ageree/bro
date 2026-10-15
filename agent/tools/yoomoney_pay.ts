@@ -755,7 +755,7 @@ async function callYoomoneyPay(
     personTurn: true,
     said: words.said,
     step,
-    ...(words.compacted === true ? { compacted: true } : {}),
+    compacted: words.compacted === true,
   };
   if (!yoomoneyEnabled(scope)) {
     return {

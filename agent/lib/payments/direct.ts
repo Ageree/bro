@@ -38,7 +38,7 @@ export function directPurchaseCeilingRub() {
 
 /** The person's words of this turn, as `personWordsThisTurn` gives them. */
 export interface DirectTurn {
-  readonly compacted?: true;
+  readonly compacted?: boolean;
   /** Whether a message of the person's opened this turn (`startedByPerson`). */
   readonly personTurn: boolean;
   readonly said: readonly string[] | null;
@@ -62,7 +62,7 @@ export type DirectPurchase =
       /** What to ask, for the model. */
       readonly reply: string;
       /** What differs, in the judge's words, for a mismatch. */
-      readonly differs?: string;
+      readonly differs?: string | undefined;
     };
 
 /**
@@ -160,7 +160,7 @@ export async function directPurchase(
     readonly terms: Readonly<
       Record<string, z.infer<ReturnType<typeof z.json>>>
     >;
-    readonly totalMinor?: number;
+    readonly totalMinor?: number | undefined;
   }
 ): Promise<DirectPurchase | undefined> {
   if (!directPurchasePilot(scope)) return undefined;
@@ -192,10 +192,10 @@ export async function directPurchase(
   if (!verdict.matches) {
     const differs = verdict.differs ?? undefined;
     return {
+      differs,
       kind: "ask",
       reason: "mismatch",
       reply: `What was found differs from what the person asked for${differs === undefined ? "" : ` (${differs})`}: ask one short question about exactly that difference, with the total, instead of «Оплачиваю?», and pay only after their plain yes.`,
-      ...(differs === undefined ? {} : { differs }),
     };
   }
   const ceiling = directPurchaseCeilingRub();
