@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from "next";
-import { Onest, Prata } from "next/font/google";
+import { Geist, Source_Serif_4 } from "next/font/google";
 import { headers } from "next/headers";
 import { QueryProvider } from "@app/_providers/query-provider";
 import { TooltipProvider } from "@web/components/ui/tooltip";
@@ -8,21 +8,20 @@ import { applicationOrigin } from "@shared/environment/origin";
 import { getAuthSession } from "@db/services/auth/session";
 import "./globals.css";
 
-// The display face carries the whole brand; the gothic is only for fine
-// print. Prata ships a single weight, Onest is a variable font, so the
-// shared type recipes keep their weights. Both are self-hosted by next/font
-// and reach the stylesheet as `--font-prata` and `--font-onest`.
-const prata = Prata({
+// Source Serif 4 carries the headings, Geist everything that is read or
+// pressed. Both are variable fonts with a Cyrillic subset, self-hosted by
+// next/font and reaching the stylesheet as `--font-serif-4` and `--font-geist`.
+const serif = Source_Serif_4({
   display: "swap",
   subsets: ["cyrillic", "latin"],
-  variable: "--font-prata",
+  variable: "--font-serif-4",
   weight: "400",
 });
 
-const onest = Onest({
+const geist = Geist({
   display: "swap",
   subsets: ["cyrillic", "latin"],
-  variable: "--font-onest",
+  variable: "--font-geist",
 });
 
 export const metadata: Metadata = {
@@ -37,7 +36,7 @@ export const metadata: Metadata = {
 
 export const viewport: Viewport = {
   initialScale: 1,
-  themeColor: "#ffffff",
+  themeColor: "#f1f2ee",
   viewportFit: "cover",
   width: "device-width",
 };
@@ -49,7 +48,7 @@ export default async function RootLayout({ children }: LayoutProps<"/">) {
     : undefined;
 
   return (
-    <html className={`${prata.variable} ${onest.variable}`} lang="ru">
+    <html className={`${serif.variable} ${geist.variable}`} lang="ru">
       <body data-brand="bro" data-workspace-id={workspaceId}>
         <QueryProvider>
           <TooltipProvider>{children}</TooltipProvider>
