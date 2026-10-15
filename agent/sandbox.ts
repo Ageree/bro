@@ -9,8 +9,9 @@ import { env } from "@shared/environment";
  * model. AGENT_SANDBOX picks where it runs: eve's default (Vercel Sandbox on
  * Vercel), or the Cloud.ru code host (`sandbox/README.md`) once Bro leaves
  * Vercel. There it is a small gVisor container without network: attachments
- * need little room, and every live one holds the host's memory until it
- * idles out after 20 minutes into its snapshot in Object Storage.
+ * need little room, and every live one holds the host's memory until it is
+ * stopped into its snapshot in Object Storage, a minute after the turn that
+ * opened it (`agent/hooks/sandbox-release.ts`).
  */
 const attachmentsMemoryMb = 1024;
 
