@@ -58,7 +58,7 @@ export function VaultAddresses({
                   section.setView("add");
                 }}
                 type="button"
-                variant="act"
+                variant="paper"
               >
                 Добавить адрес
               </Button>

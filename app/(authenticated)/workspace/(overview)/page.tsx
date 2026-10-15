@@ -26,7 +26,7 @@ import {
 } from "@db/services/settings";
 import { listSpendEntries, readSpendLimit } from "@db/services/spending";
 import { readUserProfile } from "@db/services/user-profile";
-import { listVaultItems } from "@db/services/vault";
+import { readVaultItems } from "@db/services/vault";
 import {
   listCurrentMemories,
   readCabinetMemoryScopeKey,
@@ -56,11 +56,9 @@ import { PersonalMailAction } from "./_components/personal-mail-action";
 import { ModelSelector } from "./_components/model-selector";
 import { SpendLimitSection } from "./_components/spend-limit-section";
 import { TelegramLinkAction } from "./_components/telegram-link-action";
+import { CabinetVault } from "./_components/vault/cabinet";
 
 export const metadata: Metadata = { title: "Кабинет" };
-
-/** The cabinet lists this many vault rows before pointing at the vault. */
-const vaultPreviewRows = 8;
 
 const dayMs = 24 * 60 * 60 * 1000;
 
@@ -74,14 +72,7 @@ function paidDaysUsed(paidUntil: Date) {
 }
 
 /** What the cabinet shows of a vault item: the metadata, never the secret. */
-type VaultPreviewItem = Awaited<ReturnType<typeof listVaultItems>>[number];
-
-const vaultKindLabels: Partial<Record<VaultPreviewItem["kind"], string>> = {
-  address: "Адрес",
-  contact: "Контакт",
-  login: "Вход",
-  payment: "Карта",
-};
+type VaultPreviewItem = Awaited<ReturnType<typeof readVaultItems>>[number];
 
 export default async function Page({ searchParams }: PageProps<"/workspace">) {
   const { google, status, mail, mailStatus } = await searchParams;
@@ -118,7 +109,7 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
     telegramConfigured ? readChannelIdentity(scope, "telegram") : undefined,
     readBillingState(scope),
     readUserProfile(scope),
-    listVaultItems(scope),
+    readVaultItems(scope),
     readSpendLimit(scope),
     Promise.all(
       shownApps.map(async (app) => ({
@@ -233,7 +224,7 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
       <SiteLoginsSection
         logins={vaultItems.filter((item) => item.kind === "login")}
       />
-      <VaultSection items={vaultItems} />
+      <CabinetVault items={vaultItems} />
       <MemorySection count={memories.length} />
       <TimeZoneSection timeZone={timeZone} />
 
@@ -573,62 +564,6 @@ function SiteLoginsSection({
           ? `Сохранены входы: ${domains.join(", ")}`
           : "Пока нет сохранённых входов — Bro предложит способ войти, когда понадобится."}
       </p>
-    </Section>
-  );
-}
-
-function VaultSection({
-  items,
-}: {
-  readonly items: readonly VaultPreviewItem[];
-}) {
-  const shown = items.slice(0, vaultPreviewRows);
-  const rest = items.length - shown.length;
-
-  return (
-    <Section headingId="vault-heading" title="Сейф">
-      <p className="type-fine text-muted-foreground">
-        Карта, адреса и входы на сайты. Номер и CVV он не видит — пароль в чат
-        тоже не пиши.
-      </p>
-      {items.length > 0 ? (
-        <Rows>
-          {shown.map((item) => {
-            const kind = vaultKindLabels[item.kind] ?? item.kind;
-            const line =
-              item.account && item.account !== item.label
-                ? `${item.label} · ${item.account}`
-                : item.label;
-            return (
-              <Row key={item.id} side={kind}>
-                <p>{line}</p>
-              </Row>
-            );
-          })}
-          {rest > 0 ? (
-            <Row>
-              <p className="type-status text-muted-foreground">
-                и ещё {rest} — в сейфе
-              </p>
-            </Row>
-          ) : null}
-        </Rows>
-      ) : (
-        <p className="type-fine mt-[0.6rem] text-muted-foreground">
-          Пока пусто — добавь карту, и Bro сможет покупать.
-        </p>
-      )}
-      <Actions>
-        <Link
-          className="type-act bro-link"
-          href="/vault?setup=vault&kind=payment"
-        >
-          Добавить карту
-        </Link>
-        <Link className="type-act bro-link" href="/vault">
-          перейти в сейф
-        </Link>
-      </Actions>
     </Section>
   );
 }

@@ -58,7 +58,7 @@ export function VaultCards({
                   section.setView("add");
                 }}
                 type="button"
-                variant="act"
+                variant="paper"
               >
                 Добавить карту
               </Button>

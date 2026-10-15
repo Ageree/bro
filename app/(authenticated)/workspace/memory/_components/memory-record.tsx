@@ -132,7 +132,7 @@ function RemoveMemory({
           </DialogDescription>
         </DialogHeader>
         <p className="type-row wrap-break-word">{text}</p>
-        <DialogFooter className="mx-0 mt-4 mb-0 rounded-none border-t-0 bg-transparent p-0">
+        <DialogFooter className="mt-2">
           <DialogClose
             render={<Button size="lg" type="button" variant="outline" />}
           >
@@ -237,7 +237,7 @@ function EditMemory({
               ) : null}
             </Field>
           </FieldGroup>
-          <DialogFooter className="mx-0 mt-4 mb-0 rounded-none border-t-0 bg-transparent p-0">
+          <DialogFooter className="mt-2">
             <Button
               disabled={!parsed.success || update.isPending}
               type="submit"

@@ -58,7 +58,7 @@ export function VaultContacts({
                   section.setView("add");
                 }}
                 type="button"
-                variant="act"
+                variant="paper"
               >
                 Добавить контакт
               </Button>
