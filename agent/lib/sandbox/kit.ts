@@ -8,16 +8,42 @@ import unpackScript from "../../../sandbox/kit/boot/unpack.py?raw";
 // The package, one line per file here and one in `kitFiles` below. A file
 // left out never reaches a sandbox: tests/agent/sandbox/kit.test.ts walks
 // sandbox/kit/brokit and compares.
-import brokitInit from "../../../sandbox/kit/brokit/__init__.py?raw";
-import brokitMain from "../../../sandbox/kit/brokit/__main__.py?raw";
+import brokitAes from "../../../sandbox/kit/brokit/aes.py?raw";
 import brokitCli from "../../../sandbox/kit/brokit/cli.py?raw";
-import imgInit from "../../../sandbox/kit/brokit/img/__init__.py?raw";
+import brokitInit from "../../../sandbox/kit/brokit/__init__.py?raw";
+import brokitLabels from "../../../sandbox/kit/brokit/labels.py?raw";
 import brokitLook from "../../../sandbox/kit/brokit/look.py?raw";
-import officeInit from "../../../sandbox/kit/brokit/office/__init__.py?raw";
-import pdfInit from "../../../sandbox/kit/brokit/pdf/__init__.py?raw";
+import brokitMain from "../../../sandbox/kit/brokit/__main__.py?raw";
+import brokitQr from "../../../sandbox/kit/brokit/qr.py?raw";
 import brokitRender from "../../../sandbox/kit/brokit/render.py?raw";
-import ruInit from "../../../sandbox/kit/brokit/ru/__init__.py?raw";
+import brokitSurvey from "../../../sandbox/kit/brokit/survey.py?raw";
 import brokitUtil from "../../../sandbox/kit/brokit/util.py?raw";
+import brokitZipx from "../../../sandbox/kit/brokit/zipx.py?raw";
+import imgBasic from "../../../sandbox/kit/brokit/img/basic.py?raw";
+import imgIdphoto from "../../../sandbox/kit/brokit/img/idphoto.py?raw";
+import imgInit from "../../../sandbox/kit/brokit/img/__init__.py?raw";
+import imgRaster from "../../../sandbox/kit/brokit/img/raster.py?raw";
+import imgScan from "../../../sandbox/kit/brokit/img/scan.py?raw";
+import imgSignature from "../../../sandbox/kit/brokit/img/signature.py?raw";
+import officeInit from "../../../sandbox/kit/brokit/office/__init__.py?raw";
+import officeSheet from "../../../sandbox/kit/brokit/office/sheet.py?raw";
+import officeSoffice from "../../../sandbox/kit/brokit/office/soffice.py?raw";
+import officeWord from "../../../sandbox/kit/brokit/office/word.py?raw";
+import pdfCompress from "../../../sandbox/kit/brokit/pdf/compress.py?raw";
+import pdfCrypt from "../../../sandbox/kit/brokit/pdf/crypt.py?raw";
+import pdfForm from "../../../sandbox/kit/brokit/pdf/form.py?raw";
+import pdfGeom from "../../../sandbox/kit/brokit/pdf/geom.py?raw";
+import pdfInfo from "../../../sandbox/kit/brokit/pdf/info.py?raw";
+import pdfInit from "../../../sandbox/kit/brokit/pdf/__init__.py?raw";
+import pdfLayout from "../../../sandbox/kit/brokit/pdf/layout.py?raw";
+import pdfLines from "../../../sandbox/kit/brokit/pdf/lines.py?raw";
+import pdfPages from "../../../sandbox/kit/brokit/pdf/pages.py?raw";
+import pdfSign from "../../../sandbox/kit/brokit/pdf/sign.py?raw";
+import pdfWrite from "../../../sandbox/kit/brokit/pdf/write.py?raw";
+import ruAmount from "../../../sandbox/kit/brokit/ru/amount.py?raw";
+import ruDecline from "../../../sandbox/kit/brokit/ru/decline.py?raw";
+import ruInit from "../../../sandbox/kit/brokit/ru/__init__.py?raw";
+import ruRules from "../../../sandbox/kit/brokit/ru/rules.py?raw";
 
 /**
  * The task agent's file kit `brokit` (sandbox/kit/README.md) travels with
@@ -39,14 +65,40 @@ import brokitUtil from "../../../sandbox/kit/brokit/util.py?raw";
 const kitFiles: readonly (readonly [string, string])[] = [
   ["brokit/__init__.py", brokitInit],
   ["brokit/__main__.py", brokitMain],
+  ["brokit/aes.py", brokitAes],
   ["brokit/cli.py", brokitCli],
   ["brokit/img/__init__.py", imgInit],
+  ["brokit/img/basic.py", imgBasic],
+  ["brokit/img/idphoto.py", imgIdphoto],
+  ["brokit/img/raster.py", imgRaster],
+  ["brokit/img/scan.py", imgScan],
+  ["brokit/img/signature.py", imgSignature],
+  ["brokit/labels.py", brokitLabels],
   ["brokit/look.py", brokitLook],
   ["brokit/office/__init__.py", officeInit],
+  ["brokit/office/sheet.py", officeSheet],
+  ["brokit/office/soffice.py", officeSoffice],
+  ["brokit/office/word.py", officeWord],
   ["brokit/pdf/__init__.py", pdfInit],
+  ["brokit/pdf/compress.py", pdfCompress],
+  ["brokit/pdf/crypt.py", pdfCrypt],
+  ["brokit/pdf/form.py", pdfForm],
+  ["brokit/pdf/geom.py", pdfGeom],
+  ["brokit/pdf/info.py", pdfInfo],
+  ["brokit/pdf/layout.py", pdfLayout],
+  ["brokit/pdf/lines.py", pdfLines],
+  ["brokit/pdf/pages.py", pdfPages],
+  ["brokit/pdf/sign.py", pdfSign],
+  ["brokit/pdf/write.py", pdfWrite],
+  ["brokit/qr.py", brokitQr],
   ["brokit/render.py", brokitRender],
   ["brokit/ru/__init__.py", ruInit],
+  ["brokit/ru/amount.py", ruAmount],
+  ["brokit/ru/decline.py", ruDecline],
+  ["brokit/ru/rules.py", ruRules],
+  ["brokit/survey.py", brokitSurvey],
   ["brokit/util.py", brokitUtil],
+  ["brokit/zipx.py", brokitZipx],
 ];
 
 /**
