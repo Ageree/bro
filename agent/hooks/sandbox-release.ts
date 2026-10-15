@@ -5,8 +5,12 @@ import { releaseSessionSandboxes } from "@agent/lib/sandbox/capacity";
  * How long Bro's own sandbox outlives the turn that opened it. The next
  * message within it finds the sandbox running; a later one restores its
  * `/workspace` from the snapshot, a second or two before the first reply.
+ * eve reads the attachments in the history back out of the sandbox on every
+ * model step, so a short grace would make most turns of a conversation with
+ * a file wait for a restore; a full host stops sandboxes in their grace at
+ * once anyway.
  */
-const graceMs = 60_000;
+const graceMs = 5 * 60_000;
 
 /**
  * Bro's own sandbox on the code host (AGENT_SANDBOX=bro-cloudru) holds
