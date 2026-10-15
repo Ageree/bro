@@ -63,6 +63,8 @@ const sharedFreshMs = 15 * 60_000;
 const sideFreshMs = 2 * 60 * 60_000;
 /** Matches farther apart than this are different places: ask which. */
 const ambiguousM = 1_000;
+/** Matches within this of the person's last point are in their city. */
+const ownCityM = 60_000;
 
 const inputSchema = z
   .object({
@@ -136,12 +138,24 @@ function reply(text: string): Resolved {
   return { kind: "reply", reply: text };
 }
 
-/** The map's match for an address, or a question when it is not one place. */
+/**
+ * The map's match for an address, or a question when it is not one place.
+ * Matches in several cities, some of them near the person's last point,
+ * are the ones in their city: «Центральный телеграф» is Moscow's for a
+ * person in Moscow, not Tashkent's (live check 15.10).
+ */
 function onePlace(
-  found: readonly MapPlace[],
+  matches: readonly MapPlace[],
   origin: Place["origin"],
-  label: string
+  label: string,
+  near?: Pick<MapPlace, "lat" | "lon">
 ): Resolved {
+  const local =
+    near === undefined
+      ? []
+      : matches.filter((place) => distanceM(place, near) <= ownCityM);
+  const found =
+    local.length > 0 && local.length < matches.length ? local : matches;
   const [first] = found;
   if (!first) {
     return reply(
@@ -155,7 +169,7 @@ function onePlace(
         .map((place) => place.label)
         .join(
           "; "
-        )}). If the person's message names the house or the city, call again with the street, the house and the city in \`place\` as they wrote them; otherwise ask the person which one. Nothing was set up.`
+        )}). If the person's message names the house or the city, call again with them added to \`place\`, and add no street or house they did not write; otherwise ask the person which one. Nothing was set up.`
     );
   }
   return {
@@ -306,7 +320,7 @@ async function resolvePlace(
     context.abortSignal,
     3
   );
-  return onePlace(found, "address", wanted.slice(0, 80));
+  return onePlace(found, "address", wanted.slice(0, 80), latest?.point);
 }
 
 /**

@@ -241,7 +241,10 @@ export const skillRouterGroups = {
  * The skill whose rules a group's tools lean on: their short descriptions
  * point to the skill's block, which the `skills` slot attaches only at the
  * turn's start, by its own triggers. A group open without that block gets a
- * note to load it (`routerSkillNote`).
+ * note to load it (`routerSkillNote`). Not `places`: its tools are core and
+ * point to no block, and the note to load picking places sent «напомни,
+ * когда приду на Тверскую» through `load_skill recommendations` first (2 of
+ * 4 live turns, 15.10).
  */
 export const routerGroupSkill: Readonly<
   Partial<Record<RouterGroup, SkillName>>
@@ -253,6 +256,5 @@ export const routerGroupSkill: Readonly<
   mail: "google",
   media: "images",
   money: "money",
-  places: "recommendations",
   schedules: "schedules",
 };

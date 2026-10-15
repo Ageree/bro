@@ -172,6 +172,22 @@ function position(minutesAgo: number, where = home) {
   };
 }
 
+/** A building the map found by the name «Центральный телеграф». */
+function telegraph(lat: number, lon: number, label: string) {
+  return {
+    countryCode: undefined,
+    district: undefined,
+    houseNumber: undefined,
+    importance: 0.4,
+    kind: "place" as const,
+    label,
+    lat,
+    lon,
+    name: "Центральный телеграф",
+    tag: "building:yes",
+  };
+}
+
 describe("place_reminder", () => {
   it("sets a reminder at home in the person's words, honest about sharing", async () => {
     const tool = await reminderTool("напомни забрать посылку, когда буду дома");
@@ -266,6 +282,42 @@ describe("place_reminder", () => {
     expect(await create("сюда")).toMatchObject({ created: true });
     expect(await create("Тверская улица 7, Москва")).toMatchObject({
       created: true,
+    });
+  });
+
+  it("takes the match in the person's city when the map finds the name in several", async () => {
+    const tool = await reminderTool(
+      "напомни отправить письмо, когда буду у Центрального телеграфа"
+    );
+    services.find.mockResolvedValue([
+      telegraph(
+        55.7578,
+        37.6114,
+        "Центральный телеграф, Тверская улица 7, Москва"
+      ),
+      telegraph(
+        41.3111,
+        69.2797,
+        "Центральный телеграф, Навои проспект, Ташкент"
+      ),
+    ]);
+    const create = () =>
+      tool.execute(
+        {
+          action: "create",
+          place: "Центральный телеграф",
+          text: "отправить письмо",
+        },
+        callContext()
+      );
+    expect(await create()).toHaveProperty(
+      "reply",
+      expect.stringContaining("several places")
+    );
+    services.latest.mockResolvedValue(position(600));
+    expect(await create()).toMatchObject({ created: true });
+    expect(services.create.mock.calls[0]?.[1].source).toMatchObject({
+      address: "Центральный телеграф, Тверская улица 7, Москва",
     });
   });
 
