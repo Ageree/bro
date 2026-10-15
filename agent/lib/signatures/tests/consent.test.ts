@@ -126,6 +126,14 @@ describe("what a delivered send did to an open signing", () => {
     expect(asked(text)).toEqual({ text, verbatim: false });
   });
 
+  it("reads a link's own «?» as no question", () => {
+    expect(asked(`${question}\nФайл: ${shareLink()}`)).toEqual({
+      text: `${question}\nФайл: ${shareLink()}`,
+      verbatim: true,
+    });
+    expect(asked(`Вот файл: [анкета](${shareLink()})`)).toBeUndefined();
+  });
+
   it("clears what was asked with another question, even one after the stored question", () => {
     expect(asked("Что-то ещё?")).toBe("clear");
     expect(

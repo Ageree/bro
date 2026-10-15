@@ -211,10 +211,15 @@ export function deliveredShareIds(
   return [...ids];
 }
 
-/** The text up to and with its last «?»: what the person's answer answers. */
+/**
+ * The text up to and with its last «?»: what the person's answer answers.
+ * A link's own «?» (every shared file's `?sig=`) asks nothing.
+ */
 function latestQuestion(text: string) {
-  const end = Math.max(text.lastIndexOf("?"), text.lastIndexOf("？"));
-  return end < 0 ? undefined : text.slice(0, end + 1);
+  let asking = text;
+  for (const link of linksInText(text)) asking = asking.replace(link, " ");
+  const end = Math.max(asking.lastIndexOf("?"), asking.lastIndexOf("？"));
+  return end < 0 ? undefined : asking.slice(0, end + 1);
 }
 
 /**
