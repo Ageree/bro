@@ -41,6 +41,7 @@ describe("source layout", () => {
       "environment",
       "google-workspace",
       "identity",
+      "location",
       "mail",
       "memory",
       "model",

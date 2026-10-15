@@ -15,6 +15,7 @@ import { messageContent } from "../../../_lib/message-input";
 import { cn } from "@web/components/class-names";
 import { api } from "@web/trpc/client";
 import type { ChatAgent } from "../chat-agent";
+import { ShareLocationButton } from "./location";
 
 export function ChatInput({
   agent,
@@ -65,7 +66,18 @@ export function ChatInput({
           />
         </PromptInputBody>
         <PromptInputFooter>
-          <PromptInputTools />
+          <PromptInputTools>
+            <ShareLocationButton
+              disabled={isRestoring || agent.status === "submitted"}
+              onShared={async (text) => {
+                if (sessionId !== undefined) saveChat({ sessionId });
+                await agent.send(
+                  text,
+                  isBusy ? { turnPolicy: "steer" } : undefined
+                );
+              }}
+            />
+          </PromptInputTools>
           <PromptInputSubmit
             className={paperComposerSubmitClassName}
             disabled={isRestoring}

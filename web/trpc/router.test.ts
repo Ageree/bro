@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as Chats from "@db/services/chats";
+import * as Location from "@db/services/location";
 import * as MemoryRecords from "@db/services/memory/records";
 import * as Settings from "@db/services/settings";
 import * as ConnectedApps from "@shared/composio/connected-apps";
@@ -35,6 +36,9 @@ const scopeKeysMock = vi.spyOn(MemoryRecords, "listMemoryScopeKeys");
 const listMemoriesMock = vi.spyOn(MemoryRecords, "listCurrentMemories");
 const updateMemoryMock = vi.spyOn(MemoryRecords, "updateMemory");
 const restoreMemoryMock = vi.spyOn(MemoryRecords, "restoreMemory");
+
+const locationPilotMock = vi.spyOn(Location, "locationPilot");
+const recordWebShareMock = vi.spyOn(Location, "recordWebShare");
 
 const scope = {
   userId: "user-1",
@@ -82,6 +86,37 @@ describe("appRouter", () => {
       scope,
       "deepseek/deepseek-v4.1-flash"
     );
+  });
+
+  it("stores the web chat's point only in the geolocation pilot, once per 10 s", async () => {
+    const caller = appRouter.createCaller({
+      origin: "https://example.com",
+      scope,
+    });
+    locationPilotMock.mockReturnValue(false);
+    await expect(caller.location.enabled()).resolves.toBe(false);
+    await expect(
+      caller.location.share({ lat: 55.76, lon: 37.61 })
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(recordWebShareMock).not.toHaveBeenCalled();
+
+    locationPilotMock.mockReturnValue(true);
+    recordWebShareMock.mockResolvedValue({ shared: true });
+    await expect(
+      caller.location.share({ accuracyM: 12.6, lat: 55.76, lon: 37.61 })
+    ).resolves.toEqual({ shared: true });
+    expect(recordWebShareMock).toHaveBeenCalledExactlyOnceWith(scope, {
+      accuracyM: 13,
+      lat: 55.76,
+      lon: 37.61,
+    });
+    recordWebShareMock.mockResolvedValue({ shared: false });
+    await expect(
+      caller.location.share({ lat: 55.76, lon: 37.61 })
+    ).rejects.toMatchObject({ code: "TOO_MANY_REQUESTS" });
+    await expect(
+      caller.location.share({ lat: 91, lon: 37.61 })
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 
   it("starts Google OAuth at the chosen level when no grant exists", async () => {

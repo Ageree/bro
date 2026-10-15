@@ -22,7 +22,9 @@ const now = new Date("2026-10-02T10:00:00.000Z");
 const seen = (at: Date) => new Date(at.getTime() + 26 * 60 * 60_000);
 const sixHours = 6 * 60 * 60;
 
-function priceWatch(overrides: Partial<NewSubscription> = {}): NewSubscription {
+type NewPriceWatch = Extract<NewSubscription, { template: "price" }>;
+
+function priceWatch(overrides: Partial<NewPriceWatch> = {}): NewPriceWatch {
   return {
     checkEverySeconds: sixHours,
     condition: { amount: 8_000, kind: "below" },

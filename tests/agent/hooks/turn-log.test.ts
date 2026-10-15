@@ -476,6 +476,85 @@ describe("the turn log hook", () => {
     expect(mocks.appendTurnEntries).not.toHaveBeenCalled();
   });
 
+  // Geolocation: a context line and a location tool name where the person
+  // was; the log and the transcript keep only that it was a location.
+  it("folds where the person was out of the log and the transcript", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const events = await loadHook("on");
+    await handler(events, "message.received")(
+      {
+        ...received(
+          "Геопозиция: человек сам прислал свою точку в 15.10 14:05: Тверская улица 7, Москва, ±20 м."
+        ),
+        data: {
+          kind: "execution.background_task",
+          message:
+            "Геопозиция: человек сам прислал свою точку в 15.10 14:05: Тверская улица 7, Москва, ±20 м.",
+          sequence: 1,
+          turnId: "turn_1",
+        },
+      },
+      context()
+    );
+    await handler(events, "action.result")(
+      {
+        data: {
+          result: {
+            callId: "call-4",
+            kind: "tool-result",
+            output: { position: { address: "Тверская улица 7", lat: 55.7612 } },
+            toolName: "location_now",
+          },
+          sequence: 1,
+          status: "completed",
+          stepIndex: 0,
+          turnId: "turn_1",
+        },
+        meta,
+        type: "action.result",
+      },
+      context()
+    );
+    const lines = JSON.stringify([
+      ...info.mock.calls,
+      ...mocks.appendTurnEntries.mock.calls,
+    ]);
+    expect(lines).not.toMatch(/Тверская|55\.76/u);
+    expect(lines).toContain("[геопозиция]");
+    expect(lines).toContain('{\\"redacted\\":\\"location\\"}');
+  });
+
+  it("folds a Yandex Maps search given a point out of the transcript", async () => {
+    const events = await loadHook("on");
+    await handler(events, "actions.requested")(
+      {
+        data: {
+          actions: [
+            {
+              callId: "call-5",
+              input: {
+                args: { query: "кафе" },
+                near: [37.6184, 55.7612],
+                operation: "maps.search",
+              },
+              kind: "tool-call",
+              toolName: "yandex",
+            },
+          ],
+          sequence: 1,
+          stepIndex: 0,
+          turnId: "turn_1",
+        },
+        meta,
+        type: "actions.requested",
+      },
+      context()
+    );
+    const lines = JSON.stringify(mocks.appendTurnEntries.mock.calls);
+    expect(lines).not.toMatch(/55\.76/u);
+    expect(lines).toContain('{\\"redacted\\":\\"location\\"}');
+  });
+
   // Review of U3a: a sign-in window and a shared file open to whoever
   // holds the link.
   it("cuts sign-in and shared-file links out of the text", async () => {

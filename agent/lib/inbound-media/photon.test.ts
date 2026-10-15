@@ -510,4 +510,47 @@ describe("Photon media turn", () => {
     });
     expect(fetchMock).not.toHaveBeenCalled();
   });
+  it("reads a location card as a point in the geolocation pilot only", async () => {
+    const card = Buffer.from(
+      [
+        "BEGIN:VCARD",
+        "VERSION:3.0",
+        "N:;Current Location;;;",
+        "FN:Current Location",
+        String.raw`item1.URL;type=pref:http://maps.apple.com/?ll=55.751244\,37.618423&q=55.751244\,37.618423`,
+        "END:VCARD",
+      ].join("\r\n")
+    );
+    const { photonMediaTurn } = await loadPhotonMedia();
+    const message = () =>
+      photonMessage(
+        [
+          {
+            data: card,
+            mimeType: "text/x-vlocation",
+            name: "CL.loc.vcf",
+            type: "file",
+          },
+        ],
+        undefined
+      );
+    // Outside the pilot it stays the note it was, documents on or off.
+    const note = {
+      message: "[файл: CL.loc.vcf (text/x-vlocation)]",
+      notice: undefined,
+    };
+    await expect(photonMediaTurn(message())).resolves.toEqual(note);
+    await expect(
+      photonMediaTurn(message(), { documents: true })
+    ).resolves.toEqual(note);
+    await expect(
+      photonMediaTurn(message(), { documents: true, location: true })
+    ).resolves.toEqual({
+      locations: [
+        { kind: "position", label: null, lat: 55.751244, lon: 37.618423 },
+      ],
+      message: "[геопозиция]",
+      notice: undefined,
+    });
+  });
 });

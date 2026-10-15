@@ -60,6 +60,7 @@ const optionalServices = [
   "CROSS_CHANNEL_WORKSPACES",
   "IMESSAGE_PROJECT_ID",
   "IMESSAGE_PROJECT_SECRET",
+  "LOCATION_WORKSPACES",
   "MAIL_WORKSPACES",
   "MEMORY_DIGEST_MODEL",
   "YANDEX_API_WORKSPACES",
@@ -170,6 +171,46 @@ describe("privacy", () => {
     expect(kept).toContain(
       "ещё до 14 дней остаются в ночных зашифрованных резервных копиях"
     );
+  });
+
+  it("names the decision model only for the tool router's pilot", async () => {
+    const outside = await withServices({
+      MODEL_PROVIDER: "routerai",
+      ROUTERAI_API_KEY: "routerai-test-key",
+    });
+    expect((await overview(outside.tool)).processors.join("\n")).not.toContain(
+      "Jev"
+    );
+
+    vi.stubEnv("TOOL_ROUTER_WORKSPACES", scope.workspaceId);
+    const pilot = await withServices({
+      MODEL_PROVIDER: "routerai",
+      ROUTERAI_API_KEY: "routerai-test-key",
+    });
+    const processors = (await overview(pilot.tool)).processors.join("\n");
+    vi.stubEnv("TOOL_ROUTER_WORKSPACES", "");
+    expect(processors).toContain("модель Jev компании TypeSafe");
+    expect(processors).toContain("без кодов, номеров документов");
+  });
+
+  // Geolocation: what is kept and for how long, what reaches OpenStreetMap,
+  // and the honest note that the chat history keeps what was sent.
+  it("names shared locations only for a workspace of the pilot", async () => {
+    const outside = await overview((await withServices({})).tool);
+    const outsideText = JSON.stringify(outside);
+    expect(outsideText).not.toContain("Геопозиц");
+    expect(outside.processors.join("\n")).toContain(
+      "Адреса для расчёта дороги уходят в открытые сервисы OpenStreetMap."
+    );
+    const pilot = await overview(
+      (await withServices({ LOCATION_WORKSPACES: "*" })).tool
+    );
+    expect(pilot.kept.join("\n")).toContain("до 90 дней");
+    expect(pilot.kept.join("\n")).toContain("остаётся в истории чатов");
+    expect(pilot.processors.join("\n")).toContain(
+      "координаты присланных точек"
+    );
+    expect(pilot.remove.join("\n")).toContain("«забудь, где я был»");
   });
 
   it("names RouterAI, not OpenRouter, once the model runs there", async () => {
@@ -428,6 +469,13 @@ describe("privacy", () => {
     expect(processors).toContain("Mail.ru или Яндекса");
     expect(processors).toContain("Еда, Лавка, Go, Маркет");
     expect(processors).toContain("песочнице на сервере Selectel");
+    expect(processors).not.toContain("Яндекс Картах");
+    // With geolocation, Maps search gets the person's latest point.
+    expect(
+      facts
+        .dataProcessors("deepseek/deepseek-v4.1-flash", { location: true })
+        .join("\n")
+    ).toContain("поиск мест на Яндекс Картах");
   });
 
   it("names the browser's second proxy too, when there is one", async () => {
