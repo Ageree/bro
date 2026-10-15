@@ -20,6 +20,7 @@ import {
   turnChannel,
 } from "@agent/lib/monitoring/transcript";
 import { startedByPerson } from "@agent/lib/mode";
+import { withoutLocationLines } from "@agent/lib/location/note";
 
 /**
  * Every turn of Bro's, on every channel, into the owner's `turn_log`: whose
@@ -97,7 +98,7 @@ export default defineHook({
             role: reply === undefined ? "tool-call" : "bro",
             text:
               reply === undefined
-                ? transcriptJson(action.input)
+                ? locationRedacted(name, action.input)
                 : transcriptText(reply),
             toolName: name,
           };
@@ -113,7 +114,10 @@ export default defineHook({
           eventId: event.meta.id,
           part: result.callId,
           role: "tool-result",
-          text: transcriptJson(result.output),
+          text: locationRedacted(
+            result.kind === "tool-result" ? result.toolName : "",
+            result.output
+          ),
           toolName:
             result.kind === "subagent-result"
               ? result.subagentName
@@ -128,12 +132,10 @@ export default defineHook({
         event.data.kind === undefined &&
         !ctx.session.parent &&
         startedByPerson(ctx);
-      logMessage(
-        person ? "person" : "input",
-        ctx,
-        event.data.turnId,
-        event.data.message
-      );
+      // A shared location's context line names where the person was: the
+      // log and the transcript keep its marker only (`docs/location.md`).
+      const message = withoutLocationLines(event.data.message);
+      logMessage(person ? "person" : "input", ctx, event.data.turnId, message);
       if (!transcriptsEnabled()) return;
       await transcribe(ctx, event.data.turnId, () => [
         {
@@ -141,7 +143,7 @@ export default defineHook({
           eventId: event.meta.id,
           part: "",
           role: person ? "person" : "input",
-          text: transcriptText(event.data.message),
+          text: transcriptText(message),
           toolName: null,
         },
       ]);
@@ -233,6 +235,35 @@ function logMessage(
       sessionId: ctx.session.id,
     });
   }
+}
+
+/** The tools whose calls and results say where the person is. */
+const locationTools: ReadonlySet<string> = new Set([
+  "location_edit",
+  "location_history",
+  "location_now",
+  "place_reminder",
+]);
+
+/** A Yandex Maps search that looked around the person's own point. */
+const positionNearSchema = z.object({ positionNear: z.string() });
+
+/**
+ * A tool call's input or result for the transcript, or only that it was
+ * about a location: the geolocation tools, and a Yandex search that looked
+ * around the person's point, carry where they are.
+ */
+function locationRedacted(
+  toolName: string,
+  value: Parameters<typeof transcriptJson>[0]
+) {
+  if (
+    locationTools.has(toolName) ||
+    (toolName === "yandex" && positionNearSchema.safeParse(value).success)
+  ) {
+    return transcriptJson({ redacted: "location" });
+  }
+  return transcriptJson(value);
 }
 
 /** What `send_message` says to the person. */

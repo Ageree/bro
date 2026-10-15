@@ -80,6 +80,7 @@ describe("the tools of the skills pilot", () => {
         await catalog("web", true, {
           ...fullDeployment,
           ...taskAgentDeployment,
+          LOCATION_WORKSPACES: "workspace-1",
           SUBSCRIPTIONS_WORKSPACES: "*",
         })
       ).keys(),
@@ -87,8 +88,10 @@ describe("the tools of the skills pilot", () => {
       ...(await catalog("telegram", true)).keys(),
     ]);
     expect(names.size).toBeGreaterThan(55);
-    // The price watch of its pilot is in the table too.
+    // The price watch of its pilot is in the table too, and so are the
+    // geolocation tools of theirs.
     expect(names.has("watch-create")).toBe(true);
+    expect(names.has("place_reminder")).toBe(true);
     expect(
       [...names].filter((name) => !groupedToolNames.includes(name))
     ).toEqual([]);

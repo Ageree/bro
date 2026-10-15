@@ -200,6 +200,10 @@ export const env = createEnv({
     PHONE_WORKSPACES: workspaceListSchema.optional(),
     // Bro's own address book (`agent/tools/phone-contacts.ts`): workspace ids or *.
     CONTACTS_WORKSPACES: workspaceListSchema.optional(),
+    // Geolocation (`agent/tools/location.ts`, `docs/location.md`): workspace
+    // ids or *. Unset, nobody: a shared location stays what it was (an empty
+    // Telegram turn, a file note in iMessage).
+    LOCATION_WORKSPACES: workspaceListSchema.optional(),
     PHONE_INIT_SECRET: trimmedValue.min(32).optional(),
     PHONE_WEBHOOK_SECRET: trimmedValue.min(32).optional(),
     MTS_EXOLVE_API_KEY: trimmedValue.optional(),

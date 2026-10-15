@@ -4,13 +4,15 @@ import { schedulesEnabled } from "@agent/lib/schedules/enabled";
 import { judgePriceCheck } from "@agent/lib/subscriptions/check";
 import { readPricePage } from "@agent/lib/subscriptions/page";
 import { subscriptionsPilot } from "@agent/lib/subscriptions/pilot";
-import { priceWatchOf } from "@agent/lib/subscriptions/watches";
+import { placeWatchOf, priceWatchOf } from "@agent/lib/subscriptions/watches";
+import { locationPilot } from "@db/services/location";
 import {
   type ClaimedSubscription,
   type SubscriptionCheck,
   claimDueSubscriptions,
   settleSubscriptionCheck,
 } from "@db/services/subscriptions";
+import { placeExpiredOutcome } from "@shared/subscriptions/place";
 
 /**
  * A check's lease. Each page read is bounded (`downloadWithin`), and a tick
@@ -149,6 +151,36 @@ function settle(subscription: ClaimedSubscription, check: SubscriptionCheck) {
   return settleSubscriptionCheck(subscription, check);
 }
 
+/**
+ * A place reminder comes here only when its term ends: shared points decide
+ * it (`evaluatePlaceReminders`), never the tick. One resumed, held or set up
+ * again whose term is still ahead waits for that term again. One that ran
+ * out while Bro saw where the person was tells them it ended unused; one
+ * without a single point ends quietly. Outside the pilot (LOCATION_WORKSPACES
+ * taken back) it waits for its term and ends quietly.
+ */
+async function checkPlace(subscription: ClaimedSubscription) {
+  const now = new Date();
+  const ahead = subscription.expiresAt.getTime() > now.getTime();
+  const check: SubscriptionCheck = ahead
+    ? { kind: "held", nextCheckAt: subscription.expiresAt }
+    : placeExpiry(subscription);
+  return { check, outcome: await settle(subscription, check) };
+}
+
+function placeExpiry(subscription: ClaimedSubscription): SubscriptionCheck {
+  const watch = placeWatchOf(subscription);
+  if (!watch || !locationPilot(subscription)) return { kind: "lapsed" };
+  if (!watch.state.sawPosition) return { kind: "lapsed" };
+  return {
+    kind: "expired",
+    outcome: placeExpiredOutcome({
+      condition: watch.condition,
+      source: watch.source,
+    }),
+  };
+}
+
 /** One check, logged as one line with its outcome and never the page. */
 async function checkSubscription(subscription: ClaimedSubscription) {
   const logged = {
@@ -157,7 +189,10 @@ async function checkSubscription(subscription: ClaimedSubscription) {
     workspaceId: subscription.workspaceId,
   };
   try {
-    const { check, outcome } = await checkPrice(subscription);
+    const { check, outcome } =
+      subscription.template === "place"
+        ? await checkPlace(subscription)
+        : await checkPrice(subscription);
     console.info("[subscriptions] check", {
       ...logged,
       outcome: outcome ?? "lease_lost",

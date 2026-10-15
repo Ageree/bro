@@ -5,6 +5,11 @@ import {
   flightStateSchema,
 } from "@shared/subscriptions/flight";
 import {
+  placeConditionSchema,
+  placeSourceSchema,
+  placeStateSchema,
+} from "@shared/subscriptions/place";
+import {
   priceConditionSchema,
   priceSourceSchema,
   priceStateSchema,
@@ -36,6 +41,15 @@ export function flightWatchOf<Row extends StoredWatch>(row: Row) {
   const source = flightSourceSchema.safeParse(row.source).data;
   const condition = flightConditionSchema.safeParse(row.condition).data;
   const state = flightStateSchema.safeParse(row.state).data;
+  if (!source || !condition || !state) return undefined;
+  return { ...row, condition, source, state };
+}
+
+export function placeWatchOf<Row extends StoredWatch>(row: Row) {
+  if (row.template !== "place") return undefined;
+  const source = placeSourceSchema.safeParse(row.source).data;
+  const condition = placeConditionSchema.safeParse(row.condition).data;
+  const state = placeStateSchema.safeParse(row.state).data;
   if (!source || !condition || !state) return undefined;
   return { ...row, condition, source, state };
 }

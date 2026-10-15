@@ -14,7 +14,11 @@ import { searchIndexedMemories } from "@agent/lib/memory/supermemory";
 import { adoptCutoverMemory } from "@agent/lib/memory/namespace";
 import { ruleAccessNote } from "@agent/lib/privacy/google-access";
 import { afterForgetting } from "@agent/lib/privacy/removal";
-import { eraseConversationLines } from "@agent/lib/conversation/erase";
+import {
+  eraseConversationLines,
+  eraseLocationHistory,
+} from "@agent/lib/conversation/erase";
+import { locationPilot } from "@db/services/location";
 import { crossChannelPilot } from "@agent/lib/conversation/pilot";
 import {
   adoptMemoryRecords,
@@ -313,6 +317,7 @@ async function forgetNamedMemories(
   // its text is a page's or an email's, and a card lists records, not this.
   if (startedByPerson({ session })) {
     await eraseConversationLines(scope.workspaceId);
+    await eraseLocationHistory(scope.workspaceId);
   }
   const nothingLeft = await nothingLeftBut(scope, scopeKey, changed);
   // «Забудь всё» leaves no text in history either: what expired or the
@@ -328,7 +333,7 @@ async function forgetNamedMemories(
     // The guide to what stays outside memory answers «удали всё»: only a
     // call that left no memory behind, bar one corrected after the card,
     // carries it — «забудь, что у меня кот» gets a short reply.
-    ...(nothingLeft && afterForgetting()),
+    ...(nothingLeft && afterForgetting({ location: locationPilot(scope) })),
   };
 }
 

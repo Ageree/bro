@@ -60,6 +60,7 @@ const optionalServices = [
   "CROSS_CHANNEL_WORKSPACES",
   "IMESSAGE_PROJECT_ID",
   "IMESSAGE_PROJECT_SECRET",
+  "LOCATION_WORKSPACES",
   "MAIL_WORKSPACES",
   "MEMORY_DIGEST_MODEL",
   "YANDEX_API_WORKSPACES",
@@ -170,6 +171,26 @@ describe("privacy", () => {
     expect(kept).toContain(
       "ещё до 14 дней остаются в ночных зашифрованных резервных копиях"
     );
+  });
+
+  // Geolocation: what is kept and for how long, what reaches OpenStreetMap,
+  // and the honest note that the chat history keeps what was sent.
+  it("names shared locations only for a workspace of the pilot", async () => {
+    const outside = await overview((await withServices({})).tool);
+    const outsideText = JSON.stringify(outside);
+    expect(outsideText).not.toContain("Геопозиц");
+    expect(outside.processors.join("\n")).toContain(
+      "Адреса для расчёта дороги уходят в открытые сервисы OpenStreetMap."
+    );
+    const pilot = await overview(
+      (await withServices({ LOCATION_WORKSPACES: "*" })).tool
+    );
+    expect(pilot.kept.join("\n")).toContain("до 90 дней");
+    expect(pilot.kept.join("\n")).toContain("остаётся в истории чатов");
+    expect(pilot.processors.join("\n")).toContain(
+      "координаты присланных точек"
+    );
+    expect(pilot.remove.join("\n")).toContain("«забудь, где я был»");
   });
 
   it("names RouterAI, not OpenRouter, once the model runs there", async () => {

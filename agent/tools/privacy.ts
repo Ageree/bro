@@ -6,6 +6,7 @@ import { schedulesEnabled } from "@agent/lib/schedules/enabled";
 import { resolveModeValue } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { agentMailboxEnabled } from "@db/services/agent-mail";
+import { locationPilot } from "@db/services/location";
 import { phonePilot, readPhoneNumber } from "@db/services/phone";
 import { env } from "@shared/environment";
 import {
@@ -79,18 +80,24 @@ export const privacy = defineTool({
         : false,
       crossChannelPilot(scope),
     ]);
+    const location = locationPilot(scope);
     return {
-      kept: keptData({ conversationLog, phone }),
+      kept: keptData({
+        conversationLog,
+        ...(location && { location }),
+        phone,
+      }),
       processors: dataProcessors(modelId, {
         memoryDigest,
         agentMail: agentMailboxEnabled(scope),
+        ...(location && { location }),
         phone,
       }),
       serverLocation: serverLocation(),
       ...(google !== undefined && { google }),
       remove: [
         memoryRemoval(),
-        ...removalOutsideMemory(),
+        ...removalOutsideMemory({ location }),
         ...(phone
           ? [
               "phone-disable выключает звонки, но сохраняет номер и ежемесячную плату. Постоянное освобождение требует отдельного подтверждения phone-release; operator-required означает, что оператор должен проверить отключение и плата может продолжаться. Удаление памяти не освобождает платный номер.",

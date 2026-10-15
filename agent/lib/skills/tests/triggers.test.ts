@@ -308,6 +308,9 @@ describe("the skills a turn attaches", () => {
       skillsFor("[файл: photo.jpg (image/jpeg), не удалось скачать]")
     ).toEqual([]);
     expect(skillsFor("[документ]\n[голосовое не распозналось]")).toEqual([]);
+    // A shared location's marker (`agent/lib/location/markers.ts`).
+    expect(skillsFor("[геопозиция]")).toEqual([]);
+    expect(skillsFor("[место]")).toEqual([]);
   });
 
   it("give a document for the task agent, or its marker, the rules for files", () => {

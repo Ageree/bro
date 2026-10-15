@@ -17,6 +17,11 @@ import type {
   FlightState,
 } from "@shared/subscriptions/flight";
 import type {
+  PlaceCondition,
+  PlaceSource,
+  PlaceState,
+} from "@shared/subscriptions/place";
+import type {
   PriceCondition,
   PriceSource,
   PriceState,
@@ -43,15 +48,21 @@ export const subscriptions = pgTable(
       .notNull()
       .references(() => scheduledAgentJobs.id, { onDelete: "cascade" }),
     // `price`: the person asked (`watch-create`); `flight`: Bro watches each
-    // flight in the calendar by itself, through the proactive job.
-    template: text("template", { enum: ["price", "flight"] }).notNull(),
+    // flight in the calendar by itself, through the proactive job; `place`:
+    // a reminder on arriving at or leaving a place (`place_reminder`), which
+    // shared points decide, not the tick.
+    template: text("template", {
+      enum: ["price", "flight", "place"],
+    }).notNull(),
     // One live watch per thing: a price watch's key is its normalized URL,
-    // a flight's its event and start.
+    // a flight's its event and start, a place's its crossing and point.
     dedupeKey: text("dedupe_key").notNull(),
     // Typed per template; read through its schema (`agent/lib/subscriptions/`).
-    source: jsonb("source").$type<FlightSource | PriceSource>().notNull(),
+    source: jsonb("source")
+      .$type<FlightSource | PlaceSource | PriceSource>()
+      .notNull(),
     condition: jsonb("condition")
-      .$type<FlightCondition | PriceCondition>()
+      .$type<FlightCondition | PlaceCondition | PriceCondition>()
       .notNull(),
     // `notify`: code writes the hit, and only the report turn uses the model;
     // `worker`: a hit starts a run of the proactive worker.
@@ -64,7 +75,9 @@ export const subscriptions = pgTable(
       .notNull()
       .default("day_only"),
     // What the checks remember: the first and the latest reading.
-    state: jsonb("state").$type<FlightState | PriceState>().notNull(),
+    state: jsonb("state")
+      .$type<FlightState | PlaceState | PriceState>()
+      .notNull(),
     status: text("status", {
       enum: ["active", "paused", "fired", "expired", "failed", "cancelled"],
     })
@@ -122,7 +135,7 @@ export const subscriptions = pgTable(
     }).onDelete("cascade"),
     check(
       "subscriptions_template_check",
-      sql`${table.template} IN ('price', 'flight')`
+      sql`${table.template} IN ('price', 'flight', 'place')`
     ),
     check(
       "subscriptions_action_check",
