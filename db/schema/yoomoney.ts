@@ -75,7 +75,9 @@ export const yoomoneyAuthorizations = pgTable(
  * YooMoney still processes, `unknown` one whose answer was lost: the same
  * `requestId` reads each back and never pays twice. One of those at a time
  * per workspace; `consentHash` (the question the person's yes answered,
- * per conversation) pays one payment only.
+ * per conversation) pays one payment only. A payment with `cardId` is paid
+ * from the wallet's linked card (`db/services/yoomoney/card.ts`): after the
+ * yes in the chat, or on its own page when YooMoney wants the card's CVV.
  */
 export const yoomoneyPayments = pgTable(
   "yoomoney_payments",
@@ -94,7 +96,17 @@ export const yoomoneyPayments = pgTable(
     shown: jsonb("shown").$type<{ label: string; value: string }[]>().notNull(),
     requestId: text("request_id").notNull(),
     amountMinor: bigint("amount_minor", { mode: "number" }).notNull(),
+    // Always false: YooMoney's wallet API dropped its test payments.
     test: boolean("test").notNull(),
+    // The linked card it is paid from (YooMoney's card id), as the person
+    // sees it («••4310»), and whether YooMoney wants its CVV.
+    cardId: text("card_id"),
+    cardLabel: text("card_label"),
+    cscRequired: boolean("csc_required"),
+    // A card payment waiting for the person on their bank's 3-D Secure
+    // page: the form YooMoney gave to POST there (no card data in it).
+    bankUri: text("bank_uri"),
+    bankParams: jsonb("bank_params").$type<Record<string, string>>(),
     state: text("state", {
       enum: ["quoted", "submitting", "pending", "unknown", "paid", "refused"],
     })

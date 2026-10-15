@@ -4,19 +4,24 @@ import type { ModelMessage } from "ai";
 import type { DynamicResolveContext, ToolContext } from "eve/tools";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { yoomoneyPayments } from "@db/schema/yoomoney";
+import type * as Card from "@db/services/yoomoney/card";
 import type * as connection from "@db/services/yoomoney/connection";
 import type * as stored from "@db/services/yoomoney/payments";
 import type * as Api from "@shared/yoomoney/api";
 import type * as Payments from "@shared/yoomoney/payments";
+import type * as Showcase from "@shared/yoomoney/showcase";
 
 const services = vi.hoisted(() => ({
   claim: vi.fn<typeof stored.claimYoomoneyPayment>(),
   connection: vi.fn<typeof connection.readYoomoneyConnection>(),
   create: vi.fn<typeof stored.createYoomoneyPayment>(),
   enabled: vi.fn<typeof Api.yoomoneyEnabled>(),
+  fill: vi.fn<typeof Showcase.fillYoomoneyService>(),
   history: vi.fn<typeof Payments.findYoomoneyPayment>(),
   inFlight: vi.fn<typeof stored.yoomoneyPaymentInFlight>(),
   judge: vi.fn<() => Promise<{ output: { matches: boolean } }>>(),
+  link: vi.fn<(id: string) => Promise<string>>(),
+  sendCard: vi.fn<typeof Card.sendYoomoneyCardPayment>(),
   process: vi.fn<typeof Payments.processYoomoneyPayment>(),
   read: vi.fn<typeof stored.readYoomoneyPayment>(),
   renew: vi.fn<typeof stored.renewYoomoneyPayment>(),
@@ -32,6 +37,15 @@ vi.mock("@db/services/yoomoney/payments", () => ({
   renewYoomoneyPayment: services.renew,
   settleYoomoneyPayment: services.settle,
   yoomoneyPaymentInFlight: services.inFlight,
+}));
+vi.mock("@db/services/yoomoney/card", () => ({
+  sendYoomoneyCardPayment: services.sendCard,
+  yoomoneyCardReturn: async () => "https://bro.example/return",
+  yoomoneyPayLink: services.link,
+}));
+vi.mock("@shared/yoomoney/showcase", async (original) => ({
+  ...(await original<typeof Showcase>()),
+  fillYoomoneyService: services.fill,
 }));
 vi.mock("@db/services/yoomoney/connection", () => ({
   readYoomoneyConnection: services.connection,
@@ -78,6 +92,11 @@ function row(
     requestId: "request-1",
     amountMinor: 10_000,
     test: false,
+    cardId: null,
+    cardLabel: null,
+    cscRequired: null,
+    bankUri: null,
+    bankParams: null,
     state: "quoted",
     confirmationQuestion: question,
     consentHash: null,
@@ -150,7 +169,14 @@ function answered(text: string, asked = question): ModelMessage[] {
 
 async function call(
   messages: ModelMessage[],
-  input: { action: "confirm" | "status"; paymentId: string }
+  input:
+    | { action: "confirm" | "status"; paymentId: string }
+    | {
+        action: "prepare";
+        kind: "service";
+        serviceId: string;
+        fields: { name: string; value: string }[];
+      }
 ) {
   const context: DynamicResolveContext = {
     channel: { kind: "channel:eve", metadata: {} },
@@ -230,12 +256,146 @@ describe("wallet payments", () => {
     });
   });
 
-  it("pays a test payment only as a test, and a real one only for real", async () => {
-    services.read.mockResolvedValue(row({ test: true }));
+  it("pays a service the balance cannot cover from the linked card on the chat's yes when no CVV is asked", async () => {
+    services.fill.mockResolvedValue({
+      kind: "ready",
+      title: "МегаФон (Россия)",
+      params: { pattern_id: "337", topped_up_phone: "9261234567" },
+      shown: [{ label: "Телефон", value: "9261234567" }],
+    });
+    services.create.mockImplementation(async (_scope, input) =>
+      row({ ...input, state: "quoted" })
+    );
+    services.request.mockResolvedValue({
+      kind: "ready",
+      requestId: "request-1",
+      amountMinor: 10_000,
+      contract: undefined,
+      balanceMinor: 100,
+      card: { id: "card-1", label: "••4310", cscRequired: false },
+    });
+    expect(
+      await call(answered("положи 100 рублей"), {
+        action: "prepare",
+        kind: "service",
+        serviceId: "337",
+        fields: [{ name: "topped_up_phone", value: "9261234567" }],
+      })
+    ).toMatchObject({ kind: "quoted" });
+    const asked = services.create.mock.calls[0]?.[1].confirmationQuestion ?? "";
+    expect(asked).toContain("С карты ••4310");
+    expect(asked).toContain("Оплачиваю?");
+
+    const prepared = services.create.mock.calls[0]?.[1].id ?? "";
+    const quoted = row({
+      id: prepared,
+      cardId: "card-1",
+      cardLabel: "••4310",
+      cscRequired: false,
+      confirmationQuestion: asked,
+    });
+    services.read.mockResolvedValue(quoted);
+    services.claim.mockResolvedValue({
+      kind: "claimed",
+      payment: { ...quoted, state: "submitting" },
+    });
+    services.sendCard.mockResolvedValue({ kind: "settled" });
+    // A yes to a question that never named the card does not pay from it.
+    services.judge.mockResolvedValue({ output: { matches: true } });
+    expect(
+      await call(
+        answered("да", "Пополнить МегаФон 9261234567 на 100 ₽? Оплачиваю?"),
+        { action: "confirm", paymentId: prepared }
+      )
+    ).toMatchObject({ kind: "confirmation_required" });
+    expect(services.claim).not.toHaveBeenCalled();
+    await call(answered("да", asked), {
+      action: "confirm",
+      paymentId: prepared,
+    });
+    expect(services.sendCard).toHaveBeenCalledTimes(1);
+    expect(services.sendCard.mock.calls[0]?.[1]).toMatchObject({
+      cardId: "card-1",
+      csc: undefined,
+    });
+    expect(services.process).not.toHaveBeenCalled();
+  });
+
+  it("puts a card payment that needs the CVV on its page, never on a chat yes", async () => {
+    services.fill.mockResolvedValue({
+      kind: "ready",
+      title: "МегаФон (Россия)",
+      params: { pattern_id: "337", topped_up_phone: "9261234567" },
+      shown: [{ label: "Телефон", value: "9261234567" }],
+    });
+    services.create.mockImplementation(async (_scope, input) =>
+      row({ ...input, state: "quoted" })
+    );
+    services.link.mockResolvedValue("https://bro.example/pay/x?t=secret");
+    const ready = {
+      kind: "ready" as const,
+      requestId: "request-1",
+      amountMinor: 10_000,
+      contract: undefined,
+      card: { id: "card-1", label: "••4310", cscRequired: true },
+    };
+    const prepare = {
+      action: "prepare" as const,
+      kind: "service" as const,
+      serviceId: "337",
+      fields: [{ name: "topped_up_phone", value: "9261234567" }],
+    };
+
+    // The balance covers it: the usual question in the chat.
+    services.request.mockResolvedValue({ ...ready, balanceMinor: 20_000 });
+    expect(await call(answered("да"), prepare)).toMatchObject({
+      kind: "quoted",
+    });
+    expect(services.create.mock.calls[0]?.[1].cardId).toBeNull();
+
+    services.request.mockResolvedValue({ ...ready, balanceMinor: 100 });
+    expect(await call(answered("да"), prepare)).toMatchObject({
+      kind: "pay_link",
+      link: "https://bro.example/pay/x?t=secret",
+    });
+    const fromCard = services.create.mock.calls[1]?.[1];
+    expect(fromCard).toMatchObject({ cardId: "card-1", cscRequired: true });
+    expect(fromCard?.confirmationQuestion).toContain("С карты ••4310");
+    expect(fromCard?.confirmationQuestion).not.toContain("Оплачиваю?");
+
+    // A yes in the chat never pays a card payment: the page does.
+    services.read.mockResolvedValue(
+      row({ cardId: "card-1", cardLabel: "••4310", cscRequired: true })
+    );
     expect(
       await call(answered("да"), { action: "confirm", paymentId })
-    ).toMatchObject({ kind: "mode_changed" });
+    ).toMatchObject({ kind: "pay_link" });
     expect(services.claim).not.toHaveBeenCalled();
+    expect(services.process).not.toHaveBeenCalled();
+  });
+
+  it("reads a card call YooMoney may never have taken from the history alone", async () => {
+    services.read.mockResolvedValue(
+      row({ state: "unknown", cardId: "card-1", cardLabel: "••4310" })
+    );
+    await call(answered("ну что там?"), { action: "status", paymentId });
+    expect(services.process).not.toHaveBeenCalled();
+    expect(services.history).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads a card payment back by its request alone, never from the balance", async () => {
+    services.read.mockResolvedValue(
+      row({ state: "pending", cardId: "card-1", cardLabel: "••4310" })
+    );
+    services.process.mockResolvedValue({
+      kind: "bank",
+      acsUri: "https://bank.example/3ds",
+      acsParams: {},
+    });
+    expect(
+      await call(answered("ну что там?"), { action: "status", paymentId })
+    ).toMatchObject({ kind: "pending" });
+    expect(services.process.mock.calls[0]?.[2]).toEqual({ kind: "again" });
   });
 
   it("leaves a payment whose answer was lost unknown, not refused", async () => {
@@ -269,20 +429,6 @@ describe("wallet payments", () => {
     ).toMatchObject({ kind: "unknown" });
     expect(services.process).not.toHaveBeenCalled();
     expect(services.settle).not.toHaveBeenCalled();
-  });
-
-  it("settles a lost test payment unpaid without the history: tests are never there", async () => {
-    services.read.mockResolvedValue(row({ state: "unknown", test: true }));
-    services.process.mockResolvedValue({
-      kind: "refused",
-      error: "contract_not_found",
-    });
-    await call(answered("ну что там?"), { action: "status", paymentId });
-    expect(services.history).not.toHaveBeenCalled();
-    expect(services.settle.mock.calls[0]?.[1]).toMatchObject({
-      state: "refused",
-      error: "test_unknown",
-    });
   });
 
   it("reads a payment in flight back with its own request, never a new one", async () => {
