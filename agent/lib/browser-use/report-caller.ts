@@ -17,3 +17,16 @@ export function reportedBrowserRunId(
   return browserReportCallerSchema.safeParse(caller).data?.attributes
     .browserRunId;
 }
+
+/**
+ * The caller of a turn that only shows a web chat the notice of a report
+ * that never got through (`abandoned-notice.ts`): the text is code's, and
+ * the turn calls no model.
+ */
+export const browserNoticeAuthenticator = "browser-notice";
+
+export function browserNoticeCaller(
+  caller: SessionContext["session"]["auth"]["current"]
+) {
+  return caller?.authenticator === browserNoticeAuthenticator;
+}

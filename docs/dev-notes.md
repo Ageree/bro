@@ -1836,6 +1836,10 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
 - Веб-чат достижим только через `attachSession(sessionId)`: им шлют отчёты
   (`agent/schedules/browser-runs.ts`, `dynamic.ts`) и ответ воркеру. У канала
   `scheduled-run` — заглушка с 410: без маршрутов 0.62 его не соберёт.
+  Сообщения «без хода» у eve нет: любой `send` начинает ход. Текст кода без
+  модели — ход `browser-notice`, чей `step.started` отдаёт `emptyTurnSelection`
+  (окно огромное: иначе eve сожмёт историю этой же «моделью»), а веб-чат
+  показывает `backgroundNoticeMessage` как сообщение Бро.
 - Расписание принадлежит человеку. Отчёт — в последний мессенджер (у веба нет
   пушей), в веб — только если там заведено и мессенджера нет
   (`reportConversations` в `db/services/scheduled-agent-jobs.ts`).

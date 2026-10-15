@@ -111,7 +111,11 @@ import {
   rewriteSendNotice,
   skippedSendNotice,
 } from "@agent/lib/delivery/turn-sends";
-import { backgroundTurnMarker } from "@shared/chat/background-turn";
+import { emptyTurnSelection } from "@agent/lib/model/empty-turn";
+import {
+  backgroundNoticeMessage,
+  backgroundTurnMarker,
+} from "@shared/chat/background-turn";
 import { defaultFormOfAddress } from "@shared/chat/form-of-address";
 
 const runId = "00000000-0000-4000-8000-000000000001";
@@ -172,6 +176,20 @@ describe("root agent model resolution", () => {
     await expect(
       agent.model.events["step.started"]?.({}, scheduledWorkerContext())
     ).rejects.toThrow("The scheduled run lease is no longer active.");
+    expect(services.getModel).not.toHaveBeenCalled();
+  });
+
+  it("calls no model in a web chat's notice of an undelivered report", async () => {
+    const model = await agent.model.events["step.started"]?.(
+      {},
+      interactiveContext(
+        [humanMessage(backgroundNoticeMessage("Поручение закончено."))],
+        "browser-notice",
+        reportAttributes
+      )
+    );
+
+    expect(model).toBe(emptyTurnSelection);
     expect(services.getModel).not.toHaveBeenCalled();
   });
 });

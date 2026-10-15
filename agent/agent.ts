@@ -29,7 +29,10 @@ import {
   turnSendFailed,
   turnTookNoStep,
 } from "@agent/lib/delivery/pending";
-import { reportedBrowserRunId } from "@agent/lib/browser-use/report-caller";
+import {
+  browserNoticeCaller,
+  reportedBrowserRunId,
+} from "@agent/lib/browser-use/report-caller";
 import {
   browserFilesEnabled,
   personBrowserFiles,
@@ -63,6 +66,7 @@ import { historyTrimPilot } from "@agent/lib/history/pilot";
 import { turnCostSource } from "@agent/lib/costs/turns";
 import { clockModes, localClock } from "@agent/lib/local-time";
 import { resolveModeValue } from "@agent/lib/mode";
+import { emptyTurnSelection } from "@agent/lib/model/empty-turn";
 import { modelSelection } from "@agent/lib/model/selection";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { stepContextPilot } from "@agent/lib/step-context/pilot";
@@ -108,6 +112,12 @@ export default defineAgent({
   model: defineDynamic({
     events: {
       "step.started": async (event, ctx) => {
+        // A web chat's notice of a report that never got through is code's
+        // text, which the chat shows as Bro's message: the turn ends without
+        // a model call (`agent/lib/browser-use/abandoned-notice.ts`).
+        if (browserNoticeCaller(ctx.session.auth.current)) {
+          return emptyTurnSelection;
+        }
         const scheduledRun = scheduledRunIdentity(ctx.session.auth);
         if (
           scheduledRun &&

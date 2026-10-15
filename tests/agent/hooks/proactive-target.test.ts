@@ -34,6 +34,12 @@ describe("proactive target hook", () => {
       conversationId: "100::",
       workspaceId,
     });
+    // Nor does its notice in the web chat it started in.
+    await startTurn("browser-notice", {
+      conversationChannel: "eve",
+      conversationId: "session-1",
+      workspaceId,
+    });
 
     expect(record).not.toHaveBeenCalled();
   });
