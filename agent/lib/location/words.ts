@@ -64,11 +64,77 @@ export function textSaid(text: string, said: readonly string[]) {
   return found * 2 >= words.length;
 }
 
-/** Whether an address is written in the person's words as given. */
+/**
+ * Words of an address that name no place of their own: the kind of street,
+ * a house or a city, which the model writes out or adds from the context
+ * («ул.» → «улица», «в Москве» → «Москва»).
+ */
+const addressKindStems = [
+  "улиц",
+  "проспект",
+  "переул",
+  "площад",
+  "шоссе",
+  "бульвар",
+  "набережн",
+  "проезд",
+  "тупик",
+  "алле",
+  "дом",
+  "корпус",
+  "строени",
+  "город",
+  "москв",
+  "санкт",
+  "петербург",
+  "росси",
+];
+
+/** Their short forms, matched as whole words: «пр» is not «Пресненская». */
+const addressKindShort = new Set([
+  "ул",
+  "пр",
+  "пер",
+  "пл",
+  "наб",
+  "корп",
+  "стр",
+]);
+
+/**
+ * A word of the street's kind: one of the short forms, or a kind's stem with
+ * a case ending at most («дома», but not «Домодедовская»).
+ */
+function addressKind(word: string) {
+  return (
+    addressKindShort.has(word) ||
+    addressKindStems.some(
+      (kind) => word.startsWith(kind) && word.length <= kind.length + 3
+    )
+  );
+}
+
+/**
+ * Whether an address is the person's: its every number, and the stem of its
+ * every naming word, are in their words of this turn. The model writes the
+ * address in its plain form («на Тверскую улицу 7 в Москве» → «Тверская
+ * улица 7, Москва»), which is also the form the map finds, so a case ending
+ * or a written-out «улица» must not refuse it; a street or house the person
+ * did not name still does.
+ */
 export function addressSaid(address: string, said: readonly string[]) {
-  const wanted = wordsOf(address).join(" ");
-  if (wanted.length === 0) return false;
-  return wordsOf(said.join(" ")).join(" ").includes(wanted);
+  const heard = heardOf(said);
+  const heardWords = new Set<string>(wordsOf(heard));
+  const words = wordsOf(address);
+  const numbers = words.filter((word) => /\p{N}/u.test(word));
+  const names = words.filter(
+    (word) => !/\p{N}/u.test(word) && word.length >= 3 && !addressKind(word)
+  );
+  if (names.length === 0) return false;
+  return (
+    numbers.every((number) => heardWords.has(number)) &&
+    names.every((word) => heard.includes(stem(word)))
+  );
 }
 
 /** A request to delete: «забудь», «удали», «сотри», «очисти». */

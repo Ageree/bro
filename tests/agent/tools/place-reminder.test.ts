@@ -253,6 +253,22 @@ describe("place_reminder", () => {
     });
   });
 
+  it("takes «сюда» and the person's own point's address as «here»", async () => {
+    const tool = await reminderTool(
+      "напомни купить хлеб, когда снова приду сюда"
+    );
+    services.latest.mockResolvedValue(position(5));
+    const create = (place: string) =>
+      tool.execute(
+        { action: "create", place, text: "купить хлеб" },
+        callContext()
+      );
+    expect(await create("сюда")).toMatchObject({ created: true });
+    expect(await create("Тверская улица 7, Москва")).toMatchObject({
+      created: true,
+    });
+  });
+
   it("keeps two reminders at one place apart, and one asked again as one", async () => {
     const tool = await reminderTool(
       "напомни купить хлеб и позвонить маме, когда буду дома"
