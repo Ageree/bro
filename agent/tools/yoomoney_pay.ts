@@ -393,7 +393,7 @@ async function prepare(
         fields: filled.fields,
         errors: filled.errors,
         reply:
-          "Nothing was prepared yet. Fill the required fields from the person's words and prepare again with all of them; ask the person for what you do not know. Never invent an account, a phone number or a sum. When errors are given, the service refused those values: tell the person.",
+          "Nothing was prepared yet. Fill the required fields from the person's words and prepare again with all of them; ask the person for what you do not know. Never invent an account, a phone number or a sum. Pay the sum the person named: when it is outside a field's min or max, never raise or lower it yourself — tell the person the limit and ask what to pay. When errors are given, the service refused those values: tell the person.",
       };
     }
     title = filled.title;
