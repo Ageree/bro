@@ -1187,13 +1187,18 @@ def pdf_pages_text(ctx, params, item):
 def pdf_unencrypted(ctx, params, item):
     import difflib
 
+    from pypdf import PdfReader
+
+    # Its own reader: ctx.pdf_reader turns a PDF it cannot open into an error, and a copy still under a password is this
+    # check's failure.
+    try:
+        first = PdfReader(str(item.path))
+        locked = first.is_encrypted and not first.decrypt("")
+    except Exception as e:  # a broken file, or AES without `cryptography`: nothing to tell
+        raise CheckError(f"PDF не читается: {type(e).__name__}: {e}") from e
+    if locked:
+        return failed("PDF зашифрован")
     reader = ctx.pdf_reader(item.path)
-    if reader.is_encrypted:
-        try:
-            if not reader.decrypt(""):
-                return failed("PDF зашифрован")
-        except Exception:
-            return failed("PDF зашифрован")
     n = len(reader.pages)
     if params.get("pages") and n != params["pages"]:
         return failed(f"{n} стр., нужно {params['pages']}")

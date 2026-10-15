@@ -4166,6 +4166,13 @@
           "turn": 2,
           "file_filter": "signed"
         }
+      },
+      {
+        "kind": "no_signed_file_before_consent",
+        "description": "До ответа на вопрос о подписи (ход 2) нет подписанного файла",
+        "params": {
+          "consent_turn": 2
+        }
       }
     ],
     "judge_criteria": [

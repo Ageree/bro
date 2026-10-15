@@ -123,9 +123,9 @@ pnpm bench send --kind answer --out ~/bench/files-1 --case f-rent-contract-bundl
 ## Проверки
 
 ```sh
-python3 scripts/bench/files/check.py --run ~/bench/files-1 --case f-rent-contract-bundle
-python3 scripts/bench/files/check.py --run ~/bench/files-1 --case f-rent-contract-bundle --previews
-python3 scripts/bench/files/check.py --kinds
+~/.bro-bench/files-venv/bin/python scripts/bench/files/check.py --run ~/bench/files-1 --case f-rent-contract-bundle
+~/.bro-bench/files-venv/bin/python scripts/bench/files/check.py --run ~/bench/files-1 --case f-rent-contract-bundle --previews
+~/.bro-bench/files-venv/bin/python scripts/bench/files/check.py --kinds
 ```
 
 `check.py` читает кейс из `cases.json`, `files-run.json` и `received/` прогона и
@@ -180,10 +180,11 @@ python3 scripts/bench/files/build_cases.py --check
 `--check` сравнивает разобранный JSON с закоммиченным и проверяет набор: у
 каждого хода с `when` есть `gate`, `consent_turn` указывает на ход с условием
 согласия, шаблоны условий из переносимого подмножества (Python `re` и
-JavaScript `u` читают их одинаково: нет `\w`, `\d`, `\b`, именованных групп и
-флагов посреди шаблона), каждый файл хода делает генератор кейса, его тип
-принимает веб-чат, а каждый вид проверки есть в реестре. Правки после
-исследования отмечены в `build_cases.py` комментарием с причиной.
+JavaScript `u` читают их одинаково: нет `\w`, `\d`, `\b`, именованных групп,
+флагов посреди шаблона и `$` иначе как `\s*$`), каждый файл хода делает
+генератор кейса, его тип принимает веб-чат, а каждый вид проверки есть в
+реестре. Правки после исследования отмечены в `build_cases.py` комментарием с
+причиной.
 
 ## Отличия от Telegram
 

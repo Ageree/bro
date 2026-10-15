@@ -1,4 +1,5 @@
-"""Run context: truth found without a manifest, dates taken from the message a file came in."""
+"""Run context: truth found without a manifest or through ~, dates taken from the message a file came in, cleanup turns
+left out."""
 
 import json
 import pathlib
@@ -26,6 +27,22 @@ class ContextTest(unittest.TestCase):
         case_dir = make_run(self.root / "out", "f-test", **run)
         data = json.loads((case_dir / "files-run.json").read_text(encoding="utf-8"))
         return Context(case=CASE, run=data, case_dir=case_dir, fixtures_dir=self.root / "fixtures")
+
+    def test_fixtures_named_from_home_find_their_truth(self):
+        import os
+        from unittest import mock
+
+        (self.truth / "a.json").write_text(json.dumps({"file": "form.pdf", "fields": {"fio": {"rect": [1, 2, 3, 4]}}}))
+        case_dir = make_run(self.root / "out", "f-test")
+        run = json.loads((case_dir / "files-run.json").read_text(encoding="utf-8"))
+        with mock.patch.dict(os.environ, {"HOME": str(self.root)}):
+            ctx = Context(case=CASE, run=run, case_dir=case_dir, fixtures_dir=pathlib.Path("~/fixtures"))
+        self.assertEqual(ctx.field_rect("fio"), [1, 2, 3, 4])
+
+    def test_a_lost_download_of_the_cleanup_turn_changes_no_result(self):
+        ctx = self.context(failed=[(None, "/eve/v1/sandbox-files/x/a.pdf")])
+        outcome, _ = evaluate(ctx, {"kind": "pdf_no_image_in_bbox", "params": {"rects": [[0, 0, 10, 10]]}})
+        self.assertEqual(outcome.status, "pass")
 
     def test_truth_is_found_by_case_or_input_name_without_a_manifest(self):
         (self.truth / "a.json").write_text(json.dumps({"file": "form.pdf", "fields": {"fio": {"rect": [1, 2, 3, 4]}}}))

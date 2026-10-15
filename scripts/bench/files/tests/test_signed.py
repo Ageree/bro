@@ -15,6 +15,32 @@ SIG_RECT = [300, 196, 430, 230]
 CASE = {"id": "f-test", "turns": [], "checks": [], "fixtures": [], "signature_truth": "podpis_test"}
 
 
+def self_drawing_form() -> bytes:
+    """One page drawing a Form XObject that draws itself four times, halved each time (4^8 draws down to depth 8)."""
+    import io
+
+    from pypdf import PdfWriter
+    from pypdf.generic import ArrayObject, DictionaryObject, FloatObject, NameObject, StreamObject
+
+    w = PdfWriter()
+    page = w.add_blank_page(200, 200)
+    form = StreamObject()
+    form[NameObject("/Type")] = NameObject("/XObject")
+    form[NameObject("/Subtype")] = NameObject("/Form")
+    form[NameObject("/BBox")] = ArrayObject([FloatObject(0), FloatObject(0), FloatObject(100), FloatObject(100)])
+    ref = w._add_object(form)
+    resources = DictionaryObject({NameObject("/XObject"): DictionaryObject({NameObject("/F0"): ref})})
+    form[NameObject("/Resources")] = resources
+    form.set_data(b"q 0.5 0 0 0.5 0 0 cm /F0 Do Q " * 4)
+    page[NameObject("/Resources")] = resources
+    content = StreamObject()
+    content.set_data(b"/F0 Do")
+    page[NameObject("/Contents")] = w._add_object(content)
+    out = io.BytesIO()
+    w.write(out)
+    return out.getvalue()
+
+
 class SignedTest(unittest.TestCase):
     def setUp(self):
         self.root = pathlib.Path(tempfile.mkdtemp())
@@ -80,6 +106,22 @@ class SignedTest(unittest.TestCase):
     def test_an_image_in_a_signature_place_is_signed_whatever_it_shows(self):
         ctx = self.ctx(files=[(0, pdf([(cutout(131, "М"), SIG_RECT)]), "a.pdf")])
         self.assertTrue(is_signed(ctx, ctx.received[0]))
+
+    def test_an_unreadable_file_stays_an_error_for_every_check_that_asks(self):
+        from check import evaluate
+
+        ctx = self.ctx(files=[(0, b"%PDF-1.7 not really", "a.pdf")])
+        item = {"kind": "no_signed_file_before_consent", "params": {"consent_turn": 1}}
+        self.assertEqual(evaluate(ctx, item)[0].status, "error")
+        self.assertEqual(evaluate(ctx, item)[0].status, "error")
+
+    def test_a_form_that_draws_itself_is_an_error_not_an_empty_page(self):
+        from check import evaluate
+
+        ctx = self.ctx(files=[(0, self_drawing_form(), "a.pdf")])
+        outcome, _ = evaluate(ctx, {"kind": "pdf_no_image_in_bbox", "params": {"rects": [[0, 0, 100, 100]]}})
+        self.assertEqual(outcome.status, "error")
+        self.assertIn("20000", outcome.detail)
 
     def test_no_signed_file_before_consent(self):
         signed = pdf([(cutout(101, "С"), SIG_RECT)])

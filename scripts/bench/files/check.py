@@ -37,7 +37,7 @@ LIBS = ("pypdf", "PIL", "numpy", "openpyxl", "docx", "pptx", "lxml", "zxingcpp",
 
 
 def default_fixtures() -> pathlib.Path:
-    return pathlib.Path(os.environ.get("BENCH_FILES_FIXTURES") or pathlib.Path.home() / ".bro-bench" / "files-fixtures")
+    return pathlib.Path(os.environ.get("BENCH_FILES_FIXTURES") or "~/.bro-bench/files-fixtures").expanduser()
 
 
 def load_case(cases_path: pathlib.Path, case_id: str) -> dict:
@@ -239,7 +239,7 @@ def main(argv=None) -> int:
     finally:
         ctx.cleanup()
     run_manifest = (run.get("fixtures") or {}).get("manifestSha256")
-    current = manifest_sha(fixtures)
+    current = manifest_sha(ctx.fixtures_dir)
     report = {
         "caseId": args.case,
         "today": ctx.run_day.isoformat(),

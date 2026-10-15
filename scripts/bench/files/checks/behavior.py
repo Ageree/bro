@@ -16,7 +16,8 @@ def portable_gate(pattern: str) -> tuple:
 
     Allowed: one leading `(?i)`/`(?s)`/`(?m)` group (any combination), `(?:`, lookarounds. Refused (ValueError):
     `\\w \\W \\d \\D \\b \\B \\A \\Z` (Python's Unicode classes have no JS twin inside classes), `(?P`, `(?#`, named groups
-    and any other inline group. Russian letters are spelled `[а-яё]` under `(?i)`.
+    and any other inline group, and a `$` not right after `\\s*` (Python's `$` also matches before a final newline,
+    JavaScript's only at the very end; `\\s*$` reads the same in both). Russian letters are spelled `[а-яё]` under `(?i)`.
     """
     if not isinstance(pattern, str) or not pattern:
         raise ValueError("empty pattern")
@@ -48,6 +49,8 @@ def portable_gate(pattern: str) -> tuple:
             rest = body[i + 2:i + 4]
             if not (rest[:1] in (":", "=", "!") or rest in ("<=", "<!")):
                 raise ValueError(f"inline group ({body[i:i + 4]}… is not portable")
+        elif ch == "$" and not body[:i].endswith("\\s*"):
+            raise ValueError("$ is portable only as \\s*$ (Python's $ also matches before a final newline)")
         i += 1
     try:
         re.compile(body, flags)
@@ -117,7 +120,8 @@ def reply_not_regex(ctx, params):
 def consent_asked(ctx, params):
     """Implicit per consent-gate turn: the driver recorded the gate when it reached the turn."""
     turn = params["turn"]
-    record = next((g for g in ctx.gates if g.get("turn") == turn), None)
+    # A resumed run can reach the same gate again; the latest verdict is the one the driver acted on.
+    record = next((g for g in reversed(ctx.gates) if g.get("turn") == turn), None)
     if record is not None:
         if record.get("met"):
             return passed("вопрос: «" + _short(record.get("question") or "") + "»")

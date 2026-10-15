@@ -158,7 +158,7 @@ class Context:
         self.run = run
         self.case_dir = pathlib.Path(case_dir).resolve()
         self.fixtures_dir = pathlib.Path(fixtures_dir).expanduser().resolve()
-        self.truth_dir = fixtures_dir / "truth"
+        self.truth_dir = self.fixtures_dir / "truth"
         try:
             from zoneinfo import ZoneInfo
 
@@ -169,10 +169,11 @@ class Context:
         self.replies = [r for r in run.get("replies", [])]
         self.questions = [q for q in run.get("questions", [])]
         self.gates = [g for g in run.get("gates", [])]
-        self.failed_downloads = list(run.get("failedDownloads", []))
+        # Files of the cleanup turns (turn null) are never checked, so neither are their lost downloads.
+        self.failed_downloads = [f for f in run.get("failedDownloads", []) if f.get("turn") is not None]
         self.received = [self._received(item) for item in run.get("received", [])]
         self.tools: dict[str, str] = {}
-        self._scratch = pathlib.Path(tempfile.mkdtemp(prefix="bench-check-"))
+        self._scratch: pathlib.Path | None = None
         self._cache: dict = {}
         self.manifest = self._load_manifest()
         self.truth = self._load_truth()
@@ -306,12 +307,16 @@ class Context:
         return res.stdout
 
     def scratch(self, name: str) -> pathlib.Path:
+        if self._scratch is None:
+            self._scratch = pathlib.Path(tempfile.mkdtemp(prefix="bench-check-"))
         path = self._scratch / name
         path.mkdir(parents=True, exist_ok=True)
         return path
 
     def cleanup(self) -> None:
-        shutil.rmtree(self._scratch, ignore_errors=True)
+        if self._scratch is not None:
+            shutil.rmtree(self._scratch, ignore_errors=True)
+            self._scratch = None
 
     # ------------------------------------------------------------------ PDF helpers (cached)
     def pdf_reader(self, path):

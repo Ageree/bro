@@ -27,6 +27,9 @@ PLACE_EXPAND_PT = 12
 MAX_IMAGES = 80
 MAX_SIDE = 1600
 ROTATION_DEG = 10
+# Image and Form XObject draws one file may make before the walk gives up: a form that draws itself several times
+# per level would otherwise take 4^8 steps; an incomplete walk would miss placements, so it is an error, not a result.
+MAX_DRAWS = 20000
 
 
 # ------------------------------------------------------------------ placements
@@ -37,7 +40,8 @@ def _mul(a, b):
 
 def placements(ctx, path) -> list:
     """Every image drawn on every page: {page, rect (user space), px, smask, xobj}. Walks q/Q/cm/Do and recurses into
-    Form XObjects with their /Matrix (depth ≤ 8); inline images (BI…EI) are reported too."""
+    Form XObjects with their /Matrix (depth ≤ 8); inline images (BI…EI) are reported too. A file that needs more than
+    MAX_DRAWS draws raises CheckError (a partial list could hide a signature)."""
     key = ("placements", str(path))
     if key in ctx._cache:
         return ctx._cache[key]
@@ -45,6 +49,13 @@ def placements(ctx, path) -> list:
 
     reader = ctx.pdf_reader(path)
     found = []
+    draws = [0]
+    parsed = {}  # a form drawn many times is parsed once
+
+    def drawn():
+        draws[0] += 1
+        if draws[0] > MAX_DRAWS:
+            raise CheckError(f"PDF рисует больше {MAX_DRAWS} картинок и форм: размещения не прочитать")
 
     def walk(content, resources, ctm, page_no, depth):
         if depth > 8:
@@ -54,10 +65,12 @@ def placements(ctx, path) -> list:
         xobjects = xobjects.get_object() if xobjects is not None else {}
         stack = []
         cur = list(ctm)
-        try:
-            operations = ContentStream(content, reader).operations
-        except Exception:
-            return
+        if id(content) not in parsed:
+            try:
+                parsed[id(content)] = (content, ContentStream(content, reader).operations)
+            except Exception:
+                parsed[id(content)] = (content, [])
+        operations = parsed[id(content)][1]
         for operands, op in operations:
             if op == b"q":
                 stack.append(list(cur))
@@ -66,11 +79,13 @@ def placements(ctx, path) -> list:
             elif op == b"cm" and len(operands) == 6:
                 cur = _mul([float(v) for v in operands], cur)
             elif op == b"INLINE IMAGE":
+                drawn()
                 found.append({"page": page_no, "rect": _unit_square(cur), "px": [0, 0], "smask": False, "xobj": None})
             elif op == b"Do" and operands:
                 xo = xobjects.get(operands[0]) if hasattr(xobjects, "get") else None
                 if xo is None:
                     continue
+                drawn()
                 xo = xo.get_object()
                 subtype = xo.get("/Subtype")
                 if subtype == "/Image":
@@ -400,10 +415,11 @@ def signature_places(ctx) -> list:
 
 
 def is_signed(ctx, item, *, threshold: float | None = None, mirrored: bool = False) -> bool:
+    """Raises CheckError when the file cannot be read; only an answer is cached, so a later check that asks again gets
+    the same error instead of «not signed»."""
     key = ("signed", threshold, mirrored)
     if key in item.cache:
         return item.cache[key]
-    item.cache[key] = False
     if is_preview(item):
         return False
     group = group_of(item)

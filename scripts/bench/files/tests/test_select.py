@@ -84,6 +84,19 @@ class SelectTest(unittest.TestCase):
         outcome, _ = self.run_check(item, files=files)
         self.assertEqual(outcome.status, "pass")
 
+    def test_a_copy_still_under_its_password_fails_pdf_unencrypted(self):
+        import io
+
+        from pypdf import PdfReader, PdfWriter
+
+        w = PdfWriter(clone_from=PdfReader(io.BytesIO(one_page("buklet"))))
+        w.encrypt("1234", algorithm="RC4-128")
+        locked = io.BytesIO()
+        w.write(locked)
+        outcome, _ = self.run_check({"kind": "pdf_unencrypted", "params": {"pages": 1}},
+                                    files=[(0, locked.getvalue(), "buklet.pdf")])
+        self.assertEqual((outcome.status, outcome.detail), ("fail", "PDF зашифрован"))
+
     def test_an_unknown_kind_is_manual(self):
         outcome, _ = self.run_check({"kind": "no_such_kind", "params": {}})
         self.assertEqual(outcome.status, "manual")
