@@ -907,7 +907,13 @@ export const PromptInput = ({
       // Reset at once: what is typed while the files are read stays.
       form.reset();
 
+      // They leave before they are read, still inside the submit event: a
+      // second Enter while a big file is read must not send it again.
       const sent = files;
+      const sentIds = new Set(sent.map((item) => item.id));
+      if (sent.length > 0) {
+        setItems((prev) => prev.filter((item) => !sentIds.has(item.id)));
+      }
       const converted = await Promise.all(
         sent.map(async ({ id: _id, ...item }) => ({
           ...item,
@@ -920,13 +926,12 @@ export const PromptInput = ({
         item.url === null ? [] : [{ ...item, url: item.url }]
       );
       if (readable.length < converted.length) {
+        setItems((prev) => [...sent, ...prev]);
         onError?.({ code: "read", message: fileErrorMessages.read });
         putTextBack(form, text);
         return;
       }
 
-      const sentIds = new Set(sent.map((item) => item.id));
-      setItems((prev) => prev.filter((item) => !sentIds.has(item.id)));
       try {
         await onSubmit({ files: readable, text }, event);
       } catch {
