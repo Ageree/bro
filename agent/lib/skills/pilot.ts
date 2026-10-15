@@ -6,6 +6,7 @@ import { imageGenerationScope } from "@agent/lib/image-artifact/generation";
 import { resolveModeValue } from "@agent/lib/mode";
 import { backgroundActionsOfCaller } from "@agent/lib/schedules/delegation/pilot";
 import { taskFilesOfCaller } from "@agent/lib/sandbox/pilot";
+import { signOfCaller } from "@agent/lib/signatures/pilot";
 import { env } from "@shared/environment";
 import { directModelActive } from "@shared/model/provider";
 import type { InstructionLayout, SkillSetup } from "./catalog";
@@ -79,9 +80,14 @@ export function skillSetup(context: SkillsContext): SkillSetup {
     browser: browserUseConfigured(),
     images: imageGenerationScope(context) !== undefined,
   };
-  const withFiles: SkillSetup = taskFilesOfCaller(context)
+  const files: SkillSetup = taskFilesOfCaller(context)
     ? { ...setup, taskFiles: true }
     : setup;
+  // Signing only with the files (`signEnabled` requires them).
+  const withFiles: SkillSetup =
+    files.taskFiles === true && signOfCaller(context)
+      ? { ...files, sign: true }
+      : files;
   const withAutonomy: SkillSetup = autonomyPilot(context)
     ? { ...withFiles, autonomy: true }
     : withFiles;

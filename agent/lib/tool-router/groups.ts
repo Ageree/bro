@@ -240,6 +240,8 @@ export const skillRouterGroups = {
   money: ["money"],
   recommendations: ["places", "events"],
   schedules: ["schedules"],
+  // The signing tools are core; the places are marked by the task agent.
+  sign: ["files"],
 } as const satisfies Readonly<Record<SkillName, readonly RouterGroup[]>>;
 
 /**

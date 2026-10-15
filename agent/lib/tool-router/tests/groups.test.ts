@@ -176,6 +176,7 @@ describe("a skill's router groups", () => {
       autonomy: true,
       browser: true,
       images: true,
+      sign: true,
       taskFiles: true,
     };
     const unreachable = availableSkills(setup).flatMap((skill) => {
