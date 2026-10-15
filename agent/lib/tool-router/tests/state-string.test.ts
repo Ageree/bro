@@ -96,6 +96,43 @@ describe("the router's state string", () => {
     expect(text.located).toBe(true);
   });
 
+  it.each([
+    "Напомни мне купить хлеб, когда я приду на Тверскую улицу 7 в Москве",
+    "когда приеду в аэропорт, напомни про паспорт",
+    "Как только окажусь у метро — напомни позвонить маме",
+    "напомни, когда буду дома",
+    "когда вернусь домой, скажи вынести мусор",
+    "когда уйду из офиса, напомни про ключи",
+    "напомни взять зонт, как выйду из дома",
+    "где я сейчас?",
+    "Где я припарковал машину?",
+    "где моя машина",
+    "что есть рядом со мной поесть",
+    "аптека поблизости открыта?",
+    "remind me to buy milk when I get home",
+    "when I arrive at the office, ping me",
+    "where did I park",
+    "coffee near me",
+  ])("hears the person's own place in «%s»", (words) => {
+    expect(routerTurnText([person(words)]).located).toBe(true);
+  });
+
+  it.each([
+    "когда буду свободен, наберу",
+    "когда приду к выводу, скажу",
+    "напиши мне, когда буду в настроении",
+    "когда вернусь к работе после отпуска",
+    "когда буду на связи, отвечу",
+    "поставь картинку рядом с текстом",
+    "в ближайший понедельник созвон",
+    "где я могу купить билеты?",
+    "когда я выйду из себя, ты поймёшь",
+    "I will call when I get to it",
+    "when I leave a comment it disappears",
+  ])("hears no place in «%s»", (words) => {
+    expect(routerTurnText([person(words)]).located).toBe(false);
+  });
+
   it("tells a bare photo from a photo with words", () => {
     expect(routerTurnText([person("[фото]")]).mediaOnly).toBe(true);
     expect(
