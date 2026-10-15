@@ -336,6 +336,15 @@
   `status` Selectel API ходит и без проекта падает. Сборке нужны Node 24 и `zstd`
   (`apt-get update` перед `install`). Тон звонка — ops-скрипт `phone-setup.sh` с флагами
   `--public-url https://brobro.tech --apply --output /tmp/x.env`.
+- Адрес deployd в кэше `bro-app-sel-2.json` из `state restore` может отстать от
+  VM (15.10: старый адрес deployd в 17:10 начал рвать TLS, `deploy` падал на
+  «Connection reset by peer», а сайт отвечал). Если `status` по кэшу рвётся, сверьте
+  адрес с `host.py status` (ему нужен `SELECTEL_PROJECT` из
+  `GET https://api.selectel.ru/vpc/resell/v2/projects`; файл `project` состояния —
+  не он). Собранный релиз выкатывается без пересборки: `deploy --version`.
+- deployd пропускает в аргументах `host.py ops` только `[A-Za-z0-9._:/=@%?&+-]`
+  (`ARGUMENT` в `host/deployd.py`): список через запятую он отвергает («at most 16
+  plain arguments»), ops-скрипты соединяют значения через `+`.
 - Локальный диск флейвора Selectel при смене флейвора не уменьшается: VM
   меньше — только новой VM и переключением (`docs/selectel-migration.md`, шаг 6).
 - Память VM (4 ГБ): у `bro-eve` куча `--max-old-space-size=1280`, у `bro-web` 640
