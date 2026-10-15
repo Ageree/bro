@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
-import { Masthead } from "@web/components/paper/masthead";
+import { Capsule } from "@web/components/paper/capsule";
+import { SiteFooter } from "@web/components/paper/footer";
 import { env } from "@shared/environment";
 
 export const metadata: Metadata = {
@@ -11,20 +12,25 @@ export const metadata: Metadata = {
 
 const contactEmail = "solsav1703@gmail.com";
 
+const legalPages = [
+  { href: "/oferta", id: "oferta", label: "Оферта" },
+  { href: "/privacy", id: "privacy", label: "Конфиденциальность" },
+];
+
 const proseLinkClassName = "underline underline-offset-[0.2em]";
 
 /**
- * Document — paper. Same white, same serif, same rule that chrome is text:
- * a single column of prose divided by hairlines, no cards, no radius, no
- * shadow. The wording is a legal text and is carried over verbatim.
+ * Document — one plate of serif headings and prose under the shared capsule.
+ * The wording is a legal text and is carried over verbatim.
  */
 export default function Page() {
   return (
     <div className="flex min-h-svh flex-col">
-      <Masthead />
+      <Capsule active="oferta" items={legalPages} />
 
-      <main className="mx-auto w-full max-w-[44rem] px-bro-pad pt-[0.6rem] pb-20 [&_h2]:mt-8 [&_h2]:mb-2 [&_p]:mb-[0.55rem]">
-        <h1 className="type-doc-heading mb-[0.35rem]">Публичная оферта</h1>
+      <main className="mx-auto w-full max-w-[52rem] flex-1 px-bro-pad pt-[5.5rem]">
+        <article className="bro-plate p-6 sm:p-10 [&_h2]:mt-8 [&_h2]:mb-2 [&_p]:mb-[0.55rem]">
+        <h1 className="type-doc-title mb-2">Публичная оферта</h1>
         <p className="type-fine mb-8 text-muted-foreground">
           о предоставлении доступа к сервису «bro» · редакция от 27.08.2026
         </p>
@@ -143,7 +149,10 @@ export default function Page() {
           <p>ИНН 780159467840 · ОГРНИП 325784700145981</p>
           <p>Email: {contactEmail}</p>
         </div>
+        </article>
       </main>
+
+      <SiteFooter />
     </div>
   );
 }

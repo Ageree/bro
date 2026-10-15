@@ -121,7 +121,7 @@ function DirectModelField({
         Выбрать
         <ChevronsUpDownIcon />
       </DialogTrigger>
-      <DialogContent className="rounded-none sm:max-w-lg">
+      <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Model ({provider})</DialogTitle>
           <DialogDescription>
@@ -142,6 +142,7 @@ function DirectModelField({
               placeholder="provider/model"
               spellCheck={false}
               value={draft}
+              variant="paper"
             />
             <FieldDescription>
               Any {provider} id, written as provider/model.
@@ -174,6 +175,7 @@ function DirectModelField({
             <Button
               disabled={!parsed.success || selectModel.isPending}
               type="submit"
+              variant="paper"
             >
               Save
             </Button>
