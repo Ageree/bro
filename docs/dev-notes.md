@@ -798,7 +798,7 @@ user-data`, `sandbox/README.md`); runsc едет на хост объектом 
 
 ## Геолокация
 
-- `LOCATION_WORKSPACES` (id или `*`; с 15.10 в проде `*`, владелец), обзор — `docs/location.md`. `position`
+- `LOCATION_WORKSPACES` (id или `*`; с 15.10 в проде `*`, владелец; откат — id владельца, не `null`), обзор — `docs/location.md`. `position`
   (где человек) ≠ `place` (место, о котором говорит): пересланное и булавки — `place`,
   venue — «вероятно там», только приход; `.loc.vcf` — `position` лишь по подписи
   текущего места (`agent/lib/location/vcf.ts`, список подписей не сверен с живой
@@ -1119,8 +1119,11 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   `shadow` по умолчанию | `on`; нужны пилоты навыков и шага, `toolRouterEligible` в
   `agent/lib/tool-router/pilot.ts`). С 15.10 в проде всем: `*` у
   `TOOL_ROUTER_WORKSPACES`, `SKILLS_WORKSPACES`, `STEP_CONTEXT_WORKSPACES` (и
-  `LOCATION_WORKSPACES`), `TOOL_ROUTER_MODE=on`; откат — id владельца в `prod.json`
-  и `host.py env`. ход человека видит ядро
+  `LOCATION_WORKSPACES`), `TOOL_ROUTER_MODE=on`. Откат — id владельца (не email: у
+  навыков и роутера он валит проверку env, и eve не стартует) в `prod.json` и
+  `host.py env`; `null` снимает имя совсем (`compose_env`), выключая пилот и
+  владельцу. `TOOL_ROUTER_MODE` один на всех: владельца в `on`, а прочих в `shadow`
+  не держать. ход человека видит ядро
   (`agent/lib/tool-router/groups.ts`) и группы, которые Jev выбрал одним запросом System One
   (14 вопросов `noul`, `questions.ts` — дословно из оценки, правка слова — новый прогон и
   пороги). Набор хода только растёт; в окне 60 мин от последнего шага с блоком роутера —
