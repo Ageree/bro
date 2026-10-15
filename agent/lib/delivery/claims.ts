@@ -42,6 +42,38 @@ function succeeded(output: ToolResultPart["output"]) {
   return !output.type.startsWith("error") && output.type !== "execution-denied";
 }
 
+/**
+ * Tools that answer every call and say in their result whether they changed
+ * anything: a point named or forgotten (`changed`), a place reminder set or
+ * cancelled (`created`, `cancelled`).
+ */
+const flaggedWriteTools = new Set(["location_edit", "place_reminder"]);
+
+const changeFlagsSchema = z.object({
+  cancelled: z.boolean().optional(),
+  changed: z.boolean().optional(),
+  created: z.boolean().optional(),
+});
+
+/**
+ * What a call came to: `done`, `failed` — an error, a declined card, or a
+ * tool that said it changed nothing — or `read` for a call of a flagged tool
+ * that wrote nothing by design, such as the list of place reminders.
+ */
+function callOutcome(part: ToolResultPart) {
+  if (!succeeded(part.output)) return "failed";
+  if (!flaggedWriteTools.has(part.toolName)) return "done";
+  const flags =
+    part.output.type === "json"
+      ? changeFlagsSchema.safeParse(part.output.value).data
+      : undefined;
+  const said = [flags?.cancelled, flags?.changed, flags?.created].filter(
+    (flag) => flag !== undefined
+  );
+  if (said.length === 0) return "read";
+  return said.includes(true) ? "done" : "failed";
+}
+
 function toolResults(messages: readonly ModelMessage[]) {
   return messages.flatMap((message) =>
     message.role === "tool"
@@ -109,8 +141,11 @@ type Act = (typeof acts)[number];
 
 const actTools: Record<Act, readonly string[]> = {
   email: ["gmail-draft", "gmail-send"],
+  // A point the person named is remembered too: «Запомнил точку как
+  // «парковка»» after `location_edit` went back as undone (prod, 15.10).
   memory: [
     "form_of_address",
+    "location_edit",
     "personal_info__update",
     "profile__forget_all",
     "profile__remove_memory",
@@ -126,6 +161,7 @@ const actTools: Record<Act, readonly string[]> = {
   order: ["browser_task"],
   schedule: [
     ...calendarWriteTools,
+    "place_reminder",
     "proactive_messages",
     "schedules-create",
     "schedules-update",
@@ -230,10 +266,12 @@ function actOutcomes(
   for (const part of toolResults(earlier)) {
     for (const act of acts) {
       if (!actTools[act].includes(part.toolName)) continue;
+      const outcome = callOutcome(part);
+      if (outcome === "read") continue;
       outcomes[act].earlierCall = true;
-      if (succeeded(part.output)) outcomes[act].earlierDone = true;
+      if (outcome === "done") outcomes[act].earlierDone = true;
       outcomes[act].lastRefused =
-        !succeeded(part.output) && previousCalls.has(part.toolCallId);
+        outcome === "failed" && previousCalls.has(part.toolCallId);
     }
   }
   const declined = declinedCards(turn);
@@ -242,7 +280,9 @@ function actOutcomes(
     for (const act of acts) {
       if (ran) outcomes[act].done = true;
       if (!actTools[act].includes(part.toolName)) continue;
-      if (succeeded(part.output)) outcomes[act].done = true;
+      const outcome = callOutcome(part);
+      if (outcome === "read") continue;
+      if (outcome === "done") outcomes[act].done = true;
       else if (declined.has(part.toolCallId)) outcomes[act].declined = true;
       else outcomes[act].refused = true;
     }
@@ -296,7 +336,7 @@ function foundSomething(part: ToolResultPart) {
   if (part.toolName === "browser_task") {
     return Boolean(browserAnswer(part.output)?.outcome?.trim());
   }
-  return !writeTools.has(part.toolName);
+  return !writeTools.has(part.toolName) || callOutcome(part) === "read";
 }
 
 function userText(message: ModelMessage) {
