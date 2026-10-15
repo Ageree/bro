@@ -13,6 +13,7 @@ import {
   nextCase,
   noteObservation,
   observeCase,
+  owedCleanup,
   runCase,
   type DriverSettings,
 } from "../../bench/conversation.ts";
@@ -1642,6 +1643,16 @@ describe("a files case", () => {
     expect(stopped.driver.remainingSteps.map((each) => each.text)).toEqual([
       "да, подписывай",
       "спасибо",
+    ]);
+    // A run goes no further: the next case would sign with what this one saved.
+    expect(
+      owedCleanup(
+        { ...filesCase, cleanup: ["удали мою сохранённую подпись"] },
+        stopped,
+        settings.outDir
+      )
+    ).toEqual([
+      `pnpm bench send --out ${settings.outDir} --case f-test --kind cleanup --text "удали мою сохранённую подпись"`,
     ]);
 
     const record = await continueCase(

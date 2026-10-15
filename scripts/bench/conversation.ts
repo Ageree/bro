@@ -1175,6 +1175,24 @@ export async function cleanupCase(
   return current;
 }
 
+/**
+ * The cleanup a files case still owes the account, as the commands that
+ * send it: the case stopped before its end (a gate, a failure, a wait) or
+ * its cleanup broke off. What it left — a saved signature, a person's name
+ * in memory — would change the next case: a run stops there.
+ */
+export function owedCleanup(
+  benchCase: BenchCase,
+  record: RunRecord,
+  outDir: string
+) {
+  if (record.driver.suite !== "files" || record.cleanupDone) return [];
+  return benchCase.cleanup.map(
+    (text) =>
+      `pnpm bench send --out ${outDir} --case ${record.caseId} --kind cleanup --text ${JSON.stringify(text)}`
+  );
+}
+
 /** Catches up on a case's session and follows it for background results. */
 export async function followCase(
   client: Client,
