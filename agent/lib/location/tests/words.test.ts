@@ -31,6 +31,24 @@ describe("the person's own words for places", () => {
     expect(addressSaid("Арбат 1", ["напомни у Тверская 7"])).toBe(false);
   });
 
+  it("takes the plain form of an address the person declined", () => {
+    const said = [
+      "Напомни мне купить хлеб, когда я приду на Тверскую улицу 7 в Москве",
+    ];
+    expect(addressSaid("Тверская улица 7, Москва", said)).toBe(true);
+    expect(addressSaid("ул. Тверская, д. 7", said)).toBe(true);
+    expect(addressSaid("Тверская улица 9, Москва", said)).toBe(false);
+    expect(addressSaid("улица 7, Москва", said)).toBe(false);
+    expect(
+      addressSaid("Пресненская набережная 12", [
+        "когда буду на Пресненской набережной 12",
+      ])
+    ).toBe(true);
+    expect(
+      addressSaid("Домодедовская улица 5", ["когда буду дома на улице 5"])
+    ).toBe(false);
+  });
+
   it("forgets only on the person's own request to delete their places", () => {
     expect(forgetSaid(["забудь, где я был вчера"])).toBe(true);
     expect(forgetSaid(["удали геопозицию за вчера"])).toBe(true);

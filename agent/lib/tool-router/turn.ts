@@ -615,7 +615,9 @@ export async function routerGroupsOfStep(
             console.info("[tool-router] shadow-decision", {
               decided: decidedGroups(settled),
               failure: "failure" in settled ? settled.failure : undefined,
+              model: "model" in settled ? settled.model : undefined,
               ms: settled.ms,
+              provider: "provider" in settled ? settled.provider : undefined,
               turnId,
             });
             return settled;

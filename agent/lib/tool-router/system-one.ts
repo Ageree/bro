@@ -25,6 +25,13 @@ const heldAfterFailureMs = 5 * 60_000;
 /** How long after a refusal of the key (401, 402, 403). */
 const heldAfterRefusalMs = 60 * 60_000;
 
+/**
+ * A refusal, held for the hour and told to the owner: the key (401, 402,
+ * 403), or the country of the request (451 — TypeSafe answers it to the VM in
+ * Russia, 15.10; `TYPESAFE_PROXY_URL` takes the request out of it).
+ */
+const refusedStatuses: ReadonlySet<number> = new Set([401, 402, 403, 451]);
+
 const typesafeUrl = "https://api.typesafe.ai/v1/systemone";
 
 // Only TypeSafe's requests use this dispatcher; TLS stays checked through
@@ -154,7 +161,7 @@ async function request(
     // The body is the provider's own words: it never reaches a log.
     await response.body?.cancel().catch(() => undefined);
     return {
-      failure: [401, 402, 403].includes(response.status) ? "refused" : "error",
+      failure: refusedStatuses.has(response.status) ? "refused" : "error",
       ok: false,
       status: response.status,
     };
