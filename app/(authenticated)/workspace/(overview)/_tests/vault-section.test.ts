@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { answerVaultSectionQuery } from "@app/(authenticated)/vault/_components/section";
+import { answerVaultSectionQuery } from "@app/(authenticated)/workspace/(overview)/_components/vault/section";
 
 const cardSetup = { kind: "payment" as const };
 
