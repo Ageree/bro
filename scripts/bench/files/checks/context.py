@@ -213,9 +213,9 @@ class Context:
         case or one of its input files."""
         docs = {}
         listed = None
-        if self.manifest:
-            entry = self.manifest.get("cases", {}).get(self.case_id) or {}
-            listed = [n for n in entry.get("truth", {}) if n.endswith(".json")]
+        entry = (self.manifest or {}).get("cases", {}).get(self.case_id)
+        if entry and entry.get("truth"):
+            listed = [n for n in entry["truth"] if n.endswith(".json")]
         if listed is not None:
             for name in listed:
                 path = self.truth_dir / name
@@ -233,9 +233,9 @@ class Context:
             if not isinstance(doc, dict):
                 continue
             files = doc.get("files")
-            mentioned = {doc.get("file"), doc.get("fixture")} | (set(files) if isinstance(files, list) else set())
-            if isinstance(files, dict):
-                mentioned |= set(files.values())
+            listed_files = files.values() if isinstance(files, dict) else files if isinstance(files, list) else []
+            mentioned = {doc.get("file"), doc.get("fixture")}
+            mentioned |= {f if isinstance(f, str) else f.get("file") for f in listed_files if isinstance(f, (str, dict))}
             if doc.get("case") == self.case_id or mentioned & names:
                 docs[path.name] = doc
         return docs
