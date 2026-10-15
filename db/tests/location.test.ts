@@ -203,6 +203,33 @@ describe("shared locations", { timeout: 30_000 }, () => {
     ]);
   });
 
+  it("stores the web chat's point once per 10 s, never as a leave", async () => {
+    const { location } = await openDatabase();
+    const fine = { accuracyM: 30, lat: home.lat, lon: home.lon };
+    expect(await location.recordWebShare(alice, fine, now)).toEqual({
+      shared: true,
+    });
+    expect(
+      await location.recordWebShare(
+        alice,
+        fine,
+        new Date(now.getTime() + 5_000)
+      )
+    ).toEqual({ shared: false });
+    expect(
+      await location.recordWebShare(
+        alice,
+        fine,
+        new Date(now.getTime() + 11_000)
+      )
+    ).toEqual({ shared: true });
+    const shared = await location.latestWebShare(
+      alice,
+      new Date(now.getTime() - minute)
+    );
+    expect(shared).toMatchObject({ kind: "position", source: "web" });
+  });
+
   it("sweeps points past 90 days and reminders ended a month ago", async () => {
     const { db, location, subscriptions } = await openDatabase();
     await location.insertPoint(

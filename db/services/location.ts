@@ -155,6 +155,72 @@ export async function listLocationPoints(
   };
 }
 
+/** The latest point the web chat's button shared since `since`. */
+export async function latestWebShare(scope: AccessScope, since: Date) {
+  const [point] = await db
+    .select()
+    .from(locationPoints)
+    .where(
+      and(
+        eq(locationPoints.workspaceId, scope.workspaceId),
+        eq(locationPoints.source, "web"),
+        gte(locationPoints.recordedAt, since)
+      )
+    )
+    .orderBy(desc(locationPoints.recordedAt))
+    .limit(1);
+  return point;
+}
+
+/** The web chat's button shares at most one point this often. */
+const webShareGapMs = 10_000;
+/** A browser's point this coarse may not say the person arrived. */
+const webArriveAccuracyM = 100;
+
+/**
+ * Stores the point the web chat's button shared and runs it through the
+ * place reminders (a hit's report waits for the schedule tick). A browser
+ * says nothing of leaving (a laptop's point jumps by kilometres behind a
+ * VPN), and arrives only with a fine point. One share per 10 s: the
+ * redelivery key is the 10-second slot, so two at once store one.
+ */
+export async function recordWebShare(
+  scope: AccessScope,
+  input: {
+    readonly accuracyM: number | null;
+    readonly lat: number;
+    readonly lon: number;
+  },
+  now = new Date()
+) {
+  const recent = await latestWebShare(
+    scope,
+    new Date(now.getTime() - webShareGapMs)
+  );
+  if (recent) return { shared: false };
+  const { row } = await recordShared(
+    scope,
+    {
+      accuracyM: input.accuracyM,
+      address: null,
+      arriveAllowed:
+        input.accuracyM !== null && input.accuracyM <= webArriveAccuracyM,
+      externalId: `web:${String(Math.floor(now.getTime() / webShareGapMs))}`,
+      kind: "position",
+      label: null,
+      lat: input.lat,
+      leaveAllowed: false,
+      live: false,
+      liveKey: null,
+      lon: input.lon,
+      recordedAt: now,
+      source: "web",
+    },
+    { now, via: "web" }
+  );
+  return { shared: row !== undefined };
+}
+
 /** The latest point of any kind the person shared since `since`. */
 export async function latestSharedPoint(scope: AccessScope, since: Date) {
   const [point] = await db

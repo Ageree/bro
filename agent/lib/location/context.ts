@@ -1,8 +1,13 @@
-import { latestPosition } from "@db/services/location";
+import {
+  latestPosition,
+  latestWebShare,
+  sharedBefore,
+} from "@db/services/location";
 import { readWorkspaceTimeZone } from "@db/services/user-profile";
 import type { AccessScope } from "@shared/identity/access-scope";
+import { webShareText } from "@shared/location/share";
 import { pointAddress } from "./address";
-import { whereLine } from "./note";
+import { sharedLine, whereLine } from "./note";
 
 /**
  * Words of a message about places around the person: «что рядом», «где я»,
@@ -43,6 +48,47 @@ export async function locationContext(
       pointAddress(scope, point),
     ]);
     return [whereLine({ ...point, address }, timeZone)];
+  } catch (error) {
+    console.warn("[location] context failed", {
+      name: error instanceof Error ? error.name : "error",
+    });
+    return [];
+  }
+}
+
+/** The button's message reads a point shared this recently. */
+const webShareFreshMs = 2 * 60_000;
+
+/**
+ * The web chat's context lines: for the message the «поделиться
+ * геопозицией» button sends, the point it stored just before, as the
+ * person's own shared point (a reminder it fired reports on its own, a
+ * minute later); for any other message, where they last were
+ * (`locationContext`).
+ */
+export async function webLocationContext(
+  scope: AccessScope,
+  words: string,
+  now = new Date()
+): Promise<string[]> {
+  if (words.trim() !== webShareText) return locationContext(scope, words, now);
+  try {
+    const point = await latestWebShare(
+      scope,
+      new Date(now.getTime() - webShareFreshMs)
+    );
+    if (!point) return [];
+    const [timeZone, address, before] = await Promise.all([
+      readWorkspaceTimeZone(scope),
+      pointAddress(scope, point),
+      sharedBefore(scope, point.id),
+    ]);
+    return [
+      sharedLine(
+        { ...point, address },
+        { firstEver: !before, liveSeen: false, timeZone }
+      ),
+    ];
   } catch (error) {
     console.warn("[location] context failed", {
       name: error instanceof Error ? error.name : "error",

@@ -11,7 +11,7 @@ import { claimSession, isSessionOwned } from "@db/services/sessions";
 import { ensureScope } from "@db/services/scope";
 import { crossChannelRecap } from "@agent/lib/conversation/recap";
 import { firstContactContext } from "@agent/lib/first-contact";
-import { locationContext } from "@agent/lib/location/context";
+import { webLocationContext } from "@agent/lib/location/context";
 import { locationPilot } from "@db/services/location";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import {
@@ -101,10 +101,11 @@ const channel = eveChannel({
           channel: "channel:eve",
           sessionId: context.eve.sessionId,
         })),
-        // Where the person last shared they were, for a message about places
-        // near them (geolocation pilot).
+        // The point the chat's button just shared, or where the person last
+        // shared they were, for a message about places near them
+        // (geolocation pilot).
         ...(locationPilot(scope)
-          ? await locationContext(scope, messageWords(message))
+          ? await webLocationContext(scope, messageWords(message))
           : []),
       ],
     };

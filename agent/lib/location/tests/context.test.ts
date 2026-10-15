@@ -2,7 +2,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type * as points from "@db/services/location";
 
 const latestPosition = vi.fn<typeof points.latestPosition>();
+const latestWebShare = vi.fn<typeof points.latestWebShare>();
 vi.mock("@db/services/location", () => ({
+  latestWebShare,
+  sharedBefore: vi.fn<typeof points.sharedBefore>(async () => true),
   cachedAddressNear: vi.fn<typeof points.cachedAddressNear>(
     async () => undefined
   ),
@@ -34,6 +37,7 @@ const now = new Date("2026-10-15T11:00:00.000Z");
 
 afterEach(() => {
   latestPosition.mockReset();
+  latestWebShare.mockReset();
 });
 
 describe("the line of where the person last was", () => {
@@ -72,5 +76,34 @@ describe("the line of where the person last was", () => {
       },
     });
     expect(await locationContext(scope, "что рядом", now)).toEqual([]);
+  });
+});
+
+describe("the web chat's shared point", () => {
+  it("reads the button's message as the point it just stored", async () => {
+    const { webLocationContext } = await import("@agent/lib/location/context");
+    const { webShareText } = await import("@shared/location/share");
+    latestWebShare.mockResolvedValue({
+      ...row,
+      accuracyM: 40,
+      address: "Тверская улица 7, Москва",
+      id: "p2",
+      lat: 55.76,
+      lon: 37.61,
+      recordedAt: new Date(now.getTime() - 20_000),
+      source: "web",
+    });
+    const [line] = await webLocationContext(scope, webShareText, now);
+    expect(line).toContain("человек сам прислал свою точку");
+    expect(line).toContain("±40 м");
+    expect(latestWebShare).toHaveBeenCalledWith(
+      scope,
+      new Date(now.getTime() - 2 * 60_000)
+    );
+    // Without a fresh point the button's message says nothing of a place;
+    // any other message is read as before.
+    latestWebShare.mockResolvedValue(undefined);
+    expect(await webLocationContext(scope, webShareText, now)).toEqual([]);
+    expect(await webLocationContext(scope, "напиши маме", now)).toEqual([]);
   });
 });
