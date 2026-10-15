@@ -1640,6 +1640,7 @@ describe("a files case", () => {
     expect(stopped.driver.status).toBe("waiting-for-tester");
     expect(stopped.driver.statusDetail).toContain("вопросов не было");
     expect(stopped.driver.remainingSteps.map((each) => each.text)).toEqual([
+      "да, подписывай",
       "спасибо",
     ]);
 
@@ -1662,6 +1663,54 @@ describe("a files case", () => {
       ['ок: "да"', 1],
       ['ок: "спасибо"', 2],
     ]);
+  }, 20_000);
+
+  it("holds a gate stop through a hint and refuses next until the tester's answer", async () => {
+    const fake = await startFakeEve((post) =>
+      turn(
+        delivered(
+          post.route === "create"
+            ? "Готово!"
+            : `ок: ${JSON.stringify(post.message)}`
+        )
+      )
+    );
+    stopFake = () => fake.close();
+    const settings = await filesSettings(fake.url);
+    const client = new Client({ host: fake.url });
+    await runCase(client, filesCase, fileSteps, [], settings);
+
+    const hinted = await continueCase(
+      client,
+      await readRunRecord(settings.outDir, "f-test"),
+      settings,
+      {
+        code: undefined,
+        kind: "hint",
+        respond: () => undefined,
+        text: "ну что там?",
+      }
+    );
+
+    expect(hinted.driver.status).toBe("waiting-for-tester");
+    await expect(
+      nextCase(client, hinted, settings, { early: false })
+    ).rejects.toThrow(/stopped before turn 1/u);
+
+    const answered = await continueCase(client, hinted, settings, {
+      code: undefined,
+      kind: "answer",
+      respond: () => undefined,
+      text: "да, подписывай",
+    });
+
+    expect(fake.posts.map((post) => post.message)).toEqual([
+      "заполни заявление",
+      "ну что там?",
+      "да, подписывай",
+      "спасибо",
+    ]);
+    expect(answered.driver.status).toBe("completed");
   }, 20_000);
 
   it("never consents through a question card", async () => {

@@ -387,6 +387,14 @@ export class FilesCollector {
   }
 
   /**
+   * The gated turn the case stopped before, until the tester's answer is
+   * that turn: kept in `files-run.json`, so a later command still sees it.
+   */
+  get pendingGate() {
+    return this.#state.pendingGate;
+  }
+
+  /**
    * Downloads what the stream named since the last flush, then writes
    * `files-run.json`. `log` takes the journal's lines.
    */

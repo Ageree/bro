@@ -144,6 +144,10 @@ pnpm bench report --out ~/bench/files-1 --recheck   # перепроверить
 pnpm bench send --kind answer --out ~/bench/files-1 --case f-rent-contract-bundle --text "да"
 ```
 
+Подсказка (`send` без `--kind answer`) или `follow` в такой кейс его не
+сдвигают: он стоит на условии, пока ответом не уйдёт сам ход, а `next` до этого
+отказывает.
+
 ### Уборка
 
 Кейсы f-00, f-acroform, f-rent и f-trap-sign сохраняют образец подписи. После
