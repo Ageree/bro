@@ -223,7 +223,7 @@ describe("room on the shared code host", () => {
     expect(calls.map(({ kind }) => kind)).toEqual(["open", "open"]);
 
     await ownTurnEnds("bro-1");
-    await vi.advanceTimersByTimeAsync(59_999);
+    await vi.advanceTimersByTimeAsync(299_999);
     expect(calls).toHaveLength(2);
     await vi.advanceTimersByTimeAsync(1);
     expect(calls.map(({ kind }) => kind)).toEqual(["open", "open", "stop"]);
