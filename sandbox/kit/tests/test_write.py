@@ -62,6 +62,21 @@ class Write(unittest.TestCase):
         x0, y0, x1, y1 = words["Казань"]
         self.assertTrue(bx0 <= x0 and x1 <= bx1 and by0 <= y0 and y1 <= by1, (words["Казань"], box["box"]))
 
+    def test_written_file_keeps_the_ids_of_its_source(self):
+        code, source = kit("pdf", "layout", self.vector, cache=self.cache)
+        self.assertEqual(code, 0, source)
+        before = {b["id"]: b["box"] for b in source["pages"][0]["blanks"]}
+        line = self.blank(self.vector, lambda b: b["label"].startswith("ФИО"))
+        output, _ = self.write(self.vector, [{"at": line["id"], "text": "Ёжиков Щедрин"}])
+        code, written = kit("pdf", "layout", output, cache=self.cache)
+        self.assertEqual(code, 0, written)
+        blanks = written["pages"][0]["blanks"]
+        self.assertEqual({b["id"]: b["box"] for b in blanks}, before)
+        self.assertEqual([b["id"] for b in blanks if b.get("filled")], [line["id"]])
+        again = os.path.join(self.directory, "again.pdf")
+        code, refused = kit("pdf", "write", output, write_json(again + ".json", [{"at": line["id"], "text": "x"}]), "-o", again, cache=self.cache)
+        self.assertEqual((code, refused["code"]), (2, "filled_blank"))
+
     def test_text_on_a_skewed_scan_follows_the_rule(self):
         import numpy
 

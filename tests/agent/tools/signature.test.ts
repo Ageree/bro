@@ -191,12 +191,22 @@ describe("the signature sample", () => {
     });
   });
 
-  it("never saves someone else's signature", async () => {
+  it("never saves someone else's signature, as a photo or as a typed name", async () => {
     expect(
       await call([person("Вот её подпись со старой расписки", ["IMG_1.jpg"])], {
         action: "save",
         path: `${folder}/IMG_1.jpg`,
       })
+    ).toMatchObject({ status: "not_own" });
+    expect(
+      await call(
+        [
+          person(
+            "Сохрани подпись мужа: Петров Пётр Иванович, буду подписывать за него"
+          ),
+        ],
+        { action: "save_typed", name: "Петров Пётр Иванович" }
+      )
     ).toMatchObject({ status: "not_own" });
     expect(services.save).not.toHaveBeenCalled();
   });

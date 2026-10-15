@@ -6,7 +6,10 @@ type Role = SigningPlan["places"][number]["role"];
 
 /** At most this many places go into one signing, or into a choice. */
 const maximumPlaces = 40;
-const labelCharacters = 40;
+/** The kit's labels are at most 80 characters: the question quotes them whole. */
+const labelCharacters = 80;
+/** A field's labels the plan keeps: four of 80 characters fit `planLabelCharacters`. */
+const labelsPerField = 4;
 
 /**
  * Parties that are never the person signing their own form: a mark labelled
@@ -21,9 +24,12 @@ const counterpartyLabel =
 const foldedLabel = (label: string) =>
   label.normalize("NFKC").toLocaleLowerCase().replaceAll("ё", "е");
 
+const namesCounterparty = (label: string) =>
+  counterpartyLabel.test(foldedLabel(label));
+
 /**
  * The label as the question quotes it: one line, no «?» or «!» that would
- * end the question early, no trailing colon, at most 40 characters.
+ * end the question early, no trailing colon, at most 80 characters.
  */
 function questionLabel(label: string) {
   const line = label
@@ -57,14 +63,15 @@ interface Grouped {
   /** A widget of the field is labelled as a counterparty's. */
   readonly counterparty: boolean;
   readonly field: string;
-  readonly label: string | null;
+  /** Each widget's distinct label, in page order. */
+  readonly labels: readonly string[];
   readonly mark: boolean;
   readonly pages: number[];
   readonly role: Role;
   readonly trusted: boolean;
 }
 
-/** The eligible widgets by field: its role, its pages, its first label. */
+/** The eligible widgets by field: its role, its pages, its labels. */
 function groupedPlaces(
   places: readonly Place[],
   sourceKind: "attachment" | "shared"
@@ -73,7 +80,8 @@ function groupedPlaces(
   for (const place of places) {
     const role = eligibleRole(place);
     if (role === undefined) continue;
-    const counterparty = counterpartyLabel.test(foldedLabel(place.label));
+    const counterparty = namesCounterparty(place.label);
+    const label = questionLabel(place.label);
     // A file the person sends back is checked by them, whatever marks it
     // carries; a field is trusted only when every widget of it is.
     const trusted =
@@ -83,7 +91,7 @@ function groupedPlaces(
       fields.set(place.field, {
         counterparty,
         field: place.field,
-        label: questionLabel(place.label),
+        labels: label === null ? [] : [label],
         mark: place.bro !== null,
         pages: [place.page],
         role,
@@ -95,7 +103,10 @@ function groupedPlaces(
     fields.set(place.field, {
       ...known,
       counterparty: known.counterparty || counterparty,
-      label: known.label ?? questionLabel(place.label),
+      labels:
+        label === null || known.labels.includes(label)
+          ? known.labels
+          : [...known.labels, label],
       trusted: known.trusted && trusted,
     });
   }
@@ -104,9 +115,25 @@ function groupedPlaces(
   return grouped;
 }
 
-const planPlace = ({ field, label, mark, pages, role }: Grouped) => ({
+/**
+ * A field's labels as the plan keeps one: all of them, so the question
+ * names every place a widget of the field sits at; of more than four, those
+ * naming a counterparty first.
+ */
+function fieldLabel(labels: readonly string[]) {
+  const kept =
+    labels.length <= labelsPerField
+      ? labels
+      : [
+          ...labels.filter(namesCounterparty),
+          ...labels.filter((label) => !namesCounterparty(label)),
+        ].slice(0, labelsPerField);
+  return kept.length === 0 ? null : kept.join(" / ");
+}
+
+const planPlace = ({ field, labels, mark, pages, role }: Grouped) => ({
   field,
-  label,
+  label: fieldLabel(labels),
   mark,
   pages,
   role,
@@ -134,10 +161,14 @@ export function choosePlaces(
   }
   const grouped = groupedPlaces(inventory.places, options.sourceKind);
   const candidates = grouped.slice(0, maximumPlaces).map((place) => {
+    const candidate: ReturnType<typeof planPlace> & {
+      counterparty?: true;
+      foreign?: true;
+    } = planPlace(place);
     // A mark without this workspace's token, or in the person's own file.
-    const candidate: ReturnType<typeof planPlace> & { foreign?: true } =
-      planPlace(place);
     if (place.mark && !place.trusted) candidate.foreign = true;
+    // Printed as another party's: never the person's own unless they say so.
+    if (place.counterparty) candidate.counterparty = true;
     return candidate;
   });
   const plan = (chosen: readonly Grouped[]) => {

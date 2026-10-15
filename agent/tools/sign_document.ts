@@ -131,7 +131,7 @@ const refusals = {
   already_signed:
     "The PDF carries a digital signature that any change would break; do not sign it and tell the person.",
   choose_fields:
-    "Prepare again with `fields` naming only the person's own places from candidates (never a landlord's, employer's, witness's or other party's); if unclear, ask the person one question naming pages and labels.",
+    "Prepare again with `fields` naming only the person's own places from candidates (never a landlord's, employer's, witness's or other party's: a candidate with counterparty is printed as one); if unclear, ask the person one question naming pages and labels.",
   encrypted: sameTaskReply.encrypted,
   file_unavailable:
     "Use the share_file link from the task report as is, or the attachment path of a PDF the person sent.",
@@ -487,6 +487,14 @@ async function prepare(
   };
 }
 
+/** The saved sample is the very image a photo's signing question named. */
+async function savedFromPhoto(scope: AccessScope, row: DocumentSigning) {
+  const sample = await readSignatureSample(scope);
+  return (
+    sample?.kind === "image" && sha256(sample.png) === row.signaturePngSha256
+  );
+}
+
 /** The signature a confirmed signing stamps, from its saved sample or photo. */
 async function signatureFor(
   row: DocumentSigning,
@@ -506,8 +514,13 @@ async function signatureFor(
         };
   }
   // The person's yes covered saving the photo's sample: it is saved once,
-  // under the version the question named.
-  if (sample?.id === row.signatureId && sample.kind === "image") {
+  // under the version the question named — or another signing of the same
+  // photo saved those very bytes first.
+  if (
+    sample?.kind === "image" &&
+    (sample.id === row.signatureId ||
+      sha256(sample.png) === row.signaturePngSha256)
+  ) {
     return sha256(sample.png) === row.signaturePngSha256
       ? { kind: "image" as const, png: sample.png }
       : undefined;
@@ -611,12 +624,16 @@ async function confirm(
     return answer("date_changed", { reply: askAgainReply });
   }
   const summary = await readSignatureSummary(scope);
+  // A photo's signing stands while no other sample was saved after it, or
+  // the one saved is the photo's own (another document of the same photo
+  // was signed first).
   const signatureChanged =
     row.signatureSource === "saved"
       ? summary?.id !== row.signatureId
       : summary !== null &&
         summary.id !== row.signatureId &&
-        summary.savedAt.getTime() > row.createdAt.getTime();
+        summary.savedAt.getTime() > row.createdAt.getTime() &&
+        !(await savedFromPhoto(scope, row));
   if (signatureChanged) {
     return answer("signature_changed", { reply: askAgainReply });
   }

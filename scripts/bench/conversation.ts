@@ -302,8 +302,15 @@ class CaseRun {
       await this.save("failed", this.tracker.turnFailure);
       return;
     }
-    if (this.gateStop) {
-      await this.save("waiting-for-tester", this.gateStop);
+    // A gate the case stopped on holds until the tester's answer is that
+    // turn, through a hint, a follow or anything else sent meanwhile.
+    const gated = this.files?.pendingGate;
+    if (this.gateStop || gated) {
+      await this.save(
+        "waiting-for-tester",
+        this.gateStop ??
+          `ход ${String(gated?.turn)} не отправлен: ответить вручную: ${gateAnswerCommand(this, gated?.text ?? "")}`
+      );
       return;
     }
     const blocked = this.tracker.blocked(this.heldTools);
@@ -433,8 +440,12 @@ function gateStopDetail(
     gate.kind === "consent"
       ? `Бро не спросил согласия на подпись (${question === null ? "вопросов не было" : `последний вопрос: «${question}»`})`
       : `${step.at}: ответа, которого ждёт условие хода, не было`;
-  return `${why}; ответить вручную: pnpm bench send --kind answer --out ${run.settings.outDir} --case ${run.record.caseId} --text ${JSON.stringify(step.text)}`;
+  return `${why}; ответить вручную: ${gateAnswerCommand(run, step.text)}`;
 }
+
+/** The command that sends a gated turn by hand. */
+const gateAnswerCommand = (run: CaseRun, text: string) =>
+  `pnpm bench send --kind answer --out ${run.settings.outDir} --case ${run.record.caseId} --text ${JSON.stringify(text)}`;
 
 const plannedSteps = (
   saved: RunRecord["driver"]["remainingSteps"]
@@ -905,16 +916,19 @@ async function sendSteps(
       const turn = step.turn ?? index;
       const verdict = run.files.gate(step.gate, turn);
       if (!verdict.met) {
-        run.record.driver.remainingSteps = steps
-          .slice(index + 1)
-          .map(savedStep);
         if (step.gate.optional) {
+          run.record.driver.remainingSteps = steps
+            .slice(index + 1)
+            .map(savedStep);
           // oxlint-disable-next-line eslint/no-await-in-loop -- the log follows the script
           await run.journal.line(
             `== драйвер: ${step.at} пропущен: условие не выполнено`
           );
           continue;
         }
+        // The gated turn stays first among the steps left: the tester's
+        // answer is it, and nothing sends the turns after it before then.
+        run.record.driver.remainingSteps = steps.slice(index).map(savedStep);
         run.files.stopAt(turn, step.text);
         run.gateStop = gateStopDetail(run, step, step.gate, verdict.question);
         // oxlint-disable-next-line eslint/no-await-in-loop -- the case ends here
@@ -1066,7 +1080,13 @@ export async function continueCase(
     await run.catchUp(session);
     const pendingBeforeAnswer = [...run.tracker.pending.values()];
     const responses = input.respond(pendingBeforeAnswer);
+    const gated = run.files?.pendingGate;
     await run.noteTurn(session, input.kind, "продолжение", input.text);
+    // The answer is the gated turn the case stopped before: it is sent.
+    const [gatedStep, ...afterGate] = record.driver.remainingSteps;
+    if (input.kind === "answer" && gated && gatedStep?.turn === gated.turn) {
+      record.driver.remainingSteps = afterGate;
+    }
     if (responses) {
       await run.noteDeclines(pendingBeforeAnswer, responses);
       await exchange(
@@ -1155,6 +1175,24 @@ export async function cleanupCase(
   return current;
 }
 
+/**
+ * The cleanup a files case still owes the account, as the commands that
+ * send it: the case stopped before its end (a gate, a failure, a wait) or
+ * its cleanup broke off. What it left — a saved signature, a person's name
+ * in memory — would change the next case: a run stops there.
+ */
+export function owedCleanup(
+  benchCase: BenchCase,
+  record: RunRecord,
+  outDir: string
+) {
+  if (record.driver.suite !== "files" || record.cleanupDone) return [];
+  return benchCase.cleanup.map(
+    (text) =>
+      `pnpm bench send --out ${outDir} --case ${record.caseId} --kind cleanup --text ${JSON.stringify(text)}`
+  );
+}
+
 /** Catches up on a case's session and follows it for background results. */
 export async function followCase(
   client: Client,
@@ -1220,6 +1258,12 @@ export async function nextCase(
     settings.timeZone
   );
   const run = await caseRun(journal, record, extendSettings(record, settings));
+  const gated = run.files?.pendingGate;
+  if (gated) {
+    throw new Error(
+      `${record.caseId}: the case stopped before turn ${String(gated.turn)}; send it by hand first: ${gateAnswerCommand(run, gated.text)}`
+    );
+  }
   const cursor = record.driver.sessions.at(-1);
   const session = cursor
     ? client.sessions.attach(cursor.sessionId, {

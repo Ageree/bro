@@ -5,6 +5,8 @@
 - Positive kinds look at the latest version: the files of the check's group from the largest turn that has any (f-rent's
   signed PDF in turn 1, not the unsigned one of turn 0). `turn: N` takes exactly turn N, `all_files: true` every turn.
 - Negative kinds look at every file of every turn. Files of the cleanup turns (turn null) are never checked.
+- What a check forbids (`no_mark_in_rect`, `pdf_text_not_contains`, `none_of…`, `forbid_regex`, a box that stays /Off)
+  must hold for every file of the turn it reads, not only for one (`check.FORBIDDING`).
 """
 
 from __future__ import annotations

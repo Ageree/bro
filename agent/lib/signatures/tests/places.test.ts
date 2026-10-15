@@ -132,6 +132,27 @@ describe("which places a signing fills", () => {
     ).toMatchObject({ kind: "choose_fields" });
   });
 
+  it("keeps every label of a field's widgets and shows a counterparty's place as such", () => {
+    expect(
+      choosePlaces(
+        inventory([
+          place({ label: "Наниматель:", page: 1 }),
+          place({ label: "Поручитель:", page: 3 }),
+        ]),
+        { sourceKind: "attachment" }
+      )
+    ).toMatchObject({
+      candidates: [
+        {
+          counterparty: true,
+          label: "Наниматель / Поручитель",
+          pages: [1, 3],
+        },
+      ],
+      kind: "choose_fields",
+    });
+  });
+
   it("fills exactly the fields chosen, and refuses a name or a stamp spot", () => {
     const places = [
       place(),

@@ -117,7 +117,9 @@ def field_entries(reader, found, page_text):
         index, page, _, widget = record["widgets"][0]
         box = geom.user_to_view(page, geom.widget_rect(widget))
         text = page_text(index + 1)
-        group = field_kind == "radio" and len(record["widgets"]) > 1
+        states = sorted({s for *_, w in record["widgets"] for s in form.on_states(w)}) if field_kind in ("checkbox", "radio") else None
+        # Buttons of one name, each with its own state: listed one by one, with the words by each.
+        group = len(record["widgets"]) > 1 and (field_kind == "radio" or (field_kind == "checkbox" and len(states) > 1))
         if field_kind == "signature":
             signatures.append(
                 {"name": name, "page": index + 1, "box": geom.rounded(box), "signed": form.inherited(field, "/V") is not None}
@@ -131,9 +133,9 @@ def field_entries(reader, found, page_text):
             "comb": field_kind == "text" and bool(field_flags & form.FF_COMB),
             "maxlen": form.max_length(field),
             "options": [display for _, display in form.options(field)] if field_kind == "choice" else None,
-            "states": sorted({s for *_, w in record["widgets"] for s in form.on_states(w)}) if field_kind in ("checkbox", "radio") else None,
+            "states": states,
             "tooltip": str(field.get("/TU", "")) or None,
-            # A radio group is named from the left or above; each of its buttons by its own words.
+            # A group of buttons is named from the left or above; each button by its own words.
             "label": (text.label(box) if group else _label(text, box, field_kind)) or None,
             "hidden": form.hidden(widget) or None,
             "bro_mark": bool(mark_of(field)) or None,

@@ -103,6 +103,13 @@ class SignedTest(unittest.TestCase):
         self.assertTrue(is_signed(ctx, ctx.received[0]))
         self.assertFalse(is_signed(ctx, ctx.received[1]))
 
+    def test_signature_shape_wants_the_case_signature_not_just_its_proportions(self):
+        check = REGISTRY["signature_shape"].fn
+        own = self.ctx(files=[(0, pdf([(cutout(101, "С"), SIG_RECT)]), "a.pdf")])
+        self.assertEqual(check(own, {}, own.received[0]).status, "pass")
+        other = self.ctx(files=[(0, pdf([(cutout(137, "О"), SIG_RECT)]), "a.pdf")])
+        self.assertEqual(check(other, {}, other.received[0]).status, "fail")
+
     def test_an_image_in_a_signature_place_is_signed_whatever_it_shows(self):
         ctx = self.ctx(files=[(0, pdf([(cutout(131, "М"), SIG_RECT)]), "a.pdf")])
         self.assertTrue(is_signed(ctx, ctx.received[0]))

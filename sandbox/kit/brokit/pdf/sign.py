@@ -3,14 +3,17 @@
 The task agent finds places (`sign-spots`) and marks the person's own places with fields
 `bro_sign_<role>_<n>` (`sign-mark`; never a counterparty's). Bro's signer runs `sign-places`
 (inventory only — Node decides the policy) and `stamp-sign` in its own sandbox with a fresh
-copy of the kit. A mark carries /BroLabel — the printed text naming the place, computed here
-from the page so the marker cannot choose it — and /BroMark, the workspace's token, without
-which the signer does not trust the mark. Marks have no appearance (/AP): a file printed
-without Bro's signature shows nothing extra.
+copy of the kit. A mark carries /BroLabel — the printed text naming the place — and /BroMark,
+the workspace's token bound to the mark's name, page and box (`seal`), without which the signer
+does not trust the mark. `sign-places` reads every label from the page again, so a script that
+rewrites /BroLabel cannot rename the place, and the token itself never lands in a file: a mark
+copied out of a sent file vouches for nothing but its own place. Marks have no appearance (/AP):
+a file printed without Bro's signature shows nothing extra.
 """
 
 import datetime
 import hashlib
+import hmac
 import os
 import re
 import unicodedata
@@ -84,6 +87,20 @@ def stored(widget, key):
     """A key on the widget or, failing that, its field (marks carry /BroLabel and /BroMark)."""
     value = form.inherited(widget, key)
     return str(value) if value is not None else ""
+
+
+def seal(token, raw_name, index, widget):
+    """The /BroMark of a mark's widget: the token's HMAC over its name, page and box."""
+    box = ",".join("%.1f" % value for value in geom.widget_rect(widget))
+    message = "%s|%d|%s" % (raw_name, index + 1, box)
+    return hmac.new(token.encode("ascii"), message.encode("utf-8"), hashlib.sha256).hexdigest()[:32]
+
+
+def sealed(token, raw_name, index, widget):
+    """Whether the widget carries this token's seal for its own name, page and box."""
+    if not token:
+        return False
+    return hmac.compare_digest(stored(widget, "/BroMark").encode("utf-8"), seal(token, raw_name, index, widget).encode("ascii"))
 
 
 class Words:
@@ -169,12 +186,7 @@ def inventory(path, reader, token):
     found = form.fields(reader)
     base["signed_fields"] = signed_fields(found, reader)
     words = Words(path)
-    words.prefetch(
-        index + 1
-        for record in found.values()
-        if record["kind"] in ("signature", "text") and not mark_of(record["field"])
-        for index, *_ in record["widgets"]
-    )
+    words.prefetch(index + 1 for record in found.values() if record["kind"] in ("signature", "text") for index, *_ in record["widgets"])
     listed = []
     for name, record in found.items():
         field, field_kind = record["field"], record["kind"]
@@ -186,7 +198,8 @@ def inventory(path, reader, token):
         for index, page, _, widget in record["widgets"]:
             box = geom.widget_rect(widget)
             view = geom.user_to_view(page, box)
-            label = stored(widget, "/BroLabel") if mark else words(index + 1).label(view)
+            # From the page for marks too: /BroLabel is whatever the last script wrote there.
+            label = words(index + 1).label(view)
             hint = mark["role"] if mark else hint_for(form.raw_name(field) + " " + label, field_kind == "text")
             if field_kind == "text" and mark is None and hint is None:
                 continue
@@ -203,7 +216,7 @@ def inventory(path, reader, token):
                     "hidden": form.hidden(widget),
                     "empty": value in (None, ""),
                     "bro": mark,
-                    "marked": bool(mark and token and stored(widget, "/BroMark") == token),
+                    "marked": bool(mark) and sealed(token, form.raw_name(field), index, widget),
                     "label": label[:80],
                     "hint": hint,
                 }
@@ -597,7 +610,7 @@ def _mark(path, writer, items, token, warnings):
                 }
             )
             if token:
-                widget[NameObject("/BroMark")] = TextStringObject(token)
+                widget[NameObject("/BroMark")] = TextStringObject(seal(token, name, number - 1, widget))
             if role == "date":
                 widget[NameObject("/DA")] = TextStringObject("/Helv 10 Tf 0 g")
                 _helvetica(writer, acro)
@@ -638,10 +651,11 @@ def _adopt(writer, found, wanted, token, words, next_name):
     role = "initials" if re.search(r"инициал|параф|initial", normalised(label + " " + str(field.get("/TU", "")))) else "signature"
     name = next_name(role)
     field[NameObject("/T")] = TextStringObject(name)
-    for target in [field] + [w for *_, w in record["widgets"] if w is not field]:
+    field[NameObject("/BroLabel")] = TextStringObject(label)
+    for widget_index, _, _, target in record["widgets"]:
         target[NameObject("/BroLabel")] = TextStringObject(label)
         if token:
-            target[NameObject("/BroMark")] = TextStringObject(token)
+            target[NameObject("/BroMark")] = TextStringObject(seal(token, name, widget_index, target))
     return {"field": name, "role": role, "page": index + 1, "view_box": geom.rounded(view, 2), "label": label, "adopted": True, "was": wanted}
 
 
@@ -696,11 +710,12 @@ def spots(argv):
 
 
 def foreign_marks(found, token):
-    """Names of sign marks that do not carry this workspace's token (another workspace's, or forged)."""
+    """Names of sign marks that do not carry this workspace's seal (another workspace's, moved, or forged)."""
     return [
         name
         for name, record in found.items()
-        if mark_of(record["field"]) and (token is None or stored(record["widgets"][0][3], "/BroMark") != token)
+        if mark_of(record["field"])
+        and not all(sealed(token, form.raw_name(record["field"]), index, widget) for index, _, _, widget in record["widgets"])
     ]
 
 
@@ -800,7 +815,7 @@ def _blank_for(box, blanks, caption):
     best, best_distance = None, None
     for blank in blanks:
         bx0, by0, bx1, by1 = blank["box"]
-        if blank["kind"] == "checkbox":
+        if blank["kind"] == "checkbox" or blank.get("filled"):
             continue
         if caption:
             # «(подпись)» sits under its line: the blank right above it, across its centre.

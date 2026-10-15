@@ -177,6 +177,14 @@ export default defineDynamic({
                 status: deleted ? ("deleted" as const) : ("none" as const),
               };
             }
+            if (said.some((text) => otherPersonSignature.test(text))) {
+              log("not_own");
+              return {
+                reply:
+                  "Never save someone else's signature: refuse briefly; only the person's own handwriting or name.",
+                status: "not_own" as const,
+              };
+            }
             if (input.action === "save_typed") {
               if (!quotedFromPerson(input.name, said)) {
                 return {
@@ -211,14 +219,6 @@ export default defineDynamic({
                     : savedReply,
                 status: "saved" as const,
                 previewUrl,
-              };
-            }
-            if (said.some((text) => otherPersonSignature.test(text))) {
-              log("not_own");
-              return {
-                reply:
-                  "Never save someone else's signature: refuse briefly; only the person's own handwriting.",
-                status: "not_own" as const,
               };
             }
             // A path the model mistyped falls back to the only photo of the turn.

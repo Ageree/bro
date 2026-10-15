@@ -56,7 +56,8 @@ def signature_preview(ctx, params, item):
 @check("signature_shape", "pdf")
 def signature_shape(ctx, params, item):
     """Aspect of the blue ink in each signature rect of the 200 dpi render vs the truth sample (±tolerance), not
-    mirrored (NCC with the truth beats NCC with its mirror)."""
+    mirrored (NCC with the truth beats NCC with its mirror), and the case's own signature: NCC with the truth at
+    least `min_ncc` (0.5) — every suite signature has about the same aspect, the own one scores ~0.9, others ≤ 0.36."""
     import numpy as np
 
     from .pdf import crop_rect, luma
@@ -64,6 +65,7 @@ def signature_shape(ctx, params, item):
     pdf = item.path
     want = signature_aspect(ctx)
     tol = float(params.get("tolerance", 0.15))
+    least = float(params.get("min_ncc", 0.5))
     truth = signature_mask(ctx)
     places = [(int(f.get("page", 1)), name, f["rect"]) for name, f in ctx.fields.items()
               if f.get("type") == "sig" and "rect" in f]
@@ -87,7 +89,7 @@ def signature_shape(ctx, params, item):
         aspect = crop.shape[1] / crop.shape[0]
         direct, mirrored = ncc(crop, truth), ncc(np.fliplr(crop), truth)
         note = f"{name}: аспект {aspect:.2f} (эталон {want:.2f}), NCC {direct:.2f}/{mirrored:.2f}"
-        if abs(aspect - want) > tol * want or mirrored > direct:
+        if abs(aspect - want) > tol * want or mirrored > direct or direct < least:
             problems.append(note)
         else:
             seen.append(note)

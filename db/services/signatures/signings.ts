@@ -19,7 +19,8 @@ const signingPlanSchema = z.object({
         field: z.string().min(1).max(500),
         role: z.enum(["signature", "initials", "date"]),
         pages: z.array(z.number().int().min(1)).min(1).max(500),
-        label: z.string().max(80).nullable(),
+        // Every distinct label of the field's widgets (`fieldLabel`).
+        label: z.string().max(400).nullable(),
         mark: z.boolean(),
       })
     )
@@ -75,7 +76,9 @@ function ownedSigning(scope: AccessScope, rootSessionId: string, id: string) {
 
 /**
  * Records one offer to sign one document in a conversation, one row per
- * document: an older offer still open for the same bytes is cancelled, and
+ * document: an older offer still open for the same bytes, or with the same
+ * question (a corrected version of the document reads the same, and one
+ * «да» must answer one offer), is cancelled, and
  * the same offer again (the same fingerprint) is the row already there —
  * revived with its consent cleared when it was cancelled or expired, kept as
  * it is while it is live, and always once signed.
@@ -96,7 +99,10 @@ export async function prepareSigning(
     .where(
       and(
         ownedSignings(scope, input.rootSessionId),
-        eq(documentSignings.sourceSha256, input.sourceSha256),
+        or(
+          eq(documentSignings.sourceSha256, input.sourceSha256),
+          eq(documentSignings.question, input.question)
+        ),
         eq(documentSignings.status, "prepared"),
         ne(documentSignings.fingerprint, input.fingerprint)
       )

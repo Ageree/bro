@@ -57,3 +57,19 @@ class Retext(unittest.TestCase):
             image = render(output, page, dpi=72, gray=True)
             x0, y0, x1, y1 = (int(round(v)) for v in line["box"])
             self.assertGreater(int((image[y0:y1 + 1, x0:x1 + 1] < 128).sum()), 10, line)
+
+    def test_retext_keeps_the_size_and_colour_of_a_line(self):
+        code, listed = kit("pdf", "lines", self.source)
+        self.assertEqual(code, 0, listed)
+        found = {line["text"]: line for page in listed["pages"] for line in page["lines"]}
+        self.assertAlmostEqual(found["СПРАВКА"]["size"], 16, delta=0.2)
+        self.assertAlmostEqual(found["15.10.2026"]["size"], 11, delta=0.2)
+        output = os.path.join(self.directory, "spravka-same.pdf")
+        code, result = kit("pdf", "retext", self.source, write_json(os.path.join(self.directory, "none.json"), {}), "-o", output)
+        self.assertEqual(code, 0, result)
+        code, again = kit("pdf", "lines", output)
+        redrawn = {line["text"]: line for page in again["pages"] for line in page["lines"]}
+        self.assertAlmostEqual(redrawn["15.10.2026"]["size"], 11, delta=0.3)
+        x0, y0, x1, y1 = (int(round(v)) for v in found["15.10.2026"]["box"])
+        region = render(output, 1, dpi=72)[y0 : y1 + 1, x0 : x1 + 1]
+        self.assertGreater(int((region[..., 2] > region[..., 0] + 60).sum()), 5)

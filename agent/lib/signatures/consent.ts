@@ -13,7 +13,11 @@ import { directModelSelection } from "@agent/lib/model/direct";
 import { phoneActionTurn } from "@agent/lib/phone/policy";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { exactSharedLink } from "@agent/lib/sandbox/exact-link";
-import { isSharedFileLink, sandboxFilesPath } from "@agent/lib/sandbox/files";
+import {
+  isSharedFileLink,
+  linksInText,
+  sandboxFilesPath,
+} from "@agent/lib/sandbox/files";
 import { signQuestionPattern } from "./question";
 
 /**
@@ -104,29 +108,49 @@ const ownSignatureWords = new RegExp(
 );
 
 const signatureName = /podpis|rospis|sign|avtograf|autograph/iu;
-const photosLooked = 20;
+const burstsLooked = 5;
 const photosTried = 4;
 
 /**
+ * The person's messages in runs with nothing of Bro's or of a report
+ * between them, newest run first: a messenger brings a PDF and a photo as
+ * two messages, the words with one of them.
+ */
+function personBursts(messages: readonly ModelMessage[]) {
+  const bursts: ModelMessage[][] = [];
+  let burst: ModelMessage[] = [];
+  for (const message of messages) {
+    if (startsTurn(message) && isPersonMessage(message)) {
+      burst.push(message);
+    } else if (message.role !== "user" || startsTurn(message)) {
+      if (burst.length > 0) bursts.push(burst);
+      burst = [];
+    }
+  }
+  if (burst.length > 0) bursts.push(burst);
+  return bursts.toReversed();
+}
+
+/**
  * The photos of the person's own signature that a signing may take when no
- * sample is saved: those of their newest message among the last twenty that
- * says the signature on it is theirs — «Подпись моя на фотке, если нужна» —
- * and says nothing of someone else's. Of several, the one whose name says
- * it is a signature, when exactly one does; otherwise up to four, and
- * `prepare` keeps the only one the kit cuts a signature out of.
+ * sample is saved: those of their newest run of messages, of the last five,
+ * that says the signature on it is theirs — «Подпись моя на фотке, если
+ * нужна», the photo in the same message or the next — and says nothing of
+ * someone else's. Of several, the one whose name says it is a signature,
+ * when exactly one does; otherwise up to four, and `prepare` keeps the only
+ * one the kit cuts a signature out of.
  */
 export function signaturePhotoCandidates(messages: readonly ModelMessage[]) {
-  const message = messages.slice(-photosLooked).findLast((candidate) => {
-    if (!startsTurn(candidate) || !isPersonMessage(candidate)) return false;
-    const text = textOf(candidate);
-    return (
-      ownSignatureWords.test(text) &&
-      !otherPersonSignature.test(text) &&
-      currentImages([candidate]).length > 0
-    );
-  });
-  if (message === undefined) return [];
-  const images = currentImages([message]);
+  const images =
+    personBursts(messages)
+      .slice(0, burstsLooked)
+      .map((burst) => {
+        const text = burst.map(textOf).join("\n");
+        return ownSignatureWords.test(text) && !otherPersonSignature.test(text)
+          ? currentImages(burst)
+          : [];
+      })
+      .find((found) => found.length > 0) ?? [];
   const named = images.filter((image) => signatureName.test(image.name));
   return (named.length === 1 ? named : images)
     .slice(0, photosTried)
@@ -138,8 +162,6 @@ function currentImages(messages: readonly ModelMessage[]) {
     .filter((file) => file.mediaType.startsWith("image/"))
     .map(imageOf);
 }
-
-const linkPattern = /https:\/\/[^\s<>"'\\)\]]+/gu;
 
 /** A shared file's id: the 24 hex after the files path of a valid link. */
 export function sharedFileId(url: string) {
@@ -161,9 +183,7 @@ function sentLinks(message: z.infer<typeof sentSchema>) {
   return [
     ...(message.url === undefined ? [] : [message.url]),
     ...(message.attachments ?? []).map(({ url }) => url),
-    ...[...(message.text ?? "").matchAll(linkPattern)].map(([link]) =>
-      link.replace(/[.,;:!?…]+$/u, "")
-    ),
+    ...linksInText(message.text ?? ""),
   ];
 }
 
@@ -211,10 +231,15 @@ export function deliveredShareIds(
   return [...ids];
 }
 
-/** The text up to and with its last «?»: what the person's answer answers. */
+/**
+ * The text up to and with its last «?»: what the person's answer answers.
+ * A link's own «?» (every shared file's `?sig=`) asks nothing.
+ */
 function latestQuestion(text: string) {
-  const end = Math.max(text.lastIndexOf("?"), text.lastIndexOf("？"));
-  return end < 0 ? undefined : text.slice(0, end + 1);
+  let asking = text;
+  for (const link of linksInText(text)) asking = asking.replace(link, " ");
+  const end = Math.max(asking.lastIndexOf("?"), asking.lastIndexOf("？"));
+  return end < 0 ? undefined : asking.slice(0, end + 1);
 }
 
 /**
@@ -226,7 +251,9 @@ function latestQuestion(text: string) {
  * fine); a question in Bro's own words that asks to sign counts for the
  * judge, unless the message asked another open signing's stored question;
  * any other question clears what was asked; a send without one changes
- * nothing.
+ * nothing. A message that carries the file of some open signing asks about
+ * that signing only, and a question two signings share asks neither unless
+ * the message carries one of their files: one «да» answers one offer.
  */
 export function deliveryVerdicts(
   rows: readonly Pick<DocumentSigning, "id" | "question" | "sourceShareId">[],
@@ -236,22 +263,30 @@ export function deliveryVerdicts(
   const links = sentLinks(sent);
   const text = sent.text ?? "";
   const latest = latestQuestion(text);
-  const asks = (row: Pick<DocumentSigning, "question">) =>
-    latest !== undefined && endsWithQuote(row.question, latest);
-  const askedAnother = rows.some(asks);
+  const carries = (row: Pick<DocumentSigning, "sourceShareId">) =>
+    row.sourceShareId !== null &&
+    links.some((link) => sharedFileId(link) === row.sourceShareId);
+  const stored = rows.filter(
+    (row) => latest !== undefined && endsWithQuote(row.question, latest)
+  );
+  const carried = rows.filter(carries);
+  const owners = carried.length > 0 ? carried : rows;
+  // The one offer whose stored question this is, told apart by its file.
+  const owner = [stored, stored.filter(carries)].find(
+    (asking) => asking.length === 1
+  )?.[0];
   return rows.map((row) => {
     const asked: { text: string; verbatim: boolean } | "clear" | undefined =
       latest === undefined
         ? undefined
-        : asks(row)
+        : owner === row
           ? { text, verbatim: true }
-          : !askedAnother && signQuestionPattern.test(latest.trim())
+          : stored.length === 0 &&
+              owners.includes(row) &&
+              signQuestionPattern.test(latest.trim())
             ? { text, verbatim: false }
             : "clear";
-    const shown =
-      row.sourceShareId !== null &&
-      links.some((link) => sharedFileId(link) === row.sourceShareId);
-    return { asked, id: row.id, shown };
+    return { asked, id: row.id, shown: carries(row) };
   });
 }
 

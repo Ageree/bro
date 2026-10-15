@@ -327,7 +327,7 @@ def pdf_text_contains(ctx, params, item):
     return passed(f"стр. {pages[0]}–{pages[-1]}")
 
 
-@check("pdf_text_not_contains", "pdf")
+@check("pdf_text_not_contains", "pdf", quantifier="all")
 def pdf_text_not_contains(ctx, params, item):
     text = norm_text(ctx.text(item.path))
     m = re.search(params["forbid_regex"], text)
@@ -650,7 +650,7 @@ def mark_in_rect(ctx, params, item):
     return passed(f"{name}: новые чернила {share:.3f}")
 
 
-@check("no_mark_in_rect", "pdf")
+@check("no_mark_in_rect", "pdf", quantifier="all")
 def no_mark_in_rect(ctx, params, item):
     share, name = _mark_share(ctx, params, item)
     limit = float(params.get("max_ink", 0.03))

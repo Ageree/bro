@@ -126,6 +126,29 @@ class Sign(unittest.TestCase):
         self.assertNotIn("/BroMark", widgets(unmarked)[0])
         self.assertFalse(self.places(unmarked)["places"][0]["marked"])
 
+    def test_places_take_labels_from_the_page_and_a_mark_vouches_only_for_its_own_place(self):
+        from pypdf import PdfWriter
+        from pypdf.generic import NameObject, TextStringObject
+
+        code, result, output = self.mark(self.contract, [{"page": 1, "box": self.boxes["landlord"], "role": "signature"}])
+        self.assertEqual(code, 0, result)
+        with open(output, "rb") as handle:
+            self.assertNotIn(TOKEN.encode("ascii"), handle.read())
+        writer = PdfWriter(clone_from=output)
+        landlord = next(w for w in (a.get_object() for a in writer.pages[0]["/Annots"]) if w.get("/T") == "bro_sign_signature_1")
+        landlord[NameObject("/BroLabel")] = TextStringObject("НАНИМАТЕЛЬ: (подпись)")
+        copied = sig_field("bro_sign_signature_2", [60, 400, 200, 430])
+        copied[NameObject("/BroMark")] = landlord["/BroMark"]
+        add_field(writer, 0, copied)
+        plain = sig_field("bro_sign_signature_3", [60, 300, 200, 330])
+        plain[NameObject("/BroMark")] = TextStringObject(TOKEN)
+        add_field(writer, 0, plain)
+        writer.write(output)
+        listed = {place["field"]: place for place in self.places(output)["places"]}
+        self.assertTrue(listed["bro_sign_signature_1"]["label"].startswith("НАЙМОДАТЕЛЬ:"), listed["bro_sign_signature_1"])
+        marked = {name: place["marked"] for name, place in listed.items()}
+        self.assertEqual(marked, {"bro_sign_signature_1": True, "bro_sign_signature_2": False, "bro_sign_signature_3": False})
+
     def test_labels_name_each_column_and_roles_are_checked(self):
         code, result, _ = self.mark(
             self.contract,

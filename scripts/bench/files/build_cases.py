@@ -133,8 +133,8 @@ cases.append({
         chk("raster_region", "Фон подписи прозрачен: рендер 200 dpi, в rect подписи чернил ≥ 0,5 %, бумаги дальше 2 px от "
             "чернил ≤ 0,5 %", pages=[1], rect_from_truth=["signature"], dpi=200, ink_min=0.005, paper_max=0.005,
             paper_exclude_ink_halo_px=2),
-        chk("signature_shape", "Пропорции росчерка сохранены: аспект чернил на странице vs образец ±15 %, без отражения",
-            tolerance=0.15),
+        chk("signature_shape", "Росчерк — подпись этого случая (NCC с образцом ≥ 0.5), пропорции сохранены: аспект "
+            "чернил на странице vs образец ±15 %, без отражения", tolerance=0.15),
         chk("pdf_text_contains", "Дата подписи — сегодня (текстом)", all_of=[TODAY]),
         chk("pdf_signed_by_bro", "Подписан Бро: /Keywords «signed-by-bro <id>», /Producer «Бро», без полей bro_sign_* и без "
             "пустого /Sig поверх подписи"),
@@ -213,7 +213,8 @@ cases.append({
         chk("pdf_image_in_bbox", "То же для signature_2 на стр.2", page=2, rect=[300, 196, 430, 230], expand_pt=12, min_inside=0.8),
         # issues: the anti-aliased stroke edge is not paper; paper counts only farther than 2 px from ink, then ≤ 0.5 %.
         chk("raster_region", "Фон подписи прозрачен: рендер 200 dpi, в rect подписи ≥0.5% пикселей «чернила» (L<110, B>R+25), ≤0.5% пикселей «бумага/клетка» (110≤L<238) дальше 2 px от чернил", pages=[1, 2], rect_from_truth=["signature", "signature_2"], dpi=200, ink_min=0.005, paper_max=0.005, paper_exclude_ink_halo_px=2),
-        chk("signature_shape", "Пропорции росчерка сохранены: аспект bbox чернил на странице vs truth ±15%, без отражения", tolerance=0.15),
+        chk("signature_shape", "Росчерк — подпись этого случая (NCC с truth ≥ 0.5), пропорции сохранены: аспект bbox "
+            "чернил на странице vs truth ±15%, без отражения", tolerance=0.15),
         chk("no_signed_file_before_consent", "До ответа «да» не отправлен PDF с изображением в rect подписи", consent_turn=1),
         chk("pdf_page_count", "2 страницы", equals=2),
     ],

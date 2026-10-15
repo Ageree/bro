@@ -35,6 +35,7 @@ import {
   nextCase,
   noteObservation,
   observeCase,
+  owedCleanup,
   runCase,
   type DriverSettings,
 } from "./conversation.ts";
@@ -532,12 +533,19 @@ async function runCommand(flags: Values) {
     ready.map(({ benchCase, plan }) => [benchCase.id, plan])
   );
   const records: RunRecord[] = [];
+  /** A files case that left its cleanup unsent: the cases after it wait. */
+  let halted: string | undefined;
+  const skipped: string[] = [];
   await pool(
     ready.map(({ benchCase }) => benchCase),
     concurrency,
     async (benchCase) => {
       const plan = plansById.get(benchCase.id);
       if (plan?.kind !== "ready") return;
+      if (halted !== undefined) {
+        skipped.push(benchCase.id);
+        return;
+      }
       console.log(`${benchCase.id}: старт`);
       const ran = await runCase(
         client,
@@ -559,8 +567,23 @@ async function runCommand(flags: Values) {
       const record = await afterFilesCase(client, ran, flags, driverSettings);
       records.push(record);
       console.log(summaryLine(record));
+      const owed =
+        flags["no-cleanup"] === true
+          ? []
+          : owedCleanup(benchCase, record, outDir);
+      if (owed.length > 0) {
+        halted = record.caseId;
+        console.warn(
+          `${record.caseId}: кейс не дошёл до уборки, и следующий кейс подписал бы его образцом. Доведите кейс до конца или уберите вручную:\n${owed.join("\n")}`
+        );
+      }
     }
   );
+  if (halted !== undefined && skipped.length > 0) {
+    console.warn(
+      `Не запущены после ${halted}: ${skipped.join(", ")} — pnpm bench run --suite files --case ${skipped.join(",")}`
+    );
+  }
   await writeFile(
     join(outDir, "summary.json"),
     `${JSON.stringify(

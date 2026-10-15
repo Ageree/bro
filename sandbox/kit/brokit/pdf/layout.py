@@ -6,13 +6,16 @@ maximising the variance of the row projection over −3…+3°; the raster is st
 are found there (dark runs ≥ 8 pt with paper above or below — letter strokes do not count),
 and their ends are mapped back, so a blank on a skewed scan carries its `angle` and its `line`
 (the rule's ends) for `pdf write`. Every page result is cached by the file's sha1, which is
-how `pdf write` and `pdf sign-mark` resolve ids like "p1b3".
+how `pdf write` and `pdf sign-mark` resolve ids like "p1b3". A file `pdf write` made keeps the
+ids of the file it wrote on (`carry`): the blanks its text filled stay, marked "filled", instead
+of dropping out and renumbering the rest — an id from the source's layout names the same place.
 """
 
 import hashlib
 import json
 import math
 import os
+import re
 import tempfile
 
 from brokit import labels
@@ -25,7 +28,9 @@ TEXT_DPI = 100
 SCAN_DPI = 200
 MAX_PIXELS_SIDE = 4000
 WORDS_CAP = 400
-BLANK_KEYS = ("id", "kind", "box", "angle", "label", "label_box", "cells", "line")
+BLANK_KEYS = ("id", "kind", "box", "angle", "label", "label_box", "cells", "line", "filled")
+CACHE_NAME = re.compile(r"([0-9a-f]{40})-(\d+)\.json")
+FILLED_SHARE = 0.3
 
 
 def cache_dir():
@@ -364,7 +369,7 @@ def analyse(path, number, page, lines):
             twin["kind"] = "underscores"  # typed «____»: the raster rule gives the exact geometry
         else:
             blanks.append({"kind": "underscores", "box": candidate, "angle": 0.0, "line": [x0, rule_y, x1, rule_y]})
-    kept = [b for b in blanks if _covered(b["box"], printed) <= 0.3]
+    kept = [b for b in blanks if _covered(b["box"], printed) <= FILLED_SHARE]
     kept.sort(key=lambda b: (round(b["box"][3] / 6), b["box"][0]))
     for index, blank in enumerate(kept, start=1):
         blank["id"] = "p%db%d" % (number, index)
@@ -432,13 +437,57 @@ def page_results(path, numbers, reader=None):
         for number in missing:
             result = analyse(path, number, reader.pages[number - 1], text.get(number, []))
             out[number] = result
-            if directory:
-                temporary = os.path.join(directory, "%s-%d.json.%d" % (digest, number, os.getpid()))
-                with open(temporary, "w", encoding="utf-8") as handle:
-                    json.dump({"v": LAYOUT_VERSION, "kit": crypt.kit_version(), "page": result}, handle, ensure_ascii=False)
-                os.replace(temporary, os.path.join(directory, "%s-%d.json" % (digest, number)))
+            _store(directory, digest, number, result)
     _prune_cache(directory)
     return out
+
+
+def _store(directory, digest, number, result):
+    if not directory:
+        return
+    temporary = os.path.join(directory, "%s-%d.json.%d" % (digest, number, os.getpid()))
+    with open(temporary, "w", encoding="utf-8") as handle:
+        json.dump({"v": LAYOUT_VERSION, "kit": crypt.kit_version(), "page": result}, handle, ensure_ascii=False)
+    os.replace(temporary, os.path.join(directory, "%s-%d.json" % (digest, number)))
+
+
+def carry(source, output, written):
+    """Caches the source's laid-out pages for the file `pdf write` made from it, with the ids.
+
+    A fresh layout of the written file would drop the blanks its text now covers and number the
+    rest anew, so "p1b16" of the source would name another blank there. The output's words are
+    read again; a blank under its text or a written box (`written`: (page, view box) pairs) is
+    marked "filled".
+    """
+    directory = cache_dir()
+    if not directory:
+        return
+    source_digest, output_digest = file_sha1(source), file_sha1(output)
+    pages = {}
+    for name in os.listdir(directory):
+        match = CACHE_NAME.fullmatch(name)
+        if not match or match.group(1) != source_digest:
+            continue
+        try:
+            with open(os.path.join(directory, name), encoding="utf-8") as handle:
+                data = json.load(handle)
+            if data.get("v") == LAYOUT_VERSION and data.get("kit") == crypt.kit_version():
+                pages[int(match.group(2))] = data["page"]
+        except (OSError, ValueError, KeyError):
+            continue
+    if not pages:
+        return
+    text = labels.page_layout(output, min(pages), max(pages))
+    for number, page in pages.items():
+        lines = text.get(number, [])
+        printed = [w for line in lines for w in line["words"] if w["kind"] == "text" and not set(w["t"]) <= BOX_GLYPHS]
+        boxes = [box for page_number, box in written if page_number == number]
+        for blank in page["blanks"]:
+            area = geom.area(blank["box"])
+            if _covered(blank["box"], printed) > FILLED_SHARE or any(geom.intersection(blank["box"], box) > FILLED_SHARE * area for box in boxes):
+                blank["filled"] = True
+        page["words"] = [{"t": w["t"], "box": geom.rounded(w["box"])} for w in labels.text_words(lines)[:WORDS_CAP]]
+        _store(directory, output_digest, number, page)
 
 
 def _prune_cache(directory, budget=50 * 1024 * 1024):
@@ -478,6 +527,8 @@ def blank_by_id(path, blank_id):
     if not 1 <= number <= len(reader.pages):
         raise KitError("bad_id", "no page %d in this file" % number)
     for blank in page_results(path, [number], reader)[number]["blanks"]:
+        if blank["id"] == blank_id and blank.get("filled"):
+            raise KitError("filled_blank", "%s is already filled in this file" % blank_id, "write every blank in one pdf write on the source file")
         if blank["id"] == blank_id:
             return number, blank["box"], blank
     raise KitError("bad_id", "no blank %s on page %d" % (blank_id, number), "run brokit pdf layout on this file again")

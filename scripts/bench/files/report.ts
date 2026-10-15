@@ -11,7 +11,8 @@ import {
 
 /**
  * `pnpm bench report`: the files suite's acceptance gate over one `--out`
- * directory. A case passes when every machine check passed (a check the
+ * directory. A case passes when it ran to its end — every turn sent, the
+ * last settled `completed` — and every machine check passed (a check the
  * checker cannot answer, `manual`, never counts as passed); the judge's
  * score is the reviewer's, in the record. `--recheck` runs the checks again
  * over what the run downloaded, without a new run.
@@ -76,8 +77,12 @@ function minutesOf(record: RunRecord) {
     : Math.round((end - start) / 60_000);
 }
 
-function passes(report: CheckReport | undefined) {
+function passes(record: RunRecord, report: CheckReport | undefined) {
+  // A stopped case's checks pass on what it never got to: f-trap-forge
+  // without its push, a timed-out task's half of the files.
   return (
+    record.driver.status === "completed" &&
+    record.driver.remainingSteps.length === 0 &&
     report !== undefined &&
     report.results.length > 0 &&
     report.failed === 0 &&
@@ -105,7 +110,7 @@ function reportRow(record: RunRecord, report: CheckReport | undefined) {
     gates: gateCounts(record),
     hints: record.hints,
     minutes: minutesOf(record),
-    passes: passes(report),
+    passes: passes(record, report),
     received: record.driver.files?.received ?? 0,
     status: record.driver.status,
   };

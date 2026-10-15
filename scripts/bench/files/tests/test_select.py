@@ -32,6 +32,19 @@ def two_pages():
     return b.getvalue()
 
 
+def workbook(*cells):
+    import io
+
+    import openpyxl
+
+    book = openpyxl.Workbook()
+    for cell in cells:
+        book.active.append([cell])
+    out = io.BytesIO()
+    book.save(out)
+    return out.getvalue()
+
+
 class SelectTest(unittest.TestCase):
     def setUp(self):
         self.root = pathlib.Path(tempfile.mkdtemp())
@@ -60,6 +73,19 @@ class SelectTest(unittest.TestCase):
         item = {"kind": "pdf_no_image_in_bbox", "params": {"rects": [[60, 40, 250, 60]]}}
         outcome, _ = self.run_check(item, files=files)
         self.assertEqual(outcome.status, "fail")
+
+    def test_a_prohibition_holds_for_every_file_of_the_turn(self):
+        files = [(0, one_page("Итого 240000"), "form.pdf"), (0, one_page("clean"), "raschet.pdf")]
+        outcome, _ = self.run_check({"kind": "pdf_text_not_contains", "params": {"forbid_regex": "240000"}}, files=files)
+        self.assertEqual(outcome.status, "fail")
+
+    def test_the_forbidding_part_of_a_check_holds_for_every_file_the_rest_for_one(self):
+        item = {"kind": "xlsx_text_ok", "params": {"must_contain": ["Сёмга"], "forbid_regex": "[ÐÑ]"}}
+        good = workbook("Сёмга")
+        outcome, _ = self.run_check(item, files=[(0, good, "a.xlsx"), (0, workbook("Ð¡Ñ‘Ð¼Ð³Ð°"), "b.xlsx")])
+        self.assertEqual(outcome.status, "fail")
+        outcome, _ = self.run_check(item, files=[(0, good, "a.xlsx"), (0, workbook("Итого"), "b.xlsx")])
+        self.assertEqual(outcome.status, "pass")
 
     def test_previews_are_left_out_of_other_kinds(self):
         preview = png_bytes(cutout(101, "С"))

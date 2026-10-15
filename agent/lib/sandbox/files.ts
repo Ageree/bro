@@ -227,6 +227,28 @@ export function isSharedFileLink(value: string) {
   );
 }
 
+const textLink = /https:\/\/[^\s<>"'\\\]]+/gu;
+const sentenceEnd = /[.,;:!?…]+$/u;
+
+const count = (text: string, char: string) => text.split(char).length - 1;
+
+/**
+ * Each https link written in `text`, as far as it goes: to a space, a
+ * quote, an angle bracket or «]». A shared file's name keeps its own
+ * parentheses («Анкета (1).pdf» stays literal in the link); a sentence's
+ * end and a «)» the link does not open — of a markdown link, of a remark in
+ * brackets — stay out.
+ */
+export function linksInText(text: string) {
+  return [...text.matchAll(textLink)].map(([written]) => {
+    let link = written.replace(sentenceEnd, "");
+    while (link.endsWith(")") && count(link, ")") > count(link, "(")) {
+      link = link.slice(0, -1).replace(sentenceEnd, "");
+    }
+    return link;
+  });
+}
+
 export async function readOwnedSharedFile(
   value: string,
   owner: { readonly sessionId: string; readonly workspaceId: string }

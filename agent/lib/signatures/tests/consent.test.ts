@@ -126,6 +126,14 @@ describe("what a delivered send did to an open signing", () => {
     expect(asked(text)).toEqual({ text, verbatim: false });
   });
 
+  it("reads a link's own «?» as no question", () => {
+    expect(asked(`${question}\nФайл: ${shareLink()}`)).toEqual({
+      text: `${question}\nФайл: ${shareLink()}`,
+      verbatim: true,
+    });
+    expect(asked(`Вот файл: [анкета](${shareLink()})`)).toBeUndefined();
+  });
+
   it("clears what was asked with another question, even one after the stored question", () => {
     expect(asked("Что-то ещё?")).toBe("clear");
     expect(
@@ -146,12 +154,38 @@ describe("what a delivered send did to an open signing", () => {
     ).toEqual([{ text: question, verbatim: true }, "clear"]);
   });
 
-  it("showed the unsigned file when it carried its link", () => {
+  it("asks one of two offers sharing a question only by the file the message carries", () => {
+    const corrected = {
+      id: "3f6f5d78-641b-4c80-aacf-eec05af14e53",
+      question,
+      sourceShareId: "b2".repeat(12),
+    };
+    const askedOf = (message: Parameters<typeof deliveryVerdicts>[1]) =>
+      verdicts(message, [row, corrected]).map((verdict) => verdict.asked);
+    expect(askedOf({ kind: "message", text: question })).toEqual([
+      "clear",
+      "clear",
+    ]);
+    expect(
+      askedOf({
+        attachments: [{ kind: "file", url: shareLink("b2".repeat(12)) }],
+        kind: "message",
+        text: question,
+      })
+    ).toEqual(["clear", { text: question, verbatim: true }]);
+  });
+
+  it("showed the unsigned file when it carried its link, a name with parentheses in the text too", () => {
     expect(
       verdicts({
         attachments: [{ kind: "file", url: shareLink() }],
         kind: "message",
       })[0]?.shown
+    ).toBe(true);
+    const duplicate = shareLink(shareId, "anketa(1).pdf");
+    expect(
+      verdicts({ kind: "message", text: `Вот [анкета](${duplicate}).` })[0]
+        ?.shown
     ).toBe(true);
   });
 
@@ -189,6 +223,25 @@ describe("photos a signing may take the person's signature from", () => {
         ]),
       ])
     ).toEqual(["/workspace/attachments/0123456789abcdef/IMG_1.jpg"]);
+  });
+
+  it("takes the photo that came as the next message after the words, not after Bro's reply", () => {
+    const words = person("Заполни анкету и подпиши, подпись моя на фото", [
+      staged(
+        "/workspace/attachments/fedcba9876543210/anketa.pdf",
+        "application/pdf"
+      ),
+    ]);
+    expect(
+      signaturePhotoCandidates([words, person("", [photo("IMG_1.jpg")])])
+    ).toEqual(["/workspace/attachments/0123456789abcdef/IMG_1.jpg"]);
+    expect(
+      signaturePhotoCandidates([
+        words,
+        { content: "Сейчас заполню.", role: "assistant" },
+        person("", [photo("IMG_1.jpg")]),
+      ])
+    ).toEqual([]);
   });
 
   it("never takes someone else's signature", () => {

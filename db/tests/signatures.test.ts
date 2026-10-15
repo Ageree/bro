@@ -133,7 +133,7 @@ describe("the person's signature sample", () => {
 });
 
 describe("signing offers", () => {
-  it("keep one row per document and offer, and supersede an older offer for the same bytes", async () => {
+  it("keep one row per document and offer, and supersede an older offer for the same bytes or the same question", async () => {
     const store = await signaturesDatabase();
     const first = await store.prepareSigning(alice, offer());
     const again = await store.prepareSigning(alice, offer());
@@ -143,6 +143,18 @@ describe("signing offers", () => {
     expect(
       await store.readSigning(alice, "session:alice", first.id)
     ).toMatchObject({ status: "cancelled" });
+    // A corrected version: other bytes, the same question.
+    const corrected = await store.prepareSigning(
+      alice,
+      offer("fingerprint:3", "c".repeat(64))
+    );
+    const other = await store.prepareSigning(alice, {
+      ...offer("fingerprint:4", "d".repeat(64)),
+      question: "Ставлю твою сохранённую подпись на «dogovor.pdf». Подписываю?",
+    });
+    expect(
+      (await store.openSignings(alice, "session:alice")).map(({ id }) => id)
+    ).toEqual([other.id, corrected.id]);
   }, 30_000);
 
   it("revive a cancelled offer with what was asked and shown cleared", async () => {

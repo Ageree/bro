@@ -126,6 +126,17 @@ class ImgSignatureTest(unittest.TestCase):
         self.assertEqual(code, 0, result)
         self.assertLess(abs(result["aspect"] - self.aspect) / self.aspect, 0.1)
 
+    def test_two_level_scan_reads_as_ink(self):
+        # A 1-bit scan, or pure black ink without anti-aliasing: nothing between ink and paper.
+        scan = Image.new("1", (1600, 900), 1)
+        ImageDraw.Draw(scan).line(signature_points(), fill=0, width=9, joint="curve")
+        scan.save(self.path("bw.png"))
+        code, result = kit("img", "signature", self.path("bw.png"), "-o", self.path("bw_out.png"))
+        self.assertEqual(code, 0, result)
+        self.assertLess(abs(result["aspect"] - self.aspect) / self.aspect, 0.1)
+        self.assertNotIn("low_contrast", result["warnings"])
+        self.assertEqual(int(np.asarray(Image.open(self.path("bw_out.png")))[..., 3].max()), 255)
+
     def test_blank_sheet_has_no_ink(self):
         blank = Image.new("RGB", (1200, 800), PAPER)
         noise = np.random.default_rng(3).normal(0, 3, (800, 1200, 3))

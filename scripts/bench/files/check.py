@@ -57,6 +57,23 @@ def tier(kind: str, suite: list) -> str:
     return "P2"
 
 
+# What a check forbids: every file of the turn it reads keeps it, not only the one that passed the rest — an untouched
+# original sent next to a form with both boxes ticked must not pass «the second box stays empty». Kinds that only forbid
+# are registered `quantifier="all"`; these forbid part of the time, by their params (the rest of the params, kept here
+# for the forbidding part, are the positive ones dropped).
+FORBIDDING = {
+    "pdf_checkbox": lambda params: params if params.get("state") == "/Off" else None,
+    "xlsx_contains": lambda params: _forbidding(params, ("none_of", "none_of_numeric", "none_of_cells"), ("all_of",)),
+    "xlsx_text_ok": lambda params: _forbidding(params, ("forbid_regex",), ("must_contain",)),
+}
+
+
+def _forbidding(params: dict, forbids: tuple, asks: tuple):
+    if not any(params.get(key) for key in forbids):
+        return None
+    return {key: value for key, value in params.items() if key not in asks}
+
+
 def evaluate(ctx: Context, item: dict) -> tuple:
     """(Outcome, file label or None) of one check of cases.json."""
     kind = item["kind"]
@@ -77,9 +94,17 @@ def evaluate(ctx: Context, item: dict) -> tuple:
             status = "error" if why == "файл не скачан" else "fail"
             return Outcome(status, why), None
         results = [(f, _safe(spec.fn, ctx, substitute_params(raw, ctx.day_of(f.at)), f)) for f in files]
+        forbidding = FORBIDDING.get(kind, lambda params: None)(raw)
+        if forbidding is raw:
+            return _aggregate(spec, results, ctx, every=True)
+        outcome = _aggregate(spec, results, ctx)
+        if forbidding is None or outcome[0].status != "pass" or len(files) < 2:
+            return outcome
+        kept = [(f, _safe(spec.fn, ctx, substitute_params(forbidding, ctx.day_of(f.at)), f)) for f in files]
+        forbidden = _aggregate(spec, kept, ctx, every=True)
+        return outcome if forbidden[0].status == "pass" else forbidden
     except CheckError as e:
         return Outcome("error", str(e)), None
-    return _aggregate(spec, results, ctx)
 
 
 def _safe(fn, *args) -> Outcome:
@@ -97,11 +122,11 @@ def _safe(fn, *args) -> Outcome:
     return out
 
 
-def _aggregate(spec, results: list, ctx: Context) -> tuple:
+def _aggregate(spec, results: list, ctx: Context, every: bool = False) -> tuple:
     def label(f):
         return f.name or f.path.name
 
-    if spec.quantifier == "all" or spec.negative:
+    if every or spec.quantifier == "all" or spec.negative:
         bad = [(f, o) for f, o in results if o.status == "fail"]
         if bad:
             f, o = bad[0]
