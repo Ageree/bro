@@ -498,6 +498,13 @@
       "when": 1791986506808,
       "tag": "0070_schedule_delegation",
       "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "7",
+      "when": 1792062857698,
+      "tag": "0071_yoomoney",
+      "breakpoints": true
     }
   ]
 }

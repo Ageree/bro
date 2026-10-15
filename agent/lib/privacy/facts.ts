@@ -11,6 +11,7 @@ import { env } from "@shared/environment";
 import { artifactStorageConfigured } from "@shared/object-storage/artifacts";
 import { directModelProviderName } from "@shared/model/provider";
 import { photonConfigured } from "@shared/photon/credentials";
+import { yoomoneyConfigured } from "@shared/yoomoney/api";
 
 /**
  * What Bro keeps about the person and where, as this deployment is built:
@@ -135,6 +136,11 @@ export function dataProcessors(
       ? []
       : [
           "Личную почту Mail.ru или Яндекса (если вы её подключили) Бро читает по IMAP: письма, нужные для вашей просьбы, видит языковая модель.",
+        ]),
+    ...(env.YOOMONEY_WORKSPACES === undefined || !yoomoneyConfigured()
+      ? []
+      : [
+          "Кошелёк ЮMoney (если вы его подключили) Бро читает через API ЮMoney: номер кошелька, баланс и операции, нужные для вашей просьбы, видит языковая модель. Ключ доступа к кошельку хранится в базе Бро зашифрованным.",
         ]),
     ...(env.YANDEX_API_WORKSPACES === undefined
       ? []

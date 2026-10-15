@@ -139,6 +139,7 @@ const toolGroupEntries = {
   workstreams__save: "core",
   yandex: "core",
   yandex_purchase: "core",
+  yoomoney: "core",
 } as const satisfies Readonly<Record<string, ToolGroup | "core">>;
 
 const toolGroupTable = new Map(Object.entries(toolGroupEntries));
