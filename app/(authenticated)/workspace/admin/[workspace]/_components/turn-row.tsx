@@ -3,6 +3,7 @@
 import { useState } from "react";
 import type { appRouter } from "@web/trpc/router";
 import { api } from "@web/trpc/client";
+import { Badge } from "@web/components/ui/badge";
 import {
   Collapsible,
   CollapsibleContent,
@@ -42,10 +43,14 @@ export function TurnRow({
             {formatDuration(turn.durationMs)} · {formatRub(turn.costRub)}
           </span>
           <br />
-          <span className={failed ? "font-medium" : undefined}>
-            {turn.outcome}
-            {turn.errorCode ? ` · ${turn.errorCode}` : ""}
-            {turn.tools.length > 0 ? ` · ${turn.tools.join(", ")}` : ""}
+          <span className="inline-flex flex-wrap items-center gap-x-2 gap-y-1">
+            <Badge variant={failed ? "destructive" : "secondary"}>
+              {turn.outcome}
+            </Badge>
+            <span>
+              {turn.errorCode ? `${turn.errorCode} · ` : ""}
+              {turn.tools.join(", ")}
+            </span>
           </span>
         </CollapsibleTrigger>
         <CollapsibleContent className="type-fine my-1 min-w-0 rounded-2xl bg-muted px-4 py-3 wrap-break-word">

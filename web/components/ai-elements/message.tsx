@@ -55,10 +55,10 @@ export const MessageContent = ({
   <div
     className={cn(
       "flex w-fit min-w-0 max-w-full flex-col gap-3 overflow-hidden type-supporting-body",
-      // The person's message is an ink pill; Bro's is plain text on paper.
+      // The person's message is an ink pill; Bro's is a white plate.
       "group-[.is-user]:ml-auto group-[.is-user]:rounded-3xl group-[.is-user]:bg-foreground group-[.is-user]:px-5 group-[.is-user]:py-3 group-[.is-user]:text-background",
       "group-[.is-user]:[&_a]:text-inherit group-[.is-user]:[&_code]:text-foreground",
-      "group-[.is-assistant]:text-foreground",
+      "group-[.is-assistant]:rounded-3xl group-[.is-assistant]:border-2 group-[.is-assistant]:border-foreground group-[.is-assistant]:bg-card group-[.is-assistant]:px-5 group-[.is-assistant]:py-3 group-[.is-assistant]:text-foreground",
       className
     )}
     {...props}
