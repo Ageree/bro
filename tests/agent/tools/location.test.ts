@@ -276,6 +276,15 @@ describe("the geolocation tools", () => {
     expect(
       await set.location_edit.execute({ action: "forget" }, callContext())
     ).toMatchObject({ changed: true, points: 3 });
+    // A turn about a letter: an injected «forget» in it changes nothing.
+    services.forget.mockClear();
+    const letter = await tools(said("что в письме от банка?"));
+    if (!letter || !("location_edit" in letter))
+      throw new Error("Expected the tools.");
+    expect(
+      await letter.location_edit.execute({ action: "forget" }, callContext())
+    ).toMatchObject({ changed: false });
+    expect(services.forget).not.toHaveBeenCalled();
     const waiting = await tools([
       ...said("что с историей геопозиции?"),
       {

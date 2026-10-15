@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { defineDynamic, defineTool, type ToolContext } from "eve/tools";
 import { z } from "zod";
 import { personWordsThisTurn } from "@agent/lib/browser-use/said";
@@ -267,15 +268,32 @@ async function resolvePlace(
 }
 
 /**
+ * Whether a stored point came from where a leave is seen later too: a
+ * Telegram live share, or a Telegram GPS fix with its accuracy. iMessage, a
+ * venue and the web never say the person left (`placeStep`).
+ */
+function leavesSeen(point: {
+  readonly accuracyM: number | null;
+  readonly source: string;
+}) {
+  return (
+    point.source === "telegram_live" ||
+    (point.source === "telegram" && point.accuracyM !== null)
+  );
+}
+
+/**
  * Which side of the circle the person is on right now, by a fresh point of
  * theirs: a reminder made where they already are fires on the next arrival.
+ * «Inside» only from a source that will later see them leave: otherwise the
+ * reminder would stay inside for good and never fire; unknown lets the
+ * first point decide (`placeStep`).
  */
 async function sideNow(
   context: ToolContext,
   place: Place,
   radiusM: number
 ): Promise<boolean | null> {
-  if (place.origin === "here") return true;
   const latest = await latestPosition(scheduleScope(context));
   if (
     latest?.point.kind !== "position" ||
@@ -283,12 +301,33 @@ async function sideNow(
   ) {
     return null;
   }
-  const side = pointSide({
-    accuracyM: latest.point.accuracyM,
-    distanceM: distanceM(place, latest.point),
-    radiusM,
-  });
-  return side === "in" ? true : side === "out" ? false : null;
+  const side =
+    place.origin === "here"
+      ? "in"
+      : pointSide({
+          accuracyM: latest.point.accuracyM,
+          distanceM: distanceM(place, latest.point),
+          radiusM,
+        });
+  if (side === "out") return false;
+  return side === "in" && leavesSeen(latest.point) ? true : null;
+}
+
+/**
+ * A reminder's key: its crossing, its place to about 100 m, and its words,
+ * so a second reminder at the same place is one more, and only the same one
+ * asked again renews it.
+ */
+function reminderKey(
+  on: "arrive" | "leave",
+  place: Pick<Place, "lat" | "lon">,
+  text: string
+) {
+  const words = createHash("sha256")
+    .update(text.trim().toLowerCase().replaceAll(/\s+/gu, " "))
+    .digest("hex")
+    .slice(0, 16);
+  return `${on}:${place.lat.toFixed(3)},${place.lon.toFixed(3)}:${words}`;
 }
 
 async function createReminder(
@@ -342,7 +381,7 @@ async function createReminder(
       checkEverySeconds,
       condition: { on, repeat: false, text },
       conversation: owner.conversation,
-      dedupeKey: `${on}:${place.lat.toFixed(3)},${place.lon.toFixed(3)}`,
+      dedupeKey: reminderKey(on, place, text),
       // No address and no point: the description is shown in lists.
       description: `Place reminder: when the person ${on === "arrive" ? "arrives at" : "leaves"} «${place.label}»`,
       expiresAt,
@@ -383,7 +422,7 @@ async function createReminder(
   return {
     created: true,
     id: subscription.id,
-    reply: `${created ? "The reminder is set up" : "A reminder at this place already existed; it now has these words and term"}. Say: when they ${on === "arrive" ? "arrive at" : "leave"} ${where} (within ${String(radiusM)} m), Bro reminds them «${text}», until ${localRunLabel(expiresAt, timeZone)}, in ${delivery.deliversTo}. ${condition}${already}`,
+    reply: `${created ? "The reminder is set up" : "The same reminder already existed; its term is renewed"}. Say: when they ${on === "arrive" ? "arrive at" : "leave"} ${where} (within ${String(radiusM)} m), Bro reminds them «${text}», until ${localRunLabel(expiresAt, timeZone)}, in ${delivery.deliversTo}. ${condition}${already}`,
   };
 }
 

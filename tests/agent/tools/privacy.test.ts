@@ -469,6 +469,13 @@ describe("privacy", () => {
     expect(processors).toContain("Mail.ru или Яндекса");
     expect(processors).toContain("Еда, Лавка, Go, Маркет");
     expect(processors).toContain("песочнице на сервере Selectel");
+    expect(processors).not.toContain("Яндекс Картах");
+    // With geolocation, Maps search gets the person's latest point.
+    expect(
+      facts
+        .dataProcessors("deepseek/deepseek-v4.1-flash", { location: true })
+        .join("\n")
+    ).toContain("поиск мест на Яндекс Картах");
   });
 
   it("names the browser's second proxy too, when there is one", async () => {

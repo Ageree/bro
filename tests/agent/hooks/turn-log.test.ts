@@ -524,6 +524,37 @@ describe("the turn log hook", () => {
     expect(lines).toContain('{\\"redacted\\":\\"location\\"}');
   });
 
+  it("folds a Yandex Maps search given a point out of the transcript", async () => {
+    const events = await loadHook("on");
+    await handler(events, "actions.requested")(
+      {
+        data: {
+          actions: [
+            {
+              callId: "call-5",
+              input: {
+                args: { query: "кафе" },
+                near: [37.6184, 55.7612],
+                operation: "maps.search",
+              },
+              kind: "tool-call",
+              toolName: "yandex",
+            },
+          ],
+          sequence: 1,
+          stepIndex: 0,
+          turnId: "turn_1",
+        },
+        meta,
+        type: "actions.requested",
+      },
+      context()
+    );
+    const lines = JSON.stringify(mocks.appendTurnEntries.mock.calls);
+    expect(lines).not.toMatch(/55\.76/u);
+    expect(lines).toContain('{\\"redacted\\":\\"location\\"}');
+  });
+
   // Review of U3a: a sign-in window and a shared file open to whoever
   // holds the link.
   it("cuts sign-in and shared-file links out of the text", async () => {

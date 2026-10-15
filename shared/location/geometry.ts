@@ -80,9 +80,14 @@ export interface FencePoint extends Coordinates {
 
 /** A point older than this updates the state but never fires. */
 const freshForMs = 10 * 60_000;
-/** Faster than this between two points is a jump of the receiver. */
+/**
+ * Faster than this between two live edits is a jump of the receiver. Only
+ * against a point at most `outlierWindowMs` old: after a flight the old
+ * anchor says nothing, and a wrong anchor must not veto every later point.
+ */
 const outlierKmh = 200;
 const outlierMinimumSeconds = 5;
+const outlierWindowMs = 15 * 60_000;
 /** Two live edits on the new side at least this far apart confirm it. */
 const debounceMs = 30_000;
 /** A reminder this young does not fire on a point that finds it inside. */
@@ -103,7 +108,9 @@ export interface PlaceStepResult {
 /**
  * The geofence of one reminder, as a pure step over one shared point:
  * - a point not newer than the last one taken changes nothing;
- * - a point faster than 200 km/h from the last one is a jump, and dropped;
+ * - a live edit faster than 200 km/h from the last point, taken at most 15
+ *   minutes before, is a jump, and dropped; a point the person sent is
+ *   trusted, and becomes the new last point;
  * - a point older than 10 minutes moves the state but never fires;
  * - a side change this point has no right to say (a leave from iMessage or
  *   a venue, an arrival from a coarse web point) changes nothing;
@@ -130,10 +137,14 @@ export function placeStep(
   if (state.last !== null && at <= Date.parse(state.last.at)) {
     return { state };
   }
-  if (state.last !== null) {
+  if (state.last !== null && point.live) {
     const seconds = (at - Date.parse(state.last.at)) / 1000;
     const kmh = (distanceM(state.last, point) / 1000 / seconds) * 3600;
-    if (seconds >= outlierMinimumSeconds && kmh > outlierKmh) {
+    if (
+      seconds >= outlierMinimumSeconds &&
+      seconds * 1000 <= outlierWindowMs &&
+      kmh > outlierKmh
+    ) {
       return { state };
     }
   }

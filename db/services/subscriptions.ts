@@ -521,6 +521,13 @@ export async function setSubscriptionStatus(
           current.status === "paused" && {
             nextCheckAt: current.template === "place" ? current.expiresAt : now,
           }),
+        // Points were not run while it was paused: its side is unknown, so
+        // the first arrival after resuming is not taken for staying.
+        ...(status === "active" &&
+          current.status === "paused" &&
+          current.template === "place" && {
+            state: sql`${subscriptions.state} || '{"inside":null,"changedAt":null,"pending":null}'::jsonb`,
+          }),
         status: status === "deleted" ? "cancelled" : status,
         updatedAt: now,
       })

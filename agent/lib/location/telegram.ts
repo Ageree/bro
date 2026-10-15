@@ -11,7 +11,8 @@ import { liveKeyOf } from "@shared/location/geometry";
  *   live share) is where they are, and may say they left a place;
  * - a venue they picked, not forwarded, is where they probably are: it only
  *   says they arrived (people often pick a place near them from the list);
- * - anything forwarded, and a pin dropped on the map, is a place they talk
+ * - anything forwarded or sent through an inline bot (whose live location
+ *   that bot moves), and a pin dropped on the map, is a place they talk
  *   about, never where they are.
  */
 
@@ -35,15 +36,23 @@ const shareSchema = z.object({
       title: z.string().optional(),
     })
     .optional(),
+  via_bot: z.unknown().optional(),
 });
 
 /** The keyboard button that sends the person's location (`location_now` with `ask`). */
 const locationButtonText = "📍 Отправить геопозицию";
-/** The line the button comes with: Telegram posts no keyboard without text. */
+/**
+ * The line the button comes with: Telegram posts no keyboard without text.
+ * Impersonal: the channel posts it as is, past the person's «ты» or «вы».
+ */
 export const locationButtonPrompt =
-  "Кнопка «📍 Отправить геопозицию» внизу пришлёт Бро, где ты сейчас.";
+  "Кнопка «📍 Отправить геопозицию» внизу отправит Бро текущую геопозицию.";
 
-/** The reply keyboard with the button: shown once, hidden after a tap. */
+/**
+ * The reply keyboard with the button: hidden after a tap, but Telegram keeps
+ * it behind the keyboard icon until a message removes it
+ * (`takeKeyboardRemoval`).
+ */
 export const locationButtonMarkup = {
   keyboard: [[{ request_location: true, text: locationButtonText }]],
   one_time_keyboard: true,
@@ -73,14 +82,53 @@ const rememberedAsks = 500;
  */
 const askedChats = new Map<string, number>();
 
+/**
+ * Chats whose keyboard still holds the button, by chat id: when it was shown
+ * and whether a location came since. A tap past the 10 minutes would read as
+ * a pin dropped on the map, so the keyboard goes with Bro's next message
+ * once a location came or the window closed.
+ */
+const keyboardChats = new Map<
+  string,
+  { readonly shownAt: number; arrived: boolean }
+>();
+
+function remember<Value>(
+  chats: Map<string, Value>,
+  chatId: string,
+  value: Value
+) {
+  chats.delete(chatId);
+  chats.set(chatId, value);
+  for (const oldest of chats.keys()) {
+    if (chats.size <= rememberedAsks) break;
+    chats.delete(oldest);
+  }
+}
+
 /** Remembers that the chat was just shown the location button. */
 export function rememberLocationAsked(chatId: string, now = Date.now()) {
-  askedChats.delete(chatId);
-  askedChats.set(chatId, now);
-  for (const oldest of askedChats.keys()) {
-    if (askedChats.size <= rememberedAsks) break;
-    askedChats.delete(oldest);
-  }
+  remember(askedChats, chatId, now);
+  remember(keyboardChats, chatId, { arrived: false, shownAt: now });
+}
+
+/** A location came from the chat: its button has served. */
+export function locationArrived(chatId: string) {
+  const shown = keyboardChats.get(chatId);
+  if (shown !== undefined) shown.arrived = true;
+}
+
+/**
+ * Whether Bro's message to the chat now should remove the button's
+ * keyboard: a location came since it was shown, or its 10 minutes are over.
+ * Forgets the chat when it says yes.
+ */
+export function takeKeyboardRemoval(chatId: string, now = Date.now()) {
+  const shown = keyboardChats.get(chatId);
+  if (shown === undefined) return false;
+  if (!shown.arrived && now - shown.shownAt <= askedForMs) return false;
+  keyboardChats.delete(chatId);
+  return true;
 }
 
 /** Whether the chat was shown the button in the last 10 minutes; forgets it. */
@@ -108,7 +156,8 @@ export function telegramLocation(
   const forwarded =
     share.forward_origin !== undefined ||
     share.forward_date !== undefined ||
-    share.forward_from !== undefined;
+    share.forward_from !== undefined ||
+    share.via_bot !== undefined;
   const base = {
     externalId: `telegram:${message.chat.id}:${message.messageId}:${String(share.date)}`,
     lat: location.latitude,

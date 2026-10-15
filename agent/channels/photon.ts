@@ -18,7 +18,10 @@ import {
 import { crossChannelRecap } from "@agent/lib/conversation/recap";
 import { firstContactContext } from "@agent/lib/first-contact";
 import { photonMediaTurn } from "@agent/lib/inbound-media/photon";
-import { voiceFailedNote } from "@agent/lib/inbound-media/turn-content";
+import {
+  inboundWords,
+  voiceFailedNote,
+} from "@agent/lib/inbound-media/turn-content";
 import { locationContext } from "@agent/lib/location/context";
 import { iMessageShare, ingestShared } from "@agent/lib/location/ingest";
 import { locationPilot } from "@db/services/location";
@@ -309,7 +312,7 @@ export default photonIMessageChannel({
     if (located) {
       turnContext.push(
         ...(media?.locations === undefined
-          ? await locationContext(scope, message.text)
+          ? await locationContext(scope, inboundWords(media, message.text))
           : await ingestShared(
               scope,
               media.locations.map((card, index) =>

@@ -37,14 +37,17 @@ function quoted(text: string | null | undefined, cap: number) {
   return plain === undefined ? undefined : `«${plain.slice(0, cap)}»`;
 }
 
-/** What a point is said to be at: its address, or its coordinates. */
+/**
+ * What a point is said to be at: its address, quoted as data (a venue's
+ * address is what its sender wrote), or its coordinates.
+ */
 function whereWords(point: {
   readonly address: string | null;
   readonly lat: number;
   readonly lon: number;
 }) {
   return (
-    lineName(point.address ?? undefined) ??
+    quoted(point.address, 200) ??
     `адрес пока не известен, координаты ${pointLabel(point.lat, point.lon)}`
   );
 }

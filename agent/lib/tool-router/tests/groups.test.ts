@@ -163,3 +163,34 @@ describe("the tool router's groups", () => {
     }
   );
 });
+
+describe("a skill's router groups", () => {
+  it("offer every tool its body names", async () => {
+    const { availableSkills, skillBody } =
+      await import("@agent/lib/skills/catalog");
+    const setup = {
+      autonomy: true,
+      browser: true,
+      images: true,
+      taskFiles: true,
+    };
+    const unreachable = availableSkills(setup).flatMap((skill) => {
+      const body = skillBody(skill, setup) ?? "";
+      // A tool of another skill's groups is named with the way to it.
+      const loads = skillNames.filter((other) =>
+        body.includes(`load_skill ${other}`)
+      );
+      return routerToolNames.flatMap((name) =>
+        // `task` is also a parameter of `browser_task` and `phone-call`.
+        name !== "task" &&
+        body.includes(`\`${name}\``) &&
+        ![skill, ...loads].some((own) =>
+          routerToolOffered(name, skillRouterGroups[own])
+        )
+          ? [[skill, name]]
+          : []
+      );
+    });
+    expect(unreachable).toEqual([]);
+  });
+});

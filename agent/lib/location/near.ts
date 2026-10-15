@@ -9,7 +9,9 @@ import { localStamp } from "./note";
  * [longitude, latitude] and defaults to central Moscow): the person's own
  * point within two hours when the model gave none, and the model's pair
  * turned round when it gave latitude first and that lands next to the
- * point. Undefined when the search keeps what it was given.
+ * point. A pair already next to the point is kept, but said to be the
+ * person's (the transcript folds such a result away). Undefined when the
+ * search looks elsewhere.
  */
 
 /** `maps.search`'s own default: eve parses it in before the tool runs. */
@@ -41,7 +43,11 @@ export async function nearFromPosition(
   }
   const given = distanceM({ lat: near[1], lon: near[0] }, point);
   const turned = distanceM({ lat: near[0], lon: near[1] }, point);
-  if (given > swappedWithinM && turned <= swappedWithinM) {
+  if (given <= swappedWithinM) {
+    const kept: [number, number] = [near[0], near[1]];
+    return { near: kept, said: "near is by the person's shared location" };
+  }
+  if (turned <= swappedWithinM) {
     const turnedRound: [number, number] = [near[1], near[0]];
     return {
       near: turnedRound,

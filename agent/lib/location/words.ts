@@ -70,3 +70,35 @@ export function addressSaid(address: string, said: readonly string[]) {
   if (wanted.length === 0) return false;
   return wordsOf(said.join(" ")).join(" ").includes(wanted);
 }
+
+/** A request to delete: «забудь», «удали», «сотри», «очисти». */
+const forgetVerbs = ["забуд", "забыв", "удал", "стер", "сотр", "очист"];
+
+/** What it is about: the person's places, track or everything. */
+const locationWords = [
+  "геопоз",
+  "геолок",
+  "местополож",
+  "локац",
+  "где я",
+  "где был",
+  "где бывал",
+  "точк",
+  "маршрут",
+  "перемещ",
+  "истори",
+];
+
+/**
+ * Whether the person asked in this turn to forget where they were: a word
+ * of deleting and a word of their places together. Forgetting cannot be
+ * undone, so a page or a letter read in the turn must not be able to ask.
+ */
+export function forgetSaid(said: readonly string[]) {
+  const heard = heardOf(said);
+  return (
+    forgetVerbs.some((verb) => heard.includes(verb)) &&
+    (locationWords.some((word) => heard.includes(word)) ||
+      wordsOf(heard).some((word) => word === "все"))
+  );
+}

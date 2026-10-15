@@ -1,4 +1,4 @@
-import type { ModelMessage } from "ai";
+import type { JSONValue, ModelMessage } from "ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 /** eve's durable state, as one session's in-memory store. */
@@ -18,6 +18,26 @@ vi.mock("eve/context", () => ({
   },
 }));
 
+/** The groups the decision model chooses, and how often it was asked. */
+const decisions = vi.hoisted(() => ({ asked: 0, groups: Array.of<string>() }));
+
+vi.mock("@agent/lib/tool-router/system-one", () => ({
+  askRouterQuestions: async () => {
+    decisions.asked += 1;
+    return { groups: decisions.groups };
+  },
+}));
+
+vi.mock("@agent/lib/tool-router/decision", () => ({
+  routerDecision: (answer: { readonly groups: readonly string[] }) => ({
+    groups: answer.groups,
+    model: "jev-1.14.0",
+    ms: 90,
+    probabilities: {},
+    provider: "typesafe",
+  }),
+}));
+
 import type { RouterDecision } from "@agent/lib/tool-router/decision";
 import { routerGroups } from "@agent/lib/tool-router/questions";
 import {
@@ -28,9 +48,11 @@ import {
 import {
   chooseRouterGroups,
   type RouterInputs,
+  routerGroupsOfStep,
   routerSkillNote,
   stampRouterUse,
 } from "@agent/lib/tool-router/turn";
+import { recordTurnStarted } from "@agent/lib/compaction/record";
 import { skillRecord } from "@agent/lib/skills/render";
 
 const now = Date.parse("2026-10-15T12:00:00Z");
@@ -374,5 +396,131 @@ describe("the note of a group without its rules", () => {
     expect(
       routerSkillNote(["mail"], [person("ответь Лене"), block], setup)
     ).toBeUndefined();
+  });
+});
+
+/** A tool's call and its result, as one step leaves them. */
+function called(
+  id: string,
+  toolName: string,
+  input: JSONValue,
+  output: JSONValue
+): ModelMessage[] {
+  return [
+    {
+      content: [{ input, toolCallId: id, toolName, type: "tool-call" }],
+      role: "assistant",
+    },
+    {
+      content: [
+        {
+          output: { type: "json", value: output },
+          toolCallId: id,
+          toolName,
+          type: "tool-result",
+        },
+      ],
+      role: "tool",
+    },
+  ];
+}
+
+describe("a person's step in the router's pilot", () => {
+  const setup = { browser: true, images: true };
+
+  beforeEach(() => {
+    stores.clear();
+    decisions.asked = 0;
+    decisions.groups = [];
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("keeps a group open_tools opened when the person writes again before the next step", async () => {
+    decisions.groups = ["mail"];
+    const opener = person("напиши Лене");
+    await routerGroupsOfStep(
+      [opener],
+      { sessionId: "session-1", stepIndex: 0, turnId: "turn_1" },
+      setup,
+      "on"
+    );
+    const groups = await routerGroupsOfStep(
+      [
+        opener,
+        ...called(
+          "call-1",
+          "open_tools",
+          { groups: ["phone"] },
+          { opened: ["phone"] }
+        ),
+        person("или лучше позвони ей"),
+      ],
+      { sessionId: "session-1", stepIndex: 1, turnId: "turn_1" },
+      setup,
+      "on"
+    );
+    expect(groups).toContain("phone");
+    expect(groups).toContain("mail");
+  });
+
+  it("asks again after the person answered Bro's question mid-turn", async () => {
+    decisions.groups = ["mail"];
+    const opener = person("свяжись с Леной");
+    const step = { sessionId: "session-1", turnId: "turn_1" };
+    // eve's compaction did nothing to the turn.
+    recordTurnStarted("turn_1");
+    await routerGroupsOfStep([opener], { ...step, stepIndex: 0 }, setup, "on");
+    expect(decisions.asked).toBe(1);
+    decisions.groups = ["phone"];
+    const groups = await routerGroupsOfStep(
+      [
+        opener,
+        ...called(
+          "call-1",
+          "ask_question",
+          {
+            options: [
+              { id: "mail", label: "Написать письмо" },
+              { id: "call", label: "Позвонить" },
+            ],
+            prompt: "Написать Лене письмо или позвонить?",
+          },
+          { optionId: "call", status: "answered" }
+        ),
+      ],
+      { ...step, stepIndex: 1 },
+      setup,
+      "on"
+    );
+    expect(decisions.asked).toBe(2);
+    expect(groups).toEqual(expect.arrayContaining(["mail", "phone"]));
+  });
+
+  it("offers the first contact's call and Yandex in the turns after it", async () => {
+    const marker = Object.assign(
+      {
+        content: "Это первое сообщение воркспейса: `first-contact`.",
+        role: "user" as const,
+      },
+      { kind: "context.first-contact" }
+    );
+    const groups = await routerGroupsOfStep(
+      [
+        marker,
+        person("Привет"),
+        assistant(["send_message", { text: "Привет! Расскажи о себе." }]),
+        person("Я Аня, дизайнер из Казани"),
+      ],
+      { sessionId: "session-1", stepIndex: 0, turnId: "turn_2" },
+      setup,
+      "on"
+    );
+    expect(groups).toEqual(
+      expect.arrayContaining(["calendar", "mail", "phone", "yandex"])
+    );
   });
 });

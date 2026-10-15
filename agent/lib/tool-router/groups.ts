@@ -215,17 +215,20 @@ export const sharedRouterTools: ReadonlySet<string> = new Set([
 
 /**
  * The groups each skill stands for: a skill the turn would get from its
- * words, or that `load_skill` brought, opens them.
+ * words, or that `load_skill` brought, opens them. They hold every tool the
+ * skill's body names (the test in `tests/groups.test.ts`): the first
+ * contact offers a call and Yandex, the Госуслуги fallback searches mail and
+ * Drive in the same turn.
  */
 export const skillRouterGroups = {
-  "about-bro": ["settings"],
+  "about-bro": ["settings", "browser"],
   apps: ["docs", "chat_apps"],
-  browser: ["browser"],
+  browser: ["browser", "settings"],
   files: ["files"],
-  "first-contact": ["mail", "calendar"],
+  "first-contact": ["mail", "calendar", "phone", "yandex"],
   games: [],
   google: ["mail", "calendar", "docs"],
-  "gov-services": ["browser"],
+  "gov-services": ["browser", "mail", "docs"],
   images: ["media"],
   memory: [],
   "meter-readings": ["browser"],

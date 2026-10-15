@@ -11,7 +11,7 @@ import {
   readHistory,
   type Stay,
 } from "@agent/lib/location/stays";
-import { labelSaid } from "@agent/lib/location/words";
+import { forgetSaid, labelSaid } from "@agent/lib/location/words";
 import { resolveModeValue, startedByPerson } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import {
@@ -248,6 +248,13 @@ async function locationEdit(
     return {
       changed: true,
       reply: `The point is named «${label.toLowerCase()}». Say that «где ${label.toLowerCase()}?» will find it.`,
+    };
+  }
+  if (!forgetSaid(said)) {
+    return {
+      changed: false,
+      reply:
+        "Nothing was changed: forgetting needs the person's own request in this turn. Ask them whether to delete their location history.",
     };
   }
   if (heldForAnswer) {

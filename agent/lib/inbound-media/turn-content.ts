@@ -54,6 +54,21 @@ export interface InboundTurn {
   readonly locations?: readonly CardPoint[];
 }
 
+/**
+ * What the person said in a message: its text, with a voice note's
+ * transcript when the turn carries one (`inboundTurn`), or the raw text when
+ * there is no media turn. A check of their words (the geolocation's
+ * «что рядом») reads a voice note as it would the same words typed.
+ */
+export function inboundWords(turn: InboundTurn | undefined, raw: string) {
+  const message = turn?.message;
+  if (message === undefined) return raw;
+  if (!Array.isArray(message)) return message;
+  return message
+    .flatMap((part) => (part.type === "text" ? [part.text] : []))
+    .join("\n");
+}
+
 /** Sent when every voice note failed to transcribe and nothing else was said. */
 export const voiceRetryText =
   "Не расслышал голосовое. Напиши текстом, пожалуйста, или запиши ещё раз.";

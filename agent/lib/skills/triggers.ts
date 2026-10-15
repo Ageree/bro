@@ -331,9 +331,10 @@ function sentDocument(input: readonly ModelMessage[]) {
 /**
  * The marker a channel adds to a workspace's first message ever
  * (`agent/lib/first-contact.ts`). It comes as eve's turn context, which no
- * person or page writes.
+ * person or page writes. In a whole conversation: whether its first contact
+ * is in it.
  */
-function firstContact(input: readonly ModelMessage[]) {
+export function firstContactMarked(input: readonly ModelMessage[]) {
   return input.some(
     (message) =>
       message.role === "user" &&
@@ -528,7 +529,7 @@ export function skillsForTurn(turn: {
   if (hosts.some(publicServiceHost)) wanted.add("gov-services");
   if (hosts.some(meterReadingsHost)) wanted.add("meter-readings");
   if (appsNamedByPerson(turn.input).length > 0) wanted.add("apps");
-  if (firstContact(turn.input)) wanted.add("first-contact");
+  if (firstContactMarked(turn.input)) wanted.add("first-contact");
   if (turn.browserReport) wanted.add("browser");
   for (const name of ["meter-readings", "gov-services"] as const) {
     if (wanted.has(name)) {

@@ -49,10 +49,12 @@ function edit(
   overrides: Partial<{
     chat: { id: number; type: string };
     editDate: number;
+    forwarded: boolean;
     fromId: number;
     isBot: boolean;
     lat: number;
     livePeriod: number | undefined;
+    viaBot: boolean;
   }> = {}
 ) {
   const livePeriod = "livePeriod" in overrides ? overrides.livePeriod : 3_600;
@@ -72,6 +74,13 @@ function edit(
         ...(livePeriod !== undefined && { live_period: livePeriod }),
       },
       message_id: 77,
+      ...(overrides.forwarded === true && {
+        forward_date: editedAt - 900,
+        forward_origin: { date: editedAt - 900, type: "user" },
+      }),
+      ...(overrides.viaBot === true && {
+        via_bot: { first_name: "Map", id: 555, is_bot: true },
+      }),
     },
     update_id: 1,
   };
@@ -121,7 +130,12 @@ beforeEach(() => {
     workspaceId: "personal:alice",
   });
   capture.pilot.mockReturnValue(true);
-  capture.recent.mockResolvedValue(undefined);
+  // The share's first message, stored as the person's own point.
+  capture.recent.mockResolvedValue({
+    lat: 55.75,
+    lon: 37.61,
+    recordedAt: new Date((editedAt - 600) * 1000),
+  });
   capture.evaluate.mockResolvedValue([]);
   capture.insert.mockImplementation(async () => ({
     accuracyM: 12,
@@ -186,7 +200,20 @@ describe("the live location route", () => {
     expect(capture.insert).not.toHaveBeenCalled();
   });
 
-  it("runs the reminders as a live edit and stores the first point", async () => {
+  it("drops a forwarded share, one sent through a bot, and one never stored as the person's own", async () => {
+    expect((await post(edit({ forwarded: true }), withSecret)).body).toEqual({
+      ignored: true,
+    });
+    expect((await post(edit({ viaBot: true }), withSecret)).body).toEqual({
+      ignored: true,
+    });
+    capture.recent.mockResolvedValue(undefined);
+    expect((await post(edit(), withSecret)).body).toEqual({ ignored: true });
+    expect(capture.evaluate).not.toHaveBeenCalled();
+    expect(capture.insert).not.toHaveBeenCalled();
+  });
+
+  it("runs the reminders as a live edit and stores it", async () => {
     const { body } = await post(edit(), withSecret);
     expect(body).toEqual({ evaluated: true, hits: 0, stored: true });
     expect(capture.evaluate).toHaveBeenCalledWith(
@@ -230,7 +257,7 @@ describe("the live location route", () => {
       (await post(edit({ editDate: editedAt + 40, lat: 55.751 }), withSecret))
         .body
     ).toEqual({ evaluated: true, hits: 0, stored: true });
-    // The edit that ends the share is stored whatever the pace.
+    // The edit that ends the share is stored and run whatever the pace.
     expect(
       (
         await post(
@@ -238,7 +265,7 @@ describe("the live location route", () => {
           withSecret
         )
       ).body
-    ).toEqual({ evaluated: false, hits: 0, stored: true });
+    ).toEqual({ evaluated: true, hits: 0, stored: true });
   });
 });
 

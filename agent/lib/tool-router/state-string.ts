@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { ModelMessage } from "ai";
 import { z } from "zod";
+import { answersThisTurn } from "@agent/lib/browser-use/said";
 import { placeMarker, positionMarker } from "@agent/lib/location/markers";
 import { isLocationLine } from "@agent/lib/location/note";
 import { withoutSecrets } from "@agent/lib/privacy/secrets";
@@ -97,11 +98,19 @@ function lastSend(history: readonly ModelMessage[]) {
  *   paying, its ask for readings, its answer to a schedule's report.
  * - `mediaOnly`: the turn sent a photo or a file with no words of its own.
  * - `located`: the turn carries the location pilot's marker of a point.
+ * - `answers`: the person's answers to `ask_question` in this turn, typed
+ *   or picked: eve resumes the same turn with them as tool results, and
+ *   «Позвонить» may want a group the opening words did not. They change
+ *   the digest, so the step after one asks the router again, as for words
+ *   written mid-turn.
  */
 export function routerTurnText(messages: readonly ModelMessage[]) {
   const { history, input } = splitTurn(messages);
   const words = withoutLocationLines(turnWords(input)).trim();
   const previous = lastSend(history);
+  const { answers } = answersThisTurn(
+    messages.slice(history.length + input.length)
+  );
   const state = [
     ...(previous === undefined
       ? []
@@ -109,6 +118,10 @@ export function routerTurnText(messages: readonly ModelMessage[]) {
           `Предыдущее сообщение Бро: ${cleaned(previous.text, routerStateLimits.prev)}`,
         ]),
     `Сообщение человека: ${headAndTail(words)}`,
+    ...answers.map(
+      (answer) =>
+        `Ответ человека на вопрос Бро: ${cleaned(answer, routerStateLimits.prev)}`
+    ),
   ].join("\n");
   const filesSent = input.some(
     (message) =>
@@ -118,6 +131,7 @@ export function routerTurnText(messages: readonly ModelMessage[]) {
   );
   const bare = words.replaceAll(mediaMarkers, " ").replaceAll(/\s+/gu, " ");
   return {
+    answers,
     digest: createHash("sha256").update(state).digest("hex").slice(0, 32),
     history,
     input,

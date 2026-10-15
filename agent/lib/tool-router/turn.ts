@@ -4,7 +4,8 @@ import {
   compactionOfTurn,
   type TurnCompaction,
 } from "@agent/lib/compaction/record";
-import { currentTurnMessages } from "@agent/lib/delivery/turn-sends";
+import { personMessages } from "@agent/lib/browser-use/said";
+import { startsTurn } from "@agent/lib/delivery/turn-sends";
 import {
   availableSkills,
   type SkillName,
@@ -15,7 +16,7 @@ import {
   recordedSkills,
   skillStub,
 } from "@agent/lib/skills/render";
-import { skillsForTurn } from "@agent/lib/skills/triggers";
+import { firstContactMarked, skillsForTurn } from "@agent/lib/skills/triggers";
 import { type StepIdentity, turnMemory } from "@agent/lib/turn-kind/step";
 import { env } from "@shared/environment";
 import { type RouterDecision, routerDecision } from "./decision";
@@ -372,9 +373,20 @@ function groupsOfSkills(skills: readonly SkillName[]) {
   return skills.flatMap((skill) => skillRouterGroups[skill]);
 }
 
-/** What `open_tools` and `load_skill` opened in the current turn. */
+/**
+ * What `open_tools` and `load_skill` opened in the current turn, and in the
+ * step before it when the person wrote again after that step's results (a
+ * steer, or a new turn): the step's set was recorded before its call, and
+ * the tool promised the group from the next step.
+ */
 function openedGroups(messages: readonly ModelMessage[], setup: SkillSetup) {
-  const turn = currentTurnMessages(messages);
+  const opening = messages.findLastIndex(startsTurn);
+  const lastStep = messages.findLastIndex(
+    (message) => message.role === "assistant"
+  );
+  const turn = messages.slice(
+    lastStep !== -1 && lastStep < opening ? lastStep + 1 : opening + 1
+  );
   const opened = turn.flatMap((message) =>
     message.role === "tool"
       ? message.content.flatMap((part) => {
@@ -545,15 +557,27 @@ export async function routerGroupsOfStep(
   const state = readRouterState();
   const held = turnRoutes.get(step);
   const text = routerTurnText(messages);
-  const triggered = orderedGroups(
-    groupsOfSkills(
+  // The first contact's offers (a call, Yandex, Google) come in the turns
+  // after it, whose own input has no marker: its groups stay while the
+  // skill's rules do, for the person's first three messages.
+  const introducing =
+    firstContactMarked(messages) && personMessages(messages).length <= 3;
+  const triggered = orderedGroups([
+    ...groupsOfSkills(
       skillsForTurn({
         browserReport: false,
         history: text.prevCall === undefined ? [] : [text.prevCall],
-        input: text.input,
+        input: [
+          ...text.input,
+          ...text.answers.map((answer): ModelMessage => ({
+            content: answer,
+            role: "user",
+          })),
+        ],
       })
-    )
-  );
+    ),
+    ...(introducing ? skillRouterGroups["first-contact"] : []),
+  ]);
   const opened = openedGroups(messages, setup);
   const late = held?.late;
   const choice = chooseRouterGroups({

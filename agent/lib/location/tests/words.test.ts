@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { addressSaid, labelSaid, textSaid } from "@agent/lib/location/words";
+import {
+  addressSaid,
+  forgetSaid,
+  labelSaid,
+  textSaid,
+} from "@agent/lib/location/words";
 
 describe("the person's own words for places", () => {
   it("names a point only as the person did", () => {
@@ -24,5 +29,13 @@ describe("the person's own words for places", () => {
       true
     );
     expect(addressSaid("Арбат 1", ["напомни у Тверская 7"])).toBe(false);
+  });
+
+  it("forgets only on the person's own request to delete their places", () => {
+    expect(forgetSaid(["забудь, где я был вчера"])).toBe(true);
+    expect(forgetSaid(["удали геопозицию за вчера"])).toBe(true);
+    expect(forgetSaid(["забудь всё"])).toBe(true);
+    expect(forgetSaid(["что в письме от банка?"])).toBe(false);
+    expect(forgetSaid(["удали письмо, всего хорошего"])).toBe(false);
   });
 });

@@ -44,6 +44,9 @@ const editSchema = z.object({
     chat: z.object({ id: z.number().int(), type: z.string() }),
     date: z.number().int().positive(),
     edit_date: z.number().int().positive(),
+    forward_date: z.number().optional(),
+    forward_from: z.unknown().optional(),
+    forward_origin: z.unknown().optional(),
     from: z.object({ id: z.number().int(), is_bot: z.boolean() }),
     location: z.object({
       horizontal_accuracy: z.number().min(0).max(1_500).optional(),
@@ -52,6 +55,7 @@ const editSchema = z.object({
       longitude: z.number().min(-180).max(180),
     }),
     message_id: z.number().int().positive(),
+    via_bot: z.unknown().optional(),
   }),
   update_id: z.number().int(),
 });
@@ -104,9 +108,13 @@ async function readEdit(request: Request) {
 
 /**
  * One edit of a live location: checked, then run through the person's place
- * reminders at most every 15 s of the share's time, and stored when a
- * minute passed or the person moved 50 m since the last stored point. An
- * edit not newer than the last stored or run one does nothing.
+ * reminders at most every 15 s of the share's time (the edit that ends the
+ * share always), and stored when a minute passed or the person moved 50 m
+ * since the last stored point. An edit not newer than the last stored or run
+ * one does nothing. Only a share whose first message was stored as the
+ * person's own point counts (`telegramLocation` gives only that one a live
+ * key): a forwarded live location keeps moving in their chat as a friend
+ * moves, and one sent through an inline bot moves as that bot wants.
  */
 export async function receiveLiveLocation(request: Request, now = new Date()) {
   if (!trusted(request)) return answer({ ok: false }, 401);
@@ -114,7 +122,11 @@ export async function receiveLiveLocation(request: Request, now = new Date()) {
   if (
     edit?.chat.type !== "private" ||
     edit.chat.id !== edit.from.id ||
-    edit.from.is_bot
+    edit.from.is_bot ||
+    edit.forward_origin !== undefined ||
+    edit.forward_date !== undefined ||
+    edit.forward_from !== undefined ||
+    edit.via_bot !== undefined
   ) {
     return answer({ ignored: true });
   }
@@ -127,11 +139,9 @@ export async function receiveLiveLocation(request: Request, now = new Date()) {
   const recordedAt = new Date(edit.edit_date * 1000);
   const at = recordedAt.getTime();
   const lastStored = await recentLiveWrite(scope, liveKey);
+  if (!lastStored) return answer({ ignored: true });
   const lastEvaluated = evaluated.get(liveKey);
-  const newest = Math.max(
-    lastStored?.recordedAt.getTime() ?? 0,
-    lastEvaluated ?? 0
-  );
+  const newest = Math.max(lastStored.recordedAt.getTime(), lastEvaluated ?? 0);
   if (at <= newest) return answer({ stale: true });
 
   const point = {
@@ -142,13 +152,16 @@ export async function receiveLiveLocation(request: Request, now = new Date()) {
     lat: edit.location.latitude,
     lon: edit.location.longitude,
   };
-  const evaluate =
-    lastEvaluated === undefined || at - lastEvaluated >= evaluateEveryMs;
-  // The edit that ends the share (no `live_period`) is the last known point.
+  // The edit that ends the share (no `live_period`) is the last known point:
+  // it runs the reminders whatever the pace, or the arrival it confirms
+  // would never come.
   const ended = edit.location.live_period === undefined;
+  const evaluate =
+    ended ||
+    lastEvaluated === undefined ||
+    at - lastEvaluated >= evaluateEveryMs;
   const store =
     ended ||
-    !lastStored ||
     at - lastStored.recordedAt.getTime() >= storeEveryMs ||
     distanceM(lastStored, point) >= storeAfterM;
 

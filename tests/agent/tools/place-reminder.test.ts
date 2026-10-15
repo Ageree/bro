@@ -184,13 +184,13 @@ describe("place_reminder", () => {
     expect(input).toMatchObject({
       checkEverySeconds: 86_400,
       condition: { on: "arrive", repeat: false, text: "забрать посылку" },
-      dedupeKey: "arrive:55.751,37.618",
       description: "Place reminder: when the person arrives at «дом»",
       source: { label: "дом", origin: "home", radiusM: 150 },
       state: { inside: null },
       template: "place",
       wake: "urgent_at_night",
     });
+    expect(input?.dedupeKey).toMatch(/^arrive:55\.751,37\.618:[0-9a-f]{16}$/u);
     expect(JSON.stringify(input?.description)).not.toContain("Тверская");
     expect(result).toHaveProperty(
       "reply",
@@ -250,6 +250,40 @@ describe("place_reminder", () => {
     );
     expect(services.create.mock.calls[0]?.[1].state).toMatchObject({
       inside: true,
+    });
+  });
+
+  it("keeps two reminders at one place apart, and one asked again as one", async () => {
+    const tool = await reminderTool(
+      "напомни купить хлеб и позвонить маме, когда буду дома"
+    );
+    const create = (text: string) =>
+      tool.execute({ action: "create", place: "home", text }, callContext());
+    await create("купить хлеб");
+    await create("позвонить маме");
+    await create("Купить  хлеб");
+    const keys = services.create.mock.calls.map(([, input]) => input.dedupeKey);
+    expect(new Set(keys).size).toBe(2);
+    expect(keys[0]).toBe(keys[2]);
+  });
+
+  it("starts a reminder made here from iMessage with no side: no leave would ever come", async () => {
+    const tool = await reminderTool("напомни тут купить хлеб");
+    const fromIMessage = position(5);
+    services.latest.mockResolvedValue({
+      ...fromIMessage,
+      point: { ...fromIMessage.point, accuracyM: null, source: "imessage" },
+    });
+    const made = await tool.execute(
+      { action: "create", place: "here", text: "купить хлеб" },
+      callContext()
+    );
+    expect(made).toHaveProperty(
+      "reply",
+      expect.not.stringContaining("The person is there now")
+    );
+    expect(services.create.mock.calls[0]?.[1].state).toMatchObject({
+      inside: null,
     });
   });
 

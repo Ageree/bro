@@ -111,4 +111,45 @@ describe("the router's state string", () => {
     expect(again.digest).toBe(first.digest);
     expect(other.digest).not.toBe(first.digest);
   });
+
+  it("reads the person's answer to Bro's question in the turn", () => {
+    const opener = person("свяжись с Леной");
+    const before = routerTurnText([opener]);
+    const asked: ModelMessage[] = [
+      {
+        content: [
+          {
+            input: {
+              options: [{ id: "call", label: "Позвонить" }],
+              prompt: "Написать или позвонить?",
+            },
+            toolCallId: "call-2",
+            toolName: "ask_question",
+            type: "tool-call",
+          },
+        ],
+        role: "assistant",
+      },
+      {
+        content: [
+          {
+            output: {
+              type: "json",
+              value: { optionId: "call", status: "answered" },
+            },
+            toolCallId: "call-2",
+            toolName: "ask_question",
+            type: "tool-result",
+          },
+        ],
+        role: "tool",
+      },
+    ];
+    const text = routerTurnText([opener, ...asked]);
+    expect(text.state).toBe(
+      "Сообщение человека: свяжись с Леной\nОтвет человека на вопрос Бро: Позвонить"
+    );
+    expect(text.answers).toEqual(["Позвонить"]);
+    expect(text.digest).not.toBe(before.digest);
+  });
 });

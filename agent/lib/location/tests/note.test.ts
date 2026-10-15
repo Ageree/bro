@@ -27,7 +27,7 @@ describe("the context lines of a shared location", () => {
   it("say the address and the time on the person's clock, not coordinates", () => {
     const line = sharedLine(base, options);
     expect(line).toContain("15.10 14:05 (Europe/Moscow)");
-    expect(line).toContain("Тверская улица 7, Москва, ±20 м");
+    expect(line).toContain("«Тверская улица 7, Москва», ±20 м");
     expect(line).not.toContain("55.76");
     expect(sharedLine({ ...base, address: null }, options)).toContain(
       "55.7612, 37.6100"

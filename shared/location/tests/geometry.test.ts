@@ -77,11 +77,44 @@ describe("geometry of shared locations", () => {
     expect(result.state.inside).toBe(true);
   });
 
-  it("drops a late point and a jump faster than 200 km/h", () => {
-    const later = step(outside, at(0, far)).state;
+  it("drops a late point and a live jump faster than 200 km/h", () => {
+    const later = step(outside, at(0, far, { live: true })).state;
     expect(step(later, at(-minute)).state).toBe(later);
     // 2 km in 10 s is 720 km/h.
-    expect(step(later, at(10_000)).state).toBe(later);
+    expect(step(later, at(10_000, center, { live: true })).state).toBe(later);
+  });
+
+  it("takes points after a flight, and a point the person sent at once", () => {
+    // Moscow at 08:00, then Sochi (about 1 360 km) three hours later.
+    const moscow = { lat: 55.7512, lon: 37.6184 };
+    const before = placeStep(
+      outside,
+      { ...at(-3 * 60 * minute, moscow), live: true },
+      {
+        center: { lat: 43.5855, lon: 39.7231 },
+        createdAt: longAgo,
+        now,
+        on: "arrive",
+        radiusM: 150,
+      }
+    ).state;
+    const sochi = { lat: 43.5855, lon: 39.7231 };
+    const options = {
+      center: sochi,
+      createdAt: longAgo,
+      now,
+      on: "arrive" as const,
+      radiusM: 150,
+    };
+    // A point the person sent fires at once.
+    expect(placeStep(before, at(0, sochi), options).hit).toBeDefined();
+    // A live edit, far past the old anchor, is taken.
+    expect(
+      placeStep(before, at(0, sochi, { live: true }), options).state.last
+    ).toMatchObject({ lat: sochi.lat });
+    // A wrong anchor a few seconds old vetoes a live edit; one sent does not.
+    const jumped = step(outside, at(0, far, { live: true })).state;
+    expect(step(jumped, at(10_000)).hit).toBeDefined();
   });
 
   it("moves the state on a point older than 10 minutes but never fires", () => {

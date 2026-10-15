@@ -27,7 +27,10 @@ import { withApprovalCard } from "@shared/chat/approval-card";
 import { crossChannelRecap } from "@agent/lib/conversation/recap";
 import { firstContactContext } from "@agent/lib/first-contact";
 import { telegramMediaTurn } from "@agent/lib/inbound-media/telegram";
-import { inboundTurn } from "@agent/lib/inbound-media/turn-content";
+import {
+  inboundTurn,
+  inboundWords,
+} from "@agent/lib/inbound-media/turn-content";
 import { locationContext } from "@agent/lib/location/context";
 import { ingestShared } from "@agent/lib/location/ingest";
 import { placeMarker, positionMarker } from "@agent/lib/location/markers";
@@ -35,7 +38,9 @@ import {
   locationButtonMarkup,
   locationButtonPrompt,
   locationButtonResultSchema,
+  locationArrived,
   rememberLocationAsked,
+  takeKeyboardRemoval,
   takeLocationAsked,
   telegramLocation,
 } from "@agent/lib/location/telegram";
@@ -414,6 +419,7 @@ export default telegramChannel({
         })
       : undefined;
     if (shared) {
+      locationArrived(message.chat.id);
       const marker = shared.kind === "position" ? positionMarker : placeMarker;
       const turnContext = [
         ...(await firstContactContext(scope)),
@@ -447,7 +453,10 @@ export default telegramChannel({
       ...(await firstContactContext(scope)),
       ...(await crossChannelRecap(scope, { channel: "channel:telegram" })),
       ...(located
-        ? await locationContext(scope, message.text || message.caption)
+        ? await locationContext(
+            scope,
+            inboundWords(media, message.text || message.caption)
+          )
         : []),
     ];
     if (media === undefined) return { auth: sessionAuth, context: turnContext };
@@ -667,6 +676,13 @@ async function sendText(
       ? { ...body, link_preview_options: { is_disabled: true } }
       : body;
   const chatId = context.telegram.chatId;
+  // The location button's keyboard goes with the first words after it
+  // served (geolocation pilot).
+  let removeKeyboard = takeKeyboardRemoval(chatId);
+  const withKeyboard = <Body extends object>(body: Body) =>
+    removeKeyboard
+      ? { ...body, reply_markup: { remove_keyboard: true } }
+      : body;
   const chunks = splitTelegramHtml(toTelegramHtml(text));
   let plainFrom = chunks.length;
   for (const [index, chunk] of chunks.entries()) {
@@ -674,8 +690,11 @@ async function sendText(
       // oxlint-disable-next-line eslint/no-await-in-loop -- Telegram renders split messages in call order.
       await context.telegram.request(
         "sendMessage",
-        withPreview({ chat_id: chatId, parse_mode: "HTML", text: chunk })
+        withPreview(
+          withKeyboard({ chat_id: chatId, parse_mode: "HTML", text: chunk })
+        )
       );
+      removeKeyboard = false;
     } catch (error) {
       if (!(error instanceof Error) || !rejectedMarkup(error)) throw error;
       console.warn("[telegram] markup refused, sent as plain text", {
@@ -693,8 +712,9 @@ async function sendText(
       // oxlint-disable-next-line eslint/no-await-in-loop -- Telegram renders split messages in call order.
       await context.telegram.request(
         "sendMessage",
-        withPreview({ chat_id: chatId, text: plain })
+        withPreview(withKeyboard({ chat_id: chatId, text: plain }))
       );
+      removeKeyboard = false;
     }
   }
 }

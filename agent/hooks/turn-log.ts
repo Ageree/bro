@@ -249,9 +249,17 @@ const locationTools: ReadonlySet<string> = new Set([
 const positionNearSchema = z.object({ positionNear: z.string() });
 
 /**
+ * A Yandex Maps search's call with a point: the model copies it from
+ * `location_now` or a context line, so it may be where the person is.
+ */
+const nearInputSchema = z.object({
+  near: z.tuple([z.number(), z.number()]),
+});
+
+/**
  * A tool call's input or result for the transcript, or only that it was
- * about a location: the geolocation tools, and a Yandex search that looked
- * around the person's point, carry where they are.
+ * about a location: the geolocation tools, a Yandex search given a point,
+ * and one that looked around the person's point carry where they are.
  */
 function locationRedacted(
   toolName: string,
@@ -259,7 +267,9 @@ function locationRedacted(
 ) {
   if (
     locationTools.has(toolName) ||
-    (toolName === "yandex" && positionNearSchema.safeParse(value).success)
+    (toolName === "yandex" &&
+      (positionNearSchema.safeParse(value).success ||
+        nearInputSchema.safeParse(value).success))
   ) {
     return transcriptJson({ redacted: "location" });
   }

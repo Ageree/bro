@@ -88,7 +88,9 @@ export async function insertPoint(scope: AccessScope, point: NewPoint) {
 
 /**
  * The latest place the person was, as they shared it: the latest `position`,
- * or with `label` the latest point of any kind they named so («парковка»).
+ * or with `label` the latest of their own positions they named so
+ * («парковка»): a forwarded venue or a friend's card titled «Дом» is a
+ * place they talk about, never theirs.
  * `live`: an edit of its Telegram live share is still fresh.
  */
 export async function latestPosition(
@@ -101,8 +103,9 @@ export async function latestPosition(
     .where(
       and(
         eq(locationPoints.workspaceId, scope.workspaceId),
+        eq(locationPoints.kind, "position"),
         options.label === undefined
-          ? eq(locationPoints.kind, "position")
+          ? undefined
           : sql`lower(${locationPoints.label}) = lower(${options.label})`
       )
     )
@@ -304,6 +307,8 @@ export async function sharedBefore(scope: AccessScope, exceptId: string) {
 /**
  * The address of the person's own nearest point within 30 m, without asking
  * any map: a point shared where they have been before reads its address here.
+ * Only their own positions lend one: a forwarded venue's address is what its
+ * sender wrote, not where the person is.
  */
 export async function cachedAddressNear(
   scope: AccessScope,
@@ -323,6 +328,7 @@ export async function cachedAddressNear(
     .where(
       and(
         eq(locationPoints.workspaceId, scope.workspaceId),
+        eq(locationPoints.kind, "position"),
         sql`${locationPoints.address} IS NOT NULL`,
         sql`${locationPoints.lat} BETWEEN ${lat - latSpan} AND ${lat + latSpan}`,
         sql`${locationPoints.lon} BETWEEN ${lon - lonSpan} AND ${lon + lonSpan}`,
@@ -375,10 +381,12 @@ const liveStatuses = ["active", "paused"] as const;
 
 /**
  * Deletes the workspace's shared points, all of them or those recorded in
- * `[from, to)`. Forgetting everything also deletes the reminders at places
- * that are over, with their reports: their source and outcomes carry where
- * the person was. A live reminder is a schedule of theirs and stays.
- * Returns how many points and reminders went.
+ * `[from, to)`. It also deletes the reminders at places that are over, with
+ * their reports: their state and outcomes carry where the person was. A live
+ * reminder is a schedule of theirs and stays, but forgets the points it saw
+ * (`last`, `pending` and their times); whether the person is inside stays,
+ * so it still notices the next crossing. Returns how many points and
+ * reminders went.
  */
 export async function forgetLocation(
   workspaceId: string,
@@ -398,9 +406,19 @@ export async function forgetLocation(
       )
     )
     .returning({ id: locationPoints.id });
-  if (range.from !== undefined || range.to !== undefined) {
-    return { points: deleted.length, reminders: 0 };
-  }
+  await db
+    .update(subscriptions)
+    .set({
+      state: sql`${subscriptions.state} || '{"last":null,"pending":null,"recentOut":null,"farAt":null}'::jsonb`,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(subscriptions.workspaceId, workspaceId),
+        eq(subscriptions.template, "place"),
+        inArray(subscriptions.status, [...liveStatuses])
+      )
+    );
   const reminders = await deleteEndedReminders(workspaceId);
   return { points: deleted.length, reminders };
 }
@@ -439,8 +457,8 @@ async function deleteEndedReminders(workspaceId?: string, before?: Date) {
 /**
  * The hourly sweep (`agent/schedules/memory-history.ts`): points older than
  * 90 days, in batches until none is left, a live share's track older than
- * a week thinned to a point per 10 minutes, and the jobs of place reminders
- * that ended more than 30 days ago.
+ * a week thinned to a point per 10 minutes (a point the person named stays),
+ * and the jobs of place reminders that ended more than 30 days ago.
  */
 export async function expireLocationPoints(now: Date): Promise<void> {
   const cutoff = new Date(now.getTime() - locationRetentionDays * dayMs);
@@ -475,6 +493,7 @@ export async function expireLocationPoints(now: Date): Promise<void> {
           ) AS place
           FROM ${locationPoints}
           WHERE ${locationPoints.source} = 'telegram_live'
+            AND ${locationPoints.label} IS NULL
             AND ${locationPoints.recordedAt} < ${rawBefore}
         ) ranked
         WHERE ranked.place > 1
