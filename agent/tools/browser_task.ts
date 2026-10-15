@@ -3860,34 +3860,33 @@ async function consentFromInput(
   if (unchosen) throw new Error(unchosen);
   if (consent.by === "card")
     throw new Error(unrequestedSubmissionRefusal.reason);
-  if (consent.submission.directRequest !== undefined)
-    await spendDirectRequest(input, scope, said);
+  // A new consent of the person's request, not the errand's own carried on.
+  if (consent.by === "person" && consent.submission.directRequest !== undefined)
+    await spendDirectRequest(input, scope, said, context.callId);
   return consent.by === "errand" ? undefined : consent;
 }
 
 const directRequestSpentRefusal =
-  "Nothing was started: the person's request in this turn already paid for another purchase, and one request pays one. Ask them in one short question whether to buy this too, with what it is and its total, and pay only after their plain yes.";
+  "Nothing was started: the person's request in this turn is already being paid by another purchase, and one request pays one. Check that purchase with status first; do not start another for the same request. Only if they want something more, ask them one short question with what it is and its total.";
 
 /**
- * One request pays one purchase: the errand it starts, or the run it
- * continues, takes it, and a second start on the same words is refused.
+ * One request pays one purchase: the call that starts or continues the
+ * errand takes it — the same call replayed keeps it — and another call on
+ * the same request is refused.
  */
 async function spendDirectRequest(
   input: BrowserTaskInput,
   scope: AccessScope,
-  said: ReturnType<typeof turnWords>
+  said: ReturnType<typeof turnWords>,
+  callId: string
 ) {
   const direct = await directBrowserPayment(input, scope, said);
   if (direct?.kind !== "granted")
     throw new Error(paymentQuestionRefusal(input.submission?.chargeRub));
-  const ref =
-    input.action === "continue" && input.runId !== undefined
-      ? input.runId
-      : crypto.randomUUID();
   if (
     !(await claimDirectPurchase(scope, {
       consentKey: direct.key,
-      ref: `browser:${ref}`,
+      ref: `browser:${callId}`,
     }))
   )
     throw new Error(directRequestSpentRefusal);

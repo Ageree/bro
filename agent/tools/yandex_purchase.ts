@@ -255,14 +255,17 @@ const orderTerms = (
 /**
  * The most a ride booked on the person's request may cost
  * (DIRECT_PURCHASE_WORKSPACES): what their words allow — their budget or
- * the ceiling — or, when their words ask for no ride, the limit the call
- * names, else the ceiling. A saved rule or another route asks instead.
+ * the ceiling, or the price Bro's question named when they answer it with
+ * «да, вызывай» — and never above the ceiling otherwise. A saved rule or
+ * another route asks instead.
  */
 async function directRideLimit(
   scope: AccessScope,
   turn: DirectTurn,
-  args: z.output<typeof goBookOperation.args>
+  args: z.output<typeof goBookOperation.args>,
+  paymentAsked: string | null
 ) {
+  const ceiling = directPurchaseCeilingRub();
   const direct = await directPurchase(scope, turn, {
     terms: {
       ride: {
@@ -274,14 +277,17 @@ async function directRideLimit(
     },
   });
   if (direct?.kind === "ask") return direct;
-  if (direct?.kind === "granted")
-    return {
-      kind: "limit" as const,
-      maxPriceRub: Math.min(args.maxPriceRub ?? direct.capRub, direct.capRub),
-    };
+  const asked =
+    args.maxPriceRub !== undefined &&
+    paymentAsked !== null &&
+    namesTotal(paymentAsked, Math.round(args.maxPriceRub * 100))
+      ? args.maxPriceRub
+      : 0;
+  const cap =
+    direct?.kind === "granted" ? Math.max(direct.capRub, asked) : ceiling;
   return {
     kind: "limit" as const,
-    maxPriceRub: args.maxPriceRub ?? directPurchaseCeilingRub(),
+    maxPriceRub: Math.min(args.maxPriceRub ?? cap, cap),
   };
 }
 
@@ -410,8 +416,19 @@ export default defineDynamic({
                 input.action === "book"
                   ? goBookOperation.args.parse(input)
                   : undefined;
-              if (args !== undefined && directPurchasePilot(scope)) {
-                const limit = await directRideLimit(scope, turn, args);
+              // A yes to Bro's question about the price keeps the limit the
+              // call names: that price is what they said yes to.
+              if (
+                args !== undefined &&
+                directPurchasePilot(scope) &&
+                paymentAnswer(words.said) !== "yes"
+              ) {
+                const limit = await directRideLimit(
+                  scope,
+                  turn,
+                  args,
+                  words.paymentAsked
+                );
                 if (limit.kind === "ask") {
                   return {
                     kind: "not_booked" as const,
@@ -444,7 +461,7 @@ export default defineDynamic({
               )
                 return {
                   ...result,
-                  reply: `Nothing was booked: the price is above ${String(args.maxPriceRub)} ₽, the most the person's request allows without a question. Ask them one short question with the price, and book with maxPriceRub at that price only after their plain yes.`,
+                  reply: `Nothing was booked: the price is above ${String(args.maxPriceRub)} ₽. Ask the person one short question with the route and the price, ending with «Оплачиваю?», and book with maxPriceRub at that price only after their plain yes.`,
                 };
               if (result.reason !== "no_verified_card")
                 return { ...result, reply: goReplies[result.kind] };
@@ -659,6 +676,13 @@ export default defineDynamic({
                 kind: "expired" as const,
                 reply:
                   "Nothing was submitted. Prepare a fresh quote and ask again.",
+              };
+            }
+            if (claimed.kind === "consent_spent") {
+              return {
+                ...purchaseResult(claimed.purchase),
+                reply:
+                  "Nothing was submitted: the person's request in this turn already paid for another purchase, and one request pays one. Check that one first; if they want this order too, send confirmationQuestion and wait for their plain yes.",
               };
             }
             if (claimed.kind !== "claimed")

@@ -10575,6 +10575,32 @@ describe("browser_task pays on the person's own request in the direct-purchase p
     expect(task).toContain(`Payment is pre-approved up to ${formatRub(5000)}`);
   });
 
+  it("carries the errand's own consent on without spending the request again", async () => {
+    await directPilot();
+    readBrowserRunForScope.mockResolvedValue(
+      browserRunRow(new Date(), "Result: в корзине\nNeeds: payment", {
+        ...food,
+        directRequest: said,
+        paymentCapRub: 5000,
+      })
+    );
+    const tool = await directPersonTool("оплачивай");
+    await tool.execute(
+      {
+        action: "continue",
+        allowPayment: true,
+        personSaid: "оплачивай",
+        personWants: "done",
+        runId,
+        submission: { ...food, chargeRub: 2490 },
+        task: "оплачивай",
+      },
+      toolContext("better-auth:alice")
+    );
+    expect(claimDirectPurchase).not.toHaveBeenCalled();
+    expect(createBrowserUseRun).toHaveBeenCalledTimes(1);
+  });
+
   it("starts no second purchase on the same request", async () => {
     await directPilot();
     claimDirectPurchase.mockResolvedValue(false);

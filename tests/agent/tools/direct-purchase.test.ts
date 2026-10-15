@@ -358,6 +358,25 @@ describe("the wallet pays on the person's own request", () => {
     expect(services.process).not.toHaveBeenCalled();
   });
 
+  it("asks about a transfer whose recipient the request did not name", async () => {
+    services.walletRead.mockResolvedValue(
+      payment({
+        kind: "transfer",
+        requestParams: { pattern_id: "p2p", to: "79261234567" },
+        title: "перевод на кошелёк по телефону +79261234567",
+      })
+    );
+    expect(
+      await confirmPayment(asked("Переведи Маше 100 рублей"))
+    ).toMatchObject({ kind: "confirmation_required" });
+    expect(
+      await confirmPayment(asked("Переведи 100 рублей на +7 926 123-45-67"))
+    ).toMatchObject({ kind: "paid" });
+    expect(services.walletClaim.mock.calls[0]?.[1]).toMatchObject({
+      direct: true,
+    });
+  });
+
   it("pays nothing in a turn a report opened", async () => {
     expect(await confirmPayment(reported)).toMatchObject({ kind: "refused" });
     expect(services.judge).not.toHaveBeenCalled();
@@ -409,6 +428,8 @@ describe("a Go ride on the person's own request", () => {
     const input = {
       action: "book" as const,
       from: "Тверская 1",
+      near: [37.6177, 55.7558] as [number, number],
+      payment: "current" as const,
       service: "go" as const,
       to: "Шереметьево",
     };
@@ -427,6 +448,55 @@ describe("a Go ride on the person's own request", () => {
     await book("Закажи такси до Шереметьево, до 1500", 9000);
     expect(services.run.mock.calls[1]?.[2]).toMatchObject({
       maxPriceRub: 1500,
+    });
+  });
+
+  it("books above the ceiling only at the price Bro asked about", async () => {
+    await book("Закажи такси до Шереметьево", 6200);
+    expect(services.run.mock.calls[0]?.[2]).toMatchObject({
+      maxPriceRub: 5000,
+    });
+    const tool = await purchaseTool([
+      { role: "user", content: "Закажи такси до Шереметьево" },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolName: "send_message",
+            toolCallId: "send-1",
+            input: { text: "До Шереметьево сейчас 6 200 ₽. Оплачиваю?" },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolName: "send_message",
+            toolCallId: "send-1",
+            output: { type: "json", value: { status: "sent" } },
+          },
+        ],
+      },
+      { role: "user", content: "да, вызывай" },
+    ]);
+    if (!tool) throw new Error("Expected tool.");
+    await tool.execute(
+      {
+        action: "book",
+        from: "Тверская 1",
+        maxPriceRub: 6200,
+        near: [37.6177, 55.7558],
+        payment: "current",
+        service: "go",
+        to: "Шереметьево",
+      },
+      callContext("yandex_purchase")
+    );
+    expect(services.run.mock.calls[1]?.[2]).toMatchObject({
+      maxPriceRub: 6200,
     });
   });
 

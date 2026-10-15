@@ -1,5 +1,6 @@
 import { and, eq, inArray, ne } from "drizzle-orm";
 import { db, yoomoneyPayments } from "@db";
+import { claimDirectPurchase } from "@db/services/direct-purchases";
 import { lockWorkspaceSpending } from "@db/services/spending";
 import type { AccessScope } from "@shared/identity/access-scope";
 
@@ -114,7 +115,15 @@ export async function claimYoomoneyPayment(
   input: Pick<
     YoomoneyPayment,
     "id" | "rootSessionId" | "confirmationQuestion"
-  > & { readonly callId: string; readonly consentHash: string }
+  > & {
+    readonly callId: string;
+    readonly consentHash: string;
+    /**
+     * The yes is the person's request itself (`agent/lib/payments/direct.ts`):
+     * spent for every way Bro pays, not only the wallet.
+     */
+    readonly direct?: boolean;
+  }
 ) {
   return db.transaction(async (transaction) => {
     await lockWorkspaceSpending(transaction, scope);
@@ -152,6 +161,15 @@ export async function claimYoomoneyPayment(
       )
       .limit(1);
     if (spent) return { kind: "consent_spent" as const, payment };
+    if (
+      input.direct === true &&
+      !(await claimDirectPurchase(
+        scope,
+        { consentKey: input.consentHash, ref: `yoomoney:${payment.id}` },
+        transaction
+      ))
+    )
+      return { kind: "consent_spent" as const, payment };
     const [claimed] = await transaction
       .update(yoomoneyPayments)
       .set({

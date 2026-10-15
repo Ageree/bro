@@ -833,6 +833,9 @@ function imagesBlock(images: readonly BrowserRunImage[]) {
  * within it: then a stop on the payment step is not a question for them.
  */
 function approvedPaymentRub(row: BrowserRunRow, total: string | undefined) {
+  // A run paying on the person's request stops at payment only when what it
+  // found differs from it: that is the person's question, not a go-ahead.
+  if (row.submission?.directRequest !== undefined) return undefined;
   const cap = row.submission?.paymentCapRub;
   const totalRub = total === undefined ? undefined : priceRubFromTotal(total);
   return cap !== undefined && totalRub !== undefined && totalRub <= cap
