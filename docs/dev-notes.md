@@ -225,7 +225,9 @@
   / `build:eve`: гоняйте их через `env -u TELEGRAM_BOT_USERNAME`, в env прода —
   без `@`. Из-за `IMESSAGE_PROJECT_ID` в env сессии прямой `vitest run` падает
   и на `db/services/auth/tests/photon.test.ts` («resolves project credentials
-  lazily»), даже на чистом bro-next: `env -u IMESSAGE_PROJECT_ID`.
+  lazily»), даже на чистом bro-next: `env -u IMESSAGE_PROJECT_ID`. Так же
+  `OPS_ALERT_BOT_TOKEN` сессии валит `agent/lib/model/tests/credits.test.ts`: тревога
+  уходит служебным ботом, а тест ждёт тестовый токен — `env -u OPS_ALERT_BOT_TOKEN`.
   `S3_ACCESS_KEY_ID`/`S3_SECRET_ACCESS_KEY` сессии без `S3_ENDPOINT` и
   `S3_REGION` валят `pnpm build:eve` той же проверкой: снимайте и их.
 - `pnpm build` без `.env.local` падает на сборе данных страниц: хватает заглушек
@@ -1093,8 +1095,13 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   исполняется по имени через свои approval/execute. Откат — `shadow` или снять флаг.
   С решением Jev навык нескольких групп (google, apps, recommendations…) даёт лишь выбранные
   Jev из своих, а если ни одной — все (`triggerGroups`, в логе `narrowed`); `first-contact` не
-  сужается. `places` открывают и слова о своём месте («когда приду на…», «где я», `placeBound` в
-  `state-string.ts`): Jev 1.13 15.10 не дал группы напоминанию у адреса.
+  сужается. Фолбэк Госуслуг в почту и на Диск идёт в ходе-отчёте браузера, его роутер не трогает.
+  В `shadow` набор не сужается: что спрятал бы `on`, пишет `narrowed` в `shadow-decision`, и
+  `missed` в `shadow-result` без него завышает полноту `on`.
+  `places` открывают и слова о своём месте («когда приду на…», «где я»,
+  `agent/lib/location/phrases.ts`): Jev 1.13 15.10 не дал группы напоминанию у адреса.
+  Просьба «напомни, когда приду/уйду» ещё и даёт строку `context` о `place_reminder`: модель в 2
+  из 4 живых ходов сначала грузила навык подбора мест и открывала уже открытые `places`.
 - Jev 1.14 есть только у TypeSafe (`jev-1.14.0`; `jev-1.14` — 400 «Unknown model»), у
   RouterAI — 1.13 (`typesafe/jev-1.13`, отвечает `typesafe/jev-1.13-20260917`): клиент
   (`system-one.ts`) зовёт TypeSafe и через 250 мс тишины — RouterAI, пороги берёт по имени

@@ -130,6 +130,14 @@ export function whereLine(
   return `${locationLinePrefix} последняя точка, которой человек делился, — ${localStamp(point.recordedAt, timeZone)}, ${whereWords(point)}${accuracyWords(point.accuracyM)}. Если прошло больше часа — «был там», а не «ты там».`;
 }
 
+/**
+ * The line for a request to be reminded on coming to a place or leaving it:
+ * the model loaded the skill of picking places and opened the group of
+ * places it already had before calling `place_reminder` (2 of 4 live turns,
+ * 15.10).
+ */
+export const placeReminderLine = `${locationLinePrefix} человек просит напомнить у места — это place_reminder: он уже среди твоих инструментов, вызывай его сразу, без навыков и открытия групп.`;
+
 /** Whether a line is one of these context lines. */
 export function isLocationLine(line: string) {
   return line.trimStart().startsWith(locationLinePrefix);

@@ -155,7 +155,7 @@ function onePlace(
         .map((place) => place.label)
         .join(
           "; "
-        )}). Ask the person which one: the street and the house. Nothing was set up.`
+        )}). If the person's message names the house or the city, call again with the street, the house and the city in \`place\` as they wrote them; otherwise ask the person which one. Nothing was set up.`
     );
   }
   return {

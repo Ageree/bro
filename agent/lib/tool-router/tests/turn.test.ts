@@ -589,6 +589,27 @@ describe("a person's step in the router's pilot", () => {
     expect(reminder).toContain("places");
   });
 
+  it("keeps the whole set in shadow, and logs what on would have narrowed", async () => {
+    decisions.groups = ["calendar"];
+    const info = vi.mocked(console.info);
+    const groups = await routerGroupsOfStep(
+      [person("Что у меня в календаре в субботу?")],
+      { sessionId: "session-3", stepIndex: 0, turnId: "turn_1" },
+      setup,
+      "shadow"
+    );
+    expect(groups).toEqual(expect.arrayContaining(["mail", "docs"]));
+    await vi.waitFor(() => {
+      expect(info).toHaveBeenCalledWith(
+        "[tool-router] shadow-decision",
+        expect.objectContaining({
+          decided: ["calendar"],
+          narrowed: ["mail", "docs"],
+        })
+      );
+    });
+  });
+
   it("offers the first contact's call and Yandex in the turns after it", async () => {
     const marker = Object.assign(
       {

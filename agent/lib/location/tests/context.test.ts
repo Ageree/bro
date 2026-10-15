@@ -79,6 +79,26 @@ describe("the line of where the person last was", () => {
   });
 });
 
+describe("a reminder at a place", () => {
+  it("points to place_reminder only when asked to remind on coming or going", async () => {
+    const { locationContext } = await import("@agent/lib/location/context");
+    const { placeReminderLine } = await import("@agent/lib/location/note");
+    expect(
+      await locationContext(
+        scope,
+        "напомни позвонить Пете, когда уйду с Моховой 15",
+        now
+      )
+    ).toEqual([placeReminderLine]);
+    expect(
+      await locationContext(scope, "напомни позвонить Пете в пятницу", now)
+    ).toEqual([]);
+    expect(
+      await locationContext(scope, "когда приду на Тверскую, позвоню", now)
+    ).toEqual([]);
+  });
+});
+
 describe("the web chat's shared point", () => {
   it("reads the button's message as the point it just stored", async () => {
     const { webLocationContext } = await import("@agent/lib/location/context");
