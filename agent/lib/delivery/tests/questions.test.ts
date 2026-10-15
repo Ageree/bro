@@ -95,10 +95,12 @@ describe("turnAwaitsAnswer", () => {
       turnAwaitsAnswer([
         person("что там с Госуслугами?"),
         sent(
-          "Добавь вход в сейф: https://brobro.tech/vault?setup=vault&kind=login"
+          "Добавь вход в сейф: https://brobro.tech/workspace?setup=vault&kind=login"
         ),
         delivered("send_message"),
-        sent("[Сейф](https://brobro.tech/vault?setup=vault) — ссылка выше."),
+        sent(
+          "[Сейф](https://brobro.tech/workspace?setup=vault) — ссылка выше."
+        ),
         delivered("send_message"),
       ])
     ).toBe(false);

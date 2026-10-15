@@ -58,7 +58,10 @@ type ToolProps = ComponentProps<typeof Collapsible>;
 function Tool({ className, ...props }: ToolProps) {
   return (
     <Collapsible
-      className={cn("group not-prose w-full", className)}
+      className={cn(
+        "group not-prose w-full rounded-2xl border border-border bg-card px-4",
+        className
+      )}
       data-slot="chat-tool"
       {...props}
     />
@@ -92,7 +95,7 @@ function ToolHeader({
   return (
     <CollapsibleTrigger
       className={cn(
-        "flex w-full items-center gap-2 py-0.5 text-left text-muted-foreground transition-colors hover:text-foreground",
+        "flex min-h-11 w-full items-center gap-2 rounded-xl text-left text-muted-foreground transition-colors outline-none hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50",
         className
       )}
       data-slot="chat-tool-trigger"
@@ -131,7 +134,7 @@ function ToolContent({ className, ...props }: ToolContentProps) {
   return (
     <CollapsibleContent
       className={cn(
-        "space-y-4 py-2 text-popover-foreground outline-none data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-top-2 data-[state=open]:animate-in data-[state=open]:slide-in-from-top-2",
+        "-mx-4 space-y-4 border-t border-border px-4 pt-3 pb-4 text-popover-foreground outline-none data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-top-2 data-[state=open]:animate-in data-[state=open]:slide-in-from-top-2",
         className
       )}
       data-slot="chat-tool-content"
@@ -148,7 +151,7 @@ function ToolInput({ className, input, ...props }: ToolInputProps) {
   return (
     <div className={cn("space-y-2 overflow-hidden", className)} {...props}>
       <p className="type-label text-muted-foreground">Parameters</p>
-      <pre className="type-code overflow-x-auto rounded-md bg-muted/50 p-3">
+      <pre className="type-code overflow-x-auto rounded-xl bg-muted/60 p-3">
         <code>{JSON.stringify(input, null, 2)}</code>
       </pre>
     </div>
@@ -182,7 +185,7 @@ function ToolOutput({
       </p>
       <div
         className={cn(
-          "overflow-x-auto rounded-md bg-muted/50 p-3 type-supporting-body whitespace-pre-wrap",
+          "overflow-x-auto rounded-xl bg-muted/60 p-3 type-supporting-body whitespace-pre-wrap",
           errorText && "bg-destructive/10 text-destructive"
         )}
       >

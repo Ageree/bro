@@ -37,7 +37,7 @@ export function TracePreview({
           aria-label="Закрыть трассировку"
           onClick={onClose}
           ref={closeButtonRef}
-          size="icon-sm"
+          size="icon-lg"
           type="button"
           variant="ghost"
         >

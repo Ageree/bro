@@ -7,7 +7,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@web/components/ui/dialog";
-import { CardForm } from "./form";
+import { ContactForm } from "./form";
 import {
   useVaultSection,
   VaultItemBrowser,
@@ -18,39 +18,39 @@ import {
 } from "../section";
 import { useVaultSetup } from "../setup";
 
-export function VaultCards({
+export function VaultContacts({
   items,
 }: {
   readonly items: readonly VaultItem[];
 }) {
   const setup = useVaultSetup();
   const section = useVaultSection({
-    setup: setup?.kind === "payment" ? setup : undefined,
-    view: setup?.kind === "payment" ? "add" : "list",
+    setup: setup?.kind === "contact" ? setup : undefined,
+    view: setup?.kind === "contact" ? "add" : "list",
   });
 
   return (
     <VaultSection
       onOpenChange={section.onOpenChange}
       open={section.open}
-      title="Карты"
+      title="Контакты"
     >
-      <VaultSectionTrigger items={items} title="Карты" />
+      <VaultSectionTrigger items={items} title="Контакты" />
       <VaultSectionContent view={section.view}>
         {section.view === "list" ? (
           <>
             <DialogHeader className="pr-10 sm:pr-6">
-              <DialogTitle>Карты</DialogTitle>
+              <DialogTitle>Контакты</DialogTitle>
               <DialogDescription>
                 {items.length > 0
-                  ? "Найди нужную карту или удали лишнюю."
-                  : "Добавь первую карту."}
+                  ? "Найди нужный контакт или удали лишний."
+                  : "Добавь первый контакт."}
               </DialogDescription>
             </DialogHeader>
             <VaultItemBrowser
               items={items}
-              searchId="vault-search-cards"
-              title="Карты"
+              searchId="vault-search-contacts"
+              title="Контакты"
             />
             <div className="flex flex-wrap items-baseline gap-x-6 gap-y-2">
               <Button
@@ -58,9 +58,9 @@ export function VaultCards({
                   section.setView("add");
                 }}
                 type="button"
-                variant="act"
+                variant="paper"
               >
-                Добавить карту
+                Добавить контакт
               </Button>
             </div>
           </>
@@ -70,16 +70,15 @@ export function VaultCards({
               onClick={() => {
                 section.setView("list");
               }}
-              title="Карты"
+              title="Контакты"
             />
             <DialogHeader className="pr-10 sm:pr-6">
-              <DialogTitle>Добавить карту</DialogTitle>
+              <DialogTitle>Добавить контакт</DialogTitle>
               <DialogDescription>
-                Номер и CVV шифруются до записи в базу и после сохранения не
-                показываются.
+                Имя, почта и телефон, которые Bro укажет при оформлении.
               </DialogDescription>
             </DialogHeader>
-            <CardForm
+            <ContactForm
               initialLabel={section.setup?.label}
               onSaved={() => {
                 section.setView("list");

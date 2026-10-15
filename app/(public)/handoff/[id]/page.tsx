@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Masthead } from "@web/components/paper/masthead";
+import { Capsule } from "@web/components/paper/capsule";
 import { Viewer } from "./viewer";
 
 export const metadata: Metadata = {
@@ -17,8 +17,9 @@ export default async function Page(props: PageProps<"/handoff/[id]">) {
   const { id } = await props.params;
   return (
     <div className="flex min-h-svh flex-col">
-      <Masthead />
-      <main className="mx-auto w-full max-w-[72rem] px-bro-pad pt-[0.6rem] pb-12">
+      {/* A task flow for one person: the wordmark alone, no site navigation. */}
+      <Capsule items={[]} />
+      <main className="mx-auto w-full max-w-[72rem] flex-1 px-bro-pad pt-[5.5rem] pb-12">
         <Viewer id={id} />
       </main>
     </div>

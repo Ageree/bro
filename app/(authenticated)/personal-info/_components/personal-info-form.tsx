@@ -20,9 +20,9 @@ import {
 import { api } from "@web/trpc/client";
 
 /**
- * Paper, like the cabinet and the vault: a title, fine print, and sections
- * divided by hairlines. A field is a hairline rectangle with its label set
- * small and grey above it; saving is the one inverted rectangle.
+ * Paper, like the cabinet and the vault: a title, fine print, and one plate
+ * per section. A field is a pill input with its label set small and grey
+ * above it; saving is the one filled ink pill.
  */
 export function PersonalInfoForm({
   initialProfile,

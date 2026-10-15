@@ -29,7 +29,7 @@ describe("source layout", () => {
   });
 
   it("keeps cross-boundary contracts explicitly owned", () => {
-    expect(directories("web")).toEqual(["auth", "components", "hooks", "trpc"]);
+    expect(directories("web")).toEqual(["auth", "components", "trpc"]);
     expect(files("web")).toEqual([]);
     expect(directories("shared")).toEqual([
       "agent-mail",

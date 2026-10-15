@@ -4,6 +4,7 @@ import { env } from "@shared/environment";
 import {
   Document,
   DocumentTitle,
+  Rows,
   Section,
 } from "@web/components/paper/document";
 import { adminQuery } from "../_lib/caller";
@@ -57,7 +58,7 @@ export default async function Page({
           {env.OWNER_TRANSCRIPTS === "on" ? null : " · тексты выключены"}
         </p>
         {turns.length > 0 ? (
-          <ul className="mt-[0.6rem] list-none">
+          <Rows>
             {turns.map((turn) => (
               <TurnRow
                 key={turn.id}
@@ -65,7 +66,7 @@ export default async function Page({
                 turn={turn}
               />
             ))}
-          </ul>
+          </Rows>
         ) : (
           <p className="type-fine text-muted-foreground">Ходов нет.</p>
         )}

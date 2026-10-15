@@ -333,7 +333,7 @@ export function createVaultSetupUrl(
   baseUrl: string,
   request: VaultSetupRequest
 ) {
-  const url = new URL("/vault", baseUrl);
+  const url = new URL("/workspace", baseUrl);
   url.searchParams.set("setup", request.target);
   url.searchParams.set("kind", request.kind);
   // The label goes last: a messaging client that runs following text into the

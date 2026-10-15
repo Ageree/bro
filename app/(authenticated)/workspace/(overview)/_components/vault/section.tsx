@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowLeftIcon, SearchIcon } from "lucide-react";
+import { ArrowLeftIcon, ChevronRightIcon, SearchIcon } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { type ReactNode, useEffect, useState } from "react";
 import { Button } from "@web/components/ui/button";
@@ -48,7 +48,7 @@ export function answerVaultSectionQuery<Setup>(
 
 /**
  * A section's sheet, and the request that opened it. A link from the
- * cabinet, or from the foot of the vault, names the sheet in the query:
+ * cabinet, or one the agent sent, names the sheet in the query:
  * `requested` is what this section reads from it on every render.
  */
 export function useVaultSection<Setup>(requested: VaultSectionRequest<Setup>) {
@@ -88,7 +88,7 @@ export function useVaultSection<Setup>(requested: VaultSectionRequest<Setup>) {
   return { onOpenChange, open, setView, setup, view };
 }
 
-/** One row of the vault's saved list; its sheet opens from the row itself. */
+/** One row of the cabinet's vault list; its sheet opens from the row itself. */
 export function VaultSection({
   children,
   onOpenChange,
@@ -131,8 +131,9 @@ export function VaultSectionTrigger({
       }
     >
       <span className="type-row min-w-0 flex-1">{title}</span>
-      <span className="type-status shrink-0 text-muted-foreground">
+      <span className="type-status flex shrink-0 items-center gap-1 text-muted-foreground">
         {items.length > 0 ? savedCount(items.length) : "Пока пусто"}
+        <ChevronRightIcon aria-hidden="true" className="size-4" />
       </span>
     </DialogTrigger>
   );
@@ -162,8 +163,8 @@ export function VaultSectionContent({
       animated={false}
       className={
         view === "list"
-          ? "grid-rows-[auto_auto_minmax(0,1fr)_auto] overflow-hidden rounded-none sm:rounded-none"
-          : "no-scrollbar overflow-y-auto rounded-none sm:rounded-none"
+          ? "grid-rows-[auto_auto_minmax(0,1fr)_auto] overflow-hidden"
+          : "no-scrollbar overflow-y-auto"
       }
       variant="responsive"
     >
@@ -180,7 +181,13 @@ export function VaultSectionBackButton({
   readonly title: string;
 }) {
   return (
-    <Button onClick={onClick} size="act-sm" type="button" variant="act">
+    <Button
+      className="justify-self-start rounded-full px-3 py-1.5"
+      onClick={onClick}
+      size="act-sm"
+      type="button"
+      variant="act"
+    >
       <ArrowLeftIcon />
       {title}
     </Button>
@@ -215,7 +222,10 @@ export function VaultItemBrowser({
           <Label className="sr-only" htmlFor={searchId}>
             Поиск: {title.toLocaleLowerCase()}
           </Label>
-          <InputGroup className="rounded-none border-foreground">
+          <InputGroup
+            className="rounded-full border-2 border-foreground bg-card px-2"
+            size="lg"
+          >
             <InputGroupAddon>
               <SearchIcon />
             </InputGroupAddon>

@@ -1,98 +1,64 @@
 "use client";
 
-import Link from "next/link";
 import { usePathname } from "next/navigation";
-import {
-  SidebarGroup,
-  SidebarGroupContent,
-  useSidebar,
-} from "@web/components/ui/sidebar";
+import type { ReactNode } from "react";
+import { Capsule, type CapsuleItem } from "@web/components/paper/capsule";
+import { SiteFooter } from "@web/components/paper/footer";
 
-const navigation = [
+const navigation: readonly CapsuleItem[] = [
   { href: "/workspace", id: "workspace", label: "Кабинет" },
-  { href: "/vault", id: "vault", label: "Сейф" },
-  { href: "/personal-info", id: "personal-info", label: "Личные данные" },
   { href: "/chat", id: "chat", label: "Чат" },
   { href: "/chat/history", id: "history", label: "Все чаты" },
-] as const;
+  { href: "/personal-info", id: "personal-info", label: "Личные данные" },
+];
+
+const adminItem: CapsuleItem = {
+  href: "/workspace/admin",
+  id: "admin",
+  label: "Владелец",
+};
 
 /**
- * The rail is the masthead stood on its side: a column of text under the
- * wordmark. No icons, no pills, no filled row — the page you are on is ink,
- * the rest is grey, and a hovered row fades like every other link here.
- *
- * A row is a thumb's worth of paper: the padding that makes it one is taken
- * back off the column, so the block sits exactly where the text alone would.
+ * The frame of the cabinet: the capsule on top and the page under it. A
+ * document page scrolls with the footer at its foot; the chat owns the whole
+ * screen below the capsule, so it has no footer and nothing scrolls but the
+ * conversation. The vault lives inside the cabinet, so it has no item here.
  */
-export function AuthenticatedNavigation({
+export function CabinetFrame({
+  account,
+  children,
   showAdmin = false,
 }: {
+  readonly account: ReactNode;
+  readonly children: ReactNode;
   readonly showAdmin?: boolean;
 }) {
-  const active = activeRoute(usePathname());
-  const items = showAdmin
-    ? [
-        ...navigation,
-        { href: "/workspace/admin", id: "admin", label: "Владелец" },
-      ]
-    : navigation;
+  const pathname = usePathname();
+  const active = activeRoute(pathname);
+  const items = showAdmin ? [...navigation, adminItem] : navigation;
+  const ownsScreen = active === "chat";
+
+  if (ownsScreen) {
+    return (
+      <div className="flex h-svh flex-col overflow-hidden">
+        <Capsule active={active} items={items} wordmarkHref="/workspace" />
+        <div className="relative min-h-0 flex-1 pt-[5rem]">{children}</div>
+      </div>
+    );
+  }
 
   return (
-    <SidebarGroup className="px-bro-rail py-0">
-      <SidebarGroupContent>
-        <nav aria-label="Основная навигация">
-          <ul className="my-[-0.5rem] flex list-none flex-col bro-rail">
-            {items.map((item) => (
-              <li key={item.id}>
-                <Link
-                  aria-current={active === item.id ? "page" : undefined}
-                  className="type-act block py-[0.5rem] bro-link"
-                  href={item.href}
-                >
-                  {item.label}
-                </Link>
-              </li>
-            ))}
-          </ul>
-        </nav>
-      </SidebarGroupContent>
-    </SidebarGroup>
-  );
-}
-
-/**
- * On a narrow screen the rail is off canvas, so the page carries one line of
- * chrome: the way to the rail, and the page you are on. Both are text —
- * there is no hamburger on this site. «Меню» takes the header's own padding
- * as its hit area, so the whole line is the tap.
- */
-export function AuthenticatedMobileHeader() {
-  const { toggleSidebar } = useSidebar();
-  const active = activeRoute(usePathname());
-  const label =
-    active === "admin"
-      ? "Владелец"
-      : navigation.find((item) => item.id === active)?.label;
-
-  return (
-    <header className="flex items-baseline justify-between gap-4 border-b border-border px-bro-pad py-[0.85rem] md:hidden">
-      <button
-        aria-label="Открыть меню"
-        className="type-act my-[-0.85rem] py-[0.85rem] bro-link"
-        onClick={toggleSidebar}
-        type="button"
-      >
-        Меню
-      </button>
-      <span className="type-status text-muted-foreground">{label}</span>
-    </header>
+    <div className="flex min-h-svh flex-col">
+      <Capsule active={active} items={items} wordmarkHref="/workspace" />
+      <div className="flex-1 pt-[5.5rem]">{children}</div>
+      <SiteFooter>{account}</SiteFooter>
+    </div>
   );
 }
 
 function activeRoute(pathname: string) {
   if (pathname.startsWith("/workspace/admin")) return "admin";
   if (pathname.startsWith("/workspace")) return "workspace";
-  if (pathname.startsWith("/vault")) return "vault";
   if (pathname.startsWith("/personal-info")) return "personal-info";
   if (pathname.startsWith("/chat/history")) return "history";
   if (pathname.startsWith("/chat")) return "chat";
