@@ -37,6 +37,7 @@ export async function createYoomoneyPayment(
     | "id"
     | "rootSessionId"
     | "kind"
+    | "account"
     | "title"
     | "requestParams"
     | "shown"

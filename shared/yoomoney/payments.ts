@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { env } from "@shared/environment";
-import { YoomoneyError, yoomoneyRequest } from "./api";
+import { yoomoneyHistoryPage, yoomoneyRequest } from "./api";
 
 /**
  * A payment from the wallet's balance, in YooMoney's two calls:
@@ -122,56 +122,57 @@ export async function processYoomoneyPayment(
   return { kind: "refused" as const, error: answer.error ?? answer.status };
 }
 
-const historySchema = z.object({
-  error: z.string().optional(),
-  operations: z
-    .array(
-      z.object({
-        operation_id: z.string(),
-        status: z.string(),
-        direction: z.string(),
-        amount: z.coerce.number(),
-        label: z.string().optional(),
-      })
-    )
-    .default([]),
-});
-
 /**
- * A payment whose outcome was lost, in the wallet's history: a transfer by
- * its label (the payment's id), a service by an outgoing operation of the
- * same sum since it was sent. Undefined when the history has none.
+ * A payment whose outcome was lost, in the wallet's outgoing history since
+ * it was sent, page by page (at most a thousand operations). A transfer is
+ * found by its label (the payment's id), paid or refused. A service has no
+ * label: only a successful payment to the same entry of the catalogue for
+ * the same sum counts — a refused one there may be the person's own try.
+ * `absent`: the whole window was read and the payment is not in it;
+ * `unread`: it was too long to read through.
  */
 export async function findYoomoneyPayment(
   token: string,
   {
     amountMinor,
     label,
+    patternId,
     since,
   }: {
     readonly amountMinor: number;
     readonly label?: string;
+    readonly patternId?: string;
     readonly since: Date;
   }
 ) {
-  const body = new URLSearchParams({
-    type: "payment",
-    from: since.toISOString(),
-    records: "30",
-  });
-  if (label !== undefined) body.set("label", label);
-  const parsed = historySchema.safeParse(
-    await yoomoneyRequest("/api/operation-history", { body, token })
-  );
-  if (!parsed.success || parsed.data.error !== undefined)
-    throw new YoomoneyError("unavailable");
-  return parsed.data.operations.find(
-    (operation) =>
-      operation.direction === "out" &&
-      (label === undefined
-        ? Math.round(operation.amount * 100) === amountMinor
-        : operation.label === label)
-  );
+  let start: string | undefined;
+  for (let page = 0; page < 10; page += 1) {
+    // oxlint-disable-next-line eslint/no-await-in-loop -- each page starts where the last one ended.
+    const { next, operations } = await yoomoneyHistoryPage(token, {
+      direction: "out",
+      from: since,
+      label,
+      records: 100,
+      start,
+    });
+    const own = operations.filter((operation) =>
+      label === undefined
+        ? operation.pattern_id === patternId &&
+          Math.round(operation.amount * 100) === amountMinor
+        : operation.label === label
+    );
+    const paid = own.find((operation) => operation.status === "success");
+    if (paid) return { kind: "paid" as const, operationId: paid.operation_id };
+    if (label !== undefined) {
+      if (own.some((operation) => operation.status === "in_progress"))
+        return { kind: "pending" as const };
+      if (own.some((operation) => operation.status === "refused"))
+        return { kind: "refused" as const };
+    }
+    if (next === undefined) return { kind: "absent" as const };
+    start = next;
+  }
+  return { kind: "unread" as const };
 }
 
 /** YooMoney's refusals as the person hears them. */
@@ -197,6 +198,8 @@ const refusals = new Map(
     not_enough_funds: "На кошельке не хватает денег.",
     not_in_history: "ЮMoney не провёл платёж: в истории кошелька его нет.",
     payment_refused: "ЮMoney отказал в платеже.",
+    test_unknown:
+      "Тестовый платёж не подтвердился. В тестовом режиме деньги не списываются.",
     payee_not_found:
       "Получатель не найден: у этого номера, телефона или почты нет кошелька ЮMoney.",
     wallet_not_allowed:

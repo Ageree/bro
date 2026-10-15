@@ -512,6 +512,13 @@
       "when": 1792065675299,
       "tag": "0072_yoomoney",
       "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "7",
+      "when": 1792067269527,
+      "tag": "0073_yoomoney_payment_wallet",
+      "breakpoints": true
     }
   ]
 }
