@@ -322,4 +322,63 @@ describe("room on the shared code host", () => {
       expect.anything()
     );
   });
+
+  it("tries a full host again as soon as its own stop on the way is done", async () => {
+    const stop = gate(stoppedAnswer);
+    const calls = stubHost({
+      open: [opened, full, opened],
+      stop: [stop.answer],
+    });
+    const { create, taskTurnEnds } = await load();
+    await create("task-key", "task-1");
+    await taskTurnEnds("task-1");
+    await vi.waitFor(() => {
+      expect(calls.map(({ kind }) => kind)).toEqual(["open", "stop"]);
+    });
+
+    // Another person's task agent needs room while the finished one is
+    // still being snapshotted.
+    const opening = create("task-key-2", "task-2");
+    await vi.waitFor(() => {
+      expect(calls).toHaveLength(3);
+    });
+    stop.open();
+
+    await expect(opening).resolves.toBeDefined();
+    expect(calls.map(({ kind }) => kind)).toEqual([
+      "open",
+      "stop",
+      "open",
+      "open",
+    ]);
+    expect(console.warn).not.toHaveBeenCalledWith(
+      "[sandbox] host full, waiting",
+      expect.anything()
+    );
+  });
+
+  it("does not let a slow own stop hold an open of a full host", async () => {
+    vi.useFakeTimers();
+    const stop = gate(stoppedAnswer);
+    const calls = stubHost({
+      open: [opened, full, opened],
+      stop: [stop.answer],
+    });
+    const { create, ownTurnEnds } = await load();
+    await create("bro-key", "bro-1");
+    await ownTurnEnds("bro-1");
+
+    const opening = create("task-key", "task-1");
+    await vi.advanceTimersByTimeAsync(32_000);
+
+    await expect(opening).resolves.toBeDefined();
+    expect(calls.map(({ kind }) => kind)).toEqual([
+      "open",
+      "open",
+      "stop",
+      "open",
+    ]);
+    stop.open();
+    await vi.advanceTimersByTimeAsync(0);
+  });
 });

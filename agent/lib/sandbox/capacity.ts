@@ -23,6 +23,11 @@ import {
 
 /** Pauses between opens of a full host: 90 s in all, then the open fails. */
 const hostFullWaitsMs = [2_000, 4_000, 8_000, 16_000, 30_000, 30_000];
+/**
+ * How long a full host's open waits for this process's own stops before
+ * the waits above: a slow snapshot does not hold it longer.
+ */
+const ownRoomWaitMs = 30_000;
 /** A release that finds a call still running looks again after this. */
 const busyRecheckMs = 5_000;
 /** Sessions whose turn never ended (parked, cut short) are forgotten past this many. */
@@ -40,8 +45,11 @@ interface HeldSandbox {
         readonly timer: ReturnType<typeof setTimeout>;
       }
     | undefined;
-  /** The stop on its way: an open waits for it, so the host restores after. */
-  stopping: Promise<void> | undefined;
+  /**
+   * The stop on its way, true once the host stopped the sandbox: an open
+   * waits for it, so the host restores after.
+   */
+  stopping: Promise<boolean> | undefined;
 }
 
 const sandboxes = new Map<string, HeldSandbox>();
@@ -129,20 +137,20 @@ async function stopUnused(
     return false;
   }
   const started = Date.now();
-  let stopped = false;
   const stop = async () => {
     try {
       await settleSandbox(sandboxId, "stop");
-      stopped = true;
       console.info("[sandbox] stopped after its turn", {
         ms: Date.now() - started,
         sandboxId,
       });
+      return true;
     } catch (error) {
       console.warn("[sandbox] not stopped after its turn", {
         ...refusal(error instanceof Error ? error : new Error("thrown")),
         sandboxId,
       });
+      return false;
     } finally {
       sandbox.stopping = undefined;
       if (unused(sandbox) && sandbox.opens === opens) {
@@ -151,8 +159,7 @@ async function stopUnused(
     }
   };
   sandbox.stopping = stop();
-  await sandbox.stopping;
-  return stopped;
+  return await sandbox.stopping;
 }
 
 function arm(
@@ -192,13 +199,33 @@ export function releaseSessionSandboxes(sessionId: string, graceMs: number) {
   }
 }
 
-/** Sends now every release still in its grace: how many stopped a sandbox. */
-async function stopPendingReleases() {
-  const sends = [...sandboxes.values()].flatMap(({ pending }) =>
-    pending === undefined ? [] : [pending.send]
-  );
-  const stopped = await Promise.all(sends.map(async (send) => await send()));
-  return stopped.filter(Boolean).length;
+/**
+ * The room this process can make at once: every release still in its
+ * grace is sent now, and the stops already on their way count too. True
+ * as soon as one of them stopped its sandbox (the rest go on), false when
+ * there was none, none stopped, or `ownRoomWaitMs` passed first.
+ */
+async function ownRoomFreed() {
+  const stops = [...sandboxes.values()].flatMap(({ pending, stopping }) => {
+    if (stopping !== undefined) return [stopping];
+    return pending === undefined ? [] : [pending.send()];
+  });
+  if (stops.length === 0) return false;
+  return await new Promise<boolean>((resolve) => {
+    let left = stops.length;
+    const timer = setTimeout(() => {
+      resolve(false);
+    }, ownRoomWaitMs);
+    const settle = async (stop: Promise<boolean>) => {
+      const stopped = await stop;
+      left -= 1;
+      if (stopped || left === 0) {
+        clearTimeout(timer);
+        resolve(stopped);
+      }
+    };
+    for (const stop of stops) void settle(stop);
+  });
 }
 
 async function pause(ms: number) {
@@ -209,11 +236,12 @@ async function pause(ms: number) {
 
 /**
  * `openSandbox` that waits for room on a full host: this process's own
- * sandboxes still in their grace are stopped at once, then the open is
- * tried again over about 90 s before it fails with a clear error. A stop
- * of this sandbox already on its way finishes first, so the host restores
- * its snapshot. `sessionId` is the eve session the open is for, whose
- * turn's end releases it.
+ * sandboxes still in their grace are stopped at once, and the open is
+ * tried again as soon as one of them, or of its stops already on their
+ * way, is down (`ownRoomFreed`); then over about 90 s more before it
+ * fails with a clear error. A stop of this sandbox already on its way
+ * finishes first, so the host restores its snapshot. `sessionId` is the
+ * eve session the open is for, whose turn's end releases it.
  */
 export async function openWithRoom(
   sandboxId: string,
@@ -240,7 +268,7 @@ export async function openWithRoom(
           freed = true;
           // The room nearest at hand is this process's own, once.
           // oxlint-disable-next-line eslint/no-await-in-loop -- The next try needs that room.
-          if ((await stopPendingReleases()) > 0) continue;
+          if (await ownRoomFreed()) continue;
         }
         const waitMs = hostFullWaitsMs[waits];
         if (waitMs === undefined) {
