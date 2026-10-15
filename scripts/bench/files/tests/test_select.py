@@ -79,6 +79,7 @@ class SelectTest(unittest.TestCase):
         outcome, _ = self.run_check({"kind": "pdf_text_not_contains", "params": {"forbid_regex": "240000"}}, files=files)
         self.assertEqual(outcome.status, "fail")
 
+    @unittest.skipUnless(shutil.which("soffice"), "needs LibreOffice: xlsx values are recalculated")
     def test_the_forbidding_part_of_a_check_holds_for_every_file_the_rest_for_one(self):
         item = {"kind": "xlsx_text_ok", "params": {"must_contain": ["Сёмга"], "forbid_regex": "[ÐÑ]"}}
         good = workbook("Сёмга")
