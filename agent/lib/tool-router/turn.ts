@@ -73,7 +73,10 @@ export interface RouterInputs {
   readonly held: TurnRoute | undefined;
   /** A decision of this turn that came after its step asked. */
   readonly late: LateDecision | undefined;
-  /** The turn carries the location pilot's marker of a point. */
+  /**
+   * The turn carries the location pilot's marker of a point, or the
+   * person's words speak of where they are or of a place-bound reminder.
+   */
   readonly located: boolean;
   /** A photo or a file with no words of the person's. */
   readonly mediaOnly: boolean;
@@ -83,8 +86,8 @@ export interface RouterInputs {
   readonly recentMs: number;
   readonly state: RouterState;
   readonly step: StepIdentity;
-  /** Groups of the skills the turn's words and Bro's last message want. */
-  readonly triggered: readonly RouterGroup[];
+  /** The skills the turn's words and Bro's last message want. */
+  readonly triggered: readonly SkillName[];
   readonly warmMs: number;
   /** Bro wrote to the person before this turn. */
   readonly withPrev: boolean;
@@ -108,6 +111,8 @@ interface RouterOutcome {
   readonly blockChanged: boolean;
   readonly decided: readonly RouterGroup[] | undefined;
   readonly groups: readonly RouterGroup[];
+  /** Groups of the triggered skills the decision left out of the set. */
+  readonly narrowed: readonly RouterGroup[];
   readonly reason: RouterReason;
   readonly recent: readonly RouterGroup[];
   readonly state: RouterState;
@@ -129,6 +134,34 @@ function decidedGroups(decision: RouterDecision | undefined) {
     : undefined;
 }
 
+/**
+ * The groups the triggered skills bring (`T`). Given the decision's groups,
+ * a skill of several groups brings only those of them the decision chose
+ * too, and all of them when it chose none: «что у меня в календаре» wants
+ * the google skill, but not its mail and Drive. A skill of one group, and
+ * the first contact, whose offers (a call, Yandex, Google) come in the
+ * turns after it, always bring all of theirs.
+ */
+function triggerGroups(
+  skills: readonly SkillName[],
+  decided?: readonly RouterGroup[]
+) {
+  const all = skills.flatMap(
+    (skill): readonly RouterGroup[] => skillRouterGroups[skill]
+  );
+  if (decided === undefined) return { dropped: [], groups: all };
+  const groups = skills.flatMap((skill): readonly RouterGroup[] => {
+    const own: readonly RouterGroup[] = skillRouterGroups[skill];
+    if (own.length < 2 || skill === "first-contact") return own;
+    const chosen = own.filter((group) => decided.includes(group));
+    return chosen.length === 0 ? own : chosen;
+  });
+  return {
+    dropped: all.filter((group) => !groups.includes(group)),
+    groups,
+  };
+}
+
 function sameSet(
   first: readonly RouterGroup[] | null | undefined,
   second: readonly RouterGroup[]
@@ -145,9 +178,10 @@ function sameSet(
  * The groups of a person's step (docs/dev-notes.md, «Роутер инструментов»):
  *
  * - `D`, the decision model's choice; `T`, the groups of the skills the
- *   turn's words and Bro's last message want; `R`, the groups whose tools
- *   were called within `recentMs`; `L`, `places` for a point the person
- *   sent; `O`, what `open_tools` and `load_skill` opened in the turn.
+ *   turn's words and Bro's last message want, narrowed by `D` when there is
+ *   one (`triggerGroups`); `R`, the groups whose tools were called within
+ *   `recentMs`; `L`, `places` for a point the person sent or for words of
+ *   where they are; `O`, what `open_tools` and `load_skill` opened.
  * - A new turn within the warm window starts from the set the last decided
  *   turn had (`carried`): a set that only grows keeps the cached prefix
  *   (the tool block comes before the history). Past it, from nothing.
@@ -175,12 +209,13 @@ export function chooseRouterGroups(inputs: RouterInputs): RouterChoice {
   const lastStep =
     state.lastStepAt === null ? Number.NaN : Date.parse(state.lastStepAt);
   const warm = Number.isFinite(lastStep) && now - lastStep < inputs.warmMs;
-  const signals = [
-    ...inputs.triggered,
+  // The signals but `T`, which the decision narrows.
+  const untriggered = [
     ...recent,
     ...(inputs.located ? (["places"] as const) : []),
     ...inputs.opened,
   ];
+  const signals = [...triggerGroups(inputs.triggered).groups, ...untriggered];
   const turnSet =
     inputs.held?.groups ??
     (state.turnId !== null && state.turnId === step.turnId
@@ -193,6 +228,7 @@ export function chooseRouterGroups(inputs: RouterInputs): RouterChoice {
     details: {
       readonly carried?: readonly RouterGroup[];
       readonly decided?: readonly RouterGroup[];
+      readonly dropped?: readonly RouterGroup[];
       readonly failedOpen: boolean;
       readonly reason: RouterReason;
       readonly newTurn: boolean;
@@ -203,6 +239,9 @@ export function chooseRouterGroups(inputs: RouterInputs): RouterChoice {
       blockChanged: !sameSet(previousBlock, ordered),
       decided: details.decided,
       groups: ordered,
+      narrowed: orderedGroups(details.dropped ?? []).filter(
+        (group) => !ordered.includes(group)
+      ),
       reason: details.reason,
       recent,
       state: {
@@ -242,15 +281,20 @@ export function chooseRouterGroups(inputs: RouterInputs): RouterChoice {
     // the decision about them when it comes. After a compaction the words
     // of the turn are not to be trusted to be new.
     const steer = inputs.compaction === "none" && turnDigest !== inputs.digest;
-    if (steer) {
-      groups = [...groups, ...signals];
-    }
     const finish = (decision: RouterDecision | undefined) => {
       const steered = decidedGroups(decision);
-      const all = [...groups, ...(steered ?? [])];
+      const triggers = steer
+        ? triggerGroups(inputs.triggered, steered)
+        : { dropped: [], groups: [] };
+      const all = [
+        ...groups,
+        ...(steer ? [...triggers.groups, ...untriggered] : []),
+        ...(steered ?? []),
+      ];
       return outcome(all, {
         carried: failedOpen ? undefined : all,
         decided: steered ?? decided,
+        dropped: triggers.dropped,
         failedOpen,
         newTurn: false,
         reason: steer ? "steer" : "turn",
@@ -320,10 +364,18 @@ export function chooseRouterGroups(inputs: RouterInputs): RouterChoice {
           reason: "failed",
         });
       }
-      const all = [...known, ...groups, ...media];
+      const triggers = triggerGroups(inputs.triggered, groups);
+      const all = [
+        ...base,
+        ...triggers.groups,
+        ...untriggered,
+        ...groups,
+        ...media,
+      ];
       return outcome(all, {
         carried: all,
         decided: groups,
+        dropped: triggers.dropped,
         failedOpen: false,
         newTurn: true,
         reason: "decided",
@@ -562,9 +614,9 @@ export async function routerGroupsOfStep(
   // skill's rules do, for the person's first three messages.
   const introducing =
     firstContactMarked(messages) && personMessages(messages).length <= 3;
-  const triggered = orderedGroups([
-    ...groupsOfSkills(
-      skillsForTurn({
+  const triggered = [
+    ...new Set<SkillName>([
+      ...skillsForTurn({
         browserReport: false,
         history: text.prevCall === undefined ? [] : [text.prevCall],
         input: [
@@ -574,10 +626,10 @@ export async function routerGroupsOfStep(
             role: "user",
           })),
         ],
-      })
-    ),
-    ...(introducing ? skillRouterGroups["first-contact"] : []),
-  ]);
+      }),
+      ...(introducing ? (["first-contact"] as const) : []),
+    ]),
+  ];
   const opened = openedGroups(messages, setup);
   const late = held?.late;
   const choice = chooseRouterGroups({
@@ -649,6 +701,7 @@ export async function routerGroupsOfStep(
     mode,
     model: decision?.model,
     ms: decision?.ms,
+    narrowed: outcome.narrowed,
     opened,
     outputTokens:
       decision !== undefined && "groups" in decision
@@ -665,7 +718,7 @@ export async function routerGroupsOfStep(
     reason: outcome.reason,
     recent: outcome.recent,
     step: step.stepIndex,
-    triggers: triggered,
+    triggers: orderedGroups(groupsOfSkills(triggered)),
     turnId: step.turnId,
     waitMs: Date.now() - started,
     warm: outcome.warm,

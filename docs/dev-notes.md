@@ -1067,6 +1067,10 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   (`missed`) и `shadow-decision`, в `on` — `hidden-call` и `cannot`. Выбор роутера — не
   авторизация: «группа не открыта → человек не просил» не выводите, скрытый инструмент
   исполняется по имени через свои approval/execute. Откат — `shadow` или снять флаг.
+  С решением Jev навык нескольких групп (google, apps, recommendations…) даёт лишь выбранные
+  Jev из своих, а если ни одной — все (`triggerGroups`, в логе `narrowed`); `first-contact` не
+  сужается. `places` открывают и слова о своём месте («когда приду на…», «где я», `placeBound` в
+  `state-string.ts`): Jev 1.13 15.10 не дал группы напоминанию у адреса.
 - Jev 1.14 есть только у TypeSafe (`jev-1.14.0`; `jev-1.14` — 400 «Unknown model»), у
   RouterAI — 1.13 (`typesafe/jev-1.13`, отвечает `typesafe/jev-1.13-20260917`): клиент
   (`system-one.ts`) зовёт TypeSafe и через 250 мс тишины — RouterAI, пороги берёт по имени
