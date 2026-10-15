@@ -9,9 +9,11 @@ import { ChatInput } from "./input";
 import { useSessionAgent } from "./use-session-agent";
 
 export function ChatSession({
+  filesPilot,
   initialUsage,
   sessionId,
 }: {
+  readonly filesPilot: boolean;
   readonly initialUsage?: ChatUsage;
   readonly sessionId: string;
 }) {
@@ -32,7 +34,11 @@ export function ChatSession({
           sessionId={sessionId}
           traceView={traceView}
         />
-        <ChatInput agent={agent} sessionId={sessionId} />
+        <ChatInput
+          agent={agent}
+          filesPilot={filesPilot}
+          sessionId={sessionId}
+        />
       </div>
       <SubagentPanel
         events={agent.events}

@@ -40,6 +40,7 @@ import {
   TooltipTrigger,
 } from "@web/components/ui/tooltip";
 import { cn } from "@web/components/class-names";
+import { admitFiles, type FileRefusal } from "@shared/chat/web-files";
 import type { ChatStatus, FileUIPart, SourceDocumentUIPart } from "ai";
 import {
   CornerDownLeftIcon,
@@ -207,6 +208,31 @@ const captureScreenshot = async (): Promise<File | null> => {
 const dragDataTransferSchema = z.custom<DataTransfer>(
   (value) => value !== null && value !== undefined
 );
+
+const fileErrorMessages = {
+  accept: "Some files do not match the accepted types.",
+  max_file_size: "Some files exceed the maximum size.",
+  max_files: "Too many files. Some were not added.",
+  max_total_size: "The files together exceed the maximum size.",
+  read: "A file could not be read.",
+} as const satisfies Readonly<Record<FileRefusal | "read", string>>;
+
+/**
+ * Puts a message's text back into the composer, ahead of anything typed
+ * since it left. The prototype's setter and an `input` event let React's
+ * `onChange` and the compact layout's measurement see the new value.
+ */
+function putTextBack(form: HTMLFormElement, text: string) {
+  if (text.length === 0) return;
+  const field = form.elements.namedItem("message");
+  if (!(field instanceof HTMLTextAreaElement)) return;
+  const current = field.value;
+  Object.getOwnPropertyDescriptor(
+    HTMLTextAreaElement.prototype,
+    "value"
+  )?.set?.call(field, current.length === 0 ? text : `${text}\n${current}`);
+  field.dispatchEvent(new Event("input", { bubbles: true }));
+}
 
 // ============================================================================
 // Provider Context & Types
@@ -550,12 +576,15 @@ export type PromptInputProps = Omit<
   maxFiles?: number;
   // bytes
   maxFileSize?: number;
+  /** Bytes the files of one message may hold together. */
+  maxTotalSize?: number;
   /** Keep a single-line draft and the footer controls on one row. */
   compact?: boolean;
-  onError?: (err: {
-    code: "max_files" | "max_file_size" | "accept";
-    message: string;
-  }) => void;
+  onError?: (err: { code: FileRefusal | "read"; message: string }) => void;
+  /**
+   * A rejected promise means the message was not sent: its text and files
+   * go back into the composer.
+   */
   onSubmit: (
     message: PromptInputMessage,
     event: SubmitEvent<HTMLFormElement>
@@ -570,6 +599,7 @@ export const PromptInput = ({
   syncHiddenInput,
   maxFiles,
   maxFileSize,
+  maxTotalSize,
   compact = false,
   onError,
   onSubmit,
@@ -586,6 +616,8 @@ export const PromptInput = ({
 
   // ----- Local attachments (only used when no provider)
   const [items, setItems] = useState<(FileUIPart & { id: string })[]>([]);
+  // A local file's size by its id: the total cap counts the files held.
+  const sizes = useRef(new Map<string, number>());
   const files = usingProvider ? controller.attachments.files : items;
 
   // ----- Local referenced sources (always local to PromptInput)
@@ -614,81 +646,51 @@ export const PromptInput = ({
     inputRef.current?.click();
   }, []);
 
-  const matchesAccept = useCallback(
-    (f: File) => {
-      if (!accept || accept.trim() === "") {
-        return true;
+  const refuse = useCallback(
+    (refusal: FileRefusal | undefined) => {
+      if (refusal !== undefined) {
+        onError?.({ code: refusal, message: fileErrorMessages[refusal] });
       }
-
-      const patterns = accept
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean);
-
-      return patterns.some((pattern) => {
-        if (pattern.endsWith("/*")) {
-          // e.g: image/* -> image/
-          const prefix = pattern.slice(0, -1);
-          return f.type.startsWith(prefix);
-        }
-        return f.type === pattern;
-      });
     },
-    [accept]
+    [onError]
   );
 
   const addLocal = useCallback(
     (fileList: File[] | FileList) => {
-      const incoming = [...fileList];
-      const accepted = incoming.filter((f) => matchesAccept(f));
-      if (incoming.length && accepted.length === 0) {
-        onError?.({
-          code: "accept",
-          message: "No files match the accepted types.",
-        });
-        return;
-      }
-      const withinSize = (f: File) =>
-        maxFileSize ? f.size <= maxFileSize : true;
-      const sized = accepted.filter(withinSize);
-      if (accepted.length > 0 && sized.length === 0) {
-        onError?.({
-          code: "max_file_size",
-          message: "All files exceed the maximum size.",
-        });
-        return;
-      }
-
-      setItems((prev) => {
-        const maximum = z.number().safeParse(maxFiles);
-        const capacity = maximum.success
-          ? Math.max(0, maximum.data - prev.length)
-          : undefined;
-        const capped =
-          capacity === undefined ? sized : sized.slice(0, capacity);
-        if (capacity !== undefined && sized.length > capacity) {
-          onError?.({
-            code: "max_files",
-            message: "Too many files. Some were not added.",
-          });
-        }
-        const next: (FileUIPart & { id: string })[] = [];
-        for (const file of capped) {
-          next.push({
-            filename: file.name,
-            id: nanoid(),
-            mediaType: file.type,
-            type: "file",
-            url: URL.createObjectURL(file),
-          });
-        }
-        return [...prev, ...next];
+      const held = filesRef.current;
+      const { admitted, refusal } = admitFiles([...fileList], {
+        accept,
+        held: {
+          bytes: held.reduce(
+            (total, item) => total + (sizes.current.get(item.id) ?? 0),
+            0
+          ),
+          count: held.length,
+        },
+        maxFileSize,
+        maxFiles,
+        maxTotalSize,
       });
+      refuse(refusal);
+      if (admitted.length === 0) return;
+      const next = admitted.map((file) => {
+        const id = nanoid();
+        sizes.current.set(id, file.size);
+        return {
+          filename: file.name,
+          id,
+          mediaType: file.type,
+          type: "file" as const,
+          url: URL.createObjectURL(file),
+        };
+      });
+      setItems((prev) => [...prev, ...next]);
     },
-    [matchesAccept, maxFiles, maxFileSize, onError]
+    [accept, maxFileSize, maxFiles, maxTotalSize, refuse]
   );
 
   const removeLocal = useCallback((id: string) => {
+    sizes.current.delete(id);
     setItems((prev) => {
       const found = prev.find((file) => file.id === id);
       if (found?.url) {
@@ -701,44 +703,27 @@ export const PromptInput = ({
   // Wrapper that validates files before calling provider's add
   const addWithProviderValidation = useCallback(
     (fileList: File[] | FileList) => {
-      const incoming = [...fileList];
-      const accepted = incoming.filter((f) => matchesAccept(f));
-      if (incoming.length && accepted.length === 0) {
-        onError?.({
-          code: "accept",
-          message: "No files match the accepted types.",
-        });
-        return;
-      }
-      const withinSize = (f: File) =>
-        maxFileSize ? f.size <= maxFileSize : true;
-      const sized = accepted.filter(withinSize);
-      if (accepted.length > 0 && sized.length === 0) {
-        onError?.({
-          code: "max_file_size",
-          message: "All files exceed the maximum size.",
-        });
-        return;
-      }
-
-      const currentCount = files.length;
-      const maximum = z.number().safeParse(maxFiles);
-      const capacity = maximum.success
-        ? Math.max(0, maximum.data - currentCount)
-        : undefined;
-      const capped = capacity === undefined ? sized : sized.slice(0, capacity);
-      if (capacity !== undefined && sized.length > capacity) {
-        onError?.({
-          code: "max_files",
-          message: "Too many files. Some were not added.",
-        });
-      }
-
-      if (capped.length > 0) {
-        controller?.attachments.add(capped);
+      const { admitted, refusal } = admitFiles([...fileList], {
+        accept,
+        held: { bytes: 0, count: files.length },
+        maxFileSize,
+        maxFiles,
+        maxTotalSize,
+      });
+      refuse(refusal);
+      if (admitted.length > 0) {
+        controller?.attachments.add([...admitted]);
       }
     },
-    [matchesAccept, maxFileSize, maxFiles, onError, files.length, controller]
+    [
+      accept,
+      maxFileSize,
+      maxFiles,
+      maxTotalSize,
+      refuse,
+      files.length,
+      controller,
+    ]
   );
 
   const clearAttachments = useCallback(() => {
@@ -746,6 +731,7 @@ export const PromptInput = ({
       controller.attachments.clear();
       return;
     }
+    sizes.current.clear();
     setItems((previousItems) => {
       for (const file of previousItems) {
         if (file.url) {
@@ -909,23 +895,65 @@ export const PromptInput = ({
     [referencedSources, clearReferencedSources]
   );
 
+  // The files leave the composer as the message is sent and come back only
+  // if `onSubmit` rejects: a message typed while a send is under way then
+  // carries none of them again.
+  const submitLocal = useCallback(
+    async (form: HTMLFormElement, event: SubmitEvent<HTMLFormElement>) => {
+      const text = z
+        .string()
+        .catch("")
+        .parse(new FormData(form).get("message"));
+      // Reset at once: what is typed while the files are read stays.
+      form.reset();
+
+      const sent = files;
+      const converted = await Promise.all(
+        sent.map(async ({ id: _id, ...item }) => ({
+          ...item,
+          url: item.url.startsWith("blob:")
+            ? await convertBlobUrlToDataUrl(item.url)
+            : item.url,
+        }))
+      );
+      const readable = converted.flatMap((item) =>
+        item.url === null ? [] : [{ ...item, url: item.url }]
+      );
+      if (readable.length < converted.length) {
+        onError?.({ code: "read", message: fileErrorMessages.read });
+        putTextBack(form, text);
+        return;
+      }
+
+      const sentIds = new Set(sent.map((item) => item.id));
+      setItems((prev) => prev.filter((item) => !sentIds.has(item.id)));
+      try {
+        await onSubmit({ files: readable, text }, event);
+      } catch {
+        // Nothing was sent: the message goes back as it was.
+        setItems((prev) => [...sent, ...prev]);
+        putTextBack(form, text);
+        return;
+      }
+      for (const item of sent) {
+        URL.revokeObjectURL(item.url);
+        sizes.current.delete(item.id);
+      }
+      clearReferencedSources();
+    },
+    [files, onError, onSubmit, clearReferencedSources]
+  );
+
   const handleSubmit = useCallback(
     async (event: SubmitEvent<HTMLFormElement>) => {
       event.preventDefault();
 
       const form = event.currentTarget;
-      const text = usingProvider
-        ? controller.textInput.value
-        : (() => {
-            const formData = new FormData(form);
-            return z.string().catch("").parse(formData.get("message"));
-          })();
-
-      // Reset form immediately after capturing text to avoid race condition
-      // where user input during async blob conversion would be lost
       if (!usingProvider) {
-        form.reset();
+        await submitLocal(form, event);
+        return;
       }
+      const text = controller.textInput.value;
 
       try {
         // Convert blob URLs to data URLs asynchronously
@@ -950,24 +978,20 @@ export const PromptInput = ({
           try {
             await result;
             clear();
-            if (usingProvider) {
-              controller.textInput.clear();
-            }
+            controller.textInput.clear();
           } catch {
             // Don't clear on error - user may want to retry
           }
         } else {
           // Sync function completed without throwing, clear inputs
           clear();
-          if (usingProvider) {
-            controller.textInput.clear();
-          }
+          controller.textInput.clear();
         }
       } catch {
         // Don't clear on error - user may want to retry
       }
     },
-    [usingProvider, controller, files, onSubmit, clear]
+    [usingProvider, controller, files, onSubmit, clear, submitLocal]
   );
 
   // Render with or without local provider

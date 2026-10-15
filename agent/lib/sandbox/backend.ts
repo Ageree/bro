@@ -10,6 +10,7 @@ import type {
 import { presignStoredObject } from "@shared/object-storage/s3";
 import { env } from "@shared/environment";
 import { applicationOrigin } from "@shared/environment/origin";
+import { sandboxHostConfigured } from "@shared/sandbox/pilot";
 import {
   deleteSandbox,
   execInSandbox,
@@ -18,7 +19,6 @@ import {
   openSandbox,
   readSandboxFile,
   removeSandboxPath,
-  sandboxHostConfigured,
   setSandboxNetwork,
   settleSandbox,
   streamSandboxFile,
