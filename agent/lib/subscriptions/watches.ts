@@ -5,6 +5,11 @@ import {
   flightStateSchema,
 } from "@shared/subscriptions/flight";
 import {
+  parcelConditionSchema,
+  parcelSourceSchema,
+  parcelStateSchema,
+} from "@shared/subscriptions/parcel";
+import {
   placeConditionSchema,
   placeSourceSchema,
   placeStateSchema,
@@ -54,8 +59,20 @@ export function placeWatchOf<Row extends StoredWatch>(row: Row) {
   return { ...row, condition, source, state };
 }
 
+export function parcelWatchOf<Row extends StoredWatch>(row: Row) {
+  if (row.template !== "parcel") return undefined;
+  const source = parcelSourceSchema.safeParse(row.source).data;
+  const condition = parcelConditionSchema.safeParse(row.condition).data;
+  const state = parcelStateSchema.safeParse(row.state).data;
+  if (!source || !condition || !state) return undefined;
+  return { ...row, condition, source, state };
+}
+
 export type PriceWatch = NonNullable<
   ReturnType<typeof priceWatchOf<ClaimedSubscription>>
+>;
+export type ParcelWatch = NonNullable<
+  ReturnType<typeof parcelWatchOf<ClaimedSubscription>>
 >;
 /** A flight's watch as stored: the proactive check reads it, unleased. */
 export type FlightWatch = NonNullable<

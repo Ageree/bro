@@ -239,7 +239,7 @@ export const routerGroupIndex = {
   money: "лимит трат и постоянные разрешения",
   phone: "звонки и записная книжка",
   places: "где человек, маршруты, напоминания у места",
-  schedules: "создать напоминание или сводку, следить за ценой",
+  schedules: "создать напоминание или сводку, следить за ценой или посылкой",
   settings: "обращение, привязка Telegram, сейф",
   yandex: "Яндекс: такси, Еда, Лавка, Маркет, Карты",
 } as const satisfies Readonly<Record<RouterGroup, string>>;

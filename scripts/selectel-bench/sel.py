@@ -161,12 +161,18 @@ def console(name):
 
 
 def down():
-    for server in one("GET", "compute", "/servers/detail", "servers"):
-        if server.get("metadata", {}).get("purpose") == PURPOSE:
-            print("server", server["name"], api("DELETE", "compute", f"/servers/{server['id']}")[0])
-    time.sleep(10)
+    """Only the bench's own: its servers and the floating IPs on their ports. The project's other floating
+    IPs are not the bench's to free: on 15.10 a `down` in ru-3 took prod's public address with it."""
+    servers = [server for server in one("GET", "compute", "/servers/detail", "servers")
+               if server.get("metadata", {}).get("purpose") == PURPOSE]
+    ports = {port["id"] for server in servers
+             for port in one("GET", "network", f"/ports?device_id={server['id']}", "ports")}
     for fip in one("GET", "network", "/floatingips", "floatingips"):
-        print("floating ip", fip["floating_ip_address"], api("DELETE", "network", f"/floatingips/{fip['id']}")[0])
+        if fip.get("port_id") in ports:
+            print("floating ip", fip["floating_ip_address"], api("DELETE", "network", f"/floatingips/{fip['id']}")[0])
+    for server in servers:
+        print("server", server["name"], api("DELETE", "compute", f"/servers/{server['id']}")[0])
+    time.sleep(10)
     for router in one("GET", "network", "/routers?name=bench-router", "routers"):
         for sub in one("GET", "network", "/subnets?name=bench-subnet", "subnets"):
             api("PUT", "network", f"/routers/{router['id']}/remove_router_interface", {"subnet_id": sub["id"]})

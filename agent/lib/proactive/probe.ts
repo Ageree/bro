@@ -73,6 +73,7 @@ const maxRankedMail = 60;
 const mailMetadataSchema = z.object({
   id: z.string().optional(),
   labelIds: z.array(z.string()).optional(),
+  snippet: z.string().optional(),
   payload: z
     .object({
       headers: z
@@ -399,13 +400,14 @@ function headerReader(metadata: z.output<typeof mailMetadataSchema>) {
 }
 
 /**
- * The named headers and labels of each message, in order; `undefined` for
- * one deleted since it was listed.
+ * The named headers and labels of each message, in order, and its snippet
+ * when asked; `undefined` for one deleted since it was listed.
  */
 async function readHeaders(
   google: GoogleClient,
   ids: readonly string[],
-  headers: readonly string[]
+  headers: readonly string[],
+  { snippet = false } = {}
 ) {
   const described: (z.output<typeof mailMetadataSchema> | undefined)[] = [];
   for (let start = 0; start < ids.length; start += headerReadBatch) {
@@ -417,7 +419,7 @@ async function readHeaders(
             google,
             mailMetadataSchema,
             googleUrl(gmailApi, `/messages/${encodeURIComponent(id)}`, {
-              fields: "id,threadId,labelIds,payload/headers",
+              fields: `id,threadId,labelIds,${snippet ? "snippet," : ""}payload/headers`,
               format: "metadata",
               metadataHeaders: headers,
             })
@@ -433,7 +435,46 @@ async function readHeaders(
   return described;
 }
 
-/** The messages among `messages` whose subject may not wait for the morning. */
+/** At most this many letters of a search are read for their words. */
+const maxSearchedLetters = 10;
+
+/**
+ * The letters a Gmail search finds among `among` (the new mail a check has
+ * not handed over yet), with their sender, subject and snippet: the start of
+ * the text Gmail shows in a list, never the body. One list request, and a
+ * read of each letter it keeps.
+ */
+export async function readFoundLetters(
+  scope: AccessScope,
+  query: string,
+  among: ReadonlySet<string>
+) {
+  const connection = await connectedGoogle(
+    scope,
+    AbortSignal.timeout(probeTimeoutMs)
+  );
+  if (connection.state !== "connected") return [];
+  const { google } = connection;
+  const ids = (await listMailIds(google, query))
+    .flatMap(({ id }) => (id && among.has(id) ? [id] : []))
+    .slice(0, maxSearchedLetters);
+  if (ids.length === 0) return [];
+  const described = await readHeaders(google, ids, ["From", "Subject"], {
+    snippet: true,
+  });
+  return described.flatMap((metadata) => {
+    if (!metadata) return [];
+    const header = headerReader(metadata);
+    return [
+      {
+        from: header("from"),
+        snippet: metadata.snippet ?? "",
+        subject: header("subject"),
+      },
+    ];
+  });
+}
+
 /**
  * The mail of a night check that cannot wait, by subject (`isNightSubject`);
  * in the evening also what Gmail marks important: a person they write

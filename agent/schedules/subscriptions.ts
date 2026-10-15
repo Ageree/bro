@@ -3,8 +3,17 @@ import { within } from "@agent/lib/browser-use/deadline";
 import { schedulesEnabled } from "@agent/lib/schedules/enabled";
 import { judgePriceCheck } from "@agent/lib/subscriptions/check";
 import { readPricePage } from "@agent/lib/subscriptions/page";
+import { judgeParcelCheck } from "@agent/lib/subscriptions/parcel/check";
+import {
+  type ParcelRead,
+  readPochtaParcel,
+} from "@agent/lib/subscriptions/parcel/pochta";
 import { subscriptionsPilot } from "@agent/lib/subscriptions/pilot";
-import { placeWatchOf, priceWatchOf } from "@agent/lib/subscriptions/watches";
+import {
+  parcelWatchOf,
+  placeWatchOf,
+  priceWatchOf,
+} from "@agent/lib/subscriptions/watches";
 import { locationPilot } from "@db/services/location";
 import {
   type ClaimedSubscription,
@@ -70,8 +79,8 @@ async function runSubscriptionChecks() {
 }
 
 /**
- * Watches grouped by the shop they read, so one shop gets one request at a
- * time from a tick however many people watch it.
+ * Watches grouped by the shop or the carrier they read, so one gets one
+ * request at a time from a tick however many people watch it.
  */
 function byHost(due: readonly ClaimedSubscription[]) {
   const groups = new Map<string, ClaimedSubscription[]>();
@@ -83,6 +92,8 @@ function byHost(due: readonly ClaimedSubscription[]) {
 }
 
 function hostOf(subscription: ClaimedSubscription) {
+  const carrier = parcelWatchOf(subscription)?.source.carrier;
+  if (carrier) return `carrier:${carrier}`;
   const url = priceWatchOf(subscription)?.source.url;
   return (url && URL.parse(url)?.hostname) ?? subscription.id;
 }
@@ -147,6 +158,27 @@ async function checkPrice(subscription: ClaimedSubscription) {
   return { check, outcome: await settle(subscription, check) };
 }
 
+/**
+ * A parcel's check: its carrier read by code, judged by code. A term that ran
+ * out reads nothing.
+ */
+async function checkParcel(subscription: ClaimedSubscription) {
+  const now = new Date();
+  const held = await heldCheck(subscription, now);
+  if (held) return { check: held, outcome: await settle(subscription, held) };
+  const watch = parcelWatchOf(subscription);
+  const check: SubscriptionCheck = watch
+    ? judgeParcelCheck(
+        watch,
+        watch.expiresAt.getTime() <= now.getTime()
+          ? { kind: "unreadable", reason: "expired" }
+          : await readParcelSafely(watch.source.number),
+        new Date()
+      )
+    : { kind: "lapsed" };
+  return { check, outcome: await settle(subscription, check) };
+}
+
 function settle(subscription: ClaimedSubscription, check: SubscriptionCheck) {
   return settleSubscriptionCheck(subscription, check);
 }
@@ -192,7 +224,9 @@ async function checkSubscription(subscription: ClaimedSubscription) {
     const { check, outcome } =
       subscription.template === "place"
         ? await checkPlace(subscription)
-        : await checkPrice(subscription);
+        : subscription.template === "parcel"
+          ? await checkParcel(subscription)
+          : await checkPrice(subscription);
     console.info("[subscriptions] check", {
       ...logged,
       outcome: outcome ?? "lease_lost",
@@ -219,6 +253,18 @@ async function readSafely(url: string) {
   } catch (error) {
     return {
       kind: "unreachable" as const,
+      reason: error instanceof Error ? error.name : "error",
+    };
+  }
+}
+
+/** A carrier's reading that cannot throw, as `readSafely` for a page. */
+async function readParcelSafely(number: string): Promise<ParcelRead> {
+  try {
+    return await readPochtaParcel(number);
+  } catch (error) {
+    return {
+      kind: "unreachable",
       reason: error instanceof Error ? error.name : "error",
     };
   }

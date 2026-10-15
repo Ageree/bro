@@ -1,7 +1,11 @@
 import type { Session } from "eve/channels";
 import type { ScheduleHandlerArgs, ScheduleToFn } from "eve/schedules";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { probeGoogleSignals, rankMail } from "@agent/lib/proactive/probe";
+import type {
+  probeGoogleSignals,
+  rankMail,
+  readFoundLetters,
+} from "@agent/lib/proactive/probe";
 import type { agentMailCheck } from "@agent/lib/proactive/agent-mail";
 import type {
   advanceAgentMailWatermark,
@@ -24,6 +28,7 @@ import type {
   listFlightWatches,
   listLiveFlightWatches,
   recordFlightWatch,
+  startMailParcelWatches,
   syncFlightWatches,
 } from "@db/services/subscriptions";
 import type { readUserProfile } from "@db/services/user-profile";
@@ -46,6 +51,10 @@ const jobs = vi.hoisted(() => ({
 }));
 const probe = vi.hoisted(() => vi.fn<typeof probeGoogleSignals>());
 const rank = vi.hoisted(() => vi.fn<typeof rankMail>());
+const parcels = vi.hoisted(() => ({
+  letters: vi.fn<typeof readFoundLetters>(),
+  start: vi.fn<typeof startMailParcelWatches>(),
+}));
 const agency = vi.hoisted(() => ({
   pilot: vi.fn<(workspaceId: string) => boolean>(() => false),
 }));
@@ -90,6 +99,7 @@ vi.mock("@agent/lib/proactive/probe", () => ({
   }),
   probeGoogleSignals: probe,
   rankMail: rank,
+  readFoundLetters: parcels.letters,
 }));
 vi.mock("@db/services/user-profile", () => ({ readUserProfile: profile }));
 vi.mock("@agent/lib/subscriptions/pilot", () => ({
@@ -99,6 +109,7 @@ vi.mock("@db/services/subscriptions", () => ({
   listFlightWatches: flights.list,
   listLiveFlightWatches: flights.live,
   recordFlightWatch: flights.record,
+  startMailParcelWatches: parcels.start,
   syncFlightWatches: flights.sync,
 }));
 vi.mock("@agent/lib/subscriptions/flight", async (importOriginal) => ({
@@ -149,6 +160,8 @@ describe("proactive schedule", () => {
     flights.list.mockResolvedValue([]);
     flights.live.mockResolvedValue([]);
     flights.sync.mockResolvedValue({ ended: 0, started: 0 });
+    parcels.letters.mockResolvedValue([]);
+    parcels.start.mockResolvedValue(0);
     flights.drive.mockResolvedValue({
       from: "home",
       kind: "drive",
@@ -448,6 +461,45 @@ describe("proactive schedule", () => {
     expect(console.info).toHaveBeenCalledWith(
       "[proactive] check",
       expect.objectContaining({ flights: { ended: 0, started: 1 } })
+    );
+  });
+
+  it("starts a parcel watch from Russian Post's own letter in the pilot, and hands the letter over", async () => {
+    flights.pilot.mockResolvedValue(true);
+    probe.mockResolvedValue({
+      calendarSeenUntil: seenUntil,
+      flights: [],
+      signals: [mailSignal],
+      state: "connected",
+    });
+    parcels.letters.mockResolvedValue([
+      {
+        from: "Почта России <noreply@pochta.ru>",
+        snippet: "Отправление 10100012345678 прибыло в отделение 101000",
+        subject: "Посылка ждёт вас",
+      },
+    ]);
+    parcels.start.mockResolvedValue(1);
+
+    await runSchedule(vi.fn<ScheduleToFn>());
+
+    expect(parcels.letters).toHaveBeenCalledExactlyOnceWith(
+      { userId: "better-auth:alice", workspaceId: "workspace:alice" },
+      expect.stringContaining("from:(pochta.ru OR russianpost.ru)"),
+      new Set([mailSignal.itemId])
+    );
+    expect(parcels.start).toHaveBeenCalledExactlyOnceWith({
+      numbers: ["10100012345678"],
+      now: afternoon,
+      proactiveJobId: "00000000-0000-4000-8000-000000000001",
+      scope: { userId: "better-auth:alice", workspaceId: "workspace:alice" },
+    });
+    expect(proactive.queue).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ signals: [mailSignal] })
+    );
+    expect(console.info).toHaveBeenCalledWith(
+      "[proactive] check",
+      expect.objectContaining({ parcels: 1 })
     );
   });
 

@@ -5,6 +5,7 @@ import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/pglite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { NewSubscription } from "@db/services/subscriptions";
+import { unreadParcelState } from "@shared/subscriptions/parcel";
 import * as schema from "../schema";
 
 const databases: PGlite[] = [];
@@ -43,6 +44,28 @@ function priceWatch(overrides: Partial<NewPriceWatch> = {}): NewPriceWatch {
     state: { baseline: 8_990, last: 8_990, lastSeenAt: now.toISOString() },
     template: "price",
     ...overrides,
+  };
+}
+
+type NewParcelWatch = Extract<NewSubscription, { template: "parcel" }>;
+const threeHours = 3 * 60 * 60;
+
+function parcelWatch(): NewParcelWatch {
+  return {
+    checkEverySeconds: threeHours,
+    condition: { kind: "changes" },
+    conversation: { conversationChannel: "telegram", conversationId: "100::" },
+    dedupeKey: "10100012345678",
+    description: "Parcel watch: Russian Post 10100012345678.",
+    expiresAt: new Date(now.getTime() + 60 * 24 * 60 * 60_000),
+    source: {
+      carrier: "pochta",
+      number: "10100012345678",
+      origin: "person",
+      title: null,
+    },
+    state: { ...unreadParcelState(now), seen: true, status: "in_transit" },
+    template: "parcel",
   };
 }
 
@@ -545,6 +568,120 @@ describe("event subscriptions", { timeout: 30_000 }, () => {
     expect(
       await subscriptions.setSubscriptionStatus(alice, flight.id, "deleted")
     ).toBeUndefined();
+  });
+
+  it("keeps a parcel watched past its news, and ends it quietly once handed over", async () => {
+    const { db, jobs, subscriptions } = await openDatabase();
+    const { subscription } = await subscriptions.createSubscription(
+      alice,
+      parcelWatch(),
+      now
+    );
+    const due = new Date(now.getTime() + threeHours * 1_000);
+    const lease = { leaseForMs: 10 * 60_000, limit: 10, now: due };
+    const [claim] = await subscriptions.claimDueSubscriptions(lease);
+    if (!claim) throw new Error("Expected a due parcel.");
+    const next = new Date(due.getTime() + threeHours * 1_000);
+    const arrived = {
+      ...parcelWatch().state,
+      place: "101000, Москва",
+      status: "arrived" as const,
+    };
+    expect(
+      await subscriptions.settleSubscriptionCheck(
+        claim,
+        {
+          kind: "news",
+          nextCheckAt: next,
+          outcome: { ...hitOutcome, summary: "The parcel has arrived." },
+          state: arrived,
+        },
+        due
+      )
+    ).toBe("news");
+    expect(await db.query.subscriptions.findFirst()).toMatchObject({
+      hits: 1,
+      nextCheckAt: next,
+      state: { status: "arrived" },
+      status: "active",
+    });
+    expect(await db.query.scheduledAgentJobs.findFirst()).toMatchObject({
+      status: "active",
+    });
+    expect(await jobs.listRecoverableScheduledReports(due)).toEqual([
+      expect.objectContaining({ jobId: subscription.jobId }),
+    ]);
+
+    const [again] = await subscriptions.claimDueSubscriptions({
+      ...lease,
+      now: next,
+    });
+    if (!again) throw new Error("Expected the parcel due again.");
+    expect(
+      await subscriptions.settleSubscriptionCheck(
+        again,
+        { kind: "done", state: { ...arrived, status: "delivered" } },
+        next
+      )
+    ).toBe("done");
+    expect(await db.query.subscriptions.findFirst()).toMatchObject({
+      state: { status: "delivered" },
+      status: "fired",
+    });
+    expect(await db.query.scheduledAgentJobs.findFirst()).toMatchObject({
+      status: "completed",
+    });
+    expect(await db.query.scheduledAgentRuns.findMany()).toHaveLength(1);
+  });
+
+  it("starts a parcel watch from a carrier's letter once, where proactive reports go", async () => {
+    const { db, subscriptions } = await openDatabase();
+    const [proactive] = await db
+      .insert(schema.scheduledAgentJobs)
+      .values({
+        conversationChannel: "telegram",
+        conversationId: "200::",
+        createdByUserId: "alice",
+        kind: "proactive",
+        prompt: "Proactive check.",
+        status: "active",
+        timing: { at: now.toISOString(), kind: "once" },
+        workspaceId: alice.workspaceId,
+      })
+      .returning();
+    if (!proactive) throw new Error("Expected the proactive job.");
+    await subscriptions.createSubscription(alice, parcelWatch(), now);
+    const letter = {
+      now,
+      numbers: ["10100012345678", "RA123456785RU", "RA123456785RU"],
+      proactiveJobId: proactive.id,
+      scope: alice,
+    };
+    // The person's own watch of the first number stands; only the other starts.
+    expect(await subscriptions.startMailParcelWatches(letter)).toBe(1);
+    const started = await db.query.subscriptions.findFirst({
+      where: eq(schema.subscriptions.dedupeKey, "RA123456785RU"),
+      with: { job: true },
+    });
+    expect(started).toMatchObject({
+      job: { conversationId: "200::", kind: "subscription" },
+      nextCheckAt: now,
+      source: { origin: "mail" },
+      state: { seen: false, status: "unknown" },
+      status: "active",
+    });
+    // A later letter of the same parcel starts nothing, ended or not.
+    await db
+      .update(schema.subscriptions)
+      .set({ status: "fired" })
+      .where(eq(schema.subscriptions.dedupeKey, "RA123456785RU"));
+    expect(
+      await subscriptions.startMailParcelWatches({
+        ...letter,
+        now: new Date(now.getTime() + 30 * 24 * 60 * 60_000),
+      })
+    ).toBe(0);
+    expect(await db.query.subscriptions.findMany()).toHaveLength(2);
   });
 
   it("refuses a watch checked more often than hourly or kept past 90 days", async () => {

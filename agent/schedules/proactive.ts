@@ -7,12 +7,14 @@ import {
   probeFailure,
   probeGoogleSignals,
   rankMail,
+  readFoundLetters,
 } from "@agent/lib/proactive/probe";
 import {
   eveningMailUntil,
   quietHoursEnd,
 } from "@agent/lib/proactive/quiet-hours";
 import {
+  gmailProbeQuery,
   mailSearchStart,
   maxRunsPerDay,
   proactiveRunPrompt,
@@ -25,6 +27,10 @@ import {
   flightReminderSignals,
   measureDrive,
 } from "@agent/lib/subscriptions/flight";
+import {
+  carrierLetterNumbers,
+  carrierMailQuery,
+} from "@agent/lib/subscriptions/parcel/mail";
 import { subscriptionsPilot } from "@agent/lib/subscriptions/pilot";
 import {
   type FlightWatch,
@@ -50,6 +56,7 @@ import {
   listFlightWatches,
   listLiveFlightWatches,
   recordFlightWatch,
+  startMailParcelWatches,
   syncFlightWatches,
 } from "@db/services/subscriptions";
 import type { FlightStage } from "@shared/subscriptions/flight";
@@ -292,6 +299,51 @@ function dedupeKeys(signals: readonly ProactiveSignal[]) {
   return new Set(signals.map((signal) => signal.dedupeKey));
 }
 
+/**
+ * A check's parcels in the subscriptions pilot: a Russian Post number in a
+ * letter from the carrier's own domains, among the new mail, starts a watch
+ * that code checks from then on (`startMailParcelWatches`). The letter goes
+ * to the run as any other. One Gmail search for such letters, and a read of
+ * those it finds; a failure is logged and leaves the check alone.
+ */
+async function pilotParcels(
+  watch: ClaimedWatch,
+  unseen: readonly ProactiveSignal[],
+  mailAfter: Date,
+  now: Date
+) {
+  const mail = new Set(
+    unseen.flatMap((signal) =>
+      signal.source === "gmail" ? [signal.itemId] : []
+    )
+  );
+  if (mail.size === 0) return {};
+  const scope = {
+    userId: watch.createdByUserId,
+    workspaceId: watch.workspaceId,
+  };
+  try {
+    const letters = await readFoundLetters(
+      scope,
+      `${gmailProbeQuery(mailAfter)} ${carrierMailQuery}`,
+      mail
+    );
+    const started = await startMailParcelWatches({
+      numbers: carrierLetterNumbers(letters),
+      now,
+      proactiveJobId: watch.jobId,
+      scope,
+    });
+    return started > 0 ? { parcels: started } : {};
+  } catch (error) {
+    console.warn("[proactive] parcel watches", {
+      name: error instanceof Error ? error.name : "error",
+      workspaceId: watch.workspaceId,
+    });
+    return {};
+  }
+}
+
 /** A check outside the pilot: the probe reminds of flights itself. */
 const noFlights = {
   logged: {},
@@ -310,12 +362,13 @@ async function checkByDay(
   now: Date,
   { agency, pilot, timeZone }: CheckMode
 ) {
+  const mailAfter = mailSearchStart(watch.mailCheckedAt, now);
   const probe = await probeGoogleSignals(
     { userId: watch.createdByUserId, workspaceId: watch.workspaceId },
     {
       ...(agency && { calendarPrep: true }),
       flightReminders: !pilot,
-      mailAfter: mailSearchStart(watch.mailCheckedAt, now),
+      mailAfter,
       now,
       timeZone,
     }
@@ -350,6 +403,9 @@ async function checkByDay(
     }
     return { outcome: "nothing_new", signalCount: 0, ...flights.logged };
   }
+  const parcels = pilot
+    ? await pilotParcels(watch, unseen, mailAfter, now)
+    : {};
   // After a pause (a reconnect, the end of quiet hours, turning proactive
   // messages back on) the backlog becomes one catch-up run; the watermark
   // moves past the rest instead of queuing batch after batch of old mail.
@@ -374,6 +430,7 @@ async function checkByDay(
     signalCount: unseen.length,
     ...(droppedMail > 0 && { droppedMail }),
     ...flights.logged,
+    ...parcels,
   };
 }
 
