@@ -17,7 +17,10 @@ import {
   stepIdentity,
   stepStartedEventSchema,
 } from "@agent/lib/turn-kind/step";
-import { withYoomoneyToken } from "@db/services/yoomoney/connection";
+import {
+  readYoomoneyConnection,
+  withYoomoneyToken,
+} from "@db/services/yoomoney/connection";
 import {
   claimYoomoneyPayment,
   createYoomoneyPayment,
@@ -192,8 +195,16 @@ async function pay(token: string, payment: Payment) {
     const wait = Math.min(outcome.nextRetryMs, 5_000);
     // oxlint-disable-next-line eslint/no-await-in-loop -- YooMoney asks to wait before asking again.
     await new Promise((resolve) => setTimeout(resolve, wait));
-    // oxlint-disable-next-line eslint/no-await-in-loop -- the same request, read back.
-    outcome = await processYoomoneyPayment(token, payment.requestId, payment);
+    try {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- the same request, read back.
+      outcome = await processYoomoneyPayment(token, payment.requestId, payment);
+    } catch (error) {
+      // YooMoney took the payment already: a lost or refused read of it
+      // says nothing of how it went.
+      if (error instanceof YoomoneyError)
+        return { kind: "pending" as const, nextRetryMs: 5_000 };
+      throw error;
+    }
   }
   return outcome;
 }
@@ -203,33 +214,51 @@ type Settlement = Omit<
   "id" | "from"
 >;
 
+/** Whether the wallet connected now is the one the payment was prepared from. */
+async function sameWallet(scope: AccessScope, payment: Payment) {
+  const connection = await readYoomoneyConnection(scope);
+  return (
+    connection.state === "connected" &&
+    (payment.account === null || connection.account === payment.account)
+  );
+}
+
 /**
- * What became of a payment whose outcome was lost, by the wallet's history
- * (`findYoomoneyPayment`): none there half an hour after it was sent is a
- * payment YooMoney never made. Undefined while that cannot be told.
+ * What became of a payment whose outcome was lost, by its wallet's history
+ * (`findYoomoneyPayment`): absent from the whole history half an hour after
+ * it was sent is a payment YooMoney never made. A test payment is never in
+ * the history and never charged. Undefined while it cannot be told.
  */
 async function fromHistory(
   scope: AccessScope,
   payment: Payment
 ): Promise<Settlement | undefined> {
+  if (payment.test) return { state: "refused", error: "test_unknown" };
   const sent = payment.submittedAt ?? payment.createdAt;
   try {
     const found = await withYoomoneyToken(scope, (token) =>
       findYoomoneyPayment(token, {
         amountMinor: payment.amountMinor,
         label: payment.kind === "transfer" ? payment.id : undefined,
+        patternId: payment.requestParams.pattern_id,
         since: new Date(sent.getTime() - 60_000),
       })
     );
     if (!found.connected) return undefined;
-    const operation = found.result;
-    if (operation?.status === "success")
-      return { state: "paid", paymentId: operation.operation_id };
-    if (operation?.status === "refused")
-      return { state: "refused", error: "payment_refused" };
-    if (operation === undefined && sent.getTime() < Date.now() - 30 * 60_000)
-      return { state: "refused", error: "not_in_history" };
-    return undefined;
+    switch (found.result.kind) {
+      case "paid":
+        return { state: "paid", paymentId: found.result.operationId };
+      case "refused":
+        return { state: "refused", error: "payment_refused" };
+      case "pending":
+        return { state: "pending" };
+      case "absent":
+        return sent.getTime() < Date.now() - 30 * 60_000
+          ? { state: "refused", error: "not_in_history" }
+          : undefined;
+      default:
+        return undefined;
+    }
   } catch {
     return undefined;
   }
@@ -254,6 +283,10 @@ async function payAndSettle(
 ) {
   let settlement: Settlement | undefined;
   try {
+    // Another wallet connected since knows nothing of this payment.
+    if (readBack && !(await sameWallet(scope, payment))) {
+      throw new YoomoneyError("revoked");
+    }
     const paid = await withYoomoneyToken(scope, (token) => pay(token, payment));
     const outcome = paid.connected
       ? paid.result
@@ -284,7 +317,7 @@ async function payAndSettle(
     return {
       ...paymentResult(payment),
       reply:
-        "The wallet cannot be read now: it is not connected or its access was revoked. Whether this payment went through is not known: never pay it again. Ask the person to reconnect the wallet or look at its history.",
+        "The wallet this payment was made from cannot be read now: it is not connected, another wallet is, or its access was revoked. Whether this payment went through is not known: never pay it again. Ask the person to reconnect that wallet or look at its history.",
     };
   }
   const settled =
@@ -372,6 +405,8 @@ async function prepare(
     shown = filled.shown;
   }
   const test = yoomoneyTestPayments();
+  const connection = await readYoomoneyConnection(scope);
+  if (connection.state !== "connected") return notConnected;
   const checked = await withYoomoneyToken(scope, (token) =>
     requestYoomoneyPayment(token, params, { test })
   );
@@ -394,6 +429,7 @@ async function prepare(
     ...draft,
     rootSessionId,
     kind: input.kind,
+    account: connection.account,
     requestParams: params,
     requestId: checked.result.requestId,
     confirmationQuestion: confirmationQuestion(draft),
@@ -417,9 +453,11 @@ async function prepare(
 
 /**
  * The person's own yes to this very payment (`agent/lib/payments/consent.ts`),
- * as the hash a claim spends: the conversation, the turn and the question
- * it answered. One yes pays one payment, even when Bro prepares the same
- * payment again in the same turn. Undefined: no yes to this payment.
+ * as the hash a claim spends: the conversation and the question it
+ * answered. One question pays one payment, even when Bro prepares the same
+ * payment again, in this turn or a later one; a payment asked about again
+ * in other words is asked with its own `confirmationQuestion`. Undefined:
+ * no yes to this payment.
  */
 async function consent(
   scope: AccessScope,
@@ -449,13 +487,7 @@ async function consent(
     }));
   if (!matches) return undefined;
   return createHash("sha256")
-    .update(
-      JSON.stringify([
-        context.session.id,
-        context.session.turn.id,
-        plainQuestion(asked),
-      ])
-    )
+    .update(JSON.stringify([context.session.id, plainQuestion(asked)]))
     .digest("hex");
 }
 
@@ -477,6 +509,13 @@ async function confirm(
       kind: "mode_changed" as const,
       reply:
         "Nothing was paid: test payments were switched on or off after this payment was prepared. Prepare it again and ask the person again.",
+    };
+  }
+  if (!(await sameWallet(scope, payment))) {
+    return {
+      kind: "wallet_changed" as const,
+      reply:
+        "Nothing was paid: the wallet connected now is not the one this payment was prepared from. Prepare it again and ask the person again.",
     };
   }
   const consentHash = await consent(scope, payment, words, context);

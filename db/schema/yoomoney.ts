@@ -85,6 +85,8 @@ export const yoomoneyPayments = pgTable(
     userId: text("user_id").notNull(),
     rootSessionId: text("root_session_id").notNull(),
     kind: text("kind", { enum: ["transfer", "service"] }).notNull(),
+    // The wallet the payment was prepared from: it is read back only there.
+    account: text("account"),
     title: text("title").notNull(),
     requestParams: jsonb("request_params")
       .$type<Record<string, string>>()

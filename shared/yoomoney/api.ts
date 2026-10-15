@@ -134,7 +134,8 @@ const operationSchema = z.object({
   title: z.string().default(""),
   direction: z.enum(["in", "out"]),
   amount: amountSchema,
-  type: z.string().optional(),
+  pattern_id: z.string().optional(),
+  label: z.string().optional(),
 });
 const historySchema = z.object({
   error: z.string().optional(),
@@ -143,34 +144,59 @@ const historySchema = z.object({
 });
 
 /**
- * The latest operations (`operation-history`), newest first: `direction`
- * narrows to incoming (`deposition`) or outgoing (`payment`), `from` to
- * those since then.
+ * One page of `operation-history`, newest first: `direction` narrows to
+ * incoming (`deposition`) or outgoing (`payment`), `from` and `till` to a
+ * window, `label` to the payments that carry it; `next` starts the next
+ * page, absent on the last.
  */
-export async function readYoomoneyHistory(
+export async function yoomoneyHistoryPage(
   token: string,
   {
     direction,
     from,
+    label,
     records,
+    start,
+    till,
   }: {
     readonly direction?: "in" | "out";
     readonly from?: Date;
+    readonly label?: string;
     readonly records: number;
+    readonly start?: string;
+    readonly till?: Date;
   }
 ) {
   const body = new URLSearchParams({ records: String(records) });
   if (direction !== undefined)
     body.set("type", direction === "in" ? "deposition" : "payment");
   if (from !== undefined) body.set("from", from.toISOString());
+  if (till !== undefined) body.set("till", till.toISOString());
+  if (label !== undefined) body.set("label", label);
+  if (start !== undefined) body.set("start_record", start);
   const parsed = historySchema.safeParse(
     await yoomoneyRequest("/api/operation-history", { body, token })
   );
   if (!parsed.success || parsed.data.error !== undefined)
     throw new YoomoneyError("unavailable");
   return {
-    more: parsed.data.next_record !== undefined,
-    operations: parsed.data.operations.map((operation) => ({
+    next: parsed.data.next_record,
+    operations: parsed.data.operations,
+  };
+}
+
+/** The latest operations as the person reads them (`yoomoney history`). */
+export async function readYoomoneyHistory(
+  token: string,
+  options: Pick<
+    Parameters<typeof yoomoneyHistoryPage>[1],
+    "direction" | "from" | "records"
+  >
+) {
+  const page = await yoomoneyHistoryPage(token, options);
+  return {
+    more: page.next !== undefined,
+    operations: page.operations.map((operation) => ({
       id: operation.operation_id,
       at: operation.datetime,
       direction: operation.direction,

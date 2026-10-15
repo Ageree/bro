@@ -11,6 +11,7 @@ import type * as Payments from "@shared/yoomoney/payments";
 
 const services = vi.hoisted(() => ({
   claim: vi.fn<typeof stored.claimYoomoneyPayment>(),
+  connection: vi.fn<typeof connection.readYoomoneyConnection>(),
   create: vi.fn<typeof stored.createYoomoneyPayment>(),
   enabled: vi.fn<typeof Api.yoomoneyEnabled>(),
   history: vi.fn<typeof Payments.findYoomoneyPayment>(),
@@ -33,6 +34,7 @@ vi.mock("@db/services/yoomoney/payments", () => ({
   yoomoneyPaymentInFlight: services.inFlight,
 }));
 vi.mock("@db/services/yoomoney/connection", () => ({
+  readYoomoneyConnection: services.connection,
   withYoomoneyToken: services.withToken,
 }));
 vi.mock("@shared/yoomoney/api", async (original) => ({
@@ -69,6 +71,7 @@ function row(
     id: paymentId,
     rootSessionId: "session-1",
     kind: "service",
+    account: "4100111222333",
     title: "МегаФон (Россия)",
     requestParams: { pattern_id: "337", topped_up_phone: "9261234567" },
     shown: [{ label: "Телефон", value: "9261234567" }],
@@ -163,6 +166,12 @@ async function call(
 beforeEach(() => {
   vi.resetAllMocks();
   services.enabled.mockReturnValue(true);
+  services.connection.mockResolvedValue({
+    state: "connected",
+    account: "4100111222333",
+    connectedAt: new Date(),
+  });
+  services.history.mockResolvedValue({ kind: "absent" });
   services.withToken.mockImplementation(async (_scope, read) => ({
     connected: true,
     result: await read("token-1"),
@@ -245,7 +254,35 @@ describe("wallet payments", () => {
     expect(
       await call(answered("ну что там?"), { action: "status", paymentId })
     ).toMatchObject({ kind: "unknown" });
+    // Another wallet connected since knows nothing of it either.
+    services.withToken.mockImplementation(async (_scope, read) => ({
+      connected: true,
+      result: await read("token-2"),
+    }));
+    services.connection.mockResolvedValue({
+      state: "connected",
+      account: "4100999888777",
+      connectedAt: new Date(),
+    });
+    expect(
+      await call(answered("ну что там?"), { action: "status", paymentId })
+    ).toMatchObject({ kind: "unknown" });
+    expect(services.process).not.toHaveBeenCalled();
     expect(services.settle).not.toHaveBeenCalled();
+  });
+
+  it("settles a lost test payment unpaid without the history: tests are never there", async () => {
+    services.read.mockResolvedValue(row({ state: "unknown", test: true }));
+    services.process.mockResolvedValue({
+      kind: "refused",
+      error: "contract_not_found",
+    });
+    await call(answered("ну что там?"), { action: "status", paymentId });
+    expect(services.history).not.toHaveBeenCalled();
+    expect(services.settle.mock.calls[0]?.[1]).toMatchObject({
+      state: "refused",
+      error: "test_unknown",
+    });
   });
 
   it("reads a payment in flight back with its own request, never a new one", async () => {

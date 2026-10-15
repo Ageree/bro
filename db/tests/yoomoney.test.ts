@@ -188,6 +188,7 @@ describe("wallet payments", () => {
         id,
         rootSessionId: "session-1",
         kind: "service",
+        account: "4100111222333",
         title: "МегаФон (Россия)",
         requestParams: { pattern_id: "337" },
         shown: [],
