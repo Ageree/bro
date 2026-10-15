@@ -721,7 +721,7 @@ def _layout_spots(path, page, number, words, covered):
         elif role == "date":
             continue
         else:
-            width, height = (150, 30) if role in ("signature", "initials") else (110, 16)
+            width, height = {"signature": (150, 30), "initials": (150, 30), "date": (90, 16)}.get(role, (110, 16))
             if caption:
                 centre = (box[0] + box[2]) / 2
                 spot_box = [centre - width / 2, box[1] - 2 - height, centre + width / 2, box[1] - 2]

@@ -194,9 +194,13 @@ def find_boxes(dark, segments, scale, reach):
             else:
                 dividers = _dividers(dark, top[1], bottom[0], x0, x1, reach)
                 edges = [x0] + dividers + [x1]
-                widths = [b - a for a, b in zip(edges, edges[1:])]
-                if len(widths) >= 5 and max(widths) <= 1.2 * min(widths):
-                    box.update(kind="comb", cells=len(widths))
+                widths = sorted(b - a for a, b in zip(edges, edges[1:]))
+                middle = widths[len(widths) // 2] if widths else 0
+                # Cells drawn apart leave narrow gaps between double sides: those are not cells.
+                cells = [w for w in widths if w > 0.5 * middle]
+                gaps_only = all(w <= 0.4 * middle for w in widths if w <= 0.5 * middle)
+                if len(cells) >= 5 and gaps_only and max(cells) <= 1.25 * min(cells):
+                    box.update(kind="comb", cells=len(cells))
                 elif width >= 12 and height >= 8:
                     box["kind"] = "box"
                 else:
@@ -205,6 +209,35 @@ def find_boxes(dark, segments, scale, reach):
             used.update((id(top), id(bottom)))
             break
     return boxes, used
+
+
+def _join_cells(boxes, reach):
+    """≥ 5 equal boxes side by side on one baseline (drawn apart, not sharing sides) → one comb."""
+    rows, out = {}, []
+    for box in boxes:
+        if box["kind"] in ("box", "checkbox"):
+            rows.setdefault((box["px"][1] // (2 * reach), box["px"][3] // (2 * reach)), []).append(box)
+        else:
+            out.append(box)
+    for row in rows.values():
+        row.sort(key=lambda b: b["px"][0])
+        run = [row[0]]
+        for box in row[1:] + [None]:
+            previous = run[-1]
+            width = previous["px"][2] - previous["px"][0]
+            if (
+                box is not None
+                and 0 <= box["px"][0] - previous["px"][2] <= max(3 * reach, 0.8 * width)
+                and abs((box["px"][2] - box["px"][0]) - width) <= 0.15 * width
+            ):
+                run.append(box)
+                continue
+            if len(run) >= 5:
+                out.append({"kind": "comb", "cells": len(run), "px": [run[0]["px"][0], min(b["px"][1] for b in run), run[-1]["px"][2], max(b["px"][3] for b in run)]})
+            else:
+                out.extend(run)
+            run = [box]
+    return out
 
 
 def _ink_above(dark, y, x0, x1, limit):
@@ -278,6 +311,7 @@ def analyse(path, number, page, lines):
     reach = max(2, round(1.0 / scale))
     segments = find_segments(dark, max(3, int(round(5 / scale))), reach)
     boxes, in_boxes = find_boxes(dark, segments, scale, reach)
+    boxes = _join_cells(boxes, reach)
     back = Unrotate(angle, gray.shape[1], gray.shape[0], scale)
     blanks = []
 
@@ -337,7 +371,9 @@ def analyse(path, number, page, lines):
         blank["box"] = geom.rounded(blank["box"])
         x0, y0, x1, y1 = blank["box"]
         near = [x0, max(y0, y1 - 14), x1, y1] if blank["kind"] in ("line", "underscores") else blank["box"]
-        text, box = labels.label_parts(words, near)
+        text, box = labels.right_label(words, blank["box"]) if blank["kind"] == "checkbox" else ("", None)
+        if not text:
+            text, box = labels.label_parts(words, near)
         blank["label"] = text
         if box:
             blank["label_box"] = geom.rounded(box)
@@ -360,8 +396,11 @@ def _big_image(page):
         return False
     for entry in xobjects.get_object().values():
         target = entry.get_object()
-        if target.get("/Subtype") == "/Image" and max(int(target.get("/Width", 0)), int(target.get("/Height", 0))) >= 1000:
-            return True
+        try:
+            if target.get("/Subtype") == "/Image" and max(int(target.get("/Width", 0)), int(target.get("/Height", 0))) >= 1000:
+                return True
+        except (TypeError, ValueError):
+            continue
     return False
 
 
@@ -480,8 +519,8 @@ def main(argv):
     warnings = []
     reader = crypt.open_pdf(options.file, warnings=warnings)
     numbers = parse_pages(options.pages, len(reader.pages))
-    if len(numbers) > 30:
-        raise KitError("too_many_pages", "layout reads up to 30 pages per call", "pass --pages, e.g. 1-10")
+    if len(numbers) > 12:
+        raise KitError("too_many_pages", "layout reads up to 12 pages per call", "pass --pages, e.g. 1-6")
     results = page_results(options.file, numbers, reader)
     pages = [results[n] for n in numbers]
     out = {"pages": pages, "warnings": warnings}

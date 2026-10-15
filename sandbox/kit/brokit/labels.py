@@ -49,7 +49,8 @@ def page_layout(path, first, last=None):
     if result.returncode != 0:
         return {}
     try:
-        root = ElementTree.fromstring(result.stdout)
+        # Control characters from a hostile text layer are not valid XML.
+        root = ElementTree.fromstring(re.sub(rb"[\x00-\x08\x0b\x0c\x0e-\x1f]", b"", result.stdout))
     except ElementTree.ParseError:
         return {}
     pages = {}
@@ -88,6 +89,23 @@ def label_for(words, box):
     («(подпись)»).
     """
     return label_parts(words, box)[0]
+
+
+def right_label(words, box):
+    """(text, box) of the words right after a checkbox on its line («☐ Согласен»), or ("", None)."""
+    x0, y0, x1, y1 = box
+    height = max(y1 - y0, 6.0)
+    row = sorted(
+        (w for w in words if y0 - 0.5 * height <= _centre(w["box"])[1] <= y1 + 0.5 * height and w["box"][0] >= x1 - 1),
+        key=lambda w: w["box"][0],
+    )
+    chosen, edge = [], x1
+    for word in row:
+        if word["box"][0] - edge > 12:
+            break
+        chosen.append(word)
+        edge = word["box"][2]
+    return " ".join(w["t"] for w in chosen)[:40].strip(), _bounds(chosen)
 
 
 def _bounds(chosen):
