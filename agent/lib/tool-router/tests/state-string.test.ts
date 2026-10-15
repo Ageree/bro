@@ -113,6 +113,10 @@ describe("the router's state string", () => {
     "when I arrive at the office, ping me",
     "where did I park",
     "coffee near me",
+    "где я был вчера вечером?",
+    "где я был?",
+    "когда приеду на вечеринку, напомни про подарок",
+    "is there a pharmacy nearby?",
   ])("hears the person's own place in «%s»", (words) => {
     expect(routerTurnText([person(words)]).located).toBe(true);
   });
@@ -129,6 +133,19 @@ describe("the router's state string", () => {
     "когда я выйду из себя, ты поймёшь",
     "I will call when I get to it",
     "when I leave a comment it disappears",
+    "когда буду в пятницу свободен",
+    "когда вернусь в понедельник",
+    "когда приду к 10",
+    "позвони, когда буду в 18:00",
+    "когда вернусь к обеду",
+    "когда вернусь к этому вопросу",
+    "когда буду в шоке",
+    "когда я буду на созвоне",
+    "когда буду на встрече",
+    "когда вернусь в мае",
+    "when I get to the meeting",
+    "see the nearby paragraph",
+    "где я был неправ?",
   ])("hears no place in «%s»", (words) => {
     expect(routerTurnText([person(words)]).located).toBe(false);
   });

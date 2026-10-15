@@ -14,9 +14,12 @@ const locationMarkers = [positionMarker, placeMarker] as const;
 
 /**
  * What a place after «приду в/на/к» must not be: «когда буду в настроении»,
- * «приду к выводу», «вернусь к работе», «выйду из себя» speak of no place.
+ * «приду к выводу», «вернусь к работе», «выйду из себя» speak of no place,
+ * and neither do a time («в пятницу», «к 10», «к обеду», «в мае») or a
+ * state («в шоке», «на созвоне», «к этому вопросу»): reminders are mostly
+ * worded that way.
  */
-const notAPlace = String.raw`(?!\s+((себя|себе|it|this|that|them|know|see|meet|think|do|terms|a decision|a conclusion|the point|работе)(?!\p{L})|норм|форм|настроени|курсе|связи|сети|силах|состояни|отпуск|вывод|решени|согласи|мнени|пониман|итог|цел[иь]|финал|общему|делу|теме|вопрос))`;
+const notAPlace = String.raw`(?!\s+(\d|(себя|себе|it|this|that|them|know|see|meet|think|do|terms|a decision|a conclusion|the point|the meeting|работе|этому|тому|нему|ней|ночь|ночи|ночью|ма[йюея]|март[ау]?)(?!\p{L})|норм|форм|настроени|курсе|связи|сети|силах|состояни|отпуск|вывод|решени|согласи|мнени|пониман|итог|цел[иь]|финал|общему|делу|теме|вопрос|шоке|созвон|встреч|понедельник|вторник|сред[уеы]|четверг|пятниц|суббот|воскресень|утр|вечер(?!ин)|обед|полдень|полдн|полноч|выходн|январ|феврал|апрел|июн|июл|август|сентябр|октябр|ноябр|декабр))`;
 
 /**
  * The person's words of where they are or will be, or of a reminder bound
@@ -30,12 +33,13 @@ const placeBound = stems(
   String.raw`как\s+(только\s+)?(я\s+)?(приду|приеду|окажусь|доеду|доберусь|вернусь домой)(?!\p{L})`,
   String.raw`когда\s+(я\s+)?(уйду|выйду|уеду)\s+(из|с|со|от)(?!\p{L})${notAPlace}`,
   String.raw`(уйду|выйду|уеду|ухожу|выхожу)\s+из\s+дома`,
-  String.raw`где\s+я\s+(сейчас|нахожусь|находил\p{L}*|был[аи]?|припарковал\p{L}*|парковал\p{L}*|поставил\p{L}*\s+машин|оставил\p{L}*\s+машин)(?!\p{L})`,
+  String.raw`где\s+я\s+(сейчас|нахожусь|находил\p{L}*|припарковал\p{L}*|парковал\p{L}*|поставил\p{L}*\s+машин|оставил\p{L}*\s+машин)(?!\p{L})`,
+  String.raw`где\s+я\s+был[аи]?(\s*\?|\s+(вчера|сегодня|утром|дн[её]м|вечером|ночью|в\s+\d|час\p{L}*\s+назад)(?!\p{L}))`,
   String.raw`где\s+я\s*\?|где\s+(сейчас\s+)?нахожусь|где\s+моя\s+машин`,
   String.raw`рядом\s+со\s+мной|поблизости|неподал[её]ку|недалеко\s+от\s+меня`,
   String.raw`when\s+i\s+(get|arrive|come)\s+((home|back|there|here)(?!\p{L})|(to|at)(?!\p{L})${notAPlace})`,
   String.raw`when\s+i\s+leave(?!\s+(a|an|it|this|that|feedback|comments?|reviews?|notes?)(?!\p{L}))`,
-  String.raw`where\s+am\s+i|where\s+did\s+i\s+park|where\s+i\s+parked|near\s+me|nearby|close\s+to\s+me`
+  String.raw`where\s+am\s+i|where\s+did\s+i\s+park|where\s+i\s+parked|near\s+me|(?<!the\s+)nearby|close\s+to\s+me`
 );
 
 /**
