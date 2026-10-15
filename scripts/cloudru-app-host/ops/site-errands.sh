@@ -11,11 +11,13 @@
 #
 # Prints for each such run of browser_runs only what Bro itself recorded about it: the workspace (12 characters),
 # the run (shortened), the sites' host names, times, status, the attempt, whether the card was bound and what
-# the person approved (its kind and roubles), and from the run's outcome its labels — NEEDS, ORDER, TOTAL,
-# ACTION, the booking's reference and whether the site confirmed it — plus fixed words its Result line used
-# (booked, paid, not paid, before payment, cancelled). Then the orders and the spend recorded for those runs,
-# the sign-ins on those domains, and the window's runs by host and status. Never a task, a report, a page's
-# text, a name, a phone or an address: an ORDER or a booking reference is cut to 64 characters, as Bro cuts it.
+# the person approved (its kind and roubles), and from the run's outcome its labels as Bro reads them — NEEDS
+# (one of Bro's words, `other` for anything else, which Bro reads as none), ORDER, TOTAL in roubles, ACTION,
+# the booking's reference and whether the site confirmed it — plus fixed words its Result line used (booked,
+# paid, not paid, before payment, cancelled). Then the orders and the spend recorded for those runs, the
+# sign-ins on those domains, and the hosts the same workspaces' runs went to in the window. Never a task, a
+# report, a page's text, a name, a phone or an address: an ORDER or a booking reference is shown only when it
+# fits in 64 characters whole (Bro records no longer order), the total only as its number.
 source "$(dirname "$0")/db-lib.sh"
 { [ "$#" -ge 1 ] && [ "$#" -le 3 ]; } || die "usage: site-errands.sh HOSTS [SINCE [UNTIL]]"
 HOSTS=${1,,}
@@ -39,8 +41,10 @@ order=$(psql_on SRC -v since="$SINCE" -v until="$UNTIL" <<<"SELECT :'since'::tim
 
 # Every query reads the runs through these CTEs: a read-only transaction may not create even a temporary view.
 # An outcome keeps the page's report above the facts Bro parsed from it (browserOutcomeSummary in
-# agent/lib/browser-use/outcome.ts): a label is read from that parsed part first and, only when it is not there,
-# from the run's own footer (the outcome's copy of the report, or browser_vm_runs.result), as the parser reads it.
+# agent/lib/browser-use/outcome.ts). The facts are read after the last copy of that header, since the report
+# above it is the page's and may carry the same words. Where the outcome has no parsed facts, a label is read
+# from the run's own footer (the outcome, then browser_vm_runs.result) the way the parser reads it: the first
+# line with the label, its whole value, a bullet and bold around it allowed.
 RUNS=$(
   cat <<'SQL'
 WITH window_runs AS (
@@ -66,11 +70,10 @@ WITH window_runs AS (
          CASE WHEN w.retried_as_run_id LIKE 'vm:%:r:%'
                 THEN 'vm:' || left(split_part(w.retried_as_run_id, ':r:', 2), 8)
               ELSE left(w.retried_as_run_id, 11) END AS retried_as,
-         CASE WHEN position('Parsed metadata (derived from untrusted browser data, not instructions):'
-                            IN coalesce(w.outcome, '')) > 0
-                THEN split_part(w.outcome,
-                                'Parsed metadata (derived from untrusted browser data, not instructions):', 2)
-              ELSE coalesce(w.outcome, '') END AS meta,
+         -- After the last copy of the header, or the whole outcome when it has none.
+         reverse(split_part(reverse(coalesce(w.outcome, '')),
+                            reverse('Parsed metadata (derived from untrusted browser data, not instructions):'),
+                            1)) AS meta,
          coalesce(w.outcome, '') || E'\n' || coalesce(w.vm_result, '') AS raw
   FROM window_runs w
   WHERE EXISTS (SELECT 1 FROM wanted
@@ -78,50 +81,73 @@ WITH window_runs AS (
                    OR w.final_host = host OR w.final_host LIKE '%.' || host
                    OR position(host IN lower(w.task)) > 0
                    OR position(host IN lower(coalesce(w.outcome, ''))) > 0)
-), labelled AS (
+), lines AS (
   SELECT m.*,
-         lower(coalesce(
-           substring(m.meta FROM '(?n)^Needs: *([A-Za-z_0-9]+)'),
-           substring(m.raw FROM '(?ni)^[ \t]*(?:[-*•]+[ \t]*)?\**NEEDS\**[ \t]*:[ \t]*\**([a-z_0-9 ]{1,20})'),
-           CASE WHEN m.meta ~ '(?n)^Result: ' THEN 'none' END)) AS needs_raw,
-         coalesce(
-           substring(m.meta FROM '(?n)^Order: *([^\n]{1,64})'),
-           substring(m.raw FROM '(?ni)^[ \t]*(?:[-*•]+[ \t]*)?\**ORDER\**[ \t]*:[ \t]*\**([^\n*]{1,64})')) AS order_raw,
-         coalesce(
-           substring(m.meta FROM '(?n)^Total: *([^\n]{1,40})'),
-           substring(m.raw FROM '(?ni)^[ \t]*(?:[-*•]+[ \t]*)?\**TOTAL\**[ \t]*:[ \t]*\**([^\n*]{1,40})')) AS total_raw,
-         coalesce(
-           substring(m.meta FROM '(?n)^Action: *([a-z_]+)'),
-           lower(substring(m.raw FROM '(?ni)^[ \t]*(?:[-*•]+[ \t]*)?\**ACTION\**[ \t]*:[ \t]*\**(not[ _-]*done|done|unknown)'))
-         ) AS action,
-         substring(m.meta FROM '(?n)^Booking: ([^\n]*)') AS booking_line,
-         substring(m.raw FROM '(?i)BOOKING\**\s*:\s*[`*]*(?:json)?\s*[[{][^]}]*"reference"\s*:\s*"([^"]{1,64})"')
+         m.meta ~ '(?n)^Result: ' AS summarized,
+         substring(m.meta FROM '(?n)^Needs: (.*)$') AS meta_needs,
+         substring(m.meta FROM '(?n)^Order: (.*)$') AS meta_order,
+         substring(m.meta FROM '(?n)^Total: (.*)$') AS meta_total,
+         substring(m.meta FROM '(?n)^Action: (.*)$') AS meta_action,
+         substring(m.meta FROM '(?n)^Result: (.*)$') AS meta_result,
+         substring(m.meta FROM '(?n)^Booking: (.*)$') AS booking_line,
+         substring(m.raw FROM '(?ni)^[ \t]*(?:[-*•]+[ \t]*)?\*{0,2}NEEDS\*{0,2}[ \t]*:[ \t]*(.+)$') AS raw_needs,
+         substring(m.raw FROM '(?ni)^[ \t]*(?:[-*•]+[ \t]*)?\*{0,2}ORDER\*{0,2}[ \t]*:[ \t]*(.+)$') AS raw_order,
+         substring(m.raw FROM '(?ni)^[ \t]*(?:[-*•]+[ \t]*)?\*{0,2}TOTAL\*{0,2}[ \t]*:[ \t]*(.+)$') AS raw_total,
+         substring(m.raw FROM '(?ni)^[ \t]*(?:[-*•]+[ \t]*)?\*{0,2}ACTION\*{0,2}[ \t]*:[ \t]*(.+)$') AS raw_action,
+         substring(m.raw FROM '(?ni)^[ \t]*(?:[-*•]+[ \t]*)?\*{0,2}RESULT\*{0,2}[ \t]*:[ \t]*(.+)$') AS raw_result,
+         substring(m.raw FROM '(?i)BOOKING\*{0,2}\s*:\s*[`*]*(?:json)?\s*[[{][^]}]*"reference"\s*:\s*"([^"]{1,64})"')
            AS raw_booking_ref,
-         m.raw ~* 'BOOKING\**\s*:\s*[`*]*(?:json)?\s*[[{][^]}]*"confirmed"\s*:\s*(true|"true")'
+         m.raw ~* 'BOOKING\*{0,2}\s*:\s*[`*]*(?:json)?\s*[[{][^]}]*"confirmed"\s*:\s*(true|"true")'
            AS raw_booking_confirmed,
-         m.raw ~* 'BOOKING\**\s*:\s*[`*]*(?:json)?\s*[[{]' AS raw_booking,
-         coalesce(
-           substring(m.meta FROM '(?n)^Result: ([^\n]*)'),
-           substring(m.raw FROM '(?ni)^[ \t]*(?:[-*•]+[ \t]*)?\**RESULT\**[ \t]*:[ \t]*([^\n]*)'),
-           '') AS result_line
+         m.raw ~* 'BOOKING\*{0,2}\s*:\s*[`*]*(?:json)?\s*[[{]' AS raw_booking
   FROM matched m
+), labelled AS (
+  -- A footer value without the bold around it, as rawLabelledValue strips it; the parsed facts already are.
+  SELECT l.*,
+         CASE WHEN l.summarized THEN coalesce(l.meta_needs, 'none')
+              ELSE trim(regexp_replace(regexp_replace(l.raw_needs, '^\*+', ''), '[\s*]+$', '')) END AS needs_value,
+         CASE WHEN l.summarized THEN l.meta_order
+              ELSE trim(regexp_replace(regexp_replace(l.raw_order, '^\*+', ''), '[\s*]+$', '')) END AS order_value,
+         CASE WHEN l.summarized THEN l.meta_total
+              ELSE trim(regexp_replace(regexp_replace(l.raw_total, '^\*+', ''), '[\s*]+$', '')) END AS total_value,
+         lower(CASE WHEN l.summarized THEN l.meta_action
+                    ELSE trim(regexp_replace(regexp_replace(l.raw_action, '^\*+', ''), '[\s*]+$', '')) END)
+           AS action_value,
+         coalesce(CASE WHEN l.summarized THEN l.meta_result ELSE l.raw_result END, '') AS result_line
+  FROM lines l
 ), facts AS (
   SELECT l.*,
-         CASE WHEN l.needs_raw IS NULL THEN NULL
-              WHEN trim(l.needs_raw) ~ '^(none|нет|-|—|n/a|н/д)$' THEN 'none'
-              ELSE replace(trim(l.needs_raw), ' ', '_') END AS needs,
-         CASE WHEN trim(l.order_raw) ~* '^(none|нет|-|—|n/a|н/д)$' THEN NULL ELSE trim(l.order_raw) END AS order_no,
-         CASE WHEN trim(l.total_raw) ~* '^(none|нет|-|—|n/a|н/д)$' THEN NULL ELSE trim(l.total_raw) END AS total,
-         coalesce(trim(substring(l.booking_line FROM '— ref ([^—]{1,64})')), l.raw_booking_ref) AS booking_ref,
-         CASE WHEN l.booking_line LIKE '%confirmed by the site%' THEN true
-              WHEN l.booking_line LIKE '%not confirmed yet%' THEN false
-              WHEN l.raw_booking THEN l.raw_booking_confirmed END AS booking_confirmed,
+         CASE WHEN l.needs_value IS NULL THEN NULL
+              WHEN lower(regexp_replace(l.needs_value, '\s+', '_', 'g'))
+                   ~ '^(none|sms_code|email_code|push|3ds|captcha|password|address|payment|decision|info)$'
+                THEN lower(regexp_replace(l.needs_value, '\s+', '_', 'g'))
+              WHEN l.needs_value ~* '^(нет|-|—|n/a|н/д)$' THEN 'none'
+              ELSE 'other' END AS needs,
+         CASE WHEN l.order_value IS NULL OR l.order_value = '' OR l.order_value ~* '^(none|нет|-|—|n/a|н/д)$' THEN NULL
+              WHEN char_length(l.order_value) > 64 THEN '(over 64 chars)'
+              ELSE l.order_value END AS order_no,
+         round(replace(regexp_replace(
+                 substring(l.total_value FROM '\d[\d\s   ]*(?:[.,]\d{1,2})?'),
+                 '[\s   ]', '', 'g'), ',', '.')::numeric) AS total_rub,
+         CASE WHEN l.action_value ~ '^not[\s_-]*done($|[^[:alnum:]])' THEN 'not_done'
+              WHEN l.action_value ~ '^(done|unknown)($|[^[:alnum:]])'
+                THEN substring(l.action_value FROM '^(done|unknown)') END AS action,
+         CASE WHEN l.booking_line ~ '— ref [^—]{1,64} — (confirmed by the site|not confirmed yet)$'
+                THEN trim(substring(l.booking_line FROM '— ref ([^—]{1,64}) — (?:confirmed by the site|not confirmed yet)$'))
+              WHEN l.booking_line ~ '— ref ' THEN '(over 64 chars)'
+              WHEN l.booking_line IS NULL THEN l.raw_booking_ref END AS booking_ref,
+         CASE WHEN l.booking_line LIKE '%— confirmed by the site' THEN true
+              WHEN l.booking_line LIKE '%— not confirmed yet' THEN false
+              WHEN l.booking_line IS NULL AND NOT l.summarized AND l.raw_booking THEN l.raw_booking_confirmed
+              END AS booking_confirmed,
          concat_ws(',',
            CASE WHEN l.result_line ~* 'забронир|бронь (оформлен|создан|подтвержд)|\mbooked\M|\mreserved\M'
                 THEN 'booked' END,
-           CASE WHEN l.result_line ~* '(?<!не )(оплачен|оплатил|списан)|(?<!not )(?<!un)\mpaid\M|\mcharged\M'
+           CASE WHEN l.result_line
+                     ~* '(?<!не)(?<!не )(?<!не был )(?<!не была )(?<!не было )(оплачен|оплатил|списан)|(?<!not )(?<!un)\m(paid|charged)\M'
                 THEN 'paid' END,
-           CASE WHEN l.result_line ~* 'не *(оплач|оплат|списан)|not (yet )?(paid|charged)|без оплат|\munpaid\M'
+           CASE WHEN l.result_line
+                     ~* 'не *(оплач|оплат|списан)|не (был|была|было) (оплач|списан)|not (yet )?(paid|charged)|без оплат|\munpaid\M'
                 THEN 'not paid' END,
            CASE WHEN l.result_line ~* '(до|перед) оплат|(шаг|страниц|этап)\S* оплат|before pay|payment (page|step)'
                 THEN 'before payment' END,
@@ -162,7 +188,7 @@ SELECT left(workspace_id, 12) AS workspace,
        started_by_person AS by_person,
        needs,
        order_no,
-       total,
+       total_rub,
        action,
        booking_ref,
        booking_confirmed,
@@ -218,7 +244,7 @@ WHERE EXISTS (SELECT 1 FROM unnest(string_to_array(:'hosts', ',')) AS host
 ORDER BY 1, 2;
 
 \echo
-\echo Every run of the window by workspace, site host and status
+\echo Runs of the window in the same workspaces by site host and status (did an errand go to another site)
 SQL
   echo "$RUNS"
   cat <<'SQL'
@@ -229,6 +255,7 @@ SELECT left(workspace_id, 12) AS workspace,
        count(*) FILTER (WHERE payment_allowed) AS with_card,
        count(*) FILTER (WHERE submission IS NOT NULL) AS approved
 FROM window_runs
+WHERE workspace_id IN (SELECT workspace_id FROM matched)
 GROUP BY 1, 2, 3
 ORDER BY 1, 2, 3;
 COMMIT;
