@@ -343,7 +343,7 @@ describe("a payment from the wallet's linked card", () => {
     });
   });
 
-  it("is refused when the bank did not pass the person and YooMoney has no outcome", async () => {
+  it("stays pending, its bank form spent, when the bank did not pass the person and YooMoney has no outcome", async () => {
     const yoomoney = await service();
     const state = stateOf(
       await yoomoney.startYoomoneyAuthorization(alice, origin)
@@ -388,11 +388,13 @@ describe("a payment from the wallet's linked card", () => {
         Response.json({ status: "refused", error: "illegal_params" }),
       "/api/operation-history": () => Response.json({ operations: [] }),
     });
+    // Another try at the same bank form may still pass: the history
+    // settles it, never the address the person came back by.
     await card.readBackYoomoneyCardPayment(id, token, "failed");
     expect(await payments.readYoomoneyPayment(alice, { id })).toMatchObject({
-      state: "refused",
-      error: "ext_auth_failed",
+      state: "pending",
       bankUri: null,
+      bankParams: null,
     });
   });
 });

@@ -20,17 +20,12 @@ export async function GET(
   const { id } = await params;
   const query = new URL(request.url).searchParams;
   const token = query.get("t") ?? "";
-  const back = verdicts.get(query.get("r") ?? "");
-  if (back !== undefined) {
-    // Which way the bank sent the person back, and what YooMoney added to
-    // the address (names only): what a payment lost after the bank did.
-    console.info("[yoomoney] card payment back from the bank", {
-      back,
-      added: [...query.keys()].filter((name) => name !== "t" && name !== "r"),
-    });
-  }
   try {
-    await readBackYoomoneyCardPayment(id, token, back);
+    await readBackYoomoneyCardPayment(
+      id,
+      token,
+      verdicts.get(query.get("r") ?? "")
+    );
   } catch (error) {
     console.warn("[yoomoney] card payment read back failed", {
       name: error instanceof Error ? error.name : "unknown",

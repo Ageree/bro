@@ -255,6 +255,13 @@ export async function readBackYoomoneyCardPayment(
   back: "passed" | "failed" | undefined
 ) {
   const payment = await readYoomoneyPaymentByLink(id, token);
+  // Which way the bank sent the person back: what a payment lost after the
+  // bank did. Only by the payment's own link.
+  if (payment !== undefined && back !== undefined)
+    console.info("[yoomoney] card payment back from the bank", {
+      back,
+      state: payment.state,
+    });
   if (payment?.state !== "pending") return;
   const scope = scopeOf(payment);
   try {
@@ -268,6 +275,9 @@ export async function readBackYoomoneyCardPayment(
       outcome: outcome.kind,
       error: outcome.kind === "refused" ? outcome.error : undefined,
     });
+    // Even back from a bank that did not pass the person, a payment YooMoney
+    // does not call refused stays pending: another try at the same bank
+    // form may have passed. The history settles it, at most in half an hour.
     const settlement =
       outcome.kind === "paid"
         ? { state: "paid" as const, paymentId: outcome.paymentId }
@@ -275,11 +285,9 @@ export async function readBackYoomoneyCardPayment(
           ? { state: "pending" as const }
           : !yoomoneyReadBackSilent(outcome.error)
             ? { state: "refused" as const, error: outcome.error }
-            : ((await settlementFromHistory(scope, payment)) ??
-              // A bank that did not pass the person: nothing was charged.
-              (back === "failed"
-                ? { state: "refused" as const, error: "ext_auth_failed" }
-                : { state: "pending" as const }));
+            : ((await settlementFromHistory(scope, payment)) ?? {
+                state: "pending" as const,
+              });
     // The bank asks again: its fresh form replaces the stale one. Back from
     // the bank, the form is spent: the page no longer offers it.
     const form =

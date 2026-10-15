@@ -150,7 +150,12 @@ export default async function Page(props: PageProps<"/pay/[id]">) {
                 <>
                   {/* The page checks the payment again by itself until
                       YooMoney answers: React puts this tag in <head>. */}
-                  <meta content={`10;url=${checkAgain}`} httpEquiv="refresh" />
+                  {payment.state === "pending" && (
+                    <meta
+                      content={`10;url=${checkAgain}`}
+                      httpEquiv="refresh"
+                    />
+                  )}
                   <p className="type-body">
                     Проверяем платёж в ЮMoney, страница обновится сама. Не
                     оплачивайте его ещё раз.

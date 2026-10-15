@@ -417,8 +417,8 @@
   до ответа банка, страница её отправляет, банк возвращает на `/api/yoomoney/pay/<id>/return`.
   Повтор `process-payment` одним `request_id` — только для `pending` (ЮMoney уже ответил на
   карту): у неотвеченного это первый вызов, и ЮMoney по умолчанию платит кошельком —
-  `unknown` карты сверяется только по истории. У `/pay/*` `Referrer-Policy: same-origin`:
-  при `no-referrer` браузер шлёт форму с `Origin: null`, и проверка Origin её отвергает.
+  `unknown` карты сверяется только по истории. У `/pay/*` `Referrer-Policy: strict-origin`:
+  при `no-referrer` (и `same-origin` — для формы банка) браузер шлёт форму с `Origin: null`.
   Пока человек у банка, `request_id` один ЮMoney отвечает `illegal_params` (15.10): это не
   отказ — сверка с историей, платёж ждёт (`yoomoneyReadBackSilent`). Ручная проверка статуса
   посреди 3-D Secure так закрыла первый живой платёж картой «Мир» (ЮMoney шлёт её в 3-D Secure

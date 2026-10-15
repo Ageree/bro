@@ -291,7 +291,6 @@ const refusals = new Map(
       "Подготовленный платёж устарел: его нужно подготовить заново.",
     ext_action_required:
       "ЮMoney просит сначала сделать что-то в самом кошельке, например пройти идентификацию.",
-    ext_auth_failed: "Банк не подтвердил платёж картой.",
     illegal_param_amount: "ЮMoney не принял сумму.",
     illegal_param_amount_due: "ЮMoney не принял сумму.",
     illegal_param_to:
