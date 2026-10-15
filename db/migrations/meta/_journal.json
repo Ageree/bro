@@ -526,6 +526,13 @@
       "when": 1792077925575,
       "tag": "0074_yoomoney_card",
       "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "7",
+      "when": 1792101521511,
+      "tag": "0075_direct_purchase_consents",
+      "breakpoints": true
     }
   ]
 }

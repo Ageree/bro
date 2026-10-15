@@ -137,6 +137,12 @@ export type ConfirmedSubmission = Omit<BrowserSubmission, "kind"> &
      * for, or the errand's own site for a permission by kind alone.
      */
     readonly boundHost?: string;
+    /**
+     * The person's own words that asked for this purchase and paid it with
+     * no question (DIRECT_PURCHASE_WORKSPACES): the run pays only for what
+     * they name, within `paymentCapRub`.
+     */
+    readonly directRequest?: string;
     readonly paymentCapRub?: number;
   };
 

@@ -17,6 +17,12 @@ import {
   namesTotal,
   plainQuestion,
 } from "@agent/lib/payments/consent";
+import {
+  type DirectTurn,
+  directPurchase,
+  directPurchaseCeilingRub,
+  directPurchasePilot,
+} from "@agent/lib/payments/direct";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import {
   stepIdentity,
@@ -233,6 +239,52 @@ function confirmationQuestion(
   return `${serviceTitle[service]}: ${items}. Доставка: ${quote.delivery}. Оплата: ${quote.payment}. Итого ${whole},${fraction} ₽, включая доставку и сборы. Заказ ${confirmationId}. Оплачиваю?`;
 }
 
+/** The order as a judge reads it beside the person's request. */
+const orderTerms = (
+  service: keyof typeof serviceTitle,
+  quote: z.output<typeof purchaseQuoteSchema>
+) => ({
+  order: {
+    service: serviceTitle[service],
+    delivery: quote.delivery,
+    items: quote.items,
+    totalRub: quote.amountMinor / 100,
+  },
+});
+
+/**
+ * The most a ride booked on the person's request may cost
+ * (DIRECT_PURCHASE_WORKSPACES): what their words allow — their budget or
+ * the ceiling — or, when their words ask for no ride, the limit the call
+ * names, else the ceiling. A saved rule or another route asks instead.
+ */
+async function directRideLimit(
+  scope: AccessScope,
+  turn: DirectTurn,
+  args: z.output<typeof goBookOperation.args>
+) {
+  const direct = await directPurchase(scope, turn, {
+    terms: {
+      ride: {
+        service: "Yandex Go taxi, econom, now",
+        from: args.from,
+        to: args.to,
+        payment: args.payment,
+      },
+    },
+  });
+  if (direct?.kind === "ask") return direct;
+  if (direct?.kind === "granted")
+    return {
+      kind: "limit" as const,
+      maxPriceRub: Math.min(args.maxPriceRub ?? direct.capRub, direct.capRub),
+    };
+  return {
+    kind: "limit" as const,
+    maxPriceRub: args.maxPriceRub ?? directPurchaseCeilingRub(),
+  };
+}
+
 /**
  * Bro asked about this very order in its own words. The model retells
  * confirmationQuestion rather than send it verbatim, and the person's yes to
@@ -321,15 +373,14 @@ export default defineDynamic({
       const scope = scopeFromPrincipal(caller);
       if (!yandexPurchasePilot(scope)) return null;
       const rootSessionId = context.session.id;
-      const words = personWordsThisTurn(
-        context.messages,
-        stepIdentity(
-          stepStartedEventSchema.safeParse(event).data,
-          rootSessionId
-        )
+      const step = stepIdentity(
+        stepStartedEventSchema.safeParse(event).data,
+        rootSessionId
       );
+      const words = personWordsThisTurn(context.messages, step);
       // Only in a turn the person's own message opened, as phone-call.
       if (words.said === null) return null;
+      const turn: DirectTurn = { personTurn: true, said: words.said, step };
       return {
         yandex_purchase: defineTool({
           availableInSubagents: false,
@@ -355,12 +406,26 @@ export default defineDynamic({
               return { kind: "unavailable" as const };
             }
             if (input.action === "book" || input.action === "cancel") {
-              const outcome =
+              let args =
                 input.action === "book"
+                  ? goBookOperation.args.parse(input)
+                  : undefined;
+              if (args !== undefined && directPurchasePilot(scope)) {
+                const limit = await directRideLimit(scope, turn, args);
+                if (limit.kind === "ask") {
+                  return {
+                    kind: "not_booked" as const,
+                    reply: `Nothing was booked. ${limit.reply}`,
+                  };
+                }
+                args = { ...args, maxPriceRub: limit.maxPriceRub };
+              }
+              const outcome =
+                args !== undefined
                   ? await runYandexOperation(
                       scope.workspaceId,
                       goBookOperation,
-                      goBookOperation.args.parse(input)
+                      args
                     )
                   : await runYandexOperation(
                       scope.workspaceId,
@@ -372,6 +437,15 @@ export default defineDynamic({
               const { unverifiedCardId, ...result } = goResultSchema.parse(
                 outcome.data
               );
+              if (
+                result.kind === "over_limit" &&
+                args?.maxPriceRub !== undefined &&
+                directPurchasePilot(scope)
+              )
+                return {
+                  ...result,
+                  reply: `Nothing was booked: the price is above ${String(args.maxPriceRub)} ₽, the most the person's request allows without a question. Ask them one short question with the price, and book with maxPriceRub at that price only after their plain yes.`,
+                };
               if (result.reason !== "no_verified_card")
                 return { ...result, reply: goReplies[result.kind] };
               if (input.action !== "book" || unverifiedCardId === undefined)
@@ -450,16 +524,36 @@ export default defineDynamic({
               }
               const result = purchaseResult(created.purchase);
               // Bro named the total before the quote: its yes may stand.
-              if (
+              const yesBefore =
                 result.kind === "quoted" &&
                 paymentAnswer(words.said) === "yes" &&
                 words.paymentAsked !== null &&
-                namesTotal(words.paymentAsked, result.quote.amountMinor)
-              ) {
+                namesTotal(words.paymentAsked, result.quote.amountMinor);
+              if (yesBefore) {
                 return {
                   ...result,
                   reply:
                     "The person has just said yes to your question with this total. Call confirm with this purchaseId now instead of asking again: it checks that your question named these items, this address and this total. Send confirmationQuestion only if confirm returns confirmation_required.",
+                };
+              }
+              const direct =
+                result.kind === "quoted"
+                  ? await directPurchase(scope, turn, {
+                      terms: orderTerms(input.service, result.quote),
+                      totalMinor: result.quote.amountMinor,
+                    })
+                  : undefined;
+              if (direct?.kind === "granted") {
+                return {
+                  ...result,
+                  reply:
+                    "The person's own request in this turn is their consent to this order: call confirm with this purchaseId now, without asking them «Оплачиваю?» and without sending confirmationQuestion. Tell them what was ordered once confirm answers.",
+                };
+              }
+              if (direct?.kind === "ask") {
+                return {
+                  ...result,
+                  reply: `Nothing was submitted. ${direct.reply}`,
                 };
               }
               return result;
@@ -495,16 +589,30 @@ export default defineDynamic({
               return purchaseResult(purchase);
             }
             const quote = purchaseQuoteSchema.safeParse(purchase.publicQuote);
-            if (
-              paymentAnswer(words.said) !== "yes" ||
-              words.paymentAsked === null ||
-              (plainQuestion(words.paymentAsked) !==
-                plainQuestion(purchase.confirmationQuestion) &&
-                !(
-                  quote.success &&
-                  (await askedInOwnWords(scope, words.paymentAsked, quote.data))
-                ))
-            ) {
+            const answer = paymentAnswer(words.said);
+            const yes =
+              answer === "yes" &&
+              words.paymentAsked !== null &&
+              (plainQuestion(words.paymentAsked) ===
+                plainQuestion(purchase.confirmationQuestion) ||
+                (quote.success &&
+                  (await askedInOwnWords(
+                    scope,
+                    words.paymentAsked,
+                    quote.data
+                  ))));
+            // Their own request this turn, when it already pays this order.
+            const direct =
+              yes ||
+              answer === "yes" ||
+              purchase.service === "go" ||
+              !quote.success
+                ? undefined
+                : await directPurchase(scope, turn, {
+                    terms: orderTerms(purchase.service, quote.data),
+                    totalMinor: quote.data.amountMinor,
+                  });
+            if (!yes && direct?.kind !== "granted") {
               return {
                 kind: "confirmation_required" as const,
                 reply:
@@ -536,6 +644,7 @@ export default defineDynamic({
               id: purchase.id,
               rootSessionId,
             };
+            if (direct?.kind === "granted") claim.directConsentKey = direct.key;
             if (refreshed)
               claim.refresh = {
                 expiresAt: new Date(refreshed.expiresAt),
