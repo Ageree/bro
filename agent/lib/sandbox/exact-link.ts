@@ -3,7 +3,7 @@ import type { z } from "zod";
 import { reportedSharedFileLinks } from "@agent/lib/browser-use/files";
 import { taskAgentTool } from "@agent/lib/turn-kind/sets";
 import type { sendMessageOutputSchema } from "@shared/chat/message-delivery";
-import { isSharedFileLink, sandboxFilesPath } from "./files";
+import { isSharedFileLink, linksInText, sandboxFilesPath } from "./files";
 
 /**
  * The task agent's file links, as the model copies them. A link carries a
@@ -17,7 +17,6 @@ import { isSharedFileLink, sandboxFilesPath } from "./files";
 
 type SentMessage = z.infer<typeof sendMessageOutputSchema>;
 
-const linkPattern = /https:\/\/[^\s<>"'\\)\]]+/gu;
 /** A link's id and the name after it, however mangled the rest. */
 const looseParts = new RegExp(
   `${sandboxFilesPath}/([\\da-f]{8,24})(?:/([^?#]*))?`,
@@ -37,12 +36,23 @@ const idChars = 24;
 const minimumIdChars = 12;
 const knownLinksKept = 100;
 
-/** The task results' text: what a `task` call answered, never its files. */
-function taskResultTexts(messages: readonly ModelMessage[]) {
+/**
+ * The tools whose results carry share links: the task agent's report, and
+ * the signing tools' files (the signed document, the source to attach, a
+ * signature's preview), each as long a tail as any other.
+ */
+const linkingTools: ReadonlySet<string> = new Set([
+  taskAgentTool,
+  "sign_document",
+  "signature",
+]);
+
+/** The text of what those tools answered, never their files. */
+function linkingResultTexts(messages: readonly ModelMessage[]) {
   return messages.flatMap((message) =>
     message.role === "tool"
       ? message.content.flatMap((part) => {
-          if (part.type !== "tool-result" || part.toolName !== taskAgentTool) {
+          if (part.type !== "tool-result" || !linkingTools.has(part.toolName)) {
             return [];
           }
           if (part.output.type === "text") return [part.output.value];
@@ -57,17 +67,15 @@ function taskResultTexts(messages: readonly ModelMessage[]) {
 
 /**
  * The share links of this conversation: the ones the person or a task
- * report brought (`reportedSharedFileLinks`) and the ones a `task` call
- * answered with, the last hundred.
+ * report brought (`reportedSharedFileLinks`) and the ones a `task` call or
+ * a signing tool answered with, the last hundred.
  */
 export function knownSharedLinks(
   messages: readonly ModelMessage[]
 ): readonly string[] {
   const links = new Set(reportedSharedFileLinks(messages));
-  for (const text of taskResultTexts(messages)) {
-    for (const [written] of text.matchAll(linkPattern)) {
-      // A link that ends a sentence keeps its period out.
-      const link = written.replace(/[.,;:!?…]+$/u, "");
+  for (const text of linkingResultTexts(messages)) {
+    for (const link of linksInText(text)) {
       if (isSharedFileLink(link)) links.add(link);
     }
   }

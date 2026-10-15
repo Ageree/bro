@@ -13,7 +13,11 @@ import { directModelSelection } from "@agent/lib/model/direct";
 import { phoneActionTurn } from "@agent/lib/phone/policy";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { exactSharedLink } from "@agent/lib/sandbox/exact-link";
-import { isSharedFileLink, sandboxFilesPath } from "@agent/lib/sandbox/files";
+import {
+  isSharedFileLink,
+  linksInText,
+  sandboxFilesPath,
+} from "@agent/lib/sandbox/files";
 import { signQuestionPattern } from "./question";
 
 /**
@@ -139,8 +143,6 @@ function currentImages(messages: readonly ModelMessage[]) {
     .map(imageOf);
 }
 
-const linkPattern = /https:\/\/[^\s<>"'\\)\]]+/gu;
-
 /** A shared file's id: the 24 hex after the files path of a valid link. */
 export function sharedFileId(url: string) {
   if (!isSharedFileLink(url)) return undefined;
@@ -161,9 +163,7 @@ function sentLinks(message: z.infer<typeof sentSchema>) {
   return [
     ...(message.url === undefined ? [] : [message.url]),
     ...(message.attachments ?? []).map(({ url }) => url),
-    ...[...(message.text ?? "").matchAll(linkPattern)].map(([link]) =>
-      link.replace(/[.,;:!?…]+$/u, "")
-    ),
+    ...linksInText(message.text ?? ""),
   ];
 }
 

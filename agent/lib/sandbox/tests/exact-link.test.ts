@@ -12,7 +12,7 @@ async function load() {
   }));
 }
 
-/** Two files the task agent shared, and the conversation that has their links. */
+/** Files the task agent and a signing shared, and the conversation that has their links. */
 async function sharedFiles() {
   const modules = await load();
   const share = async (name: string) =>
@@ -26,12 +26,15 @@ async function sharedFiles() {
   const report = await share("Отчёт за сентябрь.pdf");
   const chart = await share("chart.png");
   const table = await share("table.csv");
+  // A browser's duplicate keeps its parentheses in the link.
+  const form = await share("Анкета (1).pdf");
+  const signed = await share("Анкета (1) (подписано).pdf");
   const messages: ModelMessage[] = [
     { content: "сделай отчёт, график и таблицу", role: "user" },
-    // A background task's report, its link ending a sentence.
+    // A background task's report, its link in brackets ending a sentence.
     Object.assign(
       {
-        content: `Background task task_1 (task) is completed.\n\nResult:\nТаблица: ${table}.`,
+        content: `Background task task_1 (task) is completed.\n\nResult:\nТаблица (${table}).`,
         role: "user" as const,
       },
       { kind: "execution.background_task" }
@@ -45,9 +48,20 @@ async function sharedFiles() {
           type: "tool-result",
         },
         {
-          output: { type: "text", value: `График: ${chart}.` },
+          output: { type: "text", value: `График: ${chart}.\nАнкета: ${form}` },
           toolCallId: "call-2",
           toolName: "task",
+          type: "tool-result",
+        },
+      ],
+      role: "tool",
+    },
+    {
+      content: [
+        {
+          output: { type: "json", value: { status: "signed", url: signed } },
+          toolCallId: "call-3",
+          toolName: "sign_document",
           type: "tool-result",
         },
       ],
@@ -57,8 +71,10 @@ async function sharedFiles() {
   return {
     ...modules,
     chart,
+    form,
     known: modules.knownSharedLinks(messages),
     report,
+    signed,
     table,
   };
 }
@@ -80,20 +96,24 @@ afterEach(() => {
 });
 
 describe("the task agent's file links as the model copies them", () => {
-  it("knows the links a task call or its report answered with, a period after one or not", async () => {
-    const { chart, known, report, table } = await sharedFiles();
-    expect(known).toEqual([table, report, chart]);
+  it("knows the links a task call, its report or a signing answered with, parentheses and a period after one or not", async () => {
+    const { chart, form, known, report, signed, table } = await sharedFiles();
+    expect(known).toEqual([table, report, chart, form, signed]);
   });
 
   it("mends a wrong signature character, a cut tail or a bare id", async () => {
-    const { chart, exactSharedLink, known, report } = await sharedFiles();
-    const wrongSignature = chart.replace(/sig=(.)/u, (_, first: string) =>
-      first === "A" ? "sig=B" : "sig=A"
-    );
+    const { chart, exactSharedLink, form, known, report, signed } =
+      await sharedFiles();
+    const wrongSignature = (link: string) =>
+      link.replace(/sig=(.)/u, (_, first: string) =>
+        first === "A" ? "sig=B" : "sig=A"
+      );
 
-    expect(exactSharedLink(wrongSignature, known)).toBe(chart);
+    expect(exactSharedLink(wrongSignature(chart), known)).toBe(chart);
+    expect(exactSharedLink(wrongSignature(signed), known)).toBe(signed);
     expect(exactSharedLink(report.slice(0, -10), known)).toBe(report);
     expect(exactSharedLink(idOf(chart), known)).toBe(chart);
+    expect(exactSharedLink(idOf(form), known)).toBe(form);
   });
 
   it("mends a link whose name the model decoded, spaces and all", async () => {

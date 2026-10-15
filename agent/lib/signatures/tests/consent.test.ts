@@ -167,12 +167,17 @@ describe("what a delivered send did to an open signing", () => {
     ).toEqual(["clear", { text: question, verbatim: true }]);
   });
 
-  it("showed the unsigned file when it carried its link", () => {
+  it("showed the unsigned file when it carried its link, a name with parentheses in the text too", () => {
     expect(
       verdicts({
         attachments: [{ kind: "file", url: shareLink() }],
         kind: "message",
       })[0]?.shown
+    ).toBe(true);
+    const duplicate = shareLink(shareId, "anketa(1).pdf");
+    expect(
+      verdicts({ kind: "message", text: `Вот [анкета](${duplicate}).` })[0]
+        ?.shown
     ).toBe(true);
   });
 
