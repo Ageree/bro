@@ -124,6 +124,8 @@ def form_pdf(path):
     from reportlab.lib.colors import black, white
     from reportlab.pdfgen import canvas
 
+    from brokit.pdf.sign import seal
+
     fonts()
     buffer = io.BytesIO()
     c = canvas.Canvas(buffer, pagesize=A4)
@@ -152,7 +154,7 @@ def form_pdf(path):
     writer.pages[1][NameObject("/Rotate")] = NumberObject(90)
     add_field(writer, 0, sig_field("Подпись заявителя", [160, 110, 330, 140]))
     mark = sig_field("bro_sign_signature_1", [360, 110, 520, 140])
-    mark[NameObject("/BroMark")] = TextStringObject(TOKEN)
+    mark[NameObject("/BroMark")] = TextStringObject(seal(TOKEN, "bro_sign_signature_1", 0, mark))
     add_field(writer, 0, mark)
     writer._root_object["/AcroForm"][NameObject("/SigFlags")] = NumberObject(1)
     for widget in writer.pages[0]["/Annots"]:
