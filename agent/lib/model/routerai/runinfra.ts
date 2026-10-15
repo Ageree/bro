@@ -9,11 +9,11 @@ import { watchedModelFetch } from "../stream-watchdog";
  * DeepInfra; a cached step costs about $0.0013 (≈0.11 ₽, RouterAI ≈0.04 ₽).
  *
  * Only the models RunInfra hosts go there (`hosted`); every other model,
- * every call with `plugins` (web search) and every raw call stays on
- * RouterAI. Any failure of RunInfra — a thrown fetch, a status other than
- * 2xx, an error inside the answer — sends the same call to RouterAI at once,
- * and the calls of the next five minutes skip RunInfra, then one tries it
- * again. The answer is read whole before it is passed on, as RouterAI's is
+ * every call with `plugins` (web search) or a picture or file in a message
+ * (`carriesMedia`) and every raw call stays on RouterAI. Any failure of
+ * RunInfra — a thrown fetch, a status other than 2xx, an error inside the
+ * answer — sends the same call to RouterAI at once, and the calls of the
+ * next five minutes skip RunInfra, then one tries it again. The answer is read whole before it is passed on, as RouterAI's is
  * (`fetch.ts`): a failure can come at its end, and nothing of a failed
  * answer may reach eve.
  */
@@ -60,6 +60,32 @@ const chatCallSchema = z.object({
 
 type ChatCall = z.infer<typeof chatCallSchema>;
 
+/**
+ * Message parts RunInfra's text-only model refuses (400
+ * `hosted_parameter_not_supported`): a picture, a file, audio or video.
+ * Such a call goes to RouterAI at once and is no failure of RunInfra, which
+ * keeps serving text calls; before, every photo or PDF turn turned RunInfra
+ * off for five minutes for everyone.
+ */
+const mediaPartTypes: ReadonlySet<string> = new Set([
+  "file",
+  "image_url",
+  "input_audio",
+  "video_url",
+]);
+
+const partsMessageSchema = z.object({
+  content: z.array(z.looseObject({ type: z.string() })),
+});
+
+function carriesMedia(call: ChatCall) {
+  return call.messages.some((message) =>
+    (partsMessageSchema.safeParse(message).data?.content ?? []).some((part) =>
+      mediaPartTypes.has(part.type)
+    )
+  );
+}
+
 /** The call's JSON body, when it is a chat call RunInfra can serve. */
 function servedCall(
   input: string | URL | Request,
@@ -73,6 +99,7 @@ function servedCall(
   try {
     const call = chatCallSchema.safeParse(JSON.parse(body)).data;
     if (call === undefined || (call.plugins?.length ?? 0) > 0) return undefined;
+    if (carriesMedia(call)) return undefined;
     const model = hosted.get(call.model);
     return model === undefined ? undefined : { call, model };
   } catch {

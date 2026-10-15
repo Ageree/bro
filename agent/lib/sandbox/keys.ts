@@ -186,6 +186,18 @@ export function sandboxSnapshotKey(sandboxId: string) {
 }
 
 /**
+ * A workspace's sign-mark token, 32 hex: HMAC-SHA256 of SANDBOX_SIGNING_KEY
+ * and `bro-sign-mark:<workspace id>`. The task agent's hook keeps it in the
+ * sandbox (/workspace/.bro/mark-token), where `brokit pdf sign-mark` puts it
+ * into each signature place it marks (`/BroMark`); the signer trusts a
+ * `bro_sign_*` field only with this workspace's token, so a mark that came
+ * in a document from elsewhere asks the person instead.
+ */
+export function signMarkToken(workspaceId: string) {
+  return derived(`bro-sign-mark:${workspaceId}`).toString("hex").slice(0, 32);
+}
+
+/**
  * The key a shared file's link is signed with: the link opens that one
  * object and nothing else (`app/sandbox-files`).
  */

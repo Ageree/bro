@@ -15,8 +15,14 @@ const mediaTypesByExtension: ReadonlyMap<string, string> = new Map([
     ".docx",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   ],
+  [".ics", "text/calendar"],
+  [".jpeg", "image/jpeg"],
+  [".jpg", "image/jpeg"],
   [".json", "application/json"],
   [".md", "text/markdown"],
+  [".odp", "application/vnd.oasis.opendocument.presentation"],
+  [".ods", "application/vnd.oasis.opendocument.spreadsheet"],
+  [".odt", "application/vnd.oasis.opendocument.text"],
   [".pdf", "application/pdf"],
   [".png", "image/png"],
   [
@@ -25,10 +31,12 @@ const mediaTypesByExtension: ReadonlyMap<string, string> = new Map([
   ],
   [".svg", "image/svg+xml"],
   [".txt", "text/plain"],
+  [".vcf", "text/vcard"],
   [
     ".xlsx",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   ],
+  [".xml", "application/xml"],
   [".zip", "application/zip"],
 ]);
 

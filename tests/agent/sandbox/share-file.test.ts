@@ -75,6 +75,13 @@ describe("share_file", () => {
         "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     });
   });
+
+  it("types a calendar invitation by its name", async () => {
+    const invitation = new TextEncoder().encode("BEGIN:VCALENDAR\r\n");
+    expect(
+      await share(servedFile(1, invitation).stream, "/workspace/meeting.ics")
+    ).toMatchObject({ mediaType: "text/calendar", name: "meeting.ics" });
+  });
 });
 
 function toolContext(stream: ReadableStream<Uint8Array>) {

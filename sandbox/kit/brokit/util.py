@@ -115,8 +115,16 @@ def run(command, timeout=60, input_bytes=None):
         raise KitError("unavailable", command[0] + " is not installed in this sandbox")
 
 
+STREAM_CAP = 64 * 1024 * 1024
+
+
 def limits():
-    """Bounds for hostile input (W2 spec §5.0): memory and pypdf stream caps."""
+    """Bounds for hostile input (W2 spec §5.0): memory and pypdf stream caps.
+
+    pypdf 6 reads its caps from `overwrite_configuration`; the old constants
+    of pypdf.filters are deprecated. A cap hit raises inside pypdf, and the
+    command reports the file `unreadable`.
+    """
     try:
         import resource
 
@@ -125,13 +133,18 @@ def limits():
     except (ImportError, ValueError, OSError):
         pass  # gVisor may refuse; the sandbox's own memory bound stays
     try:
-        from pypdf import filters
-
-        for name in ("MAX_DECLARED_STREAM_LENGTH", "ZLIB_MAX_OUTPUT_LENGTH", "LZW_MAX_OUTPUT_LENGTH"):
-            if hasattr(filters, name):
-                setattr(filters, name, 64 * 1024 * 1024)
+        import pypdf
     except ImportError:
-        pass
+        return
+    pypdf.overwrite_configuration(
+        maximum_declared_stream_length=STREAM_CAP,
+        array_based_stream_maximum_output_length=STREAM_CAP,
+        jbig2_maximum_output_length=STREAM_CAP,
+        lzw_maximum_output_length=STREAM_CAP,
+        run_length_maximum_output_length=STREAM_CAP,
+        zlib_maximum_output_length=STREAM_CAP,
+        image_maximum_buffer_size=STREAM_CAP,
+    )
 
 
 def read_json(path):
@@ -141,3 +154,37 @@ def read_json(path):
             return json.load(handle)
     except (ValueError, UnicodeDecodeError) as error:
         raise KitError("bad_json", "%s is not valid JSON: %s" % (path, error))
+
+
+def cache_root():
+    """The kit's cache: /workspace/.bro/cache, or BROKIT_CACHE (tests)."""
+    return os.environ.get("BROKIT_CACHE") or "/workspace/.bro/cache"
+
+
+def cache_dir(kind):
+    """One kind of the cache (render, layout), made if missing."""
+    path = os.path.join(cache_root(), kind)
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def prune_cache(limit=50 * 1024 * 1024):
+    """Keeps the whole cache under `limit` bytes, the oldest files going first."""
+    entries = []
+    for directory, _, names in os.walk(cache_root()):
+        for name in names:
+            path = os.path.join(directory, name)
+            try:
+                info = os.stat(path)
+            except OSError:
+                continue
+            entries.append((info.st_mtime, info.st_size, path))
+    total = sum(size for _, size, _ in entries)
+    for _, size, path in sorted(entries):
+        if total <= limit:
+            break
+        try:
+            os.remove(path)
+            total -= size
+        except OSError:
+            pass
