@@ -100,9 +100,13 @@ const missingFileSchema = z.object({ code: z.literal("ENOENT") });
 const downloadCapBytes = 60 * 1024 * 1024;
 const downloadTimeoutMs = 120_000;
 
-/** Bro's file links, as `withExactSharedLinks` leaves them in the text. */
+/**
+ * Bro's file links, as `withExactSharedLinks` leaves them in the text. The
+ * name keeps what `encodeURIComponent` leaves unescaped (`'`, `(`, `)`);
+ * the link ends after its signature.
+ */
 const sharedLinkInText =
-  /https?:\/\/[^\s/<>"']+\/eve\/v1\/sandbox-files\/[\da-f]{24}\/[^\s?#<>"']*\?sig=[\w-]+/gu;
+  /https?:\/\/[^\s/<>"']+\/eve\/v1\/sandbox-files\/[\da-f]{24}\/[^\s?#<>"]*\?sig=[\w-]+/gu;
 /** Bro's private artifacts, written into the text as `/artifacts/<id>`. */
 const artifactInText =
   /(?:https?:\/\/[^\s/<>"'()]+)?\/artifacts\/[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}/giu;

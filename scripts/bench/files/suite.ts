@@ -28,6 +28,13 @@ export const turnGateSchema = z.object({
 
 export type TurnGate = z.infer<typeof turnGateSchema>;
 
+/**
+ * A fixture's name inside `<fixtures>/<case>/`: never a path, so a turn
+ * cannot send the owner's prod account a file from elsewhere on the
+ * tester's disk.
+ */
+const fixtureNameSchema = z.string().regex(/^(?!\.\.?$)[^/\\]+$/u);
+
 const filesCaseSchema = z.object({
   cleanup: z.array(z.string().min(1)).default([]),
   id: z.string().regex(/^f-[a-z0-9-]+$/u),
@@ -35,7 +42,7 @@ const filesCaseSchema = z.object({
   turns: z
     .array(
       z.object({
-        files: z.array(z.string().min(1)).default([]),
+        files: z.array(fixtureNameSchema).default([]),
         gate: turnGateSchema.optional(),
         new_conversation: z.boolean().optional(),
         text: z.string().min(1),

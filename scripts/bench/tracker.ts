@@ -126,10 +126,9 @@ export class TurnTracker {
         break;
       }
       case "message.received": {
-        if (event.data.kind === "execution.background_task") {
-          this.#settleTasks(event.data.message);
-          break;
-        }
+        const wake = event.data.kind === "execution.background_task";
+        this.#settleTasks(event.data.message, wake);
+        if (wake) break;
         const report = this.#reportedRun(event.data.message);
         if (report !== undefined) this.#settleReport(report);
         break;
@@ -251,16 +250,20 @@ export class TurnTracker {
 
   /**
    * A task wake settles each task it names as ended; progress changes
-   * nothing. A wake of no known shape ends the wait for every task, so a
-   * changed eve never makes the driver wait forever.
+   * nothing. Every message is read for them: eve merges a wake that comes
+   * with the tester's message or an errand's report into one input and
+   * drops its kind (`coalesceFrameworkMessageKind`). A `wake` of no known
+   * shape ends the wait for every task, so a changed eve never makes the
+   * driver wait forever.
    */
-  #settleTasks(message: string) {
-    this.#expectReport = false;
+  #settleTasks(message: string, wake: boolean) {
     const ended = [...message.matchAll(taskEndPattern)];
     for (const [, taskId] of ended) {
       if (taskId !== undefined) this.#tasks.delete(taskId);
     }
-    if (ended.length > 0 || taskProgressPattern.test(message)) return;
+    const known = ended.length > 0 || taskProgressPattern.test(message);
+    if (known || wake) this.#expectReport = false;
+    if (known || !wake) return;
     this.#tasks.clear();
     this.#taskCalls.clear();
     this.unknownWake = true;

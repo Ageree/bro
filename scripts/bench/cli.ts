@@ -303,8 +303,9 @@ async function missingFiles(steps: readonly PlannedStep[]) {
   return missing.flat();
 }
 
-const noFixtures = (caseId: string) =>
-  `нет фикстур: ${benchEnv.BENCH_PYTHON} scripts/bench/files/fixtures.py --case ${caseId}`;
+/** The command that builds a case's fixtures where the driver looks. */
+const noFixtures = (caseId: string, filesDir: string) =>
+  `нет фикстур: ${benchEnv.BENCH_PYTHON} scripts/bench/files/fixtures.py --case ${caseId} --out ${filesDir}`;
 
 /**
  * After a files case settled: its machine checks (unless `--no-check`),
@@ -428,7 +429,7 @@ async function withFixtures<
   if (failure !== undefined) console.warn(`fixtures.py: ${failure}`);
   const after = new Set(await unbuilt());
   for (const caseId of after) {
-    console.log(`${caseId}: пропущен — ${noFixtures(caseId)}`);
+    console.log(`${caseId}: пропущен — ${noFixtures(caseId, filesDir)}`);
   }
   return ready.filter((item) => !after.has(item.benchCase.id));
 }
@@ -481,7 +482,7 @@ async function runCommand(flags: Values) {
       const missing = await missingFiles(plan.steps);
       if (missing.length > 0) {
         console.log(
-          `  ${noFixtures(benchCase.id)} (не хватает: ${missing.join(", ")})`
+          `  ${noFixtures(benchCase.id, filesDir)} (не хватает: ${missing.join(", ")})`
         );
       }
     }

@@ -368,6 +368,29 @@ describe("TurnTracker and background tasks", () => {
     expect(tracker.awaitingBackground()).toBe(false);
     expect(tracker.unknownWake).toBe(true);
   });
+
+  it("reads a wake eve merged into the tester's message", () => {
+    // eve coalesces a wake with a message that came at the same time into
+    // one input and drops the wake's kind.
+    const received = (message: string): MessageStreamEvent => ({
+      data: { message, sequence: 1, turnId: "turn_1" },
+      meta,
+      type: "message.received",
+    });
+    const tracker = new TurnTracker();
+    observeAll(tracker, turn("turn_0", started("call_1", "task_a")));
+
+    tracker.observe(received("ну что там?"));
+    expect(tracker.awaitingBackground()).toBe(true);
+
+    tracker.observe(
+      received(
+        "ну что там?\n\nBackground task task_a (task) is completed.\n\nResult:\nготово"
+      )
+    );
+    expect(tracker.awaitingBackground()).toBe(false);
+    expect(tracker.unknownWake).toBe(false);
+  });
 });
 
 describe("TurnTracker.blocked", () => {

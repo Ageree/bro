@@ -1545,7 +1545,7 @@ describe("a files case", () => {
               turn(
                 wake(),
                 delivered(
-                  `Заполнил: ${fake.url}/eve/v1/sandbox-files/${shareId}/zayavlenie%20(1).pdf?sig=abc_DEF-1 и пример ![подпись](/artifacts/${artifactId}). Подписываю?`
+                  `Заполнил: ${fake.url}/eve/v1/sandbox-files/${shareId}/d'Artagnan%20(1).pdf?sig=abc_DEF-1 и пример ![подпись](/artifacts/${artifactId}). Подписываю?`
                 )
               )
             );
@@ -1601,8 +1601,9 @@ describe("a files case", () => {
     expect(run.gates).toEqual([
       expect.objectContaining({ met: true, turn: 1 }),
     ]);
+    // A name keeps what `encodeURIComponent` leaves in a share link: `'`.
     expect(run.received.map(({ name, turn: at }) => [name, at])).toEqual([
-      ["zayavlenie (1).pdf", 0],
+      ["d'Artagnan (1).pdf", 0],
       [artifactId, 0],
     ]);
     const [saved] = run.received;
@@ -1613,7 +1614,7 @@ describe("a files case", () => {
     // The cookie goes to Bro's own artifact, never to the share link or
     // to Object Storage behind it.
     expect([...cookies]).toEqual([
-      [`/eve/v1/sandbox-files/${shareId}/zayavlenie%20(1).pdf`, undefined],
+      [`/eve/v1/sandbox-files/${shareId}/d'Artagnan%20(1).pdf`, undefined],
       ["/s3/obj", undefined],
       [`/artifacts/${artifactId}`, "session=1"],
     ]);
@@ -1709,5 +1710,39 @@ describe("a files case", () => {
       "да, подписывай",
       "спасибо",
     ]);
+  }, 20_000);
+
+  it("does not call a case done while a turn it outwaited is unsent", async () => {
+    const fake = await startFakeEve((post) =>
+      post.route === "create"
+        ? turn(...taskStarted(), delivered("Заполняю."))
+        : turn(delivered("Подписал."))
+    );
+    stopFake = () => fake.close();
+    const settings = await filesSettings(fake.url);
+    const client = new Client({ host: fake.url });
+
+    const first = await runCase(client, filesCase, fileSteps.slice(0, 2), [], {
+      ...settings,
+      backgroundWaitMs: 0,
+    });
+    expect(first.driver.status).toBe("timed-out");
+
+    fake.append(turn(wake(), delivered("Заполнил. Подписываю?")));
+    const followed = await followCase(client, first, settings);
+
+    expect(followed.driver.status).toBe("scheduled");
+    expect(followed.driver.statusDetail).toContain("pnpm bench next");
+    expect(followed.driver.remainingSteps.map((each) => each.text)).toEqual([
+      "да, подписывай",
+    ]);
+
+    const done = await nextCase(client, followed, settings, { early: false });
+
+    expect(fake.posts.map((post) => post.message)).toEqual([
+      "заполни заявление",
+      "да, подписывай",
+    ]);
+    expect(done.driver.status).toBe("completed");
   }, 20_000);
 });

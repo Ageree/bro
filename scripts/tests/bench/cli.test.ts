@@ -90,7 +90,7 @@ describe("pnpm bench and the files suite", () => {
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain(
-      "scripts/bench/files/fixtures.py --case f-00-sign-saved-signature"
+      `scripts/bench/files/fixtures.py --case f-00-sign-saved-signature --out ${empty}`
     );
     expect(result.stdout).toContain(
       join(empty, "f-00-sign-saved-signature", "podpis_vladelec.jpg")
@@ -178,6 +178,33 @@ describe("pnpm bench and the files suite", () => {
     expect(report.stdout).toContain(
       "Итого: зачёт по проверкам 0 из 1 кейсов; проверок 1/2"
     );
+
+    // A recheck whose checker fails shows no checks, not the old ones.
+    const recheck = spawnSync(
+      process.execPath,
+      [
+        "--experimental-strip-types",
+        entry,
+        "report",
+        "--out",
+        out,
+        "--recheck",
+      ],
+      {
+        encoding: "utf8",
+        // A Python that is not there; nothing else of this environment.
+        env: {
+          BENCH_PYTHON: join(out, "no-python"),
+          HOME: out,
+          NODE_ENV: "test",
+        },
+        timeout: 30_000,
+      }
+    );
+
+    expect(recheck.status).toBe(0);
+    expect(recheck.stdout).not.toContain("Подписано Бро");
+    expect(recheck.stdout).toContain("без проверок 1");
   });
 });
 

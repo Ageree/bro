@@ -89,7 +89,8 @@ pnpm bench report --out ~/bench/files-1
 10 файлов или 40 МиБ вместе), отклоняется до отправки. Перед каждым ходом после
 первого он ждёт итог фонового помощника (`task`) и браузерных поручений, как в
 конце кейса; не дождался за `--background-wait-min` — кейс `timed-out`,
-дальше `pnpm bench follow` и `pnpm bench next --early`.
+дальше `pnpm bench follow` (итог пришёл, ход ещё не отправлен — статус
+`scheduled`) и `pnpm bench next`.
 
 Каждый файл из ответов Бро (вложения, ссылки `/eve/v1/sandbox-files/…` в
 тексте, свои `/artifacts/<id>`) драйвер скачивает в `<out>/<кейс>/received/` и

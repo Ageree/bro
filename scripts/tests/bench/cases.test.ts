@@ -29,6 +29,7 @@ describe("loadCases", () => {
 
 /** A one-case files suite whose second turn is `turn`. */
 const filesSuite = (turn: {
+  readonly files?: readonly string[];
   readonly gate?: {
     readonly kind: string;
     readonly optional: boolean;
@@ -66,6 +67,16 @@ describe("the files suite", () => {
         })
       )
     ).toThrow(/not portable/u);
+  });
+
+  it("sends only files from the case's own fixtures", () => {
+    // A path would send a file from anywhere on the tester's disk to prod.
+    expect(() =>
+      parseFilesSuite(filesSuite({ files: ["../../.ssh/id_ed25519"] }))
+    ).toThrow(/match pattern/u);
+    expect(() => parseFilesSuite(filesSuite({ files: [".."] }))).toThrow(
+      /match pattern/u
+    );
   });
 });
 

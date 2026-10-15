@@ -345,6 +345,16 @@ class CaseRun {
       );
       return;
     }
+    // A files case that outwaited a turn's background work (then `follow`)
+    // has not sent the next turn: it is no finished case, and `next` sends
+    // the turn after its condition.
+    if (this.record.driver.suite === "files" && nextStep) {
+      await this.save(
+        "scheduled",
+        `«${nextStep.at}» ещё не отправлен: pnpm bench next --out ${this.settings.outDir} --case ${this.record.caseId}`
+      );
+      return;
+    }
     await this.save("completed");
   }
 

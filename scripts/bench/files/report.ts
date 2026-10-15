@@ -125,18 +125,23 @@ export async function filesReport(options: {
   const records = await filesRecords(outDir, options.caseIds);
   const rows: ReportRow[] = [];
   for (const record of records) {
+    let checks: CheckReport | undefined;
     if (options.recheck) {
+      // A recheck that failed shows no checks, not the `checks.json` of the
+      // run before it.
       // oxlint-disable-next-line eslint/no-await-in-loop -- checks run one case at a time (soffice, memory)
-      await checkFilesCase(record, {
+      ({ report: checks } = await checkFilesCase(record, {
         fixturesDir: options.fixturesDir,
         journal: new CaseJournal(outDir, record.caseId, record.timezone),
         outDir,
         previews: options.previews,
         python: options.python,
-      });
+      }));
+    } else {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- read in the order printed
+      checks = await readChecks(outDir, record.caseId);
     }
-    // oxlint-disable-next-line eslint/no-await-in-loop -- read in the order printed
-    rows.push(reportRow(record, await readChecks(outDir, record.caseId)));
+    rows.push(reportRow(record, checks));
   }
 
   for (const row of rows) {
