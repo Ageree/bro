@@ -8,7 +8,7 @@
 import { isIP } from "node:net";
 import type { MessageAttachment } from "@shared/chat/message-delivery";
 import { downloadWithin } from "../inbound-media/download";
-import { resolveMediaType } from "../inbound-media/media-type";
+import { documentByteCap, resolveMediaType } from "../inbound-media/media-type";
 import { fetchPublic } from "../sandbox/public-fetch";
 
 /**
@@ -20,6 +20,28 @@ import { fetchPublic } from "../sandbox/public-fetch";
 export const maximumAttachmentBytes = 10 * 1024 * 1024;
 /** Ten files at the per-file cap would peak far above that same memory. */
 export const maximumAttachmentBatchBytes = 30 * 1024 * 1024;
+
+/** What one file and one message may weigh, downloaded for the upload. */
+interface AttachmentLimits {
+  readonly batchBytes: number;
+  readonly fileBytes: number;
+}
+
+const standardAttachmentLimits: AttachmentLimits = {
+  batchBytes: maximumAttachmentBatchBytes,
+  fileBytes: maximumAttachmentBytes,
+};
+
+/**
+ * The files pilot's limits (`taskFilesOfCaller`): a file the task agent made
+ * or a person sent goes back as a real file up to 20 MiB, three of them per
+ * message. Telegram takes a document up to 50 MB, and a photo past 10 MB goes
+ * as one (`agent/channels/telegram.ts`).
+ */
+export const taskFilesAttachmentLimits: AttachmentLimits = {
+  batchBytes: 50 * 1024 * 1024,
+  fileBytes: documentByteCap,
+};
 /** How many downloads are in flight at once, which bounds the peak. */
 const attachmentDownloadConcurrency = 3;
 
@@ -92,12 +114,13 @@ const mediaTypeExtensions: ReadonlyMap<string, string> = new Map([
  * attachment that cannot be fetched only costs its own upload: it comes back as
  * a failure the caller delivers as a link, which is what every channel did
  * before uploads existed. Downloads run a few at a time and stop once the
- * message has spent its byte budget, so a reply cannot buffer its way out of
- * memory.
+ * message has spent its byte budget (`limits`), so a reply cannot buffer its
+ * way out of memory.
  */
 /* oxlint-disable eslint/no-await-in-loop -- Each batch is awaited so the next one sees what the message has spent. */
 export async function prepareAttachmentDelivery(
-  attachments: readonly MessageAttachment[]
+  attachments: readonly MessageAttachment[],
+  limits: AttachmentLimits = standardAttachmentLimits
 ): Promise<{
   readonly failures: readonly AttachmentFailure[];
   readonly files: readonly OutboundFile[];
@@ -110,14 +133,14 @@ export async function prepareAttachmentDelivery(
   const prepared: (OutboundFile | AttachmentFailure)[] = [];
   let spent = 0;
   for (const batch of batched(queued, attachmentDownloadConcurrency)) {
-    const exhausted = spent >= maximumAttachmentBatchBytes;
+    const exhausted = spent >= limits.batchBytes;
     const settled = await Promise.all(
       batch.map(async ({ attachment, index }) =>
         exhausted
           ? { reason: "batch-oversize", url: attachment.url }
           : // One attachment that breaks in an unforeseen way stays one link,
             // rather than failing the turn that was delivering the reply.
-            prepareAttachment(attachment, index).catch(
+            prepareAttachment(attachment, index, limits.fileBytes).catch(
               (): AttachmentFailure => ({
                 reason: "unexpected",
                 url: attachment.url,
@@ -128,7 +151,7 @@ export async function prepareAttachmentDelivery(
     for (const item of settled) {
       if ("reason" in item) {
         prepared.push(item);
-      } else if (spent + item.data.byteLength > maximumAttachmentBatchBytes) {
+      } else if (spent + item.data.byteLength > limits.batchBytes) {
         prepared.push({ reason: "batch-oversize", url: item.sourceUrl });
       } else {
         spent += item.data.byteLength;
@@ -153,7 +176,8 @@ function* batched<TItem>(items: readonly TItem[], size: number) {
 
 async function prepareAttachment(
   attachment: MessageAttachment,
-  index: number
+  index: number,
+  maximumBytes: number
 ): Promise<
   AttachmentFailure | (OutboundFile & { readonly sourceUrl: string })
 > {
@@ -166,7 +190,7 @@ async function prepareAttachment(
     return { reason: "blocked-host", url: attachment.url };
   }
 
-  const download = await downloadWithin(url, maximumAttachmentBytes, {
+  const download = await downloadWithin(url, maximumBytes, {
     allowUrl: (next) => !isBlockedHost(next.hostname),
     // The model picks this URL, maybe from a page or a letter: each hop goes
     // only to an address its name resolves to and that is public.

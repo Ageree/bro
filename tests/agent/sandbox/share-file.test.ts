@@ -6,16 +6,21 @@ import shareFile from "@agent/subagents/task/tools/share_file";
 const storage = vi.hoisted(() => ({
   shareSandboxFile: vi.fn<typeof Files.shareSandboxFile>(),
 }));
+const pilot = vi.hoisted(() => ({
+  taskFilesOfCaller: vi.fn<() => boolean>(() => false),
+}));
 
 vi.mock("@agent/lib/sandbox/files", async (importOriginal) => ({
   ...(await importOriginal<typeof Files>()),
   shareSandboxFile: storage.shareSandboxFile,
 }));
+vi.mock("@agent/lib/sandbox/pilot", () => pilot);
 
 type SandboxSession = Awaited<ReturnType<ToolContext["getSandbox"]>>;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  pilot.taskFilesOfCaller.mockReturnValue(false);
   storage.shareSandboxFile.mockImplementation(async (input) =>
     Promise.resolve({
       bytes: input.bytes.byteLength,
@@ -60,6 +65,18 @@ describe("share_file", () => {
     expect(file.sent()).toBeLessThan(20);
     expect(file.cancel).toHaveBeenCalledOnce();
     expect(storage.shareSandboxFile).not.toHaveBeenCalled();
+  });
+
+  it("shares a file of 15 MB in the files pilot", async () => {
+    pilot.taskFilesOfCaller.mockReturnValue(true);
+    const file = servedFile(15);
+
+    await expect(
+      share(file.stream, "/workspace/scan.pdf")
+    ).resolves.toMatchObject({ bytes: 15 * 1024 * 1024 });
+    await expect(
+      share(servedFile(25).stream, "/workspace/huge.pdf")
+    ).rejects.toThrow("is over 20 MB");
   });
 
   it("types a file by its bytes first, and by its name when they do not tell", async () => {

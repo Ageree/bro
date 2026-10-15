@@ -17,6 +17,9 @@ import { trimPrompt } from "@agent/lib/history/trim";
 import type { SkillName } from "@agent/lib/skills/catalog";
 import { defuseForgedSkillBlocks } from "@agent/lib/skills/render";
 import { toolGroup, toolGroups, toolOffered } from "@agent/lib/skills/tools";
+import { rememberAnnotations } from "@agent/lib/staged-files/annotations";
+import { repairedToolInput, stagedPaths } from "@agent/lib/staged-files/paths";
+import { withStagedFiles } from "@agent/lib/staged-files/prompt";
 import type { StepIdentity } from "@agent/lib/turn-kind/step";
 import {
   defuseStepNoteTag,
@@ -202,6 +205,74 @@ function historyTrimMiddleware(trim: HistoryTrim): LanguageModelMiddleware {
         ...trimmed,
       });
       return { ...params, prompt };
+    },
+  };
+}
+
+/** A tool call with the staged paths in its input mended. */
+function withMendedPaths<
+  Part extends { readonly input: string; readonly toolName: string },
+>(part: Part, paths: ReturnType<typeof stagedPaths>): Part {
+  if (paths.known.length === 0) return part;
+  const { input, repaired } = repairedToolInput(
+    part.input,
+    paths.known,
+    paths.current
+  );
+  if (repaired === 0) return part;
+  console.info("[staged-files] paths repaired", {
+    repaired,
+    toolName: part.toolName,
+  });
+  return { ...part, input };
+}
+
+/**
+ * The files pilot (`taskFilesEnabled`): each photo and PDF the person sent
+ * goes with its sandbox path, a PDF of an earlier turn and an encrypted one
+ * as that line alone, and this turn's PDFs with RouterAI's parse of the
+ * step before (`agent/lib/staged-files/prompt.ts`); a staged path a tool
+ * call's input miswrote is mended to the one it stands for
+ * (`agent/lib/staged-files/paths.ts`), before eve records the call. It runs
+ * outside the step note's middleware, so it never sees the note.
+ */
+function stagedFilesMiddleware(): LanguageModelMiddleware {
+  return {
+    async transformParams({ params }) {
+      const { pdfs, prompt } = withStagedFiles(params.prompt);
+      if (pdfs.current + pdfs.earlier + pdfs.encrypted > 0) {
+        console.info("[staged-files] pdf", pdfs);
+      }
+      return prompt === params.prompt ? params : { ...params, prompt };
+    },
+    async wrapGenerate({ doGenerate, params }) {
+      const result = await doGenerate();
+      rememberAnnotations(result.providerMetadata);
+      const paths = stagedPaths(params.prompt);
+      return {
+        ...result,
+        content: result.content.map((part) =>
+          part.type === "tool-call" ? withMendedPaths(part, paths) : part
+        ),
+      };
+    },
+    async wrapStream({ doStream, params }) {
+      const result = await doStream();
+      const paths = stagedPaths(params.prompt);
+      const stream = result.stream.pipeThrough(
+        new TransformStream<StreamPart, StreamPart>({
+          transform(part, controller) {
+            if (part.type === "finish") {
+              rememberAnnotations(part.providerMetadata);
+            }
+            // eve takes the call from this part, not from its deltas.
+            controller.enqueue(
+              part.type === "tool-call" ? withMendedPaths(part, paths) : part
+            );
+          },
+        })
+      );
+      return { ...result, stream };
     },
   };
 }
@@ -1312,6 +1383,12 @@ export function directModelSelection(
      * stays the same through the turn (`stepToolsTransform`).
      */
     readonly stableContext?: boolean;
+    /**
+     * The files pilot (`taskFilesEnabled`): the paths of the person's photos
+     * and PDFs, earlier PDFs as lines, mended paths in tool inputs
+     * (`stagedFilesMiddleware`).
+     */
+    readonly stagedFiles?: boolean;
     /** Which session, turn and step this is, for the pilot's tool log. */
     readonly step?: StepIdentity;
     /**
@@ -1378,6 +1455,7 @@ export function directModelSelection(
     ...(options.historyTrim
       ? [historyTrimMiddleware(options.historyTrim)]
       : []),
+    ...(options.stagedFiles ? [stagedFilesMiddleware()] : []),
     ...(options.stableContext
       ? [
           stepNoteMiddleware(

@@ -5,8 +5,10 @@ import {
   resolveMediaType,
   sniffMediaType,
   textDocumentLooksLikeAudio,
+  unsupportedArchive,
 } from "./media-type";
 import { odfPackage, ooxmlPackage } from "@tests/helpers/office-package";
+import { zipWith } from "@tests/helpers/zip-archive";
 
 function padded(prefix: readonly number[]) {
   const bytes = new Uint8Array(16);
@@ -123,5 +125,38 @@ describe("documents for the task agent", () => {
     expect(textDocumentLooksLikeAudio("text/csv", utf16)).toBe(true);
     expect(textDocumentLooksLikeAudio("text/markdown", id3Audio)).toBe(false);
     expect(textDocumentLooksLikeAudio(xlsxType, id3Text)).toBe(false);
+  });
+});
+
+describe("archives for the task agent", () => {
+  const archive = zipWith({ entries: [{ content: "a", name: "a.txt" }] });
+  const bomb = zipWith({
+    entries: [{ content: "0", declaredSize: 300 * 1024 * 1024, name: "z" }],
+  });
+
+  it("takes a ZIP only where the caller asks for archives", () => {
+    expect(documentMediaType("Архив.ZIP", "application/zip")).toBeUndefined();
+    expect(
+      documentMediaType("Архив.ZIP", "application/x-zip-compressed", {
+        archives: true,
+      })
+    ).toBe("application/zip");
+    // A ZIP's type speaks for no other extension.
+    expect(
+      documentMediaType("data.csv", "application/zip", { archives: true })
+    ).toBeUndefined();
+  });
+
+  it("believes a ZIP whose directory reads within its limits", () => {
+    expect(documentBytesMatch("application/zip", archive)).toBe(true);
+    expect(documentBytesMatch("application/zip", bomb)).toBe(false);
+  });
+
+  it("names RAR and 7z as archives the task agent cannot open", () => {
+    expect(unsupportedArchive("сканы.rar", undefined)).toBe(true);
+    expect(unsupportedArchive("file", "application/x-7z-compressed")).toBe(
+      true
+    );
+    expect(unsupportedArchive("сканы.zip", "application/zip")).toBe(false);
   });
 });

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { voiceRetryText, voiceUnsupportedText } from "./turn-content";
 import { ooxmlPackage } from "@tests/helpers/office-package";
+import { zipWith } from "@tests/helpers/zip-archive";
 
 const botToken = "123456:telegram-test-bot-token";
 
@@ -67,6 +68,13 @@ function serveTelegram(
     }
     throw new Error(`Unexpected request: ${url}`);
   });
+}
+
+/** A file of `size` bytes that begins with `head`. */
+function filled(head: Uint8Array, size: number) {
+  const bytes = new Uint8Array(size);
+  bytes.set(head);
+  return bytes;
 }
 
 function telegramMessage(raw: TelegramMessage["raw"], text = "", caption = "") {
@@ -438,7 +446,7 @@ describe("Telegram media turn", () => {
     });
   });
 
-  it("keeps archives, videos, oversized and mismatched documents notes with documents on", async () => {
+  it("keeps RAR, videos, oversized and mismatched documents notes with documents on", async () => {
     const exe = new Uint8Array(32);
     exe.set([0x4d, 0x5a, 0x90, 0x00]);
     serveTelegram({ next: { bytes: exe } });
@@ -454,15 +462,18 @@ describe("Telegram media turn", () => {
       );
 
     await expect(
-      documentTurn({ file_name: "a.zip", mime_type: "application/zip" })
-    ).resolves.toMatchObject({ message: "[файл: a.zip (application/zip)]" });
+      documentTurn({ file_name: "сканы.rar", mime_type: "application/vnd.rar" })
+    ).resolves.toMatchObject({
+      message:
+        "[файл: сканы.rar (application/vnd.rar), архив RAR или 7z не открыть — нужен ZIP]",
+    });
     await expect(
       documentTurn({ file_name: "clip.mp4", mime_type: "video/mp4" })
     ).resolves.toMatchObject({ message: "[файл: clip.mp4 (video/mp4)]" });
     expect(fetchMock).not.toHaveBeenCalled();
 
     await expect(
-      documentTurn({ file_name: "big.csv", file_size: 10 * 1024 * 1024 + 1 })
+      documentTurn({ file_name: "big.csv", file_size: 20 * 1024 * 1024 + 1 })
     ).resolves.toMatchObject({
       message: "[файл: big.csv (text/csv), слишком большой]",
     });
@@ -488,7 +499,7 @@ describe("Telegram media turn", () => {
     );
 
     expect(turn?.message).toEqual([
-      { text: "[документ]", type: "text" },
+      { text: "[файл: notes.txt (application/pdf)]", type: "text" },
       {
         data: pdfBase64,
         filename: "notes.txt",
@@ -510,7 +521,7 @@ describe("Telegram media turn", () => {
     );
 
     expect(image?.message).toEqual([
-      { text: "[фото]", type: "text" },
+      { text: "[фото]\n[файл: table.csv (image/jpeg)]", type: "text" },
       {
         data: jpegBase64,
         filename: "table.csv",
@@ -518,6 +529,94 @@ describe("Telegram media turn", () => {
         type: "file",
       },
     ]);
+  });
+
+  it("hands over PDFs, documents and photos as files up to 20 MiB with documents on", async () => {
+    const megabytes = 1024 * 1024;
+    const docxType =
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    const { telegramMediaTurn } = await loadTelegramMedia();
+    const fileOf = async (
+      bytes: Uint8Array,
+      document: { readonly file_name: string; readonly mime_type: string }
+    ) => {
+      serveTelegram({ next: { bytes } });
+      const turn = await telegramMediaTurn(
+        telegramMessage({
+          document: { file_id: "d", file_size: bytes.byteLength, ...document },
+        }),
+        { documents: true }
+      );
+      if (!Array.isArray(turn?.message)) throw new Error("Expected a file.");
+      const [text, file] = turn.message;
+      return {
+        mediaType: file?.type === "file" ? file.mediaType : undefined,
+        text: text?.type === "text" ? text.text : undefined,
+      };
+    };
+
+    await expect(
+      fileOf(filled(pdf, 15 * megabytes), {
+        file_name: "Выписка.pdf",
+        mime_type: "application/pdf",
+      })
+    ).resolves.toEqual({
+      mediaType: "application/pdf",
+      text: "[файл: Выписка.pdf (application/pdf)]",
+    });
+    await expect(
+      fileOf(filled(ooxmlPackage(), 15 * megabytes), {
+        file_name: "Договор.docx",
+        mime_type: docxType,
+      })
+    ).resolves.toEqual({
+      mediaType: docxType,
+      text: `[файл: Договор.docx (${docxType})]`,
+    });
+    // Past what the model is shown inline, a photo stays a file.
+    await expect(
+      fileOf(filled(jpeg, 5 * megabytes), {
+        file_name: "подпись.jpg",
+        mime_type: "image/jpeg",
+      })
+    ).resolves.toEqual({
+      mediaType: "image/jpeg",
+      text: "[файл: подпись.jpg (image/jpeg)]",
+    });
+  });
+
+  it("hands over a ZIP whose directory reads as one, and names a bomb", async () => {
+    const archive = zipWith({ entries: [{ content: "a", name: "a.csv" }] });
+    const bomb = zipWith({
+      entries: [{ content: "0", declaredSize: 300 * 1024 * 1024, name: "z" }],
+    });
+    const { telegramMediaTurn } = await loadTelegramMedia();
+    const zipTurn = (bytes: Uint8Array) => {
+      serveTelegram({ next: { bytes } });
+      return telegramMediaTurn(
+        telegramMessage({
+          document: {
+            file_id: "z",
+            file_name: "Чеки.zip",
+            file_size: bytes.byteLength,
+            mime_type: "application/zip",
+          },
+        }),
+        { documents: true }
+      );
+    };
+
+    await expect(zipTurn(archive)).resolves.toMatchObject({
+      message: [
+        { text: "[файл: Чеки.zip (application/zip)]", type: "text" },
+        { filename: "Чеки.zip", mediaType: "application/zip", type: "file" },
+      ],
+    });
+    await expect(zipTurn(bomb)).resolves.toEqual({
+      message:
+        "[файл: Чеки.zip (application/zip), архив повреждён или слишком велик]",
+      notice: undefined,
+    });
   });
 
   it("hands over a UTF-16 text file, whose byte order mark reads as audio", async () => {

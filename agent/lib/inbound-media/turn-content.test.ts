@@ -224,3 +224,53 @@ describe("inbound turn assembly", () => {
     ]);
   });
 });
+
+describe("inbound turn assembly in the files pilot", () => {
+  const docx =
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
+  it("keeps «[фото]» for a photo without a caption, then its name", () => {
+    const turn = inboundTurn(
+      "",
+      [
+        {
+          data: jpeg,
+          filename: "IMG_0001.JPG",
+          kind: "image",
+          mediaType: "image/jpeg",
+        },
+      ],
+      { fileNotes: true }
+    );
+
+    expect(turn.message).toEqual([
+      { text: "[фото]\n[файл: IMG_0001.JPG (image/jpeg)]", type: "text" },
+      expect.objectContaining({ filename: "IMG_0001.JPG", type: "file" }),
+    ]);
+  });
+
+  it("names a PDF and a document in the order of their parts", () => {
+    const turn = inboundTurn(
+      "заполни",
+      [
+        { data: jpeg, filename: "Анкета.pdf", kind: "pdf" },
+        {
+          data: jpeg,
+          filename: "Договор.docx",
+          kind: "document",
+          mediaType: docx,
+        },
+      ],
+      { fileNotes: true }
+    );
+
+    expect(turn.message).toEqual([
+      {
+        text: `заполни\n[файл: Анкета.pdf (application/pdf)]\n[файл: Договор.docx (${docx})]`,
+        type: "text",
+      },
+      expect.objectContaining({ filename: "Анкета.pdf", type: "file" }),
+      expect.objectContaining({ filename: "Договор.docx", type: "file" }),
+    ]);
+  });
+});

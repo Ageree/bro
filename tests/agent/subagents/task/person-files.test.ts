@@ -351,17 +351,17 @@ describe("the person's files in the task agent's sandbox", () => {
     );
   });
 
-  it("brings ten files a message and lists the rest", async () => {
-    const files = Array.from({ length: 11 }, (_, index) =>
+  it("brings twenty files a message and lists the rest", async () => {
+    const files = Array.from({ length: 21 }, (_, index) =>
       staged(`f${String(index)}.csv`, `file ${String(index)}`)
     );
     inboxHolds(...files);
     const sandbox = sandboxOf();
     await received(files.map((file) => file.path).join("\n"), context(sandbox));
 
-    expect(getInbox).toHaveBeenCalledTimes(10);
+    expect(getInbox).toHaveBeenCalledTimes(20);
     expect(text(sandbox.files.get(notReceived))).toContain(
-      `${files[10]?.path ?? ""} — больше 10 файлов в одном сообщении`
+      `${files[20]?.path ?? ""} — больше 20 файлов в одном сообщении`
     );
   });
 

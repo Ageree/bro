@@ -1,8 +1,11 @@
 import { readFile } from "node:fs/promises";
-import { basename, extname } from "node:path";
+import { basename } from "node:path";
 import type { UserContent } from "ai";
 import { createDataUrlFilePart } from "eve/client";
-import { sniffMediaType } from "@agent/lib/inbound-media/media-type";
+import {
+  mediaTypeForName,
+  sniffMediaType,
+} from "@agent/lib/inbound-media/media-type";
 
 /**
  * Builds the message a step sends, the way a person's client would.
@@ -14,18 +17,6 @@ import { sniffMediaType } from "@agent/lib/inbound-media/media-type";
  * «[голосовое] …» line the model reads (`agent/lib/inbound-media`).
  */
 
-const mediaTypeByExtension: ReadonlyMap<string, string> = new Map([
-  [".jpeg", "image/jpeg"],
-  [".jpg", "image/jpeg"],
-  [".m4a", "audio/mp4"],
-  [".mp3", "audio/mpeg"],
-  [".ogg", "audio/ogg"],
-  [".pdf", "application/pdf"],
-  [".png", "image/png"],
-  [".wav", "audio/wav"],
-  [".webp", "image/webp"],
-]);
-
 export interface OutgoingFile {
   readonly mediaType?: string;
   readonly path: string;
@@ -36,7 +27,7 @@ async function filePart(file: OutgoingFile) {
   const mediaType =
     file.mediaType ??
     sniffMediaType(bytes) ??
-    mediaTypeByExtension.get(extname(file.path).toLowerCase()) ??
+    mediaTypeForName(basename(file.path)) ??
     "application/octet-stream";
   return createDataUrlFilePart({
     bytes,

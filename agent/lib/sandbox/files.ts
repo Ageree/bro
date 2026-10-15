@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { z } from "zod";
 import { downloadWithin } from "@agent/lib/inbound-media/download";
+import { documentByteCap } from "@agent/lib/inbound-media/media-type";
 import { presignStoredObject } from "@shared/object-storage/s3";
 import { applicationOrigin } from "@shared/environment/origin";
 import { sandboxFileLinkSignature, sandboxFileLinkValid } from "./keys";
@@ -15,6 +16,13 @@ import { sandboxFileLinkSignature, sandboxFileLinkValid } from "./keys";
 export const sandboxFilesPath = "/eve/v1/sandbox-files";
 /** The same cap as a message attachment: Telegram refuses a larger photo. */
 export const maximumSharedFileBytes = 10 * 1024 * 1024;
+/**
+ * The cap in the files pilot (`taskFilesOfCaller`), where a message carries
+ * files up to this (`taskFilesAttachmentLimits` in
+ * `agent/lib/outbound-media/attachments.ts`) and Telegram sends a large
+ * photo as a document.
+ */
+export const taskFilesShareBytes = documentByteCap;
 const uploadTimeoutMs = 60_000;
 /** The redirect's own link lives just long enough to be followed. */
 const redirectSeconds = 10 * 60;
@@ -27,7 +35,8 @@ const fileOwnerSchema = z.object({
   name: z.string().min(1),
   sessionId: z.string().min(1),
   sha256: z.string().regex(/^[a-f\d]{64}$/u),
-  size: z.number().int().positive().max(maximumSharedFileBytes),
+  // Whether the pilot is on now or not: a link made in it stays readable.
+  size: z.number().int().positive().max(documentByteCap),
   workspaceId: z.string().min(1),
 });
 
@@ -72,15 +81,22 @@ function objectKey(id: string, name: string) {
   return `sandbox/files/${id}/${name}`;
 }
 
-/** Stores one file and returns the link the person gets. */
+/**
+ * Stores one file and returns the link the person gets. It refuses a file
+ * past `maximumBytes`, 10 MB unless the caller says otherwise.
+ */
 export async function shareSandboxFile(input: {
   readonly bytes: Uint8Array;
+  readonly maximumBytes?: number;
   readonly mediaType: string;
   readonly name: string;
   readonly owner?: { readonly sessionId: string; readonly workspaceId: string };
 }) {
-  if (input.bytes.byteLength > maximumSharedFileBytes) {
-    throw new Error("A shared file may be at most 10 MB.");
+  const maximumBytes = input.maximumBytes ?? maximumSharedFileBytes;
+  if (input.bytes.byteLength > maximumBytes) {
+    throw new Error(
+      `A shared file may be at most ${String(maximumBytes / 1024 / 1024)} MB.`
+    );
   }
   const id = randomBytes(12).toString("hex");
   const name = sharedFileName(input.name);
@@ -250,7 +266,8 @@ export async function readOwnedSharedFile(
         method: "GET",
       })
     ),
-    maximumSharedFileBytes,
+    // The owner record holds the size, checked below.
+    documentByteCap,
     { redirect: "error", timeoutMs: uploadTimeoutMs }
   );
   if (
