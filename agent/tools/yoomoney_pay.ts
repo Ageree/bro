@@ -42,6 +42,7 @@ import { YoomoneyError, yoomoneyEnabled } from "@shared/yoomoney/api";
 import {
   processYoomoneyPayment,
   requestYoomoneyPayment,
+  yoomoneyReadBackSilent,
   yoomoneyRefusal,
 } from "@shared/yoomoney/payments";
 import {
@@ -383,11 +384,13 @@ async function payAndSettle(
       settlement = { state: "pending" };
     } else if (readBack && outcome.error === "not_connected") {
       settlement = undefined;
-    } else if (readBack && outcome.error === "contract_not_found") {
-      // A request read back after its answer was lost may be gone: that
-      // says nothing of whether it was paid, the history may.
+    } else if (readBack && yoomoneyReadBackSilent(outcome.error)) {
+      // A request read back after its answer was lost may be gone, and a
+      // card payment read back while the person is at their bank is not
+      // answered yet: neither says whether it was paid, the history may.
+      // One YooMoney took (`pending`) stays so, its bank form with it.
       settlement = (await settlementFromHistory(scope, payment)) ?? {
-        state: "unknown",
+        state: payment.state === "pending" ? "pending" : "unknown",
       };
     } else {
       settlement = { state: "refused", error: outcome.error };

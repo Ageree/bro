@@ -49,6 +49,7 @@ export default async function Page(props: PageProps<"/pay/[id]">) {
   if (!payment) notFound();
   const notice = query.e === undefined ? undefined : notices.get(query.e);
   const askCsc = payment.cscRequired !== false;
+  const checkAgain = `/api/yoomoney/pay/${payment.id}/return?t=${encodeURIComponent(query.t)}`;
   return (
     <div className="flex min-h-svh flex-col">
       <Capsule items={[]} />
@@ -146,14 +147,22 @@ export default async function Page(props: PageProps<"/pay/[id]">) {
                   </Button>
                 </form>
               ) : (
-                <p className="type-body">
-                  Платёж ждёт ответа ЮMoney. Не оплачивайте его ещё раз.
-                </p>
+                <>
+                  {/* The page checks the payment again by itself until
+                      YooMoney answers: React puts this tag in <head>. */}
+                  {payment.state === "pending" && (
+                    <meta
+                      content={`10;url=${checkAgain}`}
+                      httpEquiv="refresh"
+                    />
+                  )}
+                  <p className="type-body">
+                    Проверяем платёж в ЮMoney, страница обновится сама. Не
+                    оплачивайте его ещё раз.
+                  </p>
+                </>
               )}
-              <a
-                className="type-body underline"
-                href={`/api/yoomoney/pay/${payment.id}/return?t=${encodeURIComponent(query.t)}`}
-              >
+              <a className="type-body underline" href={checkAgain}>
                 Проверить ещё раз
               </a>
             </div>
