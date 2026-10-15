@@ -554,8 +554,10 @@ export function sendRefusal(
       : { skipped: held };
   }
   if (
+    outgoing.kind === "message" &&
     turn.openQuestion &&
     asksAgain(
+      outgoing.text ?? "",
       message,
       turn.openQuestion,
       [...delivered, ...(turn.request ? [turn.request] : [])],

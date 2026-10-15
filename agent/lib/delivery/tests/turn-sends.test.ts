@@ -1917,14 +1917,31 @@ describe("sendRefusal on a question the person has not answered yet", () => {
     ),
   ];
 
+  const askedAgain =
+    "Так и не понял, к какому ты: уточни — московский на Тверской 7 или нет?\n\nА точнее, скинь геометку или адрес, где напоминать…";
+
   it.each([
+    ["rephrased with a request for the same detail (prod)", askedAgain],
     [
-      "rephrased with a request for the same detail (prod)",
-      "Так и не понял, к какому ты: уточни — московский на Тверской 7 или нет?\n\nА точнее, скинь геометку или адрес, где напоминать…",
+      "after a sentence of filler",
+      "Так и не понял. Уточни: московский на Тверской 7 или нет?",
     ],
-    ["as a bare nudge", "Ну так какой?"],
   ])("drops the question asked again %s", (_case, text) => {
     expect(refusal(telegraph, text)).toEqual({ skipped: "asked" });
+  });
+
+  it("reads a question with an emoji after it as still asked", () => {
+    const hearted = [
+      userMessage(
+        "Когда буду у Центрального телеграфа, напомни отправить письмо"
+      ),
+      ...sendMessage(
+        "asked",
+        "Хочу повесить напоминание на «Центральный телеграф», но под этим адресом нашлось несколько мест — московский на Тверской 7 и ташкентский. Напомнить, когда будешь у московского, на Тверской? ❤️"
+      ),
+    ];
+
+    expect(refusal(hearted, askedAgain)).toEqual({ skipped: "asked" });
   });
 
   it("ends the turn once the question asked again was dropped", () => {
@@ -1934,7 +1951,7 @@ describe("sendRefusal on a question the person has not answered yet", () => {
         ...telegraph,
         ...sendMessage(
           "again",
-          "Ну так какой?",
+          askedAgain,
           textOutput(skippedSendNotice("asked"))
         ),
       ])
@@ -1944,8 +1961,75 @@ describe("sendRefusal on a question the person has not answered yet", () => {
   it.each([
     ["another place", "Или ты про телеграф на Мясницкой?"],
     ["another question", "И что за письмо — маме?"],
+    ["the same action at another place", "Или напомнить, когда придёшь домой?"],
+    ["the other task asked for", "А позвонить маме напомнить вечером?"],
+    ["only a question word", "А во сколько?"],
+    [
+      "a statement before the question",
+      "Индекс на конверте нужен обязательно… А у какого телеграфа ставить — у московского?",
+    ],
   ])("delivers a message that asks with %s", (_case, text) => {
     expect(refusal(telegraph, text)).toBeUndefined();
+  });
+
+  /**
+   * The independent review of 15.10: each second message here asks right
+   * after a question too, but brings what the person needs — the rest of the
+   * answer, a correction, a warning, a new price — or asks something else.
+   */
+  it.each([
+    [
+      "the rest of the answer",
+      "Что у меня завтра в календаре? И будет ли дождь?",
+      "Завтра у тебя встреча с Лёшей в 10:00 и стоматолог в 15:30. Напомнить про стоматолога за час?",
+      "Дождь завтра обещают после обеда — зонт пригодится. Напомнить утром взять зонт?",
+    ],
+    [
+      "another detail of the same order",
+      "закажи продукты",
+      "Какой адрес доставки — домашний?",
+      "И к какому времени доставки удобно?",
+    ],
+    [
+      "an offer about a thing the question did not ask of",
+      "что у меня завтра?",
+      "Завтра стоматолог в 15:30. Хочешь, напомню заранее?",
+      "Дождь после обеда… Вызвать такси до стоматолога?",
+    ],
+    [
+      "a corrected day",
+      "найди столик",
+      "Есть столик в «Пушкине» на завтра, 20:00. Бронировать на двоих?",
+      "Ой, не на завтра, а на сегодня — бронировать?",
+    ],
+    [
+      "a warning",
+      "найди столик",
+      "Есть столик в «Пушкине» на завтра, 20:00. Бронировать на двоих?",
+      "Учти: отмена там платная, депозит не вернут. Всё ещё хочешь, чтобы я забронировал столик?",
+    ],
+    [
+      "a corrected price within two percent",
+      "закажи продукты",
+      "Итого 2 990 ₽ за корзину. Оплачиваю?",
+      "Поправка: с сервисным сбором выйдет 3 040 ₽. Всё равно оплачивать корзину?",
+    ],
+    [
+      "a corrected time",
+      "напомни про письмо",
+      "Напомнить завтра утром?",
+      "Ой, точнее: напомнить сегодня вечером?",
+    ],
+    [
+      "the first contact's next question",
+      "привет",
+      "Привет! Я Бро — могу взять на себя почту, календарь, покупки и звонки. С чего начнём?",
+      "Расскажи немного о себе: чем занимаешься, что обычно отнимает время?",
+    ],
+  ])("delivers %s after a question", (_case, request, first, second) => {
+    expect(
+      refusal([userMessage(request), ...sendMessage("first", first)], second)
+    ).toBeUndefined();
   });
 
   it("delivers what a tool found after the question", () => {

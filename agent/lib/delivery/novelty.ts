@@ -93,7 +93,10 @@ function sentencesOf(text: string) {
     .normalize("NFKC")
     .split(/(?<=[.!?…])\s+|\n+/u)
     .map((sentence) =>
-      sentence.replace(/[\s»"')\]\p{Extended_Pictographic}]+$/gu, "")
+      sentence.replace(
+        /[\s»"')\]\p{Extended_Pictographic}\u{FE0F}\u{200D}]+$/gu,
+        ""
+      )
     );
 }
 
@@ -783,13 +786,17 @@ export function retellsAroundQuestion(
   );
 }
 
+/** A link, which a line may hold after the question it goes with. */
+const linkPattern = /\S+:\/\/\S+/gu;
+
 /**
  * Whether a message ends by asking the person something: its last sentence
- * is a question or a request — an address, a code, a choice.
+ * with a word in it is a question or a request — an address, a code, a
+ * choice. An emoji or a link after the question does not end the asking.
  */
 export function endsAsking(text: string) {
-  const last = sentencesOf(text).findLast(
-    (sentence) => normalizedText(sentence).length > 0
+  const last = sentencesOf(text).findLast((sentence) =>
+    /[\p{L}\p{N}]/u.test(sentence.replace(linkPattern, ""))
   );
   return (
     last !== undefined &&
@@ -798,47 +805,96 @@ export function endsAsking(text: string) {
 }
 
 /**
- * Words that ask for an answer without saying what about: «какой», «когда»,
- * «уточни», «пожалуйста». An ask made only of these and short words can be
- * about nothing but the question already put.
+ * Words that ask for an answer or fill a sentence without saying what it is
+ * about: «какой», «уточни», «пожалуйста», «не понял». A question word that
+ * asks for something of its own — «когда», «сколько», «почему» — is not one.
  */
 const answerWords = new Set(
-  "какой какая какое какие какого какому каком какую каким какими каких который которая которое которые которого которому котором которую которым которых когда куда откуда сколько почему зачем тебе тебя тобой твой твоя твоё твое твои вами ваша ваше ваши пожалуйста давай давайте тогда ладно итак значит точнее таки просто вообще будет будешь будете хочешь хотите нужно можно уточни уточните ответь ответьте скажи скажите подскажи подскажите напиши напишите выбери выберите which what where when please tell".split(
+  "какой какая какое какие какого какому каком какую каким какими каких который которая которое которые которого которому котором которую которым которых тебе тебя тобой твой твоя твоё твое твои вами ваша ваше ваши пожалуйста давай давайте тогда ладно итак значит таки просто вообще будет будешь будете хочешь хотите нужно можно понял поняла понятно понимаю уточни уточните ответь ответьте скажи скажите подскажи подскажите напиши напишите выбери выберите which please tell".split(
     " "
   )
 );
 
+/** The words of a normalized sentence that say what it is about. */
+function topicOf(sentence: string) {
+  return sentence
+    .split(" ")
+    .filter(
+      (word) => word.length >= contentWordLength && !answerWords.has(word)
+    );
+}
+
+/**
+ * A verb in the infinitive: the action a question offers — «напомнить»,
+ * «бронировать», «записаться». Two questions that share only it may offer
+ * that action for another thing or time.
+ */
+const infinitive = /(?:ть|ться|ти|чь)$/u;
+
+/** Whether `topic` shares with `words` a word other than an infinitive. */
+function sharesObject(topic: readonly string[], words: ReadonlySet<string>) {
+  return topic.some((word) => !infinitive.test(word) && knownWord(word, words));
+}
+
+/**
+ * Whether one question or request of a message puts `open`'s question again:
+ * each of its words occurs in `open` in some form, and it shares with what
+ * `open` asked its object — a word other than the action offered — or every
+ * word. An ask of only «какой», «уточни» and short words («Ну так какой?»,
+ * «А во сколько?») says too little to tell, and is let through.
+ */
+function repeatsAsk(ask: string, open: SentMessage) {
+  const topic = topicOf(ask);
+  if (topic.length === 0) return false;
+  if (!topic.every((word) => knownWord(word, wordsOf([open])))) return false;
+  const asked = [...open.questions, ...open.requests].flatMap(topicOf);
+  const words = new Set(topic);
+  return (
+    sharesObject(topic, new Set(asked)) ||
+    (asked.length > 0 && asked.every((word) => knownWord(word, words)))
+  );
+}
+
 /**
  * Whether a message only asks the person again what `open` asked: `open` is
  * the turn's last message, which ended asking them, and nothing was done
- * since, so the model knows nothing it did not know then. The message asks
- * something, names no number, link, picture or name that `known` — the
- * turn's messages and the person's own — did not, and each thing it asks is
- * about `open`: one of its words occurs there in some form, or it names
- * nothing of its own («Ну так какой?»). In prod (15.10) «Напомнить, когда
- * будешь у московского, на Тверской?» was followed in the next step by «Так
- * и не понял, к какому ты: уточни — московский на Тверской 7 или нет? А
- * точнее, скинь геометку или адрес…». Another place to choose or a question
- * about something else is no such repeat.
+ * since, so the model knows nothing it did not know then. In prod (15.10)
+ * «Напомнить, когда будешь у московского, на Тверской?» was followed in the
+ * next step by «Так и не понял, к какому ты: уточни — московский на
+ * Тверской 7 или нет? А точнее, скинь геометку или адрес…».
+ *
+ * One of its asks puts `open`'s question again (`repeatsAsk`), and each other
+ * one shares an object with `open` («адрес» after «адресом»). Whatever else
+ * the message says lets it through, so a doubtful case reaches the person:
+ * a statement — an answer, a warning, a correction —, a number not written
+ * exactly so before (a price «поправка: 3 040 ₽» after «2 990 ₽»), or a name
+ * or link that `known` — the turn's messages and the person's own — did not
+ * carry. Another place to choose, another time or another question is no
+ * such repeat.
  */
 export function asksAgain(
+  text: string,
   message: SentMessage,
   open: SentMessage,
   known: readonly SentMessage[],
   options: NameMatching
 ) {
   const asks = [...message.questions, ...message.requests];
-  if (asks.length === 0) return false;
+  if (!asks.some((ask) => repeatsAsk(ask, open))) return false;
+  const saysMore = statementsOf(text).some(
+    (statement) =>
+      correction.test(statement) ||
+      codesOf(statement).some(isFact) ||
+      topicOf(normalizedText(statement)).length > 0
+  );
+  if (saysMore) return false;
   if (!namesNothingNew(message, known, options)) return false;
+  const codes = new Set(known.flatMap((sent) => sent.codes));
+  if (message.codes.some((code) => isFact(code) && !codes.has(code))) {
+    return false;
+  }
   const openWords = wordsOf([open]);
-  return asks.every((ask) => {
-    const topic = ask
-      .split(" ")
-      .filter(
-        (word) => word.length >= contentWordLength && !answerWords.has(word)
-      );
-    return (
-      topic.length === 0 || topic.some((word) => knownWord(word, openWords))
-    );
-  });
+  return asks.every(
+    (ask) => repeatsAsk(ask, open) || sharesObject(topicOf(ask), openWords)
+  );
 }
