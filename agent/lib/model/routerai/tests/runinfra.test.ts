@@ -1,3 +1,4 @@
+import type { JSONValue } from "ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
@@ -19,6 +20,7 @@ const runInfraUrl = "https://api.runinfra.ai/v1/chat/completions";
 /** A chat call as the provider package sends it to RouterAI for Bro. */
 function routerAiCall(
   extra: {
+    readonly messages?: readonly JSONValue[];
     readonly model?: string;
     readonly plugins?: readonly string[];
     readonly reasoning?: {
@@ -31,7 +33,7 @@ function routerAiCall(
     body: JSON.stringify({
       include_reasoning: false,
       max_tokens: 32_768,
-      messages: [{ content: "Привет", role: "user" }],
+      messages: extra.messages ?? [{ content: "Привет", role: "user" }],
       model: extra.model ?? "deepseek/deepseek-v4.1-flash",
       plugins: extra.plugins?.map((id) => ({ id })),
       provider: { ignore: ["deepseek"], order: ["deepinfra"] },
@@ -278,6 +280,39 @@ describe("calls RunInfra does not serve stay on RouterAI", () => {
     )(routerAiUrl, routerAiCall({ plugins: ["web"] }));
 
     expect(urls(sent)).toEqual(["routerai"]);
+  });
+
+  it("a call with a picture, without counting against RunInfra", async () => {
+    // RunInfra's model reads text only: a photo would fail there and keep
+    // every call off RunInfra for five minutes.
+    const sent = network(
+      [streamed(runInfraStream("На фото кот"))],
+      [streamed(runInfraStream("Да"))]
+    );
+    const send = await modelFetch();
+
+    await (
+      await send(
+        routerAiUrl,
+        routerAiCall({
+          messages: [
+            {
+              content: [
+                { text: "Что на фото?", type: "text" },
+                {
+                  image_url: { url: "data:image/jpeg;base64,/9j/4AAQ" },
+                  type: "image_url",
+                },
+              ],
+              role: "user",
+            },
+          ],
+        })
+      )
+    ).text();
+    await (await send(routerAiUrl, routerAiCall())).text();
+
+    expect(urls(sent)).toEqual(["routerai", "runinfra"]);
   });
 
   it("a model RunInfra does not host", async () => {

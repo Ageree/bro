@@ -23,7 +23,8 @@ import { directModelSelection, type StepToolChoice } from "./direct";
  * the skills pilot (`skillsPilot`), nor `historyTrim`, the pilot of trimming
  * old history (`historyTrimPilot`), nor `compaction`, the pilot of compacting
  * a long conversation (`compactionPilot`), nor `reasoningOff`, the pilot of
- * the quicker answer step (`fastReplyPilot`).
+ * the quicker answer step (`fastReplyPilot`). `toolImages` is the task
+ * agent's alone: a Gateway id leaves its tool pictures where eve put them.
  */
 export function modelSelection(
   modelId: string,
@@ -46,6 +47,9 @@ export function modelSelection(
     readonly toolGroups?: Parameters<
       typeof directModelSelection
     >[1]["toolGroups"];
+    readonly toolImages?: Parameters<
+      typeof directModelSelection
+    >[1]["toolImages"];
     readonly withheldTools?: readonly string[];
   } = {}
 ) {
@@ -63,6 +67,7 @@ export function modelSelection(
         step: options.step,
         toolChoice: options.toolChoice ?? "auto",
         toolGroups: options.toolGroups,
+        toolImages: options.toolImages,
         withheldTools: options.withheldTools,
       })
     : modelId;

@@ -27,6 +27,7 @@ import { modelEndpoint } from "./endpoint";
 import type { PromptMessage, ToolOutput } from "./prompt";
 import { routerAiModelFetch } from "./routerai/fetch";
 import { watchedModelFetch } from "./stream-watchdog";
+import { toolImagesMiddleware } from "./tool-images";
 
 /** The direct backend a selection is built for (`endpoint.ts`). */
 type ModelEndpoint = NonNullable<ReturnType<typeof modelEndpoint>>;
@@ -1320,6 +1321,12 @@ export function directModelSelection(
      */
     readonly toolGroups?: readonly SkillName[];
     readonly toolChoice: StepToolChoice;
+    /**
+     * The task agent only: pictures of its tool results go to the model in
+     * a user message, and only those of its latest two `look` calls
+     * (`toolImagesMiddleware`). Never set for Bro's own steps.
+     */
+    readonly toolImages?: { readonly sessionId: string };
     /** Tools this step may not call, though the turn has them. */
     readonly withheldTools?: readonly string[];
   }
@@ -1396,6 +1403,7 @@ export function directModelSelection(
       : options.delivered
         ? [quietEndMiddleware()]
         : []),
+    ...(options.toolImages ? [toolImagesMiddleware(options.toolImages)] : []),
     outputCapMiddleware(maxOutputTokens(endpoint)),
     ...(routerAi ? [uniqueToolCallIdsMiddleware()] : []),
     // Innermost: what it drops is never seen by the middleware above.
