@@ -49,8 +49,14 @@ def main(argv):
     args = p.parse_args(argv)
     need_file(args.photo)
     out_path(args.output, args.photo)
-    width_mm, height_mm = parse_size(args.size, "--size")
+    if not args.output.lower().endswith((".jpg", ".jpeg", ".png")):
+        raise KitError("bad_output", "the output must be .jpg or .png")
+    width_mm, height_mm = parse_size(args.size, "--size", 100)
+    # In cm; A3 at most, so the sheet stays a printable raster at 300 dpi.
+    sheet_w, sheet_h = parse_size(args.sheet, "--sheet", 45) if args.sheet else (None, None)
     head_mm = args.head_mm or HEAD_MM * height_mm / 45.0
+    if not 0.3 * height_mm <= head_mm <= height_mm:
+        raise KitError("bad_args", "--head-mm must fit the photo height")
     top_mm = TOP_MM * height_mm / 45.0
     image, scale = load_photo(args.photo, MAX_SIDE)
     eyes = [(x * scale, y * scale) for x, y in parse_eyes(args.eyes)] if args.eyes else None
@@ -65,23 +71,22 @@ def main(argv):
     result["sheet"] = None
     result["copies"] = 0
     if args.sheet:
-        sheet_w, sheet_h = parse_size(args.sheet, "--sheet")
         sheet, copies = make_sheet(photo, (sheet_w * 10, sheet_h * 10), (width_mm, height_mm))
         stem, ext = os.path.splitext(args.output)
-        path = "%s-sheet-%s%s" % (stem, args.sheet.replace(" ", ""), ext)
+        path = out_path("%s-sheet-%gx%g%s" % (stem, sheet_w, sheet_h, ext), args.photo)
         save(sheet, path)
         result["sheet"] = path
         result["copies"] = copies
     return result
 
 
-def parse_size(text, flag):
+def parse_size(text, flag, largest):
     try:
         width, height = (float(v) for v in text.lower().replace("х", "x").split("x"))
     except ValueError:
         raise KitError("bad_args", flag + " is WxH, like 35x45")
-    if not (5 <= width <= 400 and 5 <= height <= 400):
-        raise KitError("bad_args", flag + " is out of range")
+    if not (5 <= width <= largest and 5 <= height <= largest):
+        raise KitError("bad_args", "%s is out of range (5-%g)" % (flag, largest))
     return width, height
 
 

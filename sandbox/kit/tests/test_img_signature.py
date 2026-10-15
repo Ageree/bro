@@ -107,6 +107,25 @@ class ImgSignatureTest(unittest.TestCase):
         covered = (bottom > 128).any(axis=0)
         self.assertGreater(covered.mean(), 0.8)
 
+    def test_same_photo_gives_the_same_png(self):
+        # Bro's signer extracts again at confirm and compares the sha256 with
+        # the one the person saw.
+        outputs = []
+        for name in ("again1.png", "again2.png"):
+            code, result = kit("img", "signature", self.photo, "-o", self.path(name))
+            self.assertEqual(code, 0, result)
+            with open(self.path(name), "rb") as handle:
+                outputs.append(handle.read())
+        self.assertEqual(outputs[0], outputs[1])
+
+    def test_transparent_png_reads_as_ink_on_white(self):
+        transparent = Image.new("RGBA", (1600, 900), (0, 0, 0, 0))
+        ImageDraw.Draw(transparent).line(signature_points(), fill=INK + (255,), width=9, joint="curve")
+        transparent.save(self.path("cut.png"))
+        code, result = kit("img", "signature", self.path("cut.png"), "-o", self.path("cut_out.png"))
+        self.assertEqual(code, 0, result)
+        self.assertLess(abs(result["aspect"] - self.aspect) / self.aspect, 0.1)
+
     def test_blank_sheet_has_no_ink(self):
         blank = Image.new("RGB", (1200, 800), PAPER)
         noise = np.random.default_rng(3).normal(0, 3, (800, 1200, 3))

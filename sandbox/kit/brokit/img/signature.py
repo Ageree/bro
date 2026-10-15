@@ -26,7 +26,7 @@ a caption in the bottom CAPTION_STRIP_PX pixels (the suite skips that strip).
 import colorsys
 import os
 
-from brokit.img.raster import border_connected, label_components, otsu
+from brokit.img.raster import MAX_PIXELS, border_connected, label_components, otsu, upright_rgb
 from brokit.util import KitError, need_file, out_path, parser
 
 MAX_SIDE = 1600
@@ -78,14 +78,14 @@ def main(argv):
 
 
 def open_photo(path):
-    from PIL import Image, ImageOps, UnidentifiedImageError
+    from PIL import Image
 
-    Image.MAX_IMAGE_PIXELS = 120_000_000
+    Image.MAX_IMAGE_PIXELS = MAX_PIXELS
     try:
         image = Image.open(path)
         image.draft("RGB", (MAX_SIDE, MAX_SIDE))
-        image = ImageOps.exif_transpose(image).convert("RGB")
-    except (UnidentifiedImageError, Image.DecompressionBombError, OSError, ValueError) as error:
+        image = upright_rgb(image)
+    except Exception as error:  # noqa: BLE001 — a broken file is `unreadable` for W3, never a kit bug
         raise KitError(
             "unreadable",
             "cannot read the photo: " + type(error).__name__,

@@ -27,6 +27,8 @@ ODF_KINDS = {
     "application/vnd.oasis.opendocument.presentation": "odp",
 }
 IMAGE_TYPES = {"jpeg", "png", "gif", "webp", "tiff", "bmp", "heic"}
+# As the img commands: Pillow refuses images over twice this.
+MAX_IMAGE_PIXELS = 120_000_000
 
 
 def main(argv):
@@ -40,7 +42,8 @@ def main(argv):
         dirs.sort()
         for name in sorted(files):
             path = os.path.join(folder, name)
-            if not os.path.islink(path):
+            # Regular files only: reading a FIFO would hang the survey.
+            if not os.path.islink(path) and os.path.isfile(path):
                 paths.append(path)
     if len(paths) > MAX_FILES:
         raise KitError("too_many", "more than %d files" % MAX_FILES, "survey one subfolder at a time")
@@ -109,7 +112,7 @@ def zip_kind(path):
                 for prefix, kind in OOXML_KINDS:
                     if any(name.startswith(prefix) for name in names):
                         return kind
-    except (zipfile.BadZipFile, OSError, KeyError):
+    except Exception:  # noqa: BLE001 — a damaged or encrypted zip is still a zip
         return "zip"
     return "zip"
 
@@ -222,12 +225,13 @@ def short(text):
 
 
 def inspect_image(path, kind, record):
-    from PIL import Image, UnidentifiedImageError
+    from PIL import Image
 
     record["scan"] = True
     if kind == "heic":
         record["broken"] = None
         return
+    Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
     try:
         with Image.open(path) as image:
             exif = image.getexif()
@@ -235,7 +239,10 @@ def inspect_image(path, kind, record):
             if date:
                 record["exif_date"] = str(date).strip().replace(":", "-", 2)
             image.load()
-    except (UnidentifiedImageError, OSError, SyntaxError, ValueError) as error:
+    except Image.DecompressionBombError:
+        record["broken"] = "image too large to open here (over %d megapixels)" % (2 * MAX_IMAGE_PIXELS // 10**6)
+        return
+    except Exception as error:  # noqa: BLE001 — Pillow refusing the file is the finding
         record["broken"] = "image does not decode: " + str(error)[:80]
         return
     if kind == "jpeg":

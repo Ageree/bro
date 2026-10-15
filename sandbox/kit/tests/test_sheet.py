@@ -85,6 +85,15 @@ class SheetTest(unittest.TestCase):
         self.assertEqual(result["bad_lines"], {"count": 1, "lines": [201]})
         self.assertIn("encoding='cp1251'", result["pandas"])
 
+    def test_csv_sniff_names_the_line_of_a_quote_that_never_closes(self):
+        lines = ["Дата;Товар;Сумма", '01.01.2025;"Сок 1 л;99,00']
+        lines += ["01.01.2025;Хлеб;%d,50" % n for n in range(9000)]
+        with open(self.path("open_quote.csv"), "wb") as handle:
+            handle.write("\n".join(lines).encode("cp1251"))
+        code, result = kit("csv", "sniff", self.path("open_quote.csv"))
+        self.assertEqual(code, 0, result)
+        self.assertEqual(result["stopped"]["line"], 2)
+
     @unittest.skipUnless(has("soffice"), "LibreOffice is not installed")
     def test_recalc_recomputes_stale_values_and_reports_errors(self):
         with_stale_value(self.book, self.path("stale.xlsx"), "B5", "999")

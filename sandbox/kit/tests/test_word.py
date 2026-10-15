@@ -95,12 +95,19 @@ class DocxTest(unittest.TestCase):
         document = docx.Document()
         document.add_paragraph("{ФИО}")
         document.save(self.path("merge.docx"))
-        values = self.write_json("rows.json", [{"_file": "Иванову.docx", "ФИО": "Иванову Петру"}, {"ФИО": "Ким Алине"}])
+        rows = [
+            {"_file": "Иванову.docx", "ФИО": "Иванову Петру"},
+            {"ФИО": "Ким Алине"},
+            {"_file": "Иванову", "ФИО": "Иванову Ивану"},
+        ]
+        values = self.write_json("rows.json", rows)
         code, result = kit("docx", "fill", self.path("merge.docx"), values, "-o", self.path("merged"))
         self.assertEqual(code, 0, result)
         names = sorted(os.listdir(self.path("merged")))
-        self.assertEqual(names, ["002.docx", "Иванову.docx"])
+        self.assertEqual(names, ["002.docx", "Иванову (2).docx", "Иванову.docx"])
         self.assertEqual(docx.Document(self.path("merged/002.docx")).paragraphs[0].text, "Ким Алине")
+        # A repeated _file does not overwrite the earlier letter.
+        self.assertEqual(docx.Document(self.path("merged/Иванову.docx")).paragraphs[0].text, "Иванову Петру")
 
     def test_edit_writes_tracked_changes_and_numbered_insertion(self):
         contract(self.path("contract.docx"))
@@ -143,6 +150,32 @@ class DocxTest(unittest.TestCase):
         accepted = self.text(self.path("edited.docx"), "accept")
         self.assertIn("в течение 5 (пяти) банковских дней", accepted)
         self.assertIn("за каждый день.\nСтороны сохраняют конфиденциальность условий Договора.\nУплата неустойки", accepted)
+
+    def test_edit_inside_the_other_sides_tracked_insertion(self):
+        # A contract comes back with the counterparty's tracked changes, and
+        # Bro's edit lands inside one of their insertions.
+        document = docx.Document()
+        paragraph = document.add_paragraph("Оплата ")
+        theirs = OxmlElement("w:ins")
+        for name, value in (("w:id", "90"), ("w:author", "Контрагент"), ("w:date", "2026-10-01T00:00:00Z")):
+            theirs.set(qn(name), value)
+        run = OxmlElement("w:r")
+        text = OxmlElement("w:t")
+        text.text = "в течение 10 дней после"
+        run.append(text)
+        theirs.append(run)
+        paragraph._p.append(theirs)
+        paragraph.add_run(" поставки.")
+        document.save(self.path("theirs.docx"))
+        edits = self.write_json("theirs.json", [{"replace": {"old": "10 дней", "new": "5 дней"}}])
+        code, result = kit("docx", "edit", self.path("theirs.docx"), edits, "-o", self.path("ours.docx"))
+        self.assertEqual(code, 0, result)
+        body = docx.Document(self.path("ours.docx")).element.body
+        # Word never nests insertions: ours sits between two halves of theirs.
+        self.assertEqual([i for i in body.iter(W + "ins") if i.getparent().tag == W + "ins"], [])
+        self.assertEqual(self.text(self.path("ours.docx"), "accept"), "Оплата в течение 5 дней после поставки.")
+        # Rejecting everything drops their insertion with our edit inside it.
+        self.assertEqual(self.text(self.path("ours.docx"), "reject"), "Оплата  поставки.")
 
     def test_compare_builds_a_redline_that_accepts_to_b_and_rejects_to_a(self):
         contract(self.path("v1.docx"))

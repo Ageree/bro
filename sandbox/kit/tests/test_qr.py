@@ -54,6 +54,10 @@ class QrTest(unittest.TestCase):
         self.assertEqual(code, 0, result)
         self.assertEqual(len([w for w in result["warnings"] if w.startswith("account_checksum")]), 1)
 
+    def test_text_too_long_for_a_qr_code_is_refused(self):
+        code, result = kit("qr", "--text", "я" * 3000, "-o", self.path("long.png"))
+        self.assertEqual((code, result["code"]), (2, "too_long"))
+
     @unittest.skipUnless(importlib.util.find_spec("zxingcpp"), "zxing-cpp is not installed")
     def test_png_and_pdf_decode_back_to_the_payload(self):
         import zxingcpp

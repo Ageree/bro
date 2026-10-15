@@ -90,6 +90,32 @@ class ZipTest(unittest.TestCase):
         self.assertEqual((code, result["code"]), (2, "too_big"))
         self.assertEqual(os.listdir(self.path("big")), [])
 
+    def test_odd_entries_neither_stop_the_unpack_nor_lose_files(self):
+        inner = io.BytesIO()
+        with zipfile.ZipFile(inner, "w") as archive:
+            archive.writestr("x.txt", b"x")
+        # Windows counts 255 characters, Linux 255 bytes: Cyrillic is two each.
+        long_name = "Акт сверки взаиморасчётов " * 8 + ".pdf"
+        odd = self.path("odd.zip")
+        with zipfile.ZipFile(odd, "w") as archive:
+            archive.writestr("a.zip.packed", b"kept")
+            archive.writestr("a.zip", inner.getvalue())
+            archive.writestr("note", b"a file")
+            archive.writestr("note/inside.txt", b"a folder where the file is")
+            archive.writestr(long_name, pdf_bytes("x"))
+        code, result = kit("zip", "unpack", odd, "-o", self.path("odd"))
+        self.assertEqual(code, 0, result)
+        targets = sorted(f["to"] for f in result["files"])
+        for target in targets:
+            self.assertTrue(os.path.isfile(self.path("odd/" + target)), target)
+        with open(self.path("odd/a.zip.packed"), "rb") as handle:
+            self.assertEqual(handle.read(), b"kept")
+        self.assertIn("a.zip/x.txt", targets)
+        self.assertEqual([item["name"] for item in result["skipped"]], ["note/inside.txt"])
+        pdf = [target for target in targets if target.endswith(".pdf")]
+        self.assertEqual(len(pdf), 1)
+        self.assertLessEqual(len(pdf[0].encode("utf-8")), 255)
+
     def test_rar_is_refused(self):
         with open(self.path("x.rar"), "wb") as handle:
             handle.write(b"Rar!\x1a\x07\x01\x00" + b"\0" * 64)
@@ -107,6 +133,15 @@ class ZipTest(unittest.TestCase):
             info = archive.infolist()[0]
         self.assertEqual(info.filename, "Чеки/чек.pdf")
         self.assertTrue(info.flag_bits & 0x800)
+
+    def test_pack_takes_a_file_dated_before_1980(self):
+        folder = self.path("undated")
+        os.makedirs(folder)
+        with open(os.path.join(folder, "scan.pdf"), "wb") as handle:
+            handle.write(pdf_bytes("x"))
+        os.utime(os.path.join(folder, "scan.pdf"), (0, 0))
+        code, result = kit("zip", "pack", folder, "-o", self.path("undated.zip"))
+        self.assertEqual((code, result["files"]), (0, 1))
 
 
 class SurveyTest(unittest.TestCase):
@@ -147,6 +182,15 @@ class SurveyTest(unittest.TestCase):
         self.assertEqual((files["scan.pdf"]["type"], files["scan.pdf"]["pages"]), ("pdf", 1))
         self.assertIn("Invoice No 15", files["scan.pdf"]["text"])
         self.assertEqual(files["notes.txt"]["text"], "Список дел на дачу")
+
+    def test_an_image_too_large_to_open_is_reported_not_a_crash(self):
+        with tempfile.TemporaryDirectory() as folder:
+            Image.new("L", (100, 100), 255).save(os.path.join(folder, "panorama.png"))
+            # Pillow's limit is process-wide: the second patch puts it back.
+            with mock.patch("brokit.survey.MAX_IMAGE_PIXELS", 1000), mock.patch.object(Image, "MAX_IMAGE_PIXELS"):
+                code, result = kit("files", "survey", folder)
+        self.assertEqual(code, 0, result)
+        self.assertIn("too large", result["files"][0]["broken"])
 
 
 if __name__ == "__main__":

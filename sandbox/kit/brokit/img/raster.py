@@ -11,24 +11,54 @@ def load_photo(path, max_side):
     Points the model reads with look are in the photo's own pixels: multiply
     them by `scale` to get pixels of the returned image.
     """
-    from PIL import Image, ImageOps, UnidentifiedImageError
+    from PIL import Image
 
+    refuse_heic(path)
     Image.MAX_IMAGE_PIXELS = MAX_PIXELS
     try:
         image = Image.open(path)
+        full = image.size
         image.draft("RGB", (max_side, max_side))
         drafted = image.size
-        image = ImageOps.exif_transpose(image).convert("RGB")
-    except (UnidentifiedImageError, Image.DecompressionBombError, OSError, ValueError) as error:
+        image = upright_rgb(image)
+    except Exception as error:  # noqa: BLE001 — Pillow raises many types on a broken or hostile file
         raise KitError("unreadable", "cannot read %s: %s" % (path, type(error).__name__), "send a JPEG or PNG photo")
-    with Image.open(path) as original:
-        full = original.size
     scale = drafted[0] / full[0]
     if max(image.size) > max_side:
         factor = max_side / max(image.size)
         image = image.resize((round(image.width * factor), round(image.height * factor)), Image.LANCZOS)
         scale *= factor
     return image, scale
+
+
+HEIC_BRANDS = (b"heic", b"heix", b"mif1", b"msf1", b"heim", b"heis", b"hevc", b"hevx")
+
+
+def refuse_heic(path):
+    """`unsupported` for an iPhone HEIC photo: the sandbox's Pillow has no decoder for it."""
+    with open(path, "rb") as handle:
+        head = handle.read(16)
+    if head[4:8] == b"ftyp" and head[8:12] in HEIC_BRANDS:
+        raise KitError(
+            "unsupported",
+            "HEIC photos cannot be opened here",
+            "ask for JPEG: on iPhone Settings > Camera > Formats > Most Compatible, or send as a file from Photos",
+        )
+
+
+def upright_rgb(image):
+    """RGB after the EXIF turn; transparent parts (a signature saved as a PNG with alpha) become white paper.
+
+    A plain convert("RGB") keeps the colour under the alpha, usually black, and
+    the whole picture would read as ink.
+    """
+    from PIL import Image, ImageOps
+
+    image = ImageOps.exif_transpose(image)
+    if image.mode in ("RGBA", "LA", "PA") or "transparency" in image.info:
+        rgba = image.convert("RGBA")
+        return Image.alpha_composite(Image.new("RGBA", rgba.size, (255, 255, 255, 255)), rgba).convert("RGB")
+    return image.convert("RGB")
 
 
 def otsu(values):

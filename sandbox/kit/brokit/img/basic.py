@@ -7,6 +7,8 @@ readable here (no decoder in the sandbox): `unsupported` asks for a JPEG.
 
 import os
 
+from brokit import producer
+from brokit.img.raster import MAX_PIXELS, refuse_heic
 from brokit.util import KitError, need_file, out_path, parser
 
 FORMATS = {
@@ -20,28 +22,20 @@ FORMATS = {
     ".gif": "GIF",
     ".pdf": "PDF",
 }
-MAX_PIXELS = 120_000_000
 
 
 def load(path):
-    from PIL import Image, ImageOps, UnidentifiedImageError
+    from PIL import Image, ImageOps
 
     need_file(path)
+    refuse_heic(path)
     Image.MAX_IMAGE_PIXELS = MAX_PIXELS
-    with open(path, "rb") as handle:
-        head = handle.read(16)
-    if head[4:8] == b"ftyp" and head[8:12] in (b"heic", b"heix", b"mif1", b"msf1", b"heim", b"hevc"):
-        raise KitError(
-            "unsupported",
-            "HEIC photos cannot be opened here",
-            "ask for JPEG: on iPhone Settings > Camera > Formats > Most Compatible, or send as a file from Photos",
-        )
     try:
         image = Image.open(path)
         image.load()
-    except (UnidentifiedImageError, Image.DecompressionBombError, OSError, ValueError) as error:
-        raise KitError("unreadable", "cannot read the image: %s" % str(error)[:120])
-    return ImageOps.exif_transpose(image)
+        return ImageOps.exif_transpose(image)
+    except Exception as error:  # noqa: BLE001 — Pillow raises many types on a broken or hostile file
+        raise KitError("unreadable", "cannot read the image: %s: %s" % (type(error).__name__, str(error)[:120]))
 
 
 def target_format(output):
@@ -75,6 +69,7 @@ def write(image, output, quality):
         options["dpi"] = dpi
     if fmt == "PDF":
         options["resolution"] = float(dpi[0]) if dpi else 150.0
+        options["producer"] = producer()
     image.save(output, fmt, **options)
     return {"output": output, "width": image.width, "height": image.height, "bytes": os.path.getsize(output)}
 

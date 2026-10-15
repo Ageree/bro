@@ -2,8 +2,11 @@
 
 1. Page corners on a copy of at most DETECT_SIDE px: blur, Otsu, the largest
    bright component, its extremes along x+y and x-y (TL, BR, TR, BL). They must
-   make a convex quadrilateral over MIN_PAGE_SHARE of the photo, else the photo
-   is only deskewed and a warning asks for `--corners` read with `look --grid`.
+   make a convex quadrilateral over MIN_PAGE_SHARE of the photo, and the photo
+   outside them must be clearly darker than the page (a table, not the same
+   paper in a shadow: a page filling the frame would otherwise be cropped),
+   else the photo is only deskewed and a warning asks for `--corners` read with
+   `look --grid`.
 2. Perspective: a homography from an 8x8 linear system into
    Image.transform(PERSPECTIVE); `--paper a4` gives the page 1:sqrt(2), `auto`
    snaps to A4 when the measured ratio is within A4_SNAP of it.
@@ -18,11 +21,15 @@ Several photos make one PDF in the given order at 300 dpi.
 
 import math
 
+from brokit import producer
 from brokit.img.raster import label_components, load_photo, otsu
 from brokit.util import KitError, need_file, out_path, parser
 
 DETECT_SIDE = 1000
 MIN_PAGE_SHARE = 0.25
+# Gray levels between the page and what lies outside its corners: a table is
+# 100+ darker, the shaded half of a page that fills the frame about 15.
+MIN_EDGE_CONTRAST = 40
 A4 = math.sqrt(2)
 A4_SNAP = 0.06
 A4_WIDTH_300DPI = 2480
@@ -61,8 +68,17 @@ def main(argv):
     if pdf:
         images = same_a4_size(images, pages)
         first, rest = images[0], images[1:]
+        # Pillow stores colour and gray pages as JPEG (quality applies) and black
+        # and white ones losslessly, where a quality setting is an error.
+        options = {} if args.mode == "bw" else {"quality": 80}
         first.save(
-            args.output, "PDF", save_all=True, append_images=rest, resolution=pages[0]["dpi"], quality=80
+            args.output,
+            "PDF",
+            save_all=True,
+            append_images=rest,
+            resolution=pages[0]["dpi"],
+            producer=producer(),
+            **options,
         )
     else:
         images[0].save(args.output, dpi=(pages[0]["dpi"], pages[0]["dpi"]), quality=88)
@@ -102,7 +118,7 @@ def parse_corners(text):
 def find_corners(image):
     """(TL, TR, BR, BL) of the page in photo pixels, or None."""
     import numpy as np
-    from PIL import ImageFilter
+    from PIL import Image, ImageDraw, ImageFilter
 
     scale = min(1.0, DETECT_SIDE / max(image.size))
     small = image.convert("L").resize((max(1, round(image.width * scale)), max(1, round(image.height * scale))))
@@ -127,6 +143,11 @@ def find_corners(image):
     ]
     corners = [((x + 0.5) / scale, (y + 0.5) / scale) for x, y in points]
     if not convex(corners) or quad_area(corners) < MIN_PAGE_SHARE * image.width * image.height:
+        return None
+    quad = Image.new("L", small.size, 0)
+    ImageDraw.Draw(quad).polygon([(float(x) + 0.5, float(y) + 0.5) for x, y in points], fill=255)
+    inside = np.asarray(quad) > 0
+    if (~inside).mean() > 0.02 and gray[inside].mean() - gray[~inside].mean() < MIN_EDGE_CONTRAST:
         return None
     return corners
 
@@ -220,7 +241,7 @@ def clean(image, mode):
 
 
 def text_turn(gray):
-    """0, 90, 180 or 270: how far to turn the page so that its text reads upright, or 0 when unsure."""
+    """0, 90, 180 or 270 degrees counter-clockwise (Image.rotate) that make the text read upright, or 0 when unsure."""
     import numpy as np
 
     dark = gray < min(otsu(gray), 170)
@@ -234,12 +255,13 @@ def text_turn(gray):
     if left + right < 6:
         return 0
     if sideways:
-        # rot90 turned the page by 90° counter-clockwise; its text now reads
-        # upright when short lines hang on the left.
+        # np.rot90 turned the sample by 90° counter-clockwise, as Image.rotate(90)
+        # turns the page: short lines on the left mean that turn makes it
+        # upright, on the right that it lands upside down (90 + 180).
         if left >= 3 * right:
-            return 270
-        if right >= 3 * left:
             return 90
+        if right >= 3 * left:
+            return 270
         return 0
     return 180 if right >= 3 * left else 0
 
@@ -294,6 +316,19 @@ def scan_page(path, corners, mode, paper, turn):
         corners = find_corners(image)
     else:
         corners = [(x * scale, y * scale) for x, y in corners]
+        # A corner far off the photo would only stretch the page into a huge,
+        # empty raster: the points come from look, in the photo's pixels.
+        slack_x, slack_y = 0.05 * image.width, 0.05 * image.height
+        inside = [
+            -slack_x <= x <= image.width + slack_x and -slack_y <= y <= image.height + slack_y for x, y in corners
+        ]
+        if not all(inside):
+            size = (round(image.width / scale), round(image.height / scale))
+            raise KitError(
+                "bad_args",
+                "--corners lie outside the photo (%dx%d px)" % size,
+                "read them with look --grid: pixels of the photo itself",
+            )
     if corners is None:
         angle = deskew_angle(np.asarray(image.convert("L")))
         flat = image.rotate(angle, resample=Image.BICUBIC, expand=True, fillcolor=(255, 255, 255))
@@ -315,7 +350,7 @@ def scan_page(path, corners, mode, paper, turn):
         turned = text_turn(np.asarray(result.convert("L")))
         if turned:
             result = result.rotate(turned, expand=True)
-            warnings.append("turned by %d° to read upright: check with look" % turned)
+            warnings.append("turned by %d° counter-clockwise to read upright: check with look" % turned)
     dpi = round(min(result.size) / (210 / 25.4)) if name == "a4" else DPI
     return result, {
         "source": path,

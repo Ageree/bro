@@ -13,6 +13,8 @@ Formula errors are listed; `lost` names what the LibreOffice re-save dropped.
 sniff: encoding (BOM, UTF-8, else charset detection with cp1251 preferred for
 Russian), separator, decimal comma, thousands separator, quoting, header, row
 count and the lines whose field count differs, plus a pandas call that reads it.
+`stopped` names the line of a quote that never closes (the rest of the file
+reads as one field).
 """
 
 import csv
@@ -28,6 +30,8 @@ from brokit.util import KitError, need_file, out_path, parser
 ERRORS = ("#REF!", "#DIV/0!", "#VALUE!", "#NAME?", "#N/A", "#NUM!", "#NULL!", "#SPILL!", "#CALC!")
 MAX_LISTED = 50
 SAMPLE_BYTES = 4 * 1024 * 1024
+FIELD_LIMIT = 16 * 1024 * 1024
+LONG_RECORD_LINES = 50
 SHEET_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 
 
@@ -231,6 +235,9 @@ def sniff(argv):
     p.add_argument("file")
     args = p.parse_args(argv)
     need_file(args.file)
+    # The csv module refuses fields over 128 KB; a long text cell or a quote
+    # that never closes is reported, not a crash.
+    csv.field_size_limit(FIELD_LIMIT)
     with open(args.file, "rb") as handle:
         sample = handle.read(SAMPLE_BYTES)
     if b"\x00" in sample[:4096] and not sample.startswith((b"\xff\xfe", b"\xfe\xff")):
@@ -245,7 +252,10 @@ def sniff(argv):
     except csv.Error:
         counts = {sep: head.count(sep) for sep in ";,\t|"}
         separator, quotechar = max(counts, key=counts.get), '"'
-    rows = list(csv.reader(io.StringIO("\n".join(lines[:60])), delimiter=separator, quotechar=quotechar))
+    try:
+        rows = list(csv.reader(io.StringIO("\n".join(lines[:60])), delimiter=separator, quotechar=quotechar))
+    except csv.Error as error:
+        raise KitError("unreadable", "not CSV text: " + str(error)[:120])
     first = rows[0] if rows else []
     second = rows[1] if len(rows) > 1 else []
     numeric = re.compile(r"^-?[\d\s .,]+$")
@@ -257,13 +267,13 @@ def sniff(argv):
     dot_decimal = sum(1 for v in values if re.fullmatch(r"-?\d[\d,]*\.\d+", v))
     decimal = "," if comma_decimal > dot_decimal else "."
     thousands = None
-    if any(re.fullmatch(r"-?\d{1,3}( \d{3})+([.,]\d+)?", v) for v in values):
-        thousands = " "
-    elif any(re.fullmatch(r"-?\d{1,3}( \d{3})+([.,]\d+)?", v) for v in values):
-        thousands = " "
-    elif decimal == "," and any(re.fullmatch(r"-?\d{1,3}(\.\d{3})+(,\d+)?", v) for v in values):
-        thousands = "."
-    total, bad, expected = count_rows(args.file, encoding, separator, quotechar, len(first))
+    # No-break spaces (Excel and 1C), a plain space, or dots before a decimal comma.
+    marks = ("\u00a0", "\u202f", " ", ".") if decimal == "," else ("\u00a0", "\u202f", " ")
+    for mark in marks:
+        if any(re.fullmatch(r"-?\d{1,3}(%s\d{3})+([.,]\d+)?" % re.escape(mark), v) for v in values):
+            thousands = mark
+            break
+    total, bad, expected, stopped = count_rows(args.file, encoding, separator, quotechar, len(first))
     call = "pd.read_csv(%r, encoding=%r, sep=%r, decimal=%r%s%s, quotechar=%r, on_bad_lines='warn')" % (
         args.file,
         encoding,
@@ -283,20 +293,35 @@ def sniff(argv):
         "columns": expected,
         "rows": total - (1 if has_header else 0),
         "bad_lines": {"count": len(bad), "lines": bad[:MAX_LISTED]},
+        "stopped": stopped,
         "pandas": call,
     }
 
 
 def count_rows(path, encoding, separator, quotechar, expected):
-    """(records, physical line numbers of records with another field count, field count)."""
+    """(records, physical line numbers of records with another field count, field count, stop or None).
+
+    A quote that never closes swallows the rest of the file into one field; the
+    count stops there and says on which line.
+    """
     bad = []
     total = 0
+    stopped = None
     with open(path, encoding=encoding, errors="replace", newline="") as handle:
         reader = csv.reader(handle, delimiter=separator, quotechar=quotechar)
         line = 1
-        for record in reader:
-            total += 1
-            if record and len(record) != expected:
-                bad.append(line)
-            line = reader.line_num + 1
-    return total, bad, expected
+        try:
+            for record in reader:
+                total += 1
+                if record and len(record) != expected:
+                    bad.append(line)
+                if stopped is None and reader.line_num - line >= LONG_RECORD_LINES:
+                    stopped = {
+                        "line": line,
+                        "error": "a quote opened here is never closed: %d lines read as one record"
+                        % (reader.line_num - line + 1),
+                    }
+                line = reader.line_num + 1
+        except csv.Error as error:
+            stopped = {"line": line, "error": str(error)[:120]}
+    return total, bad, expected, stopped

@@ -362,12 +362,40 @@ class Revisions:
         runs = runs_in(paragraph, start, end) if end > start else []
         if not runs:
             if text:
-                place(paragraph, start, self.inserted_text(text, rpr))
+                inserted = self.inserted_text(text, rpr)
+                place(paragraph, start, inserted)
+                self.lift(inserted)
             return
         self.delete_runs(runs)
         if text:
             # Each deleted run sits in its own w:del: the new text follows the last.
-            runs[-1].getparent().addnext(self.inserted_text(text, rpr))
+            inserted = self.inserted_text(text, rpr)
+            runs[-1].getparent().addnext(inserted)
+            self.lift(inserted)
+
+    def lift(self, inserted):
+        """Moves our w:ins out of another author's w:ins, splitting it there, as Word does.
+
+        Text typed into someone's tracked insertion is a separate insertion
+        between two halves of theirs; nested insertions would make rejecting
+        theirs also drop ours, and Word does not write them.
+        """
+        parent = inserted.getparent()
+        while parent is not None and parent.tag == w("ins"):
+            following = list(inserted.itersiblings())
+            if following:
+                rest = copy.deepcopy(parent)
+                for child in list(rest):
+                    rest.remove(child)
+                rest.set(w("id"), str(self.next_id))
+                self.next_id += 1
+                for child in following:
+                    rest.append(child)
+                parent.addnext(rest)
+            parent.addnext(inserted)
+            if len(parent) == 0:
+                parent.getparent().remove(parent)
+            parent = inserted.getparent()
 
 
 def now_iso():
@@ -476,12 +504,22 @@ def fill(argv):
         raise KitError("bad_output", "with a list of values -o is a directory", "-o /workspace/out/gramoty")
     os.makedirs(args.output, exist_ok=True)
     files = []
+    used = set()
     for n, item in enumerate(values, 1):
         item = dict(item)
         name = str(item.pop("_file", "") or "%03d.docx" % n)
-        name = re.sub(r"[/\\\x00]+", "_", name)
-        if not name.lower().endswith(".docx"):
-            name += ".docx"
+        # One path component Linux can store (255 bytes; Cyrillic takes two).
+        stem = re.sub(r"[/\\\x00]+", "_", name)
+        if stem.lower().endswith(".docx"):
+            stem = stem[:-5]
+        stem = stem[:100] or "%03d" % n
+        name = stem + ".docx"
+        copy_number = 2
+        while name.lower() in used:
+            # Two rows with the same _file must not overwrite each other.
+            name = "%s (%d).docx" % (stem, copy_number)
+            copy_number += 1
+        used.add(name.lower())
         files.append(fill_document(args.template, item, os.path.join(args.output, name)))
     return {"output": args.output, "files": files}
 
@@ -868,26 +906,37 @@ def compare(argv):
 def revision_text(paragraph, mode):
     """(text, mark) of a paragraph under accept / reject / show; mark False = merge with the next."""
 
-    def walk(element, state):
+    # A run carries both marks when one change sits in another (text deleted
+    # from someone's insertion): accepting drops what is deleted, rejecting
+    # drops what is inserted.
+    def walk(element, inserted, deleted):
         for child in element:
             tag = child.tag
             if tag == w("r"):
-                yield state, "".join(piece_text(c) or "" for c in child)
+                yield inserted, deleted, "".join(piece_text(c) or "" for c in child)
             elif tag in (w("ins"), w("moveTo")):
-                yield from walk(child, "ins")
+                yield from walk(child, True, deleted)
             elif tag in DELETED:
-                yield from walk(child, "del")
+                yield from walk(child, inserted, True)
             elif tag in RUN_CONTAINERS:
-                yield from walk(child, state)
+                yield from walk(child, inserted, deleted)
 
     out = []
-    for state, text in walk(paragraph, "live"):
+    for inserted, deleted, text in walk(paragraph, False, False):
         if not text:
             continue
-        if state == "live" or (state == "ins" and mode == "accept") or (state == "del" and mode == "reject"):
+        if mode == "accept":
+            if not deleted:
+                out.append(text)
+        elif mode == "reject":
+            if not inserted:
+                out.append(text)
+        elif deleted:
+            out.append("[-%s-]" % text)
+        elif inserted:
+            out.append("{+%s+}" % text)
+        else:
             out.append(text)
-        elif mode == "show":
-            out.append(("{+%s+}" if state == "ins" else "[-%s-]") % text)
     mark = True
     rpr = paragraph.find("%s/%s" % (w("pPr"), w("rPr")))
     if rpr is not None:

@@ -6,7 +6,10 @@ re-decoded (UTF-8 when valid, else cp866 when it gives Cyrillic). Nested zips
 unpack into a folder named like the archive («старое.zip/»), three levels deep.
 Absolute and «..» paths and symlinks are refused; encrypted entries are listed
 and left. The ACTUAL unpacked size is capped (the inbound check saw only the
-declared sizes). RAR and 7z are refused: the sandbox cannot open them.
+declared sizes). RAR and 7z are refused: the sandbox cannot open them. An
+entry the file system refuses (a file where the archive also has a folder) is
+listed in `skipped` and the rest still unpacks; names over 255 bytes (long
+Cyrillic names from Windows) are shortened, the extension kept.
 
 pack: UTF-8 names (bit 11), sorted, deflated — opens on every system.
 """
@@ -22,6 +25,8 @@ from brokit.util import KitError, need_file, out_path, parser
 MAX_TOTAL_BYTES = 256 * 1024 * 1024
 MAX_ENTRIES = 5000
 MAX_DEPTH = 3
+# NAME_MAX is 255 bytes; «name (12).ext» needs a few more.
+NAME_BYTES = 240
 CHUNK = 1024 * 1024
 UTF8_FLAG = 0x800
 ENCRYPTED_FLAG = 0x1
@@ -35,8 +40,8 @@ def unpack(argv):
     p.add_argument("-o", "--output", required=True)
     args = p.parse_args(argv)
     need_file(args.archive)
-    if os.path.realpath(args.output) == os.path.realpath(args.archive):
-        raise KitError("bad_output", "the output must be a directory, not the archive")
+    if os.path.realpath(args.output) == os.path.realpath(args.archive) or os.path.isfile(args.output):
+        raise KitError("bad_output", "the output must be a directory, not a file")
     os.makedirs(args.output, exist_ok=True)
     job = Unpack(args.output)
     try:
@@ -111,7 +116,22 @@ def safe_parts(name):
     parts = [part for part in name.split("/") if part not in ("", ".")]
     if any(part == ".." for part in parts):
         return None
-    return parts
+    return [fit_name(part) for part in parts]
+
+
+def fit_name(part):
+    """A name Linux can store (255 bytes): Windows counts 255 characters, and Cyrillic takes two bytes each.
+
+    The stem is cut, the extension kept, and room left for «(2)» of a repeated name.
+    """
+    if len(part.encode("utf-8")) <= NAME_BYTES:
+        return part
+    stem, ext = os.path.splitext(part)
+    if len(ext.encode("utf-8")) > 16:
+        stem, ext = part, ""
+    while stem and len((stem + "…" + ext).encode("utf-8")) > NAME_BYTES:
+        stem = stem[:-1]
+    return stem + "…" + ext
 
 
 def is_symlink(info):
@@ -165,7 +185,7 @@ class Unpack:
         check_magic(path)
         try:
             archive = zipfile.ZipFile(path)
-        except (zipfile.BadZipFile, OSError) as error:
+        except Exception as error:  # noqa: BLE001 — a damaged central directory fails in many ways
             raise KitError("unreadable", "not a readable ZIP archive: " + str(error)[:120])
         with archive:
             infos = archive.infolist()
@@ -173,7 +193,18 @@ class Unpack:
             if self.entries > MAX_ENTRIES:
                 raise KitError("too_big", "more than %d files in the archive" % MAX_ENTRIES)
             for info in infos:
-                self.entry(archive, info, prefix, depth)
+                try:
+                    self.entry(archive, info, prefix, depth)
+                except OSError as error:
+                    # A name the file system refuses, a file where the archive
+                    # also has a folder: that entry is left, the rest unpacks.
+                    name = decoded_name(info)[0]
+                    self.skipped.append(
+                        {
+                            "name": posixpath.join(prefix, name) if prefix else name,
+                            "why": "cannot write: " + (error.strerror or type(error).__name__),
+                        }
+                    )
 
     def entry(self, archive, info, prefix, depth):
         name, encoding = decoded_name(info)
@@ -203,26 +234,48 @@ class Unpack:
         if not os.path.isdir(parent):
             os.makedirs(parent, exist_ok=True)
             self.created.append(parent)
-        written = self.copy(archive, info, destination)
-        mtime = time.mktime(info.date_time + (0, 0, -1)) if info.date_time[0] >= 1980 else None
+        written = self.copy(archive, info, destination, shown)
+        if written is None:
+            return
         relative = os.path.relpath(destination, self.root).replace(os.sep, "/")
         if depth < MAX_DEPTH and name.lower().endswith(".zip") and self.is_zip(destination):
-            folder = destination
-            packed = destination + ".packed"
-            os.replace(destination, packed)
-            self.created.append(packed)
-            os.makedirs(folder, exist_ok=True)
-            self.created.append(folder)
-            self.nested.append(relative)
-            self.total -= written
+            if self.nested_archive(destination, relative, depth, shown):
+                self.total -= written
+                return
+        if info.date_time[0] >= 1980:
             try:
-                self.archive(packed, relative, depth + 1)
-            finally:
-                os.remove(packed)
-            return
-        if mtime is not None:
-            os.utime(destination, (mtime, mtime))
+                mtime = time.mktime(info.date_time + (0, 0, -1))
+                os.utime(destination, (mtime, mtime))
+            except (OverflowError, ValueError):
+                pass
         self.files.append({"from": shown, "to": relative, "bytes": written})
+
+    def nested_archive(self, destination, relative, depth, shown):
+        """Unpacks a zip inside the archive into a folder of its name; False leaves it a plain file."""
+        import tempfile
+
+        handle, packed = tempfile.mkstemp(prefix=".brokit-nested-", suffix=".zip", dir=os.path.dirname(destination))
+        os.close(handle)
+        os.replace(destination, packed)
+        self.created.append(packed)
+        os.makedirs(destination)
+        self.created.append(destination)
+        self.nested.append(relative)
+        try:
+            self.archive(packed, relative, depth + 1)
+        except KitError as error:
+            if error.code not in ("unreadable", "unsupported"):
+                raise
+            # It failed to open, so nothing was written into the folder yet.
+            self.nested.remove(relative)
+            os.rmdir(destination)
+            os.replace(packed, destination)
+            self.skipped.append({"name": shown, "why": "inner archive not unpacked: " + error.error})
+            return False
+        finally:
+            if os.path.lexists(packed):
+                os.remove(packed)
+        return True
 
     @staticmethod
     def is_zip(path):
@@ -230,7 +283,8 @@ class Unpack:
 
         return zipfile.is_zipfile(path)
 
-    def copy(self, archive, info, destination):
+    def copy(self, archive, info, destination, shown):
+        """Bytes written, or None when the entry is damaged (listed in skipped)."""
         import zipfile
         import zlib
 
@@ -249,13 +303,16 @@ class Unpack:
                             "too_big", "the archive unpacks to more than %d MB" % (MAX_TOTAL_BYTES // 2**20)
                         )
                     sink.write(chunk)
-        except (zipfile.BadZipFile, EOFError, NotImplementedError, zlib.error) as error:
-            # A damaged entry or an unknown compression: the rest still unpacks.
+        except (zipfile.BadZipFile, EOFError, NotImplementedError, zlib.error, OSError) as error:
+            # A damaged entry, an unknown compression or a name the file
+            # system refuses: the rest still unpacks.
             self.total -= written
-            os.remove(destination)
+            if os.path.lexists(destination):
+                os.remove(destination)
             self.created.remove(destination)
-            self.skipped.append({"name": info.filename, "why": "damaged: " + str(error)[:80]})
-            return 0
+            reason = error.strerror if isinstance(error, OSError) and error.strerror else str(error)[:80]
+            self.skipped.append({"name": shown, "why": "not unpacked: " + reason})
+            return None
         os.chmod(destination, 0o644)
         return written
 
@@ -276,7 +333,9 @@ def pack(argv):
         dirs[:] = sorted(d for d in dirs if not os.path.islink(os.path.join(folder, d)))
         for name in files:
             path = os.path.join(folder, name)
-            if os.path.islink(path) or os.path.realpath(path) == output_real:
+            # Only regular files: a symlink could pull in a file from outside
+            # the folder, and reading a FIFO would hang.
+            if os.path.islink(path) or not os.path.isfile(path) or os.path.realpath(path) == output_real:
                 continue
             names.append(os.path.relpath(path, args.directory).replace(os.sep, "/"))
     names.sort()
@@ -284,7 +343,9 @@ def pack(argv):
     with zipfile.ZipFile(args.output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
         for name in names:
             path = os.path.join(args.directory, name)
-            info = zipfile.ZipInfo.from_file(path, name)
+            # A file dated before 1980 (a copy that lost its date) gets 1980-01-01
+            # instead of an error: ZIP has no earlier dates.
+            info = zipfile.ZipInfo.from_file(path, name, strict_timestamps=False)
             info.compress_type = zipfile.ZIP_DEFLATED
             if not name.isascii():
                 info.flag_bits |= UTF8_FLAG

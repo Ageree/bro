@@ -12,6 +12,7 @@ Python API for the task agent's own scripts: `gost_payload(fields)` and
 
 import re
 
+from brokit import producer
 from brokit.util import KitError, out_path, parser, read_json
 
 GOST_HEADER = "ST00012"
@@ -115,7 +116,16 @@ def qr_matrix(payload, level="M"):
     from reportlab.graphics.barcode.qr import QrCodeWidget
 
     widget = QrCodeWidget(payload, barLevel=level, barBorder=QUIET_ZONE)
-    widget.qr.make()
+    try:
+        widget.qr.make()
+    except Exception as error:  # noqa: BLE001 — reportlab raises a bare Exception («code length overflow»)
+        if "overflow" not in str(error):
+            raise
+        raise KitError(
+            "too_long",
+            "the text does not fit in one QR code (%d bytes)" % len(payload.encode("utf-8")),
+            "shorten it (about 1200 Cyrillic letters at --level L) or use --level L",
+        )
     count = widget.qr.getModuleCount()
     return widget, [[bool(widget.qr.isDark(r, c)) for c in range(count)] for r in range(count)]
 
@@ -140,6 +150,7 @@ def write_pdf(payload, output, size_mm, level):
     size = size_mm * mm
     canvas = pdf_canvas.Canvas(output, pagesize=(size, size))
     canvas.setTitle("QR")
+    canvas.setProducer(producer())
     modules = draw_qr(canvas, payload, 0, 0, size, level)
     canvas.showPage()
     canvas.save()
