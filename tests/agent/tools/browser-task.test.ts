@@ -95,7 +95,7 @@ vi.mock("ai", async (importOriginal) => ({
   ...(await importOriginal<typeof ai>()),
   generateText: vi.fn<
     (input: { prompt: string }) => Promise<{
-      output: Readonly<Record<string, boolean | number | string | null>>;
+      output: DirectVerdict | { matches: boolean };
     }>
   >(async (input) => {
     if (
