@@ -10,7 +10,10 @@ import { claimSession, isSessionOwned } from "@db/services/sessions";
 import { ensureScope } from "@db/services/scope";
 import { crossChannelRecap } from "@agent/lib/conversation/recap";
 import { firstContactContext } from "@agent/lib/first-contact";
+import { documentByteCap } from "@agent/lib/inbound-media/media-type";
+import { webFileNotes } from "@agent/lib/inbound-media/web";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
+import { taskFilesEnabled } from "@agent/lib/sandbox/pilot";
 import {
   accessScopeForUser,
   type AccessScope,
@@ -74,15 +77,23 @@ const authenticate: Parameters<typeof routeAuth>[1] = [
 
 const channel = eveChannel({
   auth: authenticate,
+  // A file the person attaches may be as large as one Telegram or iMessage
+  // brings (20 MiB); eve answers a larger part with 413.
+  uploadPolicy: { maxBytes: documentByteCap },
   // Someone who signs up on the web and writes there first meets Bro here, so
   // this channel opens a workspace's first conversation the same way the
   // messaging channels do.
-  async onMessage(context) {
+  async onMessage(context, message) {
     const auth = defaultEveAuth(context);
     // Route auth above resolves a workspace user or has already refused the
     // request, so a missing caller is a broken invariant, not a guest.
     if (!auth) throw new Error("An eve message arrived without a caller.");
     const scope = scopeFromPrincipal(auth);
+    // In the files pilot the model learns the files' own names, which eve's
+    // staging loses (`webFileNotes`), right before the message.
+    const notes = taskFilesEnabled(scope.workspaceId)
+      ? webFileNotes(message)
+      : [];
     return {
       auth,
       context: [
@@ -91,6 +102,7 @@ const channel = eveChannel({
           channel: "channel:eve",
           sessionId: context.eve.sessionId,
         })),
+        ...(notes.length > 0 ? [notes.join("\n")] : []),
       ],
     };
   },

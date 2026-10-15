@@ -26,6 +26,7 @@ const services = vi.hoisted(() => ({
   earlyReplySplitPilot: vi.fn<() => Promise<boolean>>(),
   skillsLayout: vi.fn<() => "core" | "full">(),
   taskAgentPilot: vi.fn<() => Promise<boolean>>(),
+  taskFilesEnabled: vi.fn<(workspaceId: string | undefined) => boolean>(),
 }));
 
 vi.mock("@db/services/scheduled-agent-run-leases", () => ({
@@ -48,6 +49,7 @@ vi.mock("@agent/lib/skills/pilot", async (importOriginal) => ({
 }));
 vi.mock("@agent/lib/sandbox/pilot", () => ({
   taskAgentPilot: services.taskAgentPilot,
+  taskFilesEnabled: services.taskFilesEnabled,
   taskFilesOfCaller: () => false,
 }));
 vi.mock("@agent/lib/history/pilot", () => ({
@@ -112,6 +114,7 @@ beforeEach(() => {
   services.browserRunReportDelivered.mockResolvedValue(false);
   services.directModelActive.mockReturnValue(false);
   services.taskAgentPilot.mockResolvedValue(false);
+  services.taskFilesEnabled.mockReturnValue(false);
   services.historyTrimPilot.mockResolvedValue(false);
   services.compactionPilot.mockResolvedValue(false);
   services.compactionHeld.mockReturnValue(false);
@@ -940,6 +943,33 @@ describe("interactive delivery enforcement", () => {
       ...outside,
       historyTrim: undefined,
     });
+  });
+
+  it("shows the model the person's files only in the files pilot", async () => {
+    services.directModelActive.mockReturnValue(true);
+    services.modelSelection
+      .mockReturnValueOnce("deepseek/deepseek-v4.1-flash")
+      .mockReturnValueOnce("deepseek/deepseek-v4.1-flash");
+    const event = { data: { stepIndex: 0, turnId: "turn_0" } };
+
+    await agent.model.events["step.started"]?.(
+      event,
+      interactiveContext([humanMessage("заполни анкету")])
+    );
+    const outside = services.modelSelection.mock.lastCall?.[1];
+    expect(outside).not.toHaveProperty("stagedFiles", true);
+
+    services.taskFilesEnabled.mockImplementation(
+      (workspaceId) => workspaceId === "workspace-1"
+    );
+    await agent.model.events["step.started"]?.(
+      event,
+      interactiveContext([humanMessage("заполни анкету")])
+    );
+    const inside = services.modelSelection.mock.lastCall?.[1];
+    expect(inside?.stagedFiles).toBe(true);
+    // Nothing else of the step changes with it.
+    expect({ ...inside, stagedFiles: undefined }).toEqual(outside);
   });
 
   it("lets only the first step of a text turn compact, in the pilot", async () => {

@@ -111,7 +111,10 @@ export function reportedSharedFileLinks(messages: readonly ModelMessage[]) {
           .flatMap((part) => (part.type === "text" ? [part.text] : []))
           .join("\n")
       : message.content;
-    for (const [link] of text.matchAll(/https:\/\/[^\s<>"')\]]+/gu)) {
+    for (const [written] of text.matchAll(/https:\/\/[^\s<>"')\]]+/gu)) {
+      // A link that ends a sentence keeps its period out: no signature ends
+      // with one.
+      const link = written.replace(/[.,;:!?…]+$/u, "");
       if (isSharedFileLink(link)) links.add(link);
     }
   }

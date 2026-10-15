@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import {
+  APICallError,
   generateId,
   type JSONSchema7,
   type JSONValue,
@@ -17,6 +18,13 @@ import { trimPrompt } from "@agent/lib/history/trim";
 import type { SkillName } from "@agent/lib/skills/catalog";
 import { defuseForgedSkillBlocks } from "@agent/lib/skills/render";
 import { toolGroup, toolGroups, toolOffered } from "@agent/lib/skills/tools";
+import { rememberAnnotations } from "@agent/lib/staged-files/annotations";
+import { repairedToolInput, stagedPaths } from "@agent/lib/staged-files/paths";
+import {
+  inlinePdfPaths,
+  markUnreadablePdfs,
+  withStagedFiles,
+} from "@agent/lib/staged-files/prompt";
 import type { StepIdentity } from "@agent/lib/turn-kind/step";
 import {
   defuseStepNoteTag,
@@ -24,7 +32,7 @@ import {
 } from "@agent/lib/step-context/note";
 import { env } from "@shared/environment";
 import { modelEndpoint } from "./endpoint";
-import type { PromptMessage, ToolOutput } from "./prompt";
+import type { Prompt, PromptMessage, ToolOutput } from "./prompt";
 import { routerAiModelFetch } from "./routerai/fetch";
 import { watchedModelFetch } from "./stream-watchdog";
 import { toolImagesMiddleware } from "./tool-images";
@@ -203,6 +211,108 @@ function historyTrimMiddleware(trim: HistoryTrim): LanguageModelMiddleware {
         ...trimmed,
       });
       return { ...params, prompt };
+    },
+  };
+}
+
+/** A tool call with the staged paths in its input mended. */
+function withMendedPaths<
+  Part extends { readonly input: string; readonly toolName: string },
+>(part: Part, paths: ReturnType<typeof stagedPaths>): Part {
+  if (paths.known.length === 0) return part;
+  const { input, repaired } = repairedToolInput(
+    part.input,
+    paths.known,
+    paths.current
+  );
+  if (repaired === 0) return part;
+  console.info("[staged-files] paths repaired", {
+    repaired,
+    toolName: part.toolName,
+  });
+  return { ...part, input };
+}
+
+/**
+ * A refusal that names a file or its parse: RouterAI answers a PDF it
+ * cannot parse with 400 «Failed to parse the file … may be corrupt».
+ */
+const unparsedFile = /pars(?:e|ing)|\bpdf\b|\bfiles?\b/iu;
+
+/**
+ * The call, and when the provider could not parse a PDF of it, that PDF
+ * remembered as unreadable (`markUnreadablePdfs`): the turn fails all the
+ * same, and the next one gets the PDF as its line rather than failing too.
+ */
+async function rememberingUnreadablePdfs<Result>(
+  prompt: Prompt,
+  call: () => PromiseLike<Result>
+) {
+  try {
+    return await call();
+  } catch (error) {
+    if (
+      APICallError.isInstance(error) &&
+      error.statusCode === 400 &&
+      unparsedFile.test(`${error.message} ${error.responseBody ?? ""}`)
+    ) {
+      const pdfs = inlinePdfPaths(prompt);
+      if (pdfs.length > 0) {
+        markUnreadablePdfs(pdfs);
+        console.warn("[staged-files] pdf unreadable", { pdfs: pdfs.length });
+      }
+    }
+    throw error;
+  }
+}
+
+/**
+ * The files pilot (`taskFilesEnabled`): each photo and PDF the person sent
+ * goes with its sandbox path, a PDF of an earlier turn and an encrypted one
+ * as that line alone, and this turn's PDFs with RouterAI's parse of the
+ * step before (`agent/lib/staged-files/prompt.ts`), or as lines too once a
+ * call failed to parse them; a staged path a tool call's input miswrote is
+ * mended to the one it stands for (`agent/lib/staged-files/paths.ts`),
+ * before eve records the call. It runs outside the step note's middleware,
+ * so it never sees the note.
+ */
+function stagedFilesMiddleware(): LanguageModelMiddleware {
+  return {
+    async transformParams({ params }) {
+      const { pdfs, prompt } = withStagedFiles(params.prompt);
+      if (pdfs.current + pdfs.earlier + pdfs.encrypted > 0) {
+        console.info("[staged-files] pdf", pdfs);
+      }
+      return prompt === params.prompt ? params : { ...params, prompt };
+    },
+    async wrapGenerate({ doGenerate, params }) {
+      const result = await rememberingUnreadablePdfs(params.prompt, doGenerate);
+      rememberAnnotations(result.providerMetadata);
+      const paths = stagedPaths(params.prompt);
+      return {
+        ...result,
+        content: result.content.map((part) =>
+          part.type === "tool-call" ? withMendedPaths(part, paths) : part
+        ),
+      };
+    },
+    async wrapStream({ doStream, params }) {
+      const result = await rememberingUnreadablePdfs(params.prompt, doStream);
+      const paths = stagedPaths(params.prompt);
+      const stream = result.stream.pipeThrough(
+        new TransformStream<StreamPart, StreamPart>({
+          transform(part, controller) {
+            if (part.type === "finish") {
+              rememberAnnotations(part.providerMetadata);
+            }
+            // eve takes the call from this part, not from its deltas.
+            controller.enqueue(
+              part.type === "tool-call" ? withMendedPaths(part, paths) : part
+            );
+          },
+        })
+      );
+      return { ...result, stream };
     },
   };
 }
@@ -1313,6 +1423,12 @@ export function directModelSelection(
      * stays the same through the turn (`stepToolsTransform`).
      */
     readonly stableContext?: boolean;
+    /**
+     * The files pilot (`taskFilesEnabled`): the paths of the person's photos
+     * and PDFs, earlier PDFs as lines, mended paths in tool inputs
+     * (`stagedFilesMiddleware`).
+     */
+    readonly stagedFiles?: boolean;
     /** Which session, turn and step this is, for the pilot's tool log. */
     readonly step?: StepIdentity;
     /**
@@ -1385,6 +1501,7 @@ export function directModelSelection(
     ...(options.historyTrim
       ? [historyTrimMiddleware(options.historyTrim)]
       : []),
+    ...(options.stagedFiles ? [stagedFilesMiddleware()] : []),
     ...(options.stableContext
       ? [
           stepNoteMiddleware(

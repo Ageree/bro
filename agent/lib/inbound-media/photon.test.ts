@@ -4,6 +4,7 @@ import { z } from "zod";
 import { syntheticCafOpus } from "@tests/helpers/synthetic-caf";
 import { voiceRetryText, voiceUnsupportedText } from "./turn-content";
 import { ooxmlPackage } from "@tests/helpers/office-package";
+import { zipWith } from "@tests/helpers/zip-archive";
 
 const requiredEnvironment = {
   BETTER_AUTH_SECRET: "test-auth-secret-0123456789abcdefghijklmnop",
@@ -62,6 +63,13 @@ function photonMessage(
     text,
     threadId: "imessage:iMessage;-;+15550100011",
   });
+}
+
+/** A file of `size` bytes that begins with `head`. */
+function filled(head: Uint8Array, size: number) {
+  const bytes = new Uint8Array(size);
+  bytes.set(head);
+  return bytes;
 }
 
 async function loadPhotonMedia() {
@@ -457,12 +465,15 @@ describe("Photon media turn", () => {
       notice: undefined,
     });
 
-    // Archives and renamed executables stay notes.
+    // A ZIP that does not read as one and a renamed executable stay notes.
     await expect(
       photonMediaTurn(message("a.zip", docx, "application/zip"), {
         documents: true,
       })
-    ).resolves.toMatchObject({ message: "[файл: a.zip (application/zip)]" });
+    ).resolves.toMatchObject({
+      message:
+        "[файл: a.zip (application/zip), архив повреждён или слишком велик]",
+    });
     const exe = new Uint8Array(32);
     exe.set([0x4d, 0x5a]);
     await expect(
@@ -509,5 +520,88 @@ describe("Photon media turn", () => {
       notice: undefined,
     });
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("hands over PDFs, documents, photos and ZIPs as files up to 20 MiB with documents on", async () => {
+    const megabytes = 1024 * 1024;
+    const docxType =
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    const { photonMediaTurn } = await loadPhotonMedia();
+    const fileOf = async (
+      name: string,
+      bytes: Uint8Array,
+      mimeType: string
+    ) => {
+      const turn = await photonMediaTurn(
+        photonMessage(
+          [{ data: Buffer.from(bytes), mimeType, name, type: "file" }],
+          undefined
+        ),
+        { documents: true }
+      );
+      if (!Array.isArray(turn?.message)) throw new Error("Expected a file.");
+      const [text, file] = turn.message;
+      return {
+        mediaType: file?.type === "file" ? file.mediaType : undefined,
+        text: text?.type === "text" ? text.text : undefined,
+      };
+    };
+    const pdf = new TextEncoder().encode("%PDF-1.7\n%âãÏÓ\n");
+
+    await expect(
+      fileOf("Выписка.pdf", filled(pdf, 15 * megabytes), "application/pdf")
+    ).resolves.toEqual({
+      mediaType: "application/pdf",
+      text: "[файл: Выписка.pdf (application/pdf)]",
+    });
+    await expect(
+      fileOf("Договор.docx", filled(ooxmlPackage(), 15 * megabytes), docxType)
+    ).resolves.toEqual({
+      mediaType: docxType,
+      text: `[файл: Договор.docx (${docxType})]`,
+    });
+    // Past what the model is shown inline, a photo stays a file.
+    await expect(
+      fileOf("IMG_0002.PNG", filled(png, 5 * megabytes), "image/png")
+    ).resolves.toEqual({
+      mediaType: "image/png",
+      text: "[файл: IMG_0002.PNG (image/png)]",
+    });
+    await expect(
+      fileOf(
+        "Чеки.zip",
+        zipWith({ entries: [{ content: "a", name: "a.csv" }] }),
+        "application/zip"
+      )
+    ).resolves.toEqual({
+      mediaType: "application/zip",
+      text: "[файл: Чеки.zip (application/zip)]",
+    });
+  });
+
+  it("names a RAR without reading it, with documents on", async () => {
+    const read = reader(new Uint8Array(32));
+    const { photonMediaTurn } = await loadPhotonMedia();
+
+    await expect(
+      photonMediaTurn(
+        photonMessage(
+          [
+            {
+              mimeType: "application/x-rar-compressed",
+              name: "сканы.rar",
+              type: "file",
+            },
+          ],
+          { name: "сканы.rar", read, type: "attachment" }
+        ),
+        { documents: true }
+      )
+    ).resolves.toEqual({
+      message:
+        "[файл: сканы.rar (application/x-rar-compressed), архив RAR или 7z не открыть — нужен ZIP]",
+      notice: undefined,
+    });
+    expect(read).not.toHaveBeenCalled();
   });
 });

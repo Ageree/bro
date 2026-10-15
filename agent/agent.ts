@@ -69,7 +69,7 @@ import { stepContextPilot } from "@agent/lib/step-context/pilot";
 import { skillSetup, skillsLayout, skillsPilot } from "@agent/lib/skills/pilot";
 import { offeredSkills, turnOfferedSkills } from "@agent/lib/skills/tools";
 import { readWorkspaceTimeZone } from "@db/services/user-profile";
-import { taskAgentPilot } from "@agent/lib/sandbox/pilot";
+import { taskAgentPilot, taskFilesEnabled } from "@agent/lib/sandbox/pilot";
 import { turnKind } from "@agent/lib/turn-kind/kind";
 import {
   stepIdentity,
@@ -388,6 +388,9 @@ export default defineAgent({
           // The skills pilot reads Bro's rules from `bro-skill` blocks in the
           // conversation; a forged one is defused (docs/roadmap.md, 24).
           skillBlocks: skillsPilot(ctx) ? true : undefined,
+          // The files pilot shows the model where the person's photos and
+          // PDFs lie and mends the paths it miswrites.
+          stagedFiles: taskFilesEnabled(scope.workspaceId) ? true : undefined,
           toolChoice:
             staleReport ||
             (pastAnswer && !reportPastAnswer) ||
