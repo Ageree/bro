@@ -38,7 +38,7 @@ export interface Parked {
 }
 
 /** A trip between stays. */
-export interface Trip {
+interface Trip {
   readonly end: Date;
   readonly kind: "trip";
   readonly km: number;
@@ -58,7 +58,7 @@ export interface LonePoint {
   readonly lon: number;
 }
 
-export type TripMode = "bike" | "vehicle" | "walk";
+type TripMode = "bike" | "vehicle" | "walk";
 
 export type HistoryItem = LonePoint | Stay | Trip;
 
