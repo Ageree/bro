@@ -698,6 +698,39 @@ describe("confirming a signing", () => {
       sampleId
     );
   });
+
+  it("signs a second document from the same photo after the first saved its sample, never with another", async () => {
+    const firstId = "2d6f5d78-641b-4c80-aacf-eec05af14e53";
+    services.summary.mockResolvedValue({
+      id: firstId,
+      kind: "image",
+      savedAt: new Date(),
+    });
+    services.sample.mockResolvedValue({
+      id: firstId,
+      kind: "image",
+      png: signaturePng,
+    });
+    services.read.mockResolvedValue(
+      row({
+        signaturePhotoPath: photoPath,
+        signaturePngSha256: sha256(signaturePng),
+        signatureSource: "photo",
+      })
+    );
+    expect((await call(yes, confirmInput)).result).toMatchObject({
+      status: "signed",
+    });
+    expect(services.save).not.toHaveBeenCalled();
+    services.sample.mockResolvedValue({
+      id: firstId,
+      kind: "image",
+      png: png(600, 200),
+    });
+    expect((await call(yes, confirmInput)).result).toMatchObject({
+      status: "signature_changed",
+    });
+  });
 });
 
 describe("where the tool is offered", () => {
