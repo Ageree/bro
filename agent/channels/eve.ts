@@ -17,6 +17,7 @@ import {
 } from "@shared/identity/access-scope";
 import { getAuthSession } from "@db/services/auth/session";
 import { sendMessageToolResultSchema } from "@shared/chat/message-delivery";
+import { webMessageBodyBytes } from "@shared/chat/web-files";
 import {
   finalizeScheduledReportDelivery,
   releaseScheduledReportDelivery,
@@ -148,34 +149,158 @@ const ownedCallbackRoutes = new Set([
 
 const sessionCreationRoute = "/eve/v1/session";
 
+/** The routes that carry a person's message, files included. */
+const messageRoutes = new Set([
+  sessionCreationRoute,
+  "/eve/v1/session/:sessionId",
+]);
+
+type HttpRoute = Exclude<
+  (typeof channel.routes)[number],
+  { readonly transport: "websocket" }
+>;
+
 export default {
   ...channel,
   // oxlint-disable-next-line oxc/no-map-spread -- Keep Eve's original route definitions intact when adding the app authorization boundary.
   routes: channel.routes.map((route) => {
     if (route.transport === "websocket") return route;
-    if (route.method === "POST" && route.path === sessionCreationRoute) {
-      return {
-        ...route,
-        async handler(request, context) {
-          const principal = await routeAuth(request, authenticate);
-          if (principal instanceof Response) return principal;
-          const response = await route.handler(request, context);
-          await claimCreatedSession(principal, response);
-          return response;
-        },
-      };
-    }
-    if (!ownedCallbackRoutes.has(route.path)) return route;
+    const owned = withOwnership(route);
+    if (route.method !== "POST" || !messageRoutes.has(route.path)) return owned;
+    return {
+      ...owned,
+      async handler(request, context) {
+        return await withinMessageBound(request, (bounded) =>
+          owned.handler(bounded, context)
+        );
+      },
+    };
+  }),
+} satisfies typeof channel;
+
+/**
+ * The app's caller and workspace policy on a route: the creating caller
+ * owns a new session at once, and the callbacks whose token names a session
+ * answer only its owner.
+ */
+function withOwnership(route: HttpRoute): HttpRoute {
+  if (route.method === "POST" && route.path === sessionCreationRoute) {
     return {
       ...route,
       async handler(request, context) {
         const principal = await routeAuth(request, authenticate);
         if (principal instanceof Response) return principal;
-        return route.handler(request, context);
+        const response = await route.handler(request, context);
+        await claimCreatedSession(principal, response);
+        return response;
       },
     };
-  }),
-} satisfies typeof channel;
+  }
+  if (!ownedCallbackRoutes.has(route.path)) return route;
+  return {
+    ...route,
+    async handler(request, context) {
+      const principal = await routeAuth(request, authenticate);
+      if (principal instanceof Response) return principal;
+      return route.handler(request, context);
+    },
+  };
+}
+
+const contentLengthSchema = z
+  .string()
+  .regex(/^\d{1,16}$/u)
+  .transform(Number);
+
+/**
+ * eve reads a message body whole before its upload policy looks at a file,
+ * so the body is bounded before anything reads it. A declared length over
+ * the bound is refused at once, unread; one within it is exact, since Node's
+ * parser holds a body to its `Content-Length`. A body without one (chunked,
+ * or a proxy dropped the header) is counted as eve reads it and cut at the
+ * bound, and eve's answer to the cut body gives way to a 413.
+ *
+ * Node drops the unread rest of a body only when nothing began to read it.
+ * This one was begun, so once eve has answered (the 413, or a refusal that
+ * never read the body) its rest is read and dropped here: otherwise the
+ * kept-alive connection's next request, from Caddy maybe another person's,
+ * would be parsed from the middle of it and fail. Reading on, not closing,
+ * also lets the 413 reach the sender.
+ */
+async function withinMessageBound(
+  request: Request,
+  handle: (request: Request) => Promise<Response>
+) {
+  const declared = contentLengthSchema.safeParse(
+    request.headers.get("content-length")
+  );
+  if (declared.success) {
+    return declared.data > webMessageBodyBytes
+      ? messageTooLarge(declared.data, true)
+      : await handle(request);
+  }
+  const body = request.body;
+  if (body === null) return await handle(request);
+  const source = body.getReader();
+  const read = { bytes: 0 };
+  const counted = new ReadableStream<Uint8Array>(
+    {
+      async pull(controller) {
+        const chunk = await source.read();
+        if (chunk.done) {
+          controller.close();
+          return;
+        }
+        read.bytes += chunk.value.byteLength;
+        if (read.bytes > webMessageBodyBytes) {
+          controller.error(new Error("The message body is over its bound."));
+          return;
+        }
+        controller.enqueue(chunk.value);
+      },
+    },
+    { highWaterMark: 0 }
+  );
+  // A stream body needs `duplex`, which the DOM's `RequestInit` lacks.
+  const init = {
+    body: counted,
+    duplex: "half",
+    headers: request.headers,
+    method: request.method,
+    signal: request.signal,
+  };
+  try {
+    const response = await handle(new Request(request.url, init));
+    if (read.bytes <= webMessageBodyBytes) return response;
+    await response.body?.cancel();
+  } catch (error) {
+    if (read.bytes <= webMessageBodyBytes) throw error;
+  } finally {
+    void dropRest(source);
+  }
+  return messageTooLarge(read.bytes, false);
+}
+
+/** Reads a body to its end and drops it, as Node does with an unread one. */
+async function dropRest(source: ReadableStreamDefaultReader<Uint8Array>) {
+  try {
+    /* oxlint-disable eslint/no-await-in-loop -- A body's chunks come one after another. */
+    for (;;) {
+      if ((await source.read()).done) return;
+    }
+    /* oxlint-enable eslint/no-await-in-loop */
+  } catch {
+    // The sender went away: nothing is left to drop.
+  }
+}
+
+function messageTooLarge(bytes: number, declared: boolean) {
+  console.warn("[eve] message refused as too large", { bytes, declared });
+  return Response.json(
+    { error: "The message is larger than 64 MB.", ok: false },
+    { status: 413 }
+  );
+}
 
 /**
  * Records who owns a session before its id reaches the browser. eve answers

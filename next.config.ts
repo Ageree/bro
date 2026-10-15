@@ -1,4 +1,5 @@
 import type { NextConfig } from "next";
+import { PHASE_DEVELOPMENT_SERVER } from "next/constants";
 import { withEve } from "eve/next";
 
 const nextConfig: NextConfig = {
@@ -37,4 +38,12 @@ const nextConfig: NextConfig = {
 // oxlint-disable-next-line eslint/no-restricted-properties -- a build switch read before any env module; validating the app's runtime env here would break `next typegen` without it
 if (process.env.NEXT_OUTPUT === "standalone") nextConfig.output = "standalone";
 
-export default withEve(nextConfig);
+// In `next dev` eve's routes go through `proxy.ts`, which buffers 10 MB of a
+// body and passes the rest on cut short, so a web message with files beyond
+// that reached eve as broken JSON. On the VM `/eve/*` bypasses Next, and a
+// global 64 MB would let bro-web buffer that much for any public route.
+export default withEve((phase: string) =>
+  phase === PHASE_DEVELOPMENT_SERVER
+    ? { ...nextConfig, experimental: { proxyClientMaxBodySize: "64mb" } }
+    : nextConfig
+);

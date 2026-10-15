@@ -35,14 +35,6 @@ class SandboxHostError extends Error {
   }
 }
 
-export function sandboxHostConfigured() {
-  return (
-    env.SANDBOX_HOST_ID !== undefined &&
-    env.SANDBOX_HOST_ORIGIN !== undefined &&
-    env.SANDBOX_SIGNING_KEY !== undefined
-  );
-}
-
 function host() {
   const id = env.SANDBOX_HOST_ID;
   const origin = env.SANDBOX_HOST_ORIGIN;
