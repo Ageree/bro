@@ -2,7 +2,8 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { headers } from "next/headers";
-import { Masthead, OfferLink } from "@web/components/paper/masthead";
+import { Capsule } from "@web/components/paper/capsule";
+import { SiteFooter } from "@web/components/paper/footer";
 import { LocalPhoneAuthForm } from "@app/sign-in/_components/local-form";
 import { PhoneOtpAuthForm } from "@app/sign-in/_components/otp-form";
 import { env, localPhoneAuthBypassEnabled } from "@shared/environment";
@@ -12,8 +13,8 @@ import { photonConfigured } from "@shared/photon/credentials";
 export const metadata: Metadata = { title: "Вход" };
 
 /**
- * The login sheet: on the old site it floated over the page; here it is the
- * page, set on the same paper under the same masthead.
+ * The login sheet: one white plate centred on the paper, under the shared
+ * capsule and above the shared footer.
  */
 export default async function SignInPage({
   searchParams,
@@ -36,11 +37,14 @@ export default async function SignInPage({
 
   return (
     <div className="flex min-h-svh flex-col">
-      <Masthead start={<OfferLink />} />
+      <Capsule items={[{ href: "/oferta", id: "oferta", label: "Оферта" }]} />
 
-      <main className="flex flex-1 justify-center px-bro-pad pt-[1.1rem] pb-20">
-        <section aria-labelledby="login-title" className="w-full max-w-[23rem]">
-          <h1 className="type-sheet-title mb-[0.6rem]" id="login-title">
+      <main className="flex flex-1 items-start justify-center px-bro-pad pt-[5.5rem] pb-4 sm:items-center">
+        <section
+          aria-labelledby="login-title"
+          className="w-full max-w-[28rem] bro-plate p-6 sm:p-8"
+        >
+          <h1 className="type-doc-heading mb-2" id="login-title">
             Вход
           </h1>
           <p className="type-fine text-muted-foreground">
@@ -62,7 +66,7 @@ export default async function SignInPage({
               imessagePhoneNumber={imessagePhoneNumber}
             />
           )}
-          <p className="type-fine mt-6 text-muted-foreground">
+          <p className="type-fine mt-6 text-center text-muted-foreground">
             Продолжая, вы соглашаетесь на обработку персональных данных по{" "}
             <Link
               className="underline underline-offset-[0.2em]"
@@ -78,6 +82,8 @@ export default async function SignInPage({
           </p>
         </section>
       </main>
+
+      <SiteFooter />
     </div>
   );
 }

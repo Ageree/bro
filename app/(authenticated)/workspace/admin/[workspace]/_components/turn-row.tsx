@@ -36,7 +36,7 @@ export function TurnRow({
   return (
     <li className="min-w-0 border-t border-border py-[0.6rem] first:border-t-0 first:pt-[0.2rem]">
       <Collapsible onOpenChange={setOpen} open={open}>
-        <CollapsibleTrigger className="type-row min-w-0 text-left wrap-break-word">
+        <CollapsibleTrigger className="type-row min-h-11 w-full min-w-0 cursor-pointer text-left wrap-break-word">
           <span className="type-status text-muted-foreground">
             {formatMoment(turn.startedAt)} · {turn.channel} · {turn.kind} ·{" "}
             {formatDuration(turn.durationMs)} · {formatRub(turn.costRub)}
@@ -48,7 +48,7 @@ export function TurnRow({
             {turn.tools.length > 0 ? ` · ${turn.tools.join(", ")}` : ""}
           </span>
         </CollapsibleTrigger>
-        <CollapsibleContent className="type-fine mt-1 min-w-0 wrap-break-word">
+        <CollapsibleContent className="type-fine mt-1 mb-1 min-w-0 rounded-2xl bg-muted px-4 py-3 wrap-break-word">
           {!textsOn ? (
             <p className="text-muted-foreground">Тексты выключены.</p>
           ) : transcript.isPending ? (

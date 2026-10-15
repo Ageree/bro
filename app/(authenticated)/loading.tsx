@@ -1,11 +1,16 @@
-/** Paper waiting for its ink: the page's own measure, one quiet line. */
+import { Document } from "@web/components/paper/document";
+
+/** Paper waiting for its ink: the page's own measure, one quiet plate. */
 export default function Loading() {
   return (
-    <div
-      aria-label="Страница загружается"
-      className="mx-auto w-full max-w-[42rem] px-bro-pad pt-[0.6rem] pb-20"
-    >
-      <p className="type-fine text-muted-foreground">Загружаем…</p>
-    </div>
+    <Document className="pb-20">
+      <div
+        aria-label="Страница загружается"
+        className="mt-6 bro-plate p-6 sm:p-8"
+        role="status"
+      >
+        <p className="type-fine text-muted-foreground">Загружаем…</p>
+      </div>
+    </Document>
   );
 }

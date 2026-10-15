@@ -129,8 +129,8 @@ export default {
       context: [
         "The app under test is Bro (bro.), a personal AI agent people text in",
         "Russian; the whole interface is in Russian. «Кабинет» (/workspace) is",
-        "the dashboard, «Сейф» (/vault) holds cards and site logins, «Личные",
-        "данные» (/personal-info) the profile and time zone, «Чат» (/chat) a",
+        "the dashboard; its «Сейф» section holds cards, addresses and contacts.",
+        "«Личные данные» (/personal-info) the profile and time zone, «Чат» (/chat) a",
         "conversation with Bro and «Все чаты» (/chat/history) the list of",
         "conversations. Bro answers in the chat after a few seconds to a",
         "minute; its replies are generated, so judge their meaning, not exact",

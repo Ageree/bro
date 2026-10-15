@@ -132,8 +132,10 @@ function RemoveMemory({
           </DialogDescription>
         </DialogHeader>
         <p className="type-row wrap-break-word">{text}</p>
-        <DialogFooter className="mt-4">
-          <DialogClose render={<Button type="button" variant="act" />}>
+        <DialogFooter className="mx-0 mt-4 mb-0 rounded-none border-t-0 bg-transparent p-0">
+          <DialogClose
+            render={<Button size="lg" type="button" variant="outline" />}
+          >
             Оставить
           </DialogClose>
           <Button
@@ -142,7 +144,7 @@ function RemoveMemory({
               onRemove();
             }}
             type="button"
-            variant="act"
+            variant="paper"
           >
             Удалить навсегда
           </Button>
@@ -235,11 +237,11 @@ function EditMemory({
               ) : null}
             </Field>
           </FieldGroup>
-          <DialogFooter className="mt-4">
+          <DialogFooter className="mx-0 mt-4 mb-0 rounded-none border-t-0 bg-transparent p-0">
             <Button
               disabled={!parsed.success || update.isPending}
               type="submit"
-              variant="act"
+              variant="paper"
             >
               Сохранить
             </Button>

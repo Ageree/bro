@@ -33,7 +33,7 @@ export function LocalPhoneAuthForm({
 
   return (
     <form
-      className="mt-[0.9rem]"
+      className="mt-5"
       onSubmit={(event) => {
         event.preventDefault();
         signIn.mutate(formValue(event.currentTarget, "phone-number"));
