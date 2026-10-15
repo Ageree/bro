@@ -716,6 +716,8 @@ export const env = createEnv({
     YOOMONEY_CLIENT_ID: trimmedValue.optional(),
     YOOMONEY_CLIENT_SECRET: trimmedValue.optional(),
     YOOMONEY_WORKSPACES: workspaceListSchema.optional(),
+    // `on`: every wallet payment is YooMoney's test one — checked, not charged.
+    YOOMONEY_TEST_PAYMENTS: z.enum(["on", "off"]).default("off"),
     // Which Drizzle driver `db/index.ts` builds. Deployments keep the pooled
     // TCP client; `neon-http` exists for a maintenance run from a machine that
     // can only reach the database over HTTPS.

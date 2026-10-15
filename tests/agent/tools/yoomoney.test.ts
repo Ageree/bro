@@ -4,7 +4,7 @@ import type {
   disconnectYoomoney,
   readYoomoneyConnection,
   withYoomoneyToken,
-} from "@db/services/yoomoney";
+} from "@db/services/yoomoney/connection";
 import type * as Api from "@shared/yoomoney/api";
 
 const services = vi.hoisted(() => ({
@@ -13,7 +13,7 @@ const services = vi.hoisted(() => ({
   withToken: vi.fn<typeof withYoomoneyToken>(),
 }));
 
-vi.mock("@db/services/yoomoney", () => ({
+vi.mock("@db/services/yoomoney/connection", () => ({
   disconnectYoomoney: vi.fn<typeof disconnectYoomoney>(),
   readYoomoneyConnection: services.connection,
   withYoomoneyToken: services.withToken,

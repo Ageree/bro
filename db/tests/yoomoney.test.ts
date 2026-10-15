@@ -70,7 +70,7 @@ async function service() {
   const [Database, scope, yoomoney] = await Promise.all([
     import("@db"),
     import("@db/services/scope"),
-    import("@db/services/yoomoney"),
+    import("@db/services/yoomoney/connection"),
   ]);
   vi.spyOn(Database, "db", "get").mockReturnValue(database);
   await scope.ensureScope(alice);
@@ -93,7 +93,7 @@ describe("the YooMoney wallet connection", () => {
       "https://yoomoney.ru/oauth/authorize"
     );
     expect(page.searchParams.get("scope")).toBe(
-      "account-info operation-history"
+      "account-info operation-history payment-p2p payment-shop"
     );
     const state = stateOf(consent);
     const requests = wallet(consenting);
@@ -176,6 +176,64 @@ describe("the YooMoney wallet connection", () => {
     expect(await yoomoney.readYoomoneyConnection(alice)).toEqual({
       state: "disconnected",
     });
+  });
+});
+
+describe("wallet payments", () => {
+  it("are claimed once, and never while another may be going through", async () => {
+    await service();
+    const payments = await import("@db/services/yoomoney/payments");
+    const quoted = (id: string) =>
+      payments.createYoomoneyPayment(alice, {
+        id,
+        rootSessionId: "session-1",
+        kind: "service",
+        title: "МегаФон (Россия)",
+        requestParams: { pattern_id: "337" },
+        shown: [],
+        requestId: `request-${id}`,
+        amountMinor: 10_000,
+        test: false,
+        confirmationQuestion: `Платёж ${id}. Оплачиваю?`,
+        expiresAt: new Date(Date.now() + 60_000),
+      });
+    const first = await quoted("6f0e3c1a-1111-4a8b-9c0d-000000000001");
+    const second = await quoted("6f0e3c1a-1111-4a8b-9c0d-000000000002");
+    const claim = (payment: typeof first, callId = "call-1") =>
+      payments.claimYoomoneyPayment(alice, {
+        id: payment.id,
+        rootSessionId: "session-1",
+        confirmationQuestion: payment.confirmationQuestion,
+        callId,
+      });
+
+    expect(
+      await payments.claimYoomoneyPayment(alice, {
+        id: first.id,
+        rootSessionId: "session-1",
+        confirmationQuestion: second.confirmationQuestion,
+        callId: "call-1",
+      })
+    ).toEqual({ kind: "unavailable" });
+    expect((await claim(first)).kind).toBe("claimed");
+    expect((await claim(first, "call-2")).kind).toBe("existing");
+    expect((await claim(second)).kind).toBe("busy");
+
+    await payments.settleYoomoneyPayment(alice, {
+      id: first.id,
+      from: ["submitting"],
+      state: "paid",
+      paymentId: "payment-1",
+    });
+    // A settled payment is not settled again from where it no longer is.
+    expect(
+      await payments.settleYoomoneyPayment(alice, {
+        id: first.id,
+        from: ["submitting"],
+        state: "refused",
+      })
+    ).toBeUndefined();
+    expect((await claim(second)).kind).toBe("claimed");
   });
 });
 

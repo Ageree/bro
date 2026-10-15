@@ -4,15 +4,22 @@ import type { AccessScope } from "@shared/identity/access-scope";
 
 /**
  * The YooMoney wallet API (yoomoney.ru/docs/wallet): the person's consent by
- * OAuth, then the balance and the history under the token it gives. The
- * token lives three years, has no refresh and answers 401 once the person
- * revokes it in the wallet's settings.
+ * OAuth, then the balance, the history and payments under the token it
+ * gives (`payments.ts`, `showcase.ts`). The token lives three years, has no
+ * refresh and answers 401 once the person revokes it in the wallet's
+ * settings.
  */
 
-const origin = "https://yoomoney.ru";
+export const yoomoneyOrigin = "https://yoomoney.ru";
 
-/** What Bro asks for: the balance and the history, not payments. */
-export const yoomoneyScope = "account-info operation-history";
+/**
+ * What Bro asks for: the balance and the history, transfers to other
+ * wallets (`payment-p2p`) and payments to the services of YooMoney's
+ * catalogue (`payment-shop`), from the wallet's balance only. Every payment
+ * still waits for the person's yes to its exact total.
+ */
+export const yoomoneyScope =
+  "account-info operation-history payment-p2p payment-shop";
 
 export function yoomoneyConfigured() {
   return Boolean(env.YOOMONEY_CLIENT_ID && env.YOOMONEY_CLIENT_SECRET);
@@ -53,7 +60,7 @@ function credentials() {
  * docs; its Redirect URI may carry a query of the app's own (the state).
  */
 export function yoomoneyAuthorizeUrl(redirectUri: string) {
-  const url = new URL("/oauth/authorize", origin);
+  const url = new URL("/oauth/authorize", yoomoneyOrigin);
   url.searchParams.set("client_id", credentials().clientId);
   url.searchParams.set("response_type", "code");
   url.searchParams.set("redirect_uri", redirectUri);
@@ -69,7 +76,7 @@ const tokenSchema = z.object({ access_token: z.string().optional() });
  */
 export async function exchangeYoomoneyCode(code: string, redirectUri: string) {
   const { clientId, clientSecret } = credentials();
-  const answer = await request("/oauth/token", {
+  const answer = await yoomoneyRequest("/oauth/token", {
     body: new URLSearchParams({
       client_id: clientId,
       client_secret: clientSecret,
@@ -101,7 +108,7 @@ const accountSchema = z.object({
 /** The wallet's number and balance (`account-info`). */
 export async function readYoomoneyAccount(token: string) {
   const parsed = accountSchema.safeParse(
-    await request("/api/account-info", { token })
+    await yoomoneyRequest("/api/account-info", { token })
   );
   if (!parsed.success) throw new YoomoneyError("unavailable");
   const account = parsed.data;
@@ -153,7 +160,7 @@ export async function readYoomoneyHistory(
     body.set("type", direction === "in" ? "deposition" : "payment");
   if (from !== undefined) body.set("from", from.toISOString());
   const parsed = historySchema.safeParse(
-    await request("/api/operation-history", { body, token })
+    await yoomoneyRequest("/api/operation-history", { body, token })
   );
   if (!parsed.success || parsed.data.error !== undefined)
     throw new YoomoneyError("unavailable");
@@ -176,14 +183,18 @@ export async function readYoomoneyHistory(
  */
 export async function revokeYoomoneyToken(token: string) {
   try {
-    await request("/api/revoke", { empty: true, token });
+    await yoomoneyRequest("/api/revoke", { empty: true, token });
     return true;
   } catch {
     return false;
   }
 }
 
-async function request(
+/**
+ * A POST to the wallet API, form-encoded, under the token when one is
+ * given; the answer's JSON, or null for `empty`.
+ */
+export async function yoomoneyRequest(
   path: string,
   {
     body,
@@ -201,7 +212,7 @@ async function request(
   if (token !== undefined) headers.set("Authorization", `Bearer ${token}`);
   let response: Response;
   try {
-    response = await fetch(new URL(path, origin), {
+    response = await fetch(new URL(path, yoomoneyOrigin), {
       method: "POST",
       headers,
       body: body ?? new URLSearchParams(),

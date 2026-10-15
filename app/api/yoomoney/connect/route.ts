@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { startYoomoneyAuthorization } from "@db/services/yoomoney";
+import { startYoomoneyAuthorization } from "@db/services/yoomoney/connection";
 import { applicationOrigin } from "@shared/environment/origin";
 import { YoomoneyError } from "@shared/yoomoney/api";
 import {

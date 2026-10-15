@@ -1,10 +1,22 @@
-import { foreignKey, pgTable, text, timestamp } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import {
+  bigint,
+  boolean,
+  check,
+  foreignKey,
+  jsonb,
+  pgTable,
+  text,
+  timestamp,
+  uniqueIndex,
+  uuid,
+} from "drizzle-orm/pg-core";
 import { workspaceMemberships } from "./workspaces";
 
 /**
  * The person's YooMoney wallet, one per workspace: its number and the OAuth
  * token Bro reads it with, encrypted with the installation's key
- * (`db/services/yoomoney.ts`). YooMoney's token lives three years and has
+ * (`db/services/yoomoney/connection.ts`). YooMoney's token lives three years and has
  * no refresh; `scope` is what the person granted.
  */
 export const yoomoneyConnections = pgTable(
@@ -52,5 +64,72 @@ export const yoomoneyAuthorizations = pgTable(
         workspaceMemberships.userId,
       ],
     }).onDelete("cascade"),
+  ]
+);
+
+/**
+ * A payment from the wallet (`db/services/yoomoney/payments.ts`): checked by
+ * `request-payment` (`requestId`, the exact `amountMinor` with the fee) and
+ * asked about in `confirmationQuestion`; paid once the person said yes.
+ * `submitting` is a payment sent to `process-payment`, `pending` one
+ * YooMoney still processes, `unknown` one whose answer was lost: the same
+ * `requestId` reads each back and never pays twice. One of those at a time
+ * per workspace.
+ */
+export const yoomoneyPayments = pgTable(
+  "yoomoney_payments",
+  {
+    id: uuid("id").primaryKey(),
+    workspaceId: text("workspace_id").notNull(),
+    userId: text("user_id").notNull(),
+    rootSessionId: text("root_session_id").notNull(),
+    kind: text("kind", { enum: ["transfer", "service"] }).notNull(),
+    title: text("title").notNull(),
+    requestParams: jsonb("request_params")
+      .$type<Record<string, string>>()
+      .notNull(),
+    shown: jsonb("shown").$type<{ label: string; value: string }[]>().notNull(),
+    requestId: text("request_id").notNull(),
+    amountMinor: bigint("amount_minor", { mode: "number" }).notNull(),
+    test: boolean("test").notNull(),
+    state: text("state", {
+      enum: ["quoted", "submitting", "pending", "unknown", "paid", "refused"],
+    })
+      .notNull()
+      .default("quoted"),
+    confirmationQuestion: text("confirmation_question").notNull(),
+    paymentId: text("payment_id"),
+    error: text("error"),
+    callId: text("call_id"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    submittedAt: timestamp("submitted_at", { withTimezone: true }),
+    settledAt: timestamp("settled_at", { withTimezone: true }),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.workspaceId, table.userId],
+      foreignColumns: [
+        workspaceMemberships.workspaceId,
+        workspaceMemberships.userId,
+      ],
+    }).onDelete("cascade"),
+    uniqueIndex("yoomoney_payments_in_flight_uidx")
+      .on(table.workspaceId)
+      .where(sql`${table.state} IN ('submitting', 'pending', 'unknown')`),
+    check(
+      "yoomoney_payments_kind_check",
+      sql`${table.kind} IN ('transfer', 'service')`
+    ),
+    check(
+      "yoomoney_payments_state_check",
+      sql`${table.state} IN ('quoted', 'submitting', 'pending', 'unknown', 'paid', 'refused')`
+    ),
+    check(
+      "yoomoney_payments_amount_check",
+      sql`${table.amountMinor} BETWEEN 0 AND 9007199254740991`
+    ),
   ]
 );

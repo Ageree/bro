@@ -348,14 +348,22 @@
   не передавайте boolean-поля поиска, если человек фильтр не задал.
   Mail.ru также теряет совпадения у `SUBJECT … UNSEEN`, хотя `UNSEEN SUBJECT …`
   на том же UID работает: добавляйте флаги и даты перед текстовыми критериями.
-- Кошелёк ЮMoney (15.10, пилот `YOOMONEY_WORKSPACES`, с 15.10 — владелец): баланс и
-  история по OAuth (`agent/tools/yoomoney.ts`, `db/services/yoomoney.ts`, маршруты
-  `/api/yoomoney/*`), платежей нет. Приложение — yoomoney.ru/myservices, Redirect URI
-  `https://brobro.tech/api/yoomoney/callback`. `state` у ЮMoney нет: он едет в query
-  Redirect URI, ЮMoney его сохраняет, а обмен кода повторяет тот же URI. На неверный
-  код, секрет или URI `/oauth/token` отвечает 200 `{"access_token":""}`, а не ошибкой
-  OAuth: секрет проверяет лишь настоящий вход. Токен живёт 3 года без refresh, 401 —
-  подключение удаляется.
+- Кошелёк ЮMoney (15.10, пилот `YOOMONEY_WORKSPACES`, с 15.10 — владелец): баланс, история
+  и платежи с баланса по OAuth (`agent/tools/yoomoney.ts`, `yoomoney_pay.ts`,
+  `db/services/yoomoney/`, `shared/yoomoney/`, маршруты `/api/yoomoney/*`). Приложение —
+  yoomoney.ru/myservices, Redirect URI `https://brobro.tech/api/yoomoney/callback`. `state` у
+  ЮMoney нет: он едет в query Redirect URI, ЮMoney его сохраняет, а обмен кода повторяет тот
+  же URI. На неверный код, секрет или URI `/oauth/token` отвечает 200 `{"access_token":""}`, а
+  не ошибкой OAuth: секрет проверяет лишь настоящий вход. Токен живёт 3 года без refresh, 401
+  — подключение удаляется. Права на экране согласия видны лишь после входа в кошелёк:
+  лимит `.limit()` в scope из облака не проверить, его нет.
+- Платежи ЮMoney: каталог витрин (`/api/showcase-search`, `/api/showcase/<id>`) публичный и
+  без токена; форма идёт шагами: 300 — следующая форма (адрес — `Location`), 400 — ошибки
+  полей, 200 — параметры `request-payment`. Оплата по ИНН (витрина 5551) через API не
+  открывается (404/405) — такие находки отброшены. `process-payment` с тем же `request_id`
+  повторно не платит и возвращает исход: так читаются `in_progress` и потерянный ответ
+  (`status`); `contract_not_found` при таком чтении — «неизвестно», не отказ.
+  `YOOMONEY_TEST_PAYMENTS=on` — тестовые вызовы ЮMoney, деньги не списываются.
 - OAuth почты требует настройки самого ящика, не только scopes приложения:
   Яндекс — «Почтовые программы» → IMAP; Mail.ru — «Внешние сервисы» →
   «Доступ к Почте по IMAP, POP и SMTP». Выключенная настройка блокирует вход

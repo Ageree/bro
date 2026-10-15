@@ -3,7 +3,7 @@ import { z } from "zod";
 import {
   cancelYoomoneyAuthorization,
   finishYoomoneyAuthorization,
-} from "@db/services/yoomoney";
+} from "@db/services/yoomoney/connection";
 import { applicationOrigin } from "@shared/environment/origin";
 import { YoomoneyError } from "@shared/yoomoney/api";
 import {
@@ -20,7 +20,7 @@ const callbackSchema = z.object({
 /**
  * Where YooMoney sends the person back: with `code` after consent, with
  * `error=access_denied` after a refusal; the state rides in the query of
- * the Redirect URI (`db/services/yoomoney.ts`).
+ * the Redirect URI (`db/services/yoomoney/connection.ts`).
  */
 export async function GET(request: Request) {
   const url = new URL("/workspace", applicationOrigin());

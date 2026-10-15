@@ -1,5 +1,5 @@
 {
-  "id": "0389bf7c-94ac-45af-9242-31cf3c869698",
+  "id": "f0b3a894-e57f-4188-8038-727089b76fa5",
   "prevId": "5b8f25fb-ed8f-4b17-a817-08848274fe51",
   "version": "7",
   "dialect": "postgresql",
@@ -8596,6 +8596,181 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.yoomoney_payments": {
+      "name": "yoomoney_payments",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "workspace_id": {
+          "name": "workspace_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "root_session_id": {
+          "name": "root_session_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "title": {
+          "name": "title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "request_params": {
+          "name": "request_params",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "shown": {
+          "name": "shown",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "request_id": {
+          "name": "request_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "amount_minor": {
+          "name": "amount_minor",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "test": {
+          "name": "test",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'quoted'"
+        },
+        "confirmation_question": {
+          "name": "confirmation_question",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "payment_id": {
+          "name": "payment_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "error": {
+          "name": "error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "call_id": {
+          "name": "call_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "submitted_at": {
+          "name": "submitted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "settled_at": {
+          "name": "settled_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "yoomoney_payments_in_flight_uidx": {
+          "name": "yoomoney_payments_in_flight_uidx",
+          "columns": [
+            {
+              "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"yoomoney_payments\".\"state\" IN ('submitting', 'pending', 'unknown')",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "yoomoney_payments_workspace_id_user_id_workspace_memberships_workspace_id_user_id_fk": {
+          "name": "yoomoney_payments_workspace_id_user_id_workspace_memberships_workspace_id_user_id_fk",
+          "tableFrom": "yoomoney_payments",
+          "tableTo": "workspace_memberships",
+          "columnsFrom": ["workspace_id", "user_id"],
+          "columnsTo": ["workspace_id", "user_id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "yoomoney_payments_kind_check": {
+          "name": "yoomoney_payments_kind_check",
+          "value": "\"yoomoney_payments\".\"kind\" IN ('transfer', 'service')"
+        },
+        "yoomoney_payments_state_check": {
+          "name": "yoomoney_payments_state_check",
+          "value": "\"yoomoney_payments\".\"state\" IN ('quoted', 'submitting', 'pending', 'unknown', 'paid', 'refused')"
+        },
+        "yoomoney_payments_amount_check": {
+          "name": "yoomoney_payments_amount_check",
+          "value": "\"yoomoney_payments\".\"amount_minor\" BETWEEN 0 AND 9007199254740991"
+        }
+      },
       "isRLSEnabled": false
     }
   },
