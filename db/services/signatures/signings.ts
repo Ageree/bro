@@ -19,7 +19,8 @@ const signingPlanSchema = z.object({
         field: z.string().min(1).max(500),
         role: z.enum(["signature", "initials", "date"]),
         pages: z.array(z.number().int().min(1)).min(1).max(500),
-        label: z.string().max(80).nullable(),
+        // Every distinct label of the field's widgets (`fieldLabel`).
+        label: z.string().max(400).nullable(),
         mark: z.boolean(),
       })
     )

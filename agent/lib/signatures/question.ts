@@ -74,13 +74,14 @@ function placeList(
     .flatMap((role) => {
       const places = plan.places.filter((place) => place.role === role);
       if (places.length === 0) return [];
+      // Every label: one left out could be the other party's place.
       const labels = [
         ...new Set(
           places.flatMap(({ label }) =>
             label === null || !tellsWhose(label) ? [] : [label]
           )
         ),
-      ].slice(0, 2);
+      ];
       const named = role === "date" ? `${names.date} ${dateText}` : names[role];
       const pages = pageList(
         places.flatMap((place) => place.pages),

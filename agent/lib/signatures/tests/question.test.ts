@@ -103,6 +103,29 @@ describe("the signing question", () => {
     expect(question).toContain("дата 15.10.2026 — стр. 5");
   });
 
+  it("names every place's label, so another party's place is never left out", () => {
+    const labels = ["Заявитель", "Получатель", "Поручитель"];
+    expect(
+      signingQuestion({
+        dateText: "15.10.2026",
+        documentName: "anketa.pdf",
+        formal: false,
+        language: "ru",
+        plan: {
+          pages: 3,
+          places: labels.map((label, index) => ({
+            field: `signature_${String(index)}`,
+            label,
+            mark: false,
+            pages: [index + 1],
+            role: "signature" as const,
+          })),
+        },
+        signature: { kind: "image", source: "saved" },
+      })
+    ).toContain("стр. 1–3 («Заявитель», «Получатель», «Поручитель»)");
+  });
+
   it("is not a question about anything but signing", () => {
     expect(signQuestionPattern.test("Подписал. Что-то ещё?")).toBe(false);
     expect(signQuestionPattern.test("Итого 450 ₽. Оплачиваю?")).toBe(false);

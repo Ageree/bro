@@ -131,7 +131,7 @@ const refusals = {
   already_signed:
     "The PDF carries a digital signature that any change would break; do not sign it and tell the person.",
   choose_fields:
-    "Prepare again with `fields` naming only the person's own places from candidates (never a landlord's, employer's, witness's or other party's); if unclear, ask the person one question naming pages and labels.",
+    "Prepare again with `fields` naming only the person's own places from candidates (never a landlord's, employer's, witness's or other party's: a candidate with counterparty is printed as one); if unclear, ask the person one question naming pages and labels.",
   encrypted: sameTaskReply.encrypted,
   file_unavailable:
     "Use the share_file link from the task report as is, or the attachment path of a PDF the person sent.",
