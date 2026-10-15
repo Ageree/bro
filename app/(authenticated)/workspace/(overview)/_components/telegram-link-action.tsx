@@ -18,8 +18,8 @@ export function TelegramLinkAction({ linked }: { readonly linked: boolean }) {
             target="_blank"
           />
         }
-        size="act-sm"
-        variant="act"
+        size="sm"
+        variant="outline"
       >
         Открыть ссылку
       </Button>
@@ -32,9 +32,9 @@ export function TelegramLinkAction({ linked }: { readonly linked: boolean }) {
       onClick={() => {
         link.mutate();
       }}
-      size="act-sm"
+      size="sm"
       type="button"
-      variant="act"
+      variant="outline"
     >
       {linked ? "Перепривязать" : "Привязать"}
     </Button>

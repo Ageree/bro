@@ -12,6 +12,7 @@ import {
   Section,
   StatusLine,
 } from "@web/components/paper/document";
+import { Badge } from "@web/components/ui/badge";
 import { Button } from "@web/components/ui/button";
 import { getAuthSession } from "@db/services/auth/session";
 import { readMailConnection } from "@db/services/mail";
@@ -49,6 +50,7 @@ import { photonConfigured } from "@shared/photon/credentials";
 import { localMonthKey } from "@shared/calendar/local-period";
 import { artifactStorageConfigured } from "@shared/object-storage/artifacts";
 import { resolveTimeZone } from "@shared/user-profile/schema";
+import type { VaultItem } from "@shared/vault/schema";
 import { requireRequestScope } from "@web/auth/request-scope";
 import { ConnectedAppAction } from "./_components/connected-app-action";
 import { GoogleWorkspaceAction } from "./_components/google-workspace-action";
@@ -62,6 +64,10 @@ export const metadata: Metadata = { title: "Кабинет" };
 
 const dayMs = 24 * 60 * 60 * 1000;
 
+/** A status in the header row: a roomy pill, not the tiny default badge. */
+const statusPill =
+  "h-auto border-2 border-foreground px-3 py-1 type-status whitespace-normal";
+
 /**
  * Whole days of the paid period already behind, clamped to it: a month
  * bought before the current one expires is not a negative day count.
@@ -70,9 +76,6 @@ function paidDaysUsed(paidUntil: Date) {
   const daysLeft = Math.ceil((paidUntil.getTime() - Date.now()) / dayMs);
   return Math.min(paidPeriodDays, Math.max(0, paidPeriodDays - daysLeft));
 }
-
-/** What the cabinet shows of a vault item: the metadata, never the secret. */
-type VaultPreviewItem = Awaited<ReturnType<typeof readVaultItems>>[number];
 
 export default async function Page({ searchParams }: PageProps<"/workspace">) {
   const { google, status, mail, mailStatus } = await searchParams;
@@ -153,17 +156,21 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
   return (
     <Document>
       <DocumentTitle>Кабинет</DocumentTitle>
-      <p className="type-fine text-muted-foreground">
-        {billing.paid ? "Полный доступ" : "Бесплатный режим"} ·{" "}
-        {phoneLast4
-          ? `Телефон …${phoneLast4}`
-          : "Телефон ещё не привязан — напиши Bro в iMessage"}
-      </p>
-      <p className="type-fine text-muted-foreground">
-        {billing.paidUntil
-          ? `до ${when.format(billing.paidUntil)}`
-          : "Оплата ещё не оформлена"}
-      </p>
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <Badge className={statusPill} variant="default">
+          {billing.paid ? "Полный доступ" : "Бесплатный режим"}
+        </Badge>
+        <Badge className={statusPill} variant="outline">
+          {phoneLast4
+            ? `Телефон …${phoneLast4}`
+            : "Телефон ещё не привязан — напиши Bro в iMessage"}
+        </Badge>
+        <Badge className={statusPill} variant="outline">
+          {billing.paidUntil
+            ? `до ${when.format(billing.paidUntil)}`
+            : "Оплата ещё не оформлена"}
+        </Badge>
+      </div>
 
       <ChannelsSection
         imessageConfigured={photonConfigured()}
@@ -378,7 +385,7 @@ function connectedAppDescription(
   return `Не подключён. ${connectedAppPurposes[app]} Отключить можно в любой момент.`;
 }
 
-/** The lead actions under the title: text, like on the landing. */
+/** The lead actions under the title: the chat is the primary pill. */
 export function ChannelsSection({
   imessageConfigured,
   imessagePhoneNumber,
@@ -393,31 +400,29 @@ export function ChannelsSection({
 
   return (
     <>
-      <Actions>
+      <Actions className="items-center">
+        <Button
+          nativeButton={false}
+          render={<Link href="/chat" />}
+          variant="paper"
+        >
+          Открыть чат
+        </Button>
         {imessageHref ? (
           <Button
             nativeButton={false}
             render={
               <a aria-label="Написать Bro в iMessage" href={imessageHref} />
             }
-            size="act-lead"
-            variant="act"
+            variant="outline"
           >
             Написать Bro
           </Button>
         ) : (
-          <Button disabled size="act-lead" variant="act">
+          <Button disabled variant="outline">
             Написать Bro
           </Button>
         )}
-        <Button
-          nativeButton={false}
-          render={<Link href="/chat" />}
-          size="act-lead"
-          variant="act"
-        >
-          Открыть чат
-        </Button>
       </Actions>
       <StatusLine className="mt-2">
         {channelAvailabilityMessage({
@@ -513,18 +518,17 @@ function PaymentsSection({
       ) : (
         <p className="type-fine text-muted-foreground">Пока нет оплат.</p>
       )}
-      <Actions>
+      <Actions className="items-center">
         {billingOn ? (
           <Button
             nativeButton={false}
             render={<Link href="/api/pay" prefetch={false} />}
-            size="act-lead"
-            variant="act"
+            variant="paper"
           >
             Оплатить месяц
           </Button>
         ) : (
-          <Button disabled size="act-lead" variant="act">
+          <Button disabled variant="paper">
             Оплатить месяц
           </Button>
         )}
@@ -541,7 +545,7 @@ function PaymentsSection({
 function SiteLoginsSection({
   logins,
 }: {
-  readonly logins: readonly VaultPreviewItem[];
+  readonly logins: readonly VaultItem[];
 }) {
   const domains = [
     ...new Set(
@@ -580,10 +584,14 @@ function MemorySection({ count }: { readonly count: number }) {
         исправить, удалить или вернуть их прежний текст; правила — только
         удалить, задаются они в разговоре.
       </p>
-      <Actions>
-        <Link className="type-act bro-link" href="/workspace/memory">
-          открыть память
-        </Link>
+      <Actions className="items-center">
+        <Button
+          nativeButton={false}
+          render={<Link href="/workspace/memory" />}
+          variant="outline"
+        >
+          Открыть память
+        </Button>
       </Actions>
     </Section>
   );
@@ -595,10 +603,14 @@ function TimeZoneSection({ timeZone }: { readonly timeZone: string }) {
       <p className="type-fine text-muted-foreground">
         По этому времени Bro считает дневные лимиты и ставит напоминания.
       </p>
-      <Actions>
-        <Link className="type-act bro-link" href="/personal-info">
+      <Actions className="items-center">
+        <Button
+          nativeButton={false}
+          render={<Link href="/personal-info" />}
+          variant="outline"
+        >
           Изменить
-        </Link>
+        </Button>
       </Actions>
     </Section>
   );

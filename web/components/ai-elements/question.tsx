@@ -169,7 +169,7 @@ export const Question = ({
     <QuestionContext.Provider value={contextValue}>
       <form
         className={cn(
-          "space-y-4 rounded-lg border bg-background p-4",
+          "space-y-4 rounded-3xl border-2 border-foreground bg-card p-5",
           className
         )}
         onSubmit={(event) => {
@@ -189,7 +189,7 @@ export const QuestionPrompt = ({
   className,
   ...props
 }: QuestionPromptProps) => (
-  <p className={cn("font-medium text-sm", className)} {...props} />
+  <p className={cn("type-label", className)} {...props} />
 );
 
 export type QuestionDescriptionProps = HTMLAttributes<HTMLParagraphElement>;
@@ -198,7 +198,10 @@ export const QuestionDescription = ({
   className,
   ...props
 }: QuestionDescriptionProps) => (
-  <p className={cn("text-muted-foreground text-sm", className)} {...props} />
+  <p
+    className={cn("type-supporting-body text-muted-foreground", className)}
+    {...props}
+  />
 );
 
 export type QuestionOptionsProps = HTMLAttributes<HTMLDivElement>;
@@ -248,12 +251,16 @@ export const QuestionOption = ({
   return (
     <Button
       aria-checked={isSelected}
-      className={cn("h-auto whitespace-normal", className)}
+      className={cn(
+        "h-auto min-h-11 rounded-3xl py-2 whitespace-normal",
+        className
+      )}
       disabled={question.disabled || disabled}
       onClick={handleClick}
       role={role}
+      size="lg"
       type="button"
-      variant={variant ?? (isSelected ? "default" : "outline")}
+      variant={variant ?? (isSelected ? "paper" : "outline")}
       {...props}
     >
       {children ?? value}
@@ -321,6 +328,7 @@ export const QuestionSubmit = ({
     <Button
       disabled={question.disabled || disabled === true || !hasResponse}
       type="submit"
+      variant="paper"
       {...props}
     >
       {children}

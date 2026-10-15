@@ -43,9 +43,9 @@ export function ConnectedAppAction({
           app,
         });
       }}
-      size="act-sm"
+      size="sm"
       type="button"
-      variant="act"
+      variant="outline"
     >
       {state === "connected" ? "Отключить" : "Подключить"}
     </Button>

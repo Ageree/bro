@@ -98,7 +98,9 @@ describe("turnAwaitsAnswer", () => {
           "Добавь вход в сейф: https://brobro.tech/workspace?setup=vault&kind=login"
         ),
         delivered("send_message"),
-        sent("[Сейф](https://brobro.tech/workspace?setup=vault) — ссылка выше."),
+        sent(
+          "[Сейф](https://brobro.tech/workspace?setup=vault) — ссылка выше."
+        ),
         delivered("send_message"),
       ])
     ).toBe(false);

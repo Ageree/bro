@@ -35,9 +35,9 @@ export function GoogleWorkspaceAction({
         onClick={() => {
           update.mutate({ action: "disconnect" });
         }}
-        size="act-sm"
+        size="sm"
         type="button"
-        variant="act"
+        variant="outline"
       >
         Отключить
       </Button>
@@ -51,9 +51,9 @@ export function GoogleWorkspaceAction({
         onClick={() => {
           update.mutate({ access: "full", action: "connect" });
         }}
-        size="act-sm"
+        size="sm"
         type="button"
-        variant="act"
+        variant="outline"
       >
         Подключить
       </Button>
@@ -62,9 +62,9 @@ export function GoogleWorkspaceAction({
         onClick={() => {
           update.mutate({ access: "read_only", action: "connect" });
         }}
-        size="act-sm"
+        size="sm"
         type="button"
-        variant="act"
+        variant="outline"
       >
         Только чтение
       </Button>

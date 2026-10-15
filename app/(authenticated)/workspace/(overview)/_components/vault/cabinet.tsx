@@ -18,7 +18,11 @@ const addLinks = [
  * contacts, each list opening its own sheet, and the links that open the
  * sheet to add one. The same links come from the agent as `?setup=vault`.
  */
-export function CabinetVault({ items }: { readonly items: readonly VaultItem[] }) {
+export function CabinetVault({
+  items,
+}: {
+  readonly items: readonly VaultItem[];
+}) {
   const itemsByKind = Object.groupBy(items, (item) => item.kind);
   const otherItems = items.filter(
     (item) =>

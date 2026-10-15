@@ -112,9 +112,9 @@ function DirectModelField({
         render={
           <Button
             disabled={selectModel.isPending}
-            size="act-sm"
+            size="sm"
             type="button"
-            variant="act"
+            variant="outline"
           />
         }
       >
@@ -228,9 +228,9 @@ function GatewayModelSelector({ modelId }: { readonly modelId: string }) {
         render={
           <Button
             disabled={selectModel.isPending}
-            size="act-sm"
+            size="sm"
             type="button"
-            variant="act"
+            variant="outline"
           />
         }
       >
