@@ -102,14 +102,15 @@ export async function renewYoomoneyPayment(
 /**
  * Takes the payment for `process-payment`, once: only a quoted payment of
  * this conversation, asked about with this very question, before it
- * expires, and while no other payment of the workspace is in flight.
+ * expires, while no other payment of the workspace is in flight, and with
+ * a yes (`consentHash`) that has paid nothing yet.
  */
 export async function claimYoomoneyPayment(
   scope: AccessScope,
   input: Pick<
     YoomoneyPayment,
     "id" | "rootSessionId" | "confirmationQuestion"
-  > & { readonly callId: string }
+  > & { readonly callId: string; readonly consentHash: string }
 ) {
   return db.transaction(async (transaction) => {
     await lockWorkspaceSpending(transaction, scope);
@@ -136,9 +137,25 @@ export async function claimYoomoneyPayment(
       )
       .limit(1);
     if (busy) return { kind: "busy" as const, payment };
+    const [spent] = await transaction
+      .select({ id: yoomoneyPayments.id })
+      .from(yoomoneyPayments)
+      .where(
+        and(
+          eq(yoomoneyPayments.workspaceId, scope.workspaceId),
+          eq(yoomoneyPayments.consentHash, input.consentHash)
+        )
+      )
+      .limit(1);
+    if (spent) return { kind: "consent_spent" as const, payment };
     const [claimed] = await transaction
       .update(yoomoneyPayments)
-      .set({ state: "submitting", callId: input.callId, submittedAt: now })
+      .set({
+        state: "submitting",
+        callId: input.callId,
+        consentHash: input.consentHash,
+        submittedAt: now,
+      })
       .where(and(owned(scope, input), eq(yoomoneyPayments.state, "quoted")))
       .returning();
     if (!claimed) return { kind: "unavailable" as const };

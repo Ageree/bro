@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type * as ai from "ai";
 import type { ModelMessage } from "ai";
 import type { DynamicResolveContext, ToolContext } from "eve/tools";
@@ -12,6 +13,7 @@ const services = vi.hoisted(() => ({
   claim: vi.fn<typeof stored.claimYoomoneyPayment>(),
   create: vi.fn<typeof stored.createYoomoneyPayment>(),
   enabled: vi.fn<typeof Api.yoomoneyEnabled>(),
+  history: vi.fn<typeof Payments.findYoomoneyPayment>(),
   inFlight: vi.fn<typeof stored.yoomoneyPaymentInFlight>(),
   judge: vi.fn<() => Promise<{ output: { matches: boolean } }>>(),
   process: vi.fn<typeof Payments.processYoomoneyPayment>(),
@@ -19,6 +21,7 @@ const services = vi.hoisted(() => ({
   renew: vi.fn<typeof stored.renewYoomoneyPayment>(),
   request: vi.fn<typeof Payments.requestYoomoneyPayment>(),
   settle: vi.fn<typeof stored.settleYoomoneyPayment>(),
+  withToken: vi.fn<typeof connection.withYoomoneyToken>(),
 }));
 
 vi.mock("@db/services/yoomoney/payments", () => ({
@@ -30,10 +33,7 @@ vi.mock("@db/services/yoomoney/payments", () => ({
   yoomoneyPaymentInFlight: services.inFlight,
 }));
 vi.mock("@db/services/yoomoney/connection", () => ({
-  withYoomoneyToken: (async (_scope, read) => ({
-    connected: true,
-    result: await read("token-1"),
-  })) satisfies typeof connection.withYoomoneyToken,
+  withYoomoneyToken: services.withToken,
 }));
 vi.mock("@shared/yoomoney/api", async (original) => ({
   ...(await original<typeof Api>()),
@@ -41,6 +41,7 @@ vi.mock("@shared/yoomoney/api", async (original) => ({
 }));
 vi.mock("@shared/yoomoney/payments", async (original) => ({
   ...(await original<typeof Payments>()),
+  findYoomoneyPayment: services.history,
   processYoomoneyPayment: services.process,
   requestYoomoneyPayment: services.request,
 }));
@@ -57,8 +58,8 @@ import { YoomoneyError } from "@shared/yoomoney/api";
 
 const scope = { userId: "alice", workspaceId: "workspace:alice" };
 const paymentId = "0f9f7a5e-5c1d-4f0b-9a52-2b6f0d3c1e11";
-const question =
-  "ЮMoney: МегаФон (Россия) (Телефон: 9261234567). С кошелька спишется 100,00 ₽ с учётом комиссии. Платёж 1a2b3c. Оплачиваю?";
+const code = createHash("sha256").update(paymentId).digest("hex").slice(0, 6);
+const question = `ЮMoney: МегаФон (Россия) (Телефон: 9261234567). С кошелька спишется 100,00 ₽ с учётом комиссии. Платёж ${code}. Оплачиваю?`;
 
 function row(
   overrides: Partial<typeof yoomoneyPayments.$inferSelect> = {}
@@ -76,6 +77,7 @@ function row(
     test: false,
     state: "quoted",
     confirmationQuestion: question,
+    consentHash: null,
     paymentId: null,
     error: null,
     callId: null,
@@ -161,6 +163,10 @@ async function call(
 beforeEach(() => {
   vi.resetAllMocks();
   services.enabled.mockReturnValue(true);
+  services.withToken.mockImplementation(async (_scope, read) => ({
+    connected: true,
+    result: await read("token-1"),
+  }));
   services.judge.mockResolvedValue({ output: { matches: false } });
   services.read.mockResolvedValue(row());
   services.claim.mockResolvedValue({
@@ -191,6 +197,14 @@ describe("wallet payments", () => {
         paymentId,
       })
     ).toMatchObject({ kind: "confirmation_required" });
+    // The same words, but the code of another payment: that one was asked.
+    expect(
+      await call(answered("да", question.replace(code, "ffffff")), {
+        action: "confirm",
+        paymentId,
+      })
+    ).toMatchObject({ kind: "confirmation_required" });
+    expect(services.judge).not.toHaveBeenCalled();
     expect(services.process).not.toHaveBeenCalled();
 
     expect(
@@ -198,10 +212,21 @@ describe("wallet payments", () => {
     ).toMatchObject({ kind: "paid" });
     expect(services.process).toHaveBeenCalledTimes(1);
     expect(services.process.mock.calls[0]?.[1]).toBe("request-1");
+    expect(services.claim.mock.calls[0]?.[1].consentHash).toMatch(
+      /^[\da-f]{64}$/u
+    );
     expect(services.settle.mock.calls[0]?.[1]).toMatchObject({
       from: ["submitting"],
       state: "paid",
     });
+  });
+
+  it("pays a test payment only as a test, and a real one only for real", async () => {
+    services.read.mockResolvedValue(row({ test: true }));
+    expect(
+      await call(answered("да"), { action: "confirm", paymentId })
+    ).toMatchObject({ kind: "mode_changed" });
+    expect(services.claim).not.toHaveBeenCalled();
   });
 
   it("leaves a payment whose answer was lost unknown, not refused", async () => {
@@ -214,6 +239,15 @@ describe("wallet payments", () => {
     });
   });
 
+  it("never calls a payment it cannot read back unpaid", async () => {
+    services.read.mockResolvedValue(row({ state: "unknown" }));
+    services.withToken.mockResolvedValue({ connected: false });
+    expect(
+      await call(answered("ну что там?"), { action: "status", paymentId })
+    ).toMatchObject({ kind: "unknown" });
+    expect(services.settle).not.toHaveBeenCalled();
+  });
+
   it("reads a payment in flight back with its own request, never a new one", async () => {
     services.read.mockResolvedValue(row({ state: "unknown" }));
     services.process.mockResolvedValue({
@@ -222,6 +256,8 @@ describe("wallet payments", () => {
     });
     await call(answered("ну что там?"), { action: "status", paymentId });
     expect(services.request).not.toHaveBeenCalled();
+    // Not in the history yet, and sent just now: still unknown.
+    expect(services.history).toHaveBeenCalledTimes(1);
     expect(services.process.mock.calls[0]?.[1]).toBe("request-1");
     expect(services.settle.mock.calls[0]?.[1]).toMatchObject({
       from: ["unknown"],

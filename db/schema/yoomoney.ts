@@ -74,7 +74,8 @@ export const yoomoneyAuthorizations = pgTable(
  * `submitting` is a payment sent to `process-payment`, `pending` one
  * YooMoney still processes, `unknown` one whose answer was lost: the same
  * `requestId` reads each back and never pays twice. One of those at a time
- * per workspace.
+ * per workspace; `consentHash` (the question the person's yes answered,
+ * per conversation) pays one payment only.
  */
 export const yoomoneyPayments = pgTable(
   "yoomoney_payments",
@@ -98,6 +99,7 @@ export const yoomoneyPayments = pgTable(
       .notNull()
       .default("quoted"),
     confirmationQuestion: text("confirmation_question").notNull(),
+    consentHash: text("consent_hash"),
     paymentId: text("payment_id"),
     error: text("error"),
     callId: text("call_id"),
@@ -116,6 +118,11 @@ export const yoomoneyPayments = pgTable(
         workspaceMemberships.userId,
       ],
     }).onDelete("cascade"),
+    // One yes pays one payment: the claim stores the question it answered.
+    uniqueIndex("yoomoney_payments_consent_uidx").on(
+      table.workspaceId,
+      table.consentHash
+    ),
     uniqueIndex("yoomoney_payments_in_flight_uidx")
       .on(table.workspaceId)
       .where(sql`${table.state} IN ('submitting', 'pending', 'unknown')`),

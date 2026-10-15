@@ -1,5 +1,5 @@
 {
-  "id": "98ee093a-efe4-4ad6-a811-75d8584775b0",
+  "id": "ea66beaf-8502-486b-8b94-1a2153706cae",
   "prevId": "65f8131f-718a-40c2-bbd3-e18b61f1ffd0",
   "version": "7",
   "dialect": "postgresql",
@@ -8885,6 +8885,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "consent_hash": {
+          "name": "consent_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "payment_id": {
           "name": "payment_id",
           "type": "text",
@@ -8930,6 +8936,27 @@
         }
       },
       "indexes": {
+        "yoomoney_payments_consent_uidx": {
+          "name": "yoomoney_payments_consent_uidx",
+          "columns": [
+            {
+              "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "consent_hash",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "yoomoney_payments_in_flight_uidx": {
           "name": "yoomoney_payments_in_flight_uidx",
           "columns": [

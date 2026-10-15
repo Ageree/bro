@@ -33,17 +33,21 @@ export function yoomoneyEnabled(scope: Pick<AccessScope, "workspaceId">) {
   );
 }
 
+const errorMessages = {
+  revoked:
+    "ЮMoney больше не пускает Бро в кошелёк: доступ отозван или истёк. Подключи кошелёк заново.",
+  scope: "Кошелёк подключён без права на это: отключи его и подключи заново.",
+  unavailable: "ЮMoney сейчас не ответил. Попробуй позже.",
+} as const;
+
 /**
  * Why a call gave nothing: `revoked` — the token no longer opens the wallet
- * (401), so the connection is gone; `unavailable` — anything else.
+ * (401), so the connection is gone; `scope` — the token was granted without
+ * this right (403); `unavailable` — anything else.
  */
 export class YoomoneyError extends Error {
-  constructor(readonly code: "revoked" | "unavailable") {
-    super(
-      code === "revoked"
-        ? "ЮMoney больше не пускает Бро в кошелёк: доступ отозван или истёк. Подключи кошелёк заново."
-        : "ЮMoney сейчас не ответил. Попробуй позже."
-    );
+  constructor(readonly code: keyof typeof errorMessages) {
+    super(errorMessages[code]);
   }
 }
 
@@ -224,6 +228,7 @@ export async function yoomoneyRequest(
     throw new YoomoneyError("unavailable");
   }
   if (response.status === 401) throw new YoomoneyError("revoked");
+  if (response.status === 403) throw new YoomoneyError("scope");
   if (!response.ok) throw new YoomoneyError("unavailable");
   if (empty) return null;
   try {

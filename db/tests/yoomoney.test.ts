@@ -180,7 +180,7 @@ describe("the YooMoney wallet connection", () => {
 });
 
 describe("wallet payments", () => {
-  it("are claimed once, and never while another may be going through", async () => {
+  it("are claimed once, by a yes not spent yet, and never while another may be going through", async () => {
     await service();
     const payments = await import("@db/services/yoomoney/payments");
     const quoted = (id: string) =>
@@ -199,12 +199,13 @@ describe("wallet payments", () => {
       });
     const first = await quoted("6f0e3c1a-1111-4a8b-9c0d-000000000001");
     const second = await quoted("6f0e3c1a-1111-4a8b-9c0d-000000000002");
-    const claim = (payment: typeof first, callId = "call-1") =>
+    const claim = (payment: typeof first, consentHash: string) =>
       payments.claimYoomoneyPayment(alice, {
         id: payment.id,
         rootSessionId: "session-1",
         confirmationQuestion: payment.confirmationQuestion,
-        callId,
+        callId: "call-1",
+        consentHash,
       });
 
     expect(
@@ -213,11 +214,12 @@ describe("wallet payments", () => {
         rootSessionId: "session-1",
         confirmationQuestion: second.confirmationQuestion,
         callId: "call-1",
+        consentHash: "yes-1",
       })
     ).toEqual({ kind: "unavailable" });
-    expect((await claim(first)).kind).toBe("claimed");
-    expect((await claim(first, "call-2")).kind).toBe("existing");
-    expect((await claim(second)).kind).toBe("busy");
+    expect((await claim(first, "yes-1")).kind).toBe("claimed");
+    expect((await claim(first, "yes-2")).kind).toBe("existing");
+    expect((await claim(second, "yes-2")).kind).toBe("busy");
 
     await payments.settleYoomoneyPayment(alice, {
       id: first.id,
@@ -233,7 +235,9 @@ describe("wallet payments", () => {
         state: "refused",
       })
     ).toBeUndefined();
-    expect((await claim(second)).kind).toBe("claimed");
+    // One yes pays one payment, however alike the next one is.
+    expect((await claim(second, "yes-1")).kind).toBe("consent_spent");
+    expect((await claim(second, "yes-2")).kind).toBe("claimed");
   });
 });
 
