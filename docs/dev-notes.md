@@ -306,14 +306,13 @@
   выделяется (нужны своя сеть, роутер и floating IP); `rebuild` VM с сетевым
   диском cloud-init не перезапускает.
 - 15.10 `sel.py down` удалял **все** плавающие IP региона и в ru-3 снял адрес
-  прода: brobro.tech лежал ~18 минут. Теперь `down` трогает лишь IP своих VM.
+  прода: brobro.tech лежал ~30 минут. Теперь `down` трогает лишь IP своих VM.
   Вернуть тот же адрес API не даёт (Neutron — `PolicyNotAuthorized`, resell —
-  `service_unavailable`): новый IP на порт VM, затем A-записи `@` и `www` в DNS
-  Vercel (TTL 60; `PATCH` записи отвечает 404 — новая `POST
-/v2/domains/brobro.tech/records?teamId=…` и удаление старой). Снаружи
-  Selectel новый IP ответил лишь через ~15 минут, изнутри — сразу. Домен
-  операций — `/var/lib/bro/domain` на VM (sslip.io от IP); 15.10 Selectel
-  выдал ровно тот адрес, на который он и `bro-app-sel-2.json` уже указывали.
+  `service_unavailable`). Чинится так: новый IP на порт VM; A-записи `@` и
+  `www` в DNS Vercel, TTL 60 (`PATCH` записи отвечает 404 — новая запись
+  `POST` с `teamId`, старая удаляется); домен операций `/var/lib/bro/domain`
+  (sslip.io от IP) с перерисовкой Caddyfile; кэш `bro-app-sel-2.json` и
+  `state save`. Снаружи Selectel новый IP ответил лишь через ~15 минут.
 
 ## Прод на VM
 
