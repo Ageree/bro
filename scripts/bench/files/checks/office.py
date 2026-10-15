@@ -796,6 +796,8 @@ def docx_parts_unchanged(ctx, params, item):
             if x != y:
                 return failed(f"часть {name} изменена")
             compared += 1
+    if not compared:  # nothing compared proves nothing
+        raise CheckError(f"в исходнике {original} нет частей {params['parts']}")
     return passed(f"{compared} частей как в исходнике")
 
 
