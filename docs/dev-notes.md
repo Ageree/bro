@@ -1919,3 +1919,7 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   хода — с `annotations` прошлого шага (`file.name` = путь), зашифрованный —
   строкой. Упавший на разборе PDF ход ответа не оставляет, и следующий счёл
   бы PDF своим: такой PDF помнится до рестарта eve и тоже идёт строкой.
+- Набор f-* (`docs/benchmarks/files/README.md`) идёт строго по одному: одна
+  сохранённая подпись на воркспейс; ссылки на файлы драйвер берёт из потока до
+  маскировки (`<out>/<case>/files-run.json`); `cases.json` — выход
+  `scripts/bench/files/build_cases.py`, затем `oxfmt`.

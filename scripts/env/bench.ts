@@ -13,6 +13,12 @@ export const benchEnv = createEnv({
   experimental__runtimeEnv: {},
   server: {
     BENCH_COOKIE_FILE: z.string().trim().min(1).optional(),
+    /**
+     * Where `scripts/bench/files/fixtures.py` builds the f-* suite's input
+     * files and truth; `~/.bro-bench/files-fixtures` by default,
+     * `--files-fixtures` overrides it.
+     */
+    BENCH_FILES_FIXTURES: z.string().trim().min(1).optional(),
     BENCH_HOST: z.url().default("https://brobro.tech"),
     BENCH_OUT_DIR: z.string().trim().min(1).optional(),
     BENCH_PHONE: z
@@ -20,6 +26,11 @@ export const benchEnv = createEnv({
       .trim()
       .regex(/^\+[1-9]\d{7,14}$/u, "BENCH_PHONE must use E.164 format")
       .optional(),
+    /**
+     * The Python that builds the f-* fixtures and runs their checks: a venv
+     * with the sandbox pins and `scripts/bench/files/requirements.txt`.
+     */
+    BENCH_PYTHON: z.string().trim().min(1).default("python3"),
     BENCH_TESTER: z.string().trim().min(1).default("драйвер"),
     BENCH_TIMEZONE: z.string().trim().min(1).default("Europe/Moscow"),
     /**

@@ -16,9 +16,10 @@ import {
   runCase,
   type DriverSettings,
 } from "../../bench/conversation.ts";
+import type { TurnGate } from "../../bench/files/suite.ts";
 import { readRunRecord } from "../../bench/journal.ts";
 import type { PlannedStep } from "../../bench/steps.ts";
-import { startFakeEve } from "./fake-eve.ts";
+import { startFakeEve, type FakeAnswer } from "./fake-eve.ts";
 import { connectTimeout, readReset, socketClosed } from "./fetch-failures.ts";
 import { recordedEvents } from "./recorded.ts";
 
@@ -55,7 +56,9 @@ async function settingsFor(
     approvedTools: ownDataTools,
     backgroundWaitMs,
     confirmPaymentUpToRub,
+    downloadCookie: undefined,
     extraFiles: [],
+    filesDir: "",
     heldTools: [],
     hintText: "ну что там?",
     host,
@@ -1440,5 +1443,271 @@ describe("a way out to eve that drops requests", () => {
     // The boundary never came: the turn is not over, whatever was read.
     expect(record.driver.status).toBe("timed-out");
     expect(record.driver.statusDetail).toBe("No turn boundary within 6 s.");
+  }, 20_000);
+});
+
+describe("a files case", () => {
+  const filesCase: BenchCase = {
+    ...benchCase,
+    group: "files",
+    id: "f-test",
+    riskLevel: undefined,
+    suite: "files",
+  };
+  const consent: TurnGate = {
+    kind: "consent",
+    optional: false,
+    pattern: "(?i)(?:подписываю|shall i sign)\\?\\s*$",
+  };
+  const fileSteps: PlannedStep[] = [
+    { ...step, at: "ход 0", text: "заполни заявление", turn: 0 },
+    {
+      ...step,
+      at: "ход 1",
+      gate: consent,
+      text: "да, подписывай",
+      turn: 1,
+      waitBefore: true,
+    },
+    { ...step, at: "ход 2", text: "спасибо", turn: 2, waitBefore: true },
+  ];
+  const shareId = "0123456789abcdef01234567";
+  const artifactId = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b";
+  const pdf = Buffer.from("%PDF-1.7\n% заявление\n");
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  /** The `task` call answered with a receipt: the child works on. */
+  const taskStarted = (): MessageStreamEvent[] => [
+    {
+      data: {
+        actions: [
+          {
+            callId: "call_task",
+            input: {},
+            kind: "tool-call",
+            toolName: "task",
+          },
+        ],
+        sequence: 0,
+        stepIndex: 0,
+        turnId,
+      },
+      meta: meta(),
+      type: "actions.requested",
+    },
+    {
+      data: {
+        backgroundTask: { status: "working", taskId: "task_a" },
+        callId: "call_task",
+        output: "Task task_a started.",
+        subagentName: "task",
+      },
+      meta: meta(),
+      type: "subagent.completed",
+    },
+    toolResult("task", { taskId: "task_a" }),
+  ];
+  const wake = (): MessageStreamEvent => ({
+    data: {
+      kind: "execution.background_task",
+      message: "Background task task_a (task) is completed.\n\nResult:\nготово",
+      sequence: 0,
+      turnId,
+    },
+    meta: meta(),
+    type: "message.received",
+  });
+  /** The files of a case's run directory, as the checks read them. */
+  const filesRunSchema = z.object({
+    gates: z.array(z.object({ met: z.boolean(), turn: z.number() })),
+    received: z.array(
+      z.object({ file: z.string(), name: z.string(), turn: z.number() })
+    ),
+    replies: z.array(z.object({ text: z.string(), turn: z.number() })),
+  });
+  const filesRun = async (outDir: string) =>
+    filesRunSchema.parse(
+      JSON.parse(
+        await readFile(join(outDir, "f-test", "files-run.json"), "utf8")
+      )
+    );
+  const filesSettings = async (host: string) => ({
+    ...(await settingsFor(host, 5000)),
+    downloadCookie: "session=1",
+  });
+
+  it("waits for the task, keeps its files and answers the signing question", async () => {
+    const cookies = new Map<string, string | undefined>();
+    const fake = await startFakeEve(
+      (post) => {
+        if (post.route === "create") {
+          setTimeout(() => {
+            fake.append(
+              turn(
+                wake(),
+                delivered(
+                  `Заполнил: ${fake.url}/eve/v1/sandbox-files/${shareId}/zayavlenie%20(1).pdf?sig=abc_DEF-1 и пример ![подпись](/artifacts/${artifactId}). Подписываю?`
+                )
+              )
+            );
+          }, 300);
+          return turn(...taskStarted(), delivered("Заполняю."));
+        }
+        return turn(delivered("Подписал."));
+      },
+      (url, request): FakeAnswer | undefined => {
+        cookies.set(url.pathname, request.headers.cookie);
+        if (url.pathname.startsWith("/eve/v1/sandbox-files/")) {
+          return {
+            headers: { location: "/s3/obj?X-Amz-Signature=1" },
+            status: 302,
+          };
+        }
+        if (url.pathname === "/s3/obj") {
+          return {
+            body: pdf,
+            headers: { "content-type": "application/pdf" },
+            status: 200,
+          };
+        }
+        if (url.pathname === `/artifacts/${artifactId}`) {
+          return request.headers.cookie === "session=1"
+            ? {
+                body: png,
+                headers: { "content-type": "image/png" },
+                status: 200,
+              }
+            : { headers: { location: "/sign-in" }, status: 307 };
+        }
+        return undefined;
+      }
+    );
+    stopFake = () => fake.close();
+    const settings = await filesSettings(fake.url);
+
+    const record = await runCase(
+      new Client({ host: fake.url }),
+      filesCase,
+      fileSteps.slice(0, 2),
+      [],
+      settings
+    );
+
+    expect(fake.posts.map((post) => post.message)).toEqual([
+      "заполни заявление",
+      "да, подписывай",
+    ]);
+    expect(record.driver.status).toBe("completed");
+    const run = await filesRun(settings.outDir);
+    expect(run.gates).toEqual([
+      expect.objectContaining({ met: true, turn: 1 }),
+    ]);
+    expect(run.received.map(({ name, turn: at }) => [name, at])).toEqual([
+      ["zayavlenie (1).pdf", 0],
+      [artifactId, 0],
+    ]);
+    const [saved] = run.received;
+    await expect(
+      readFile(join(settings.outDir, "f-test", saved?.file ?? "-"))
+    ).resolves.toEqual(pdf);
+    expect(run.replies.at(-1)).toEqual({ text: "Подписал.", turn: 1 });
+    // The cookie goes to Bro's own artifact, never to the share link or
+    // to Object Storage behind it.
+    expect([...cookies]).toEqual([
+      [`/eve/v1/sandbox-files/${shareId}/zayavlenie%20(1).pdf`, undefined],
+      ["/s3/obj", undefined],
+      [`/artifacts/${artifactId}`, "session=1"],
+    ]);
+  }, 20_000);
+
+  it("leaves the consent to the tester when Bro did not ask", async () => {
+    const fake = await startFakeEve((post) =>
+      turn(
+        delivered(
+          post.route === "create"
+            ? "Готово!"
+            : `ок: ${JSON.stringify(post.message)}`
+        )
+      )
+    );
+    stopFake = () => fake.close();
+    const settings = await filesSettings(fake.url);
+    const client = new Client({ host: fake.url });
+
+    const stopped = await runCase(client, filesCase, fileSteps, [], settings);
+
+    expect(fake.posts).toHaveLength(1);
+    expect(stopped.driver.status).toBe("waiting-for-tester");
+    expect(stopped.driver.statusDetail).toContain("вопросов не было");
+    expect(stopped.driver.remainingSteps.map((each) => each.text)).toEqual([
+      "спасибо",
+    ]);
+
+    const record = await continueCase(
+      client,
+      await readRunRecord(settings.outDir, "f-test"),
+      settings,
+      { code: undefined, kind: "answer", respond: () => undefined, text: "да" }
+    );
+
+    expect(fake.posts.map((post) => post.message)).toEqual([
+      "заполни заявление",
+      "да",
+      "спасибо",
+    ]);
+    expect(record.driver.status).toBe("completed");
+    const run = await filesRun(settings.outDir);
+    expect(run.replies.map(({ text, turn: at }) => [text, at])).toEqual([
+      ["Готово!", 0],
+      ['ок: "да"', 1],
+      ['ок: "спасибо"', 2],
+    ]);
+  }, 20_000);
+
+  it("never consents through a question card", async () => {
+    const card: MessageStreamEvent = {
+      data: {
+        requests: [
+          {
+            action: {
+              callId: "call_q",
+              input: {},
+              kind: "tool-call",
+              toolName: "ask_question",
+            },
+            allowFreeform: true,
+            kind: "question",
+            prompt: "Ставлю подпись. Подписываю?",
+            requestId: "req_q",
+          },
+        ],
+        sequence: 0,
+        stepIndex: 0,
+        turnId,
+      },
+      meta: meta(),
+      type: "input.requested",
+    };
+    const fake = await startFakeEve(() => [
+      turnStarted(),
+      card,
+      sessionWaiting(),
+    ]);
+    stopFake = () => fake.close();
+    const settings = await filesSettings(fake.url);
+
+    const record = await runCase(
+      new Client({ host: fake.url }),
+      filesCase,
+      fileSteps,
+      [],
+      settings
+    );
+
+    expect(fake.posts).toHaveLength(1);
+    expect(record.driver.status).toBe("waiting-for-tester");
+    expect(record.driver.remainingSteps.map((each) => each.text)).toEqual([
+      "да, подписывай",
+      "спасибо",
+    ]);
   }, 20_000);
 });

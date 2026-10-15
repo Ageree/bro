@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { caseFixtureSets } from "../../bench/account/catalog.ts";
-import { loadCases, selectCases } from "../../bench/cases.ts";
+import {
+  caseTurns,
+  loadCases,
+  parseSuites,
+  selectCases,
+} from "../../bench/cases.ts";
+import { parseFilesSuite } from "../../bench/files/suite.ts";
 import { caseFixtures } from "../../bench/fixtures.ts";
 import { parseFills, planCase, stepOffsetMs } from "../../bench/steps.ts";
 
@@ -18,6 +24,48 @@ describe("loadCases", () => {
     expect(
       [...caseFixtureSets.keys()].filter((caseId) => !known.has(caseId))
     ).toEqual([]);
+  });
+});
+
+/** A one-case files suite whose second turn is `turn`. */
+const filesSuite = (turn: {
+  readonly gate?: {
+    readonly kind: string;
+    readonly optional: boolean;
+    readonly pattern: string;
+  };
+  readonly when?: string;
+}) =>
+  JSON.stringify([
+    {
+      id: "f-x",
+      title: "x",
+      turns: [
+        { files: [], text: "вот файл" },
+        { text: "да", ...turn },
+      ],
+    },
+  ]);
+
+describe("the files suite", () => {
+  it("is never part of a run that did not ask for it", async () => {
+    expect(parseSuites([])).not.toContain("files");
+    expect(
+      (await caseTurns()).filter((turn) => turn.id.startsWith("f-"))
+    ).toEqual([]);
+  });
+
+  it("refuses a turn it could not run", () => {
+    expect(() =>
+      parseFilesSuite(filesSuite({ when: "после вопроса Бро" }))
+    ).toThrow(/без gate/u);
+    expect(() =>
+      parseFilesSuite(
+        filesSuite({
+          gate: { kind: "consent", optional: false, pattern: "подпис\\w*\\?" },
+        })
+      )
+    ).toThrow(/not portable/u);
   });
 });
 

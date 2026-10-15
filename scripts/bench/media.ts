@@ -1,20 +1,29 @@
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { basename } from "node:path";
 import type { UserContent } from "ai";
-import { createDataUrlFilePart } from "eve/client";
 import {
   mediaTypeForName,
   sniffMediaType,
 } from "@agent/lib/inbound-media/media-type";
+// oxlint-disable-next-line local-next/no-route-private-imports -- the bench sends files exactly as the web composer does, through its own transport (type-only imports, safe outside the route)
+import { messageFileParts } from "@app/(authenticated)/chat/_lib/message-input";
+import {
+  admitFiles,
+  webMessageFiles,
+  type FileRefusal,
+} from "@shared/chat/web-files";
 
 /**
  * Builds the message a step sends, the way a person's client would.
  *
- * Photos and files go as the web chat sends them: `data:` URL file parts next
- * to the text (`app/(authenticated)/chat/_lib/message-input.ts`). A voice
- * note goes the way Telegram and iMessage deliver one, because that is where
- * people send voice: the product's own transcription turns it into the
- * «[голосовое] …» line the model reads (`agent/lib/inbound-media`).
+ * Photos and files go as the web chat sends them, through its own transport
+ * (`messageFileParts`): the original bytes, as a `data:` URL only for images
+ * within the thumbnails' budget, otherwise as bare base64, which eve does not
+ * echo into the stream and the journal. The web chat's caps apply before
+ * anything is sent. A voice note goes the way Telegram and iMessage deliver
+ * one, because that is where people send voice: the product's own
+ * transcription turns it into the «[голосовое] …» line the model reads
+ * (`agent/lib/inbound-media`).
  */
 
 export interface OutgoingFile {
@@ -22,18 +31,51 @@ export interface OutgoingFile {
   readonly path: string;
 }
 
-async function filePart(file: OutgoingFile) {
-  const bytes = new Uint8Array(await readFile(file.path));
-  const mediaType =
-    file.mediaType ??
-    sniffMediaType(bytes) ??
-    mediaTypeForName(basename(file.path)) ??
-    "application/octet-stream";
-  return createDataUrlFilePart({
-    bytes,
-    filename: basename(file.path),
-    mediaType,
-  });
+const mebibyte = 1024 * 1024;
+
+/** Why the web chat would not take a file, as the driver says it. */
+const refusalReasons = {
+  accept: "веб-чат не принимает такой тип файла",
+  max_file_size: `файл больше ${String(webMessageFiles.maxFileSize / mebibyte)} МиБ — веб-чат ответит 413`,
+  max_files: `больше ${String(webMessageFiles.maxFiles)} файлов в одном сообщении`,
+  max_total_size: `файлы сообщения вместе больше ${String(webMessageFiles.maxTotalSize / mebibyte)} МиБ`,
+} as const satisfies Readonly<Record<FileRefusal, string>>;
+
+/**
+ * The files as the web chat's file parts. The caps are checked on the
+ * files' sizes first, so a message the web chat would refuse fails here
+ * before any byte is read or sent.
+ */
+async function fileParts(files: readonly OutgoingFile[]) {
+  const sized = await Promise.all(
+    files.map(async (file) => ({
+      file,
+      name: basename(file.path),
+      size: (await stat(file.path)).size,
+      type: file.mediaType ?? "",
+    }))
+  );
+  const { admitted, refusal } = admitFiles(sized, webMessageFiles);
+  if (refusal !== undefined) {
+    const refused = sized.find((each) => !admitted.includes(each));
+    throw new Error(`${refused?.name ?? "файл"}: ${refusalReasons[refusal]}`);
+  }
+  const loaded = await Promise.all(
+    sized.map(async ({ file, name }) => {
+      const bytes = await readFile(file.path);
+      const mediaType =
+        file.mediaType ??
+        sniffMediaType(new Uint8Array(bytes)) ??
+        mediaTypeForName(name) ??
+        "application/octet-stream";
+      return {
+        filename: name,
+        mediaType,
+        url: `data:${mediaType};base64,${bytes.toString("base64")}`,
+      };
+    })
+  );
+  return messageFileParts(loaded);
 }
 
 /**
@@ -80,11 +122,12 @@ export async function messageContent(
   files: readonly OutgoingFile[],
   voice: readonly string[]
 ): Promise<string | UserContent> {
+  const attached = files.length > 0 ? await fileParts(files) : [];
   const spoken = voice.length > 0 ? await voiceLines(voice) : "";
   const body = [text, spoken].filter((line) => line.length > 0).join("\n");
-  if (files.length === 0) return body;
+  if (attached.length === 0) return body;
   const parts: UserContent = [];
   if (body.length > 0) parts.push({ text: body, type: "text" });
-  parts.push(...(await Promise.all(files.map((file) => filePart(file)))));
+  parts.push(...attached);
   return parts;
 }

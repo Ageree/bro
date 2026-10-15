@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { access, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -19,6 +19,7 @@ import {
 } from "./account/seed.ts";
 import { ownDataTools, responseFromText } from "./approvals.ts";
 import {
+  everySuite,
   loadCases,
   parseRiskLevels,
   parseSuites,
@@ -28,6 +29,7 @@ import {
 import { parseLocalMoment } from "./clock.ts";
 import { defaultCookieFile, readCookieHeader } from "./cookies.ts";
 import {
+  cleanupCase,
   continueCase,
   followCase,
   nextCase,
@@ -36,14 +38,17 @@ import {
   runCase,
   type DriverSettings,
 } from "./conversation.ts";
-import { readRunRecord, type RunRecord } from "./journal.ts";
+import { buildFilesFixtures, checkFilesCase } from "./files/checker.ts";
+import { filesReport } from "./files/report.ts";
+import { filesFixturesDir } from "./files/suite.ts";
+import { CaseJournal, readRunRecord, type RunRecord } from "./journal.ts";
 import { withRetry } from "./retry.ts";
 import {
   sendSignInCode,
   signedInSession,
   verifySignInCode,
 } from "./sign-in.ts";
-import { parseFills, planCase } from "./steps.ts";
+import { parseFills, planCase, type PlannedStep } from "./steps.ts";
 
 const usage = `Бенчмарк Бро: драйвер разговоров через eve/client.
 
@@ -59,7 +64,7 @@ const usage = `Бенчмарк Бро: драйвер разговоров че
                             (без --case убирает всё засеянное)
 
 Прогон:
-  pnpm bench list   [--suite ru|en] [--case id,…] [--group d13|13|категория] [--risk read-only]
+  pnpm bench list   [--suite ru|en|files] [--case id,…] [--group d13|13|категория] [--risk read-only]
   pnpm bench run    [отбор как у list] [--host URL] [--cookie-file PATH] [--out DIR]
                     [--fill '[ресторан]=Хачапури и вино'] [--attach FILE] [--voice FILE]
                     [--approve tool] [--hold tool] [--confirm-payment-up-to 1000]
@@ -79,6 +84,15 @@ const usage = `Бенчмарк Бро: драйвер разговоров че
                     observe без повтора флага, а флаг на одной из этих команд
                     только добавляет — снять удержание нельзя; отменённый
                     тестировщиком инструмент держится до конца кейса и дальше)
+  pnpm bench run    --suite files [--case f-…] [--files-fixtures DIR] [--no-check]
+                    [--no-cleanup] [--previews] [--background-wait-min 30]
+                    (набор f-* — только по --suite files, кейсы строго по одному;
+                    недостающие фикстуры собирает fixtures.py в BENCH_PYTHON; после
+                    кейса — проверки check.py и уборка; docs/benchmarks/files/README.md)
+  pnpm bench report --out DIR [--suite files] [--case ID,…] [--recheck] [--previews]
+                    [--files-fixtures DIR]
+                    (итог набора files по записям прогона; --recheck перепроверяет
+                    скачанное без нового прогона)
   pnpm bench next   --out DIR --case ID [--early] [--hold tool]
                     [--confirm-payment-up-to 1000]
                     (следующие шаги сценария, когда подошёл их срок)
@@ -95,10 +109,13 @@ const usage = `Бенчмарк Бро: драйвер разговоров че
                     (смотрит разговор и записывает, что Бро пишет сам; ничего не шлёт)
   pnpm bench follow --out DIR --case ID [--background-wait-min 20] [--hold tool]
                     [--confirm-payment-up-to 1000]
+                    (у кейса files send, follow и next после хода тоже запускают
+                    проверки и уборку; --no-check, --no-cleanup их выключают)
 
 По умолчанию хост https://brobro.tech, cookie ~/.bro-bench/cookies.txt,
 заготовки ~/.bro-bench/fixtures.json.
-Журналы: <out>/<case>.events.jsonl, <case>.log, <case>.json (запись прогона).
+Журналы: <out>/<case>.events.jsonl, <case>.log, <case>.json (запись прогона);
+у кейса files ещё <out>/<case>/: files-run.json, received/, checks.json.
 Правила ответов на карточки и подсказок — docs/benchmarks/README.md.`;
 
 const options = {
@@ -116,6 +133,7 @@ const options = {
   "cookie-file": { type: "string" },
   "dry-run": { type: "boolean" },
   early: { type: "boolean" },
+  "files-fixtures": { type: "string" },
   "max-steps": { type: "string" },
   fill: { multiple: true, type: "string" },
   group: { multiple: true, type: "string" },
@@ -126,10 +144,14 @@ const options = {
   kind: { type: "string" },
   mailbox: { type: "string" },
   minutes: { type: "string" },
+  "no-check": { type: "boolean" },
+  "no-cleanup": { type: "boolean" },
   nudges: { type: "string" },
   option: { type: "string" },
   out: { type: "string" },
   phone: { type: "string" },
+  previews: { type: "boolean" },
+  recheck: { type: "boolean" },
   risk: { multiple: true, type: "string" },
   session: { type: "string" },
   since: { type: "string" },
@@ -217,17 +239,24 @@ async function connection(flags: Values, recordedHost?: string) {
   await withRetry({ idempotent: true, label: "GET /eve/v1/health" }, () =>
     client.health()
   );
-  return { client, host: host.origin };
+  return { client, cookie, host: host.origin };
 }
 
-function settings(flags: Values, host: string, outDir: string): DriverSettings {
+function settings(
+  flags: Values,
+  host: string,
+  outDir: string,
+  cookie?: string
+): DriverSettings {
   return {
     approvedTools: [...ownDataTools, ...list(flags.approve)],
     backgroundWaitMs: minutes(flags["background-wait-min"], 20),
     confirmPaymentUpToRub: flags["confirm-payment-up-to"]
       ? rubSchema.parse(flags["confirm-payment-up-to"])
       : undefined,
+    downloadCookie: cookie,
     extraFiles: list(flags.attach).map((path) => ({ path: resolve(path) })),
+    filesDir: filesFixturesDir(flags["files-fixtures"]),
     heldTools: list(flags.hold),
     hintText: flags.hint ?? "ну что там?",
     host,
@@ -248,7 +277,74 @@ function summaryLine(record: RunRecord) {
     driver.observations.length > 0
       ? `, наблюдений ${String(driver.observations.length)}`
       : "";
-  return `${record.caseId}: ${driver.status}${detail} (подсказок ${String(record.hints)}, карточек ${String(driver.decisions.length)}${observed}) → ${record.transcript}`;
+  const checks = driver.files?.checks;
+  const checked = checks
+    ? `, проверки ${String(checks.passed)}/${String(checks.total)}`
+    : "";
+  return `${record.caseId}: ${driver.status}${detail} (подсказок ${String(record.hints)}, карточек ${String(driver.decisions.length)}${observed}${checked}) → ${record.transcript}`;
+}
+
+/** The files a step sends that are not on disk. */
+async function missingFiles(steps: readonly PlannedStep[]) {
+  const paths = steps.flatMap((step) => [
+    ...step.files.map((file) => file.path),
+    ...(step.voice ?? []),
+  ]);
+  const missing = await Promise.all(
+    paths.map(async (path) => {
+      try {
+        await access(path);
+        return [];
+      } catch {
+        return [path];
+      }
+    })
+  );
+  return missing.flat();
+}
+
+const noFixtures = (caseId: string) =>
+  `нет фикстур: ${benchEnv.BENCH_PYTHON} scripts/bench/files/fixtures.py --case ${caseId}`;
+
+/**
+ * After a files case settled: its machine checks (unless `--no-check`),
+ * then its cleanup, once the case ran to its end (unless `--no-cleanup`).
+ */
+async function afterFilesCase(
+  client: Client,
+  record: RunRecord,
+  flags: Values,
+  driverSettings: DriverSettings
+) {
+  if (record.driver.suite !== "files") return record;
+  let current = record;
+  if (flags["no-check"] !== true) {
+    ({ record: current } = await checkFilesCase(current, {
+      fixturesDir: driverSettings.filesDir,
+      journal: new CaseJournal(
+        driverSettings.outDir,
+        current.caseId,
+        driverSettings.timeZone
+      ),
+      outDir: driverSettings.outDir,
+      previews: flags.previews === true,
+      python: benchEnv.BENCH_PYTHON,
+    }));
+  }
+  if (
+    flags["no-cleanup"] !== true &&
+    current.driver.status === "completed" &&
+    current.driver.remainingSteps.length === 0 &&
+    !current.cleanupDone
+  ) {
+    current = await cleanupCase(
+      client,
+      await oneCase(current.caseId),
+      current,
+      driverSettings
+    );
+  }
+  return current;
 }
 
 /** The script as the record's notes: what the tester does and when. */
@@ -259,8 +355,9 @@ const scriptNotes = (benchCase: BenchCase) =>
 
 async function listCommand(flags: Values) {
   const fills = parseFills(list(flags.fill));
+  const filesDir = filesFixturesDir(flags["files-fixtures"]);
   for (const benchCase of await selected(flags)) {
-    const plan = planCase(benchCase, fills);
+    const plan = planCase(benchCase, fills, { filesDir });
     const state =
       plan.kind === "ready"
         ? `${String(plan.steps.length)} сообщ.`
@@ -297,33 +394,100 @@ async function pool(
   );
 }
 
+/**
+ * The files cases whose fixtures are not on disk, built with `fixtures.py`
+ * first; a case still without them is left out with the command that
+ * builds it.
+ */
+async function withFixtures<
+  T extends {
+    readonly benchCase: BenchCase;
+    readonly plan: { readonly steps: readonly PlannedStep[] };
+  },
+>(ready: readonly T[], filesDir: string) {
+  const unbuilt = async () =>
+    (
+      await Promise.all(
+        ready.map(async (item) =>
+          item.benchCase.suite === "files" &&
+          (await missingFiles(item.plan.steps)).length > 0
+            ? [item.benchCase.id]
+            : []
+        )
+      )
+    ).flat();
+  const before = await unbuilt();
+  if (before.length === 0) return ready;
+  console.log(
+    `Собираю фикстуры ${before.join(", ")} в ${filesDir}: ${benchEnv.BENCH_PYTHON} scripts/bench/files/fixtures.py`
+  );
+  const failure = await buildFilesFixtures(before, {
+    fixturesDir: filesDir,
+    python: benchEnv.BENCH_PYTHON,
+  });
+  if (failure !== undefined) console.warn(`fixtures.py: ${failure}`);
+  const after = new Set(await unbuilt());
+  for (const caseId of after) {
+    console.log(`${caseId}: пропущен — ${noFixtures(caseId)}`);
+  }
+  return ready.filter((item) => !after.has(item.benchCase.id));
+}
+
 async function runCommand(flags: Values) {
   const fills = parseFills(list(flags.fill));
+  const filesDir = filesFixturesDir(flags["files-fixtures"]);
   const cases = await selected(flags);
   const plans = cases.map((benchCase) => ({
     benchCase,
-    plan: planCase(benchCase, fills),
+    plan: planCase(benchCase, fills, { filesDir }),
   }));
   for (const { benchCase, plan } of plans) {
     if (plan.kind === "skipped") {
       console.log(`${benchCase.id}: пропущен — ${plan.reason}`);
     }
   }
-  const ready = plans.flatMap(({ benchCase, plan }) =>
+  const planned = plans.flatMap(({ benchCase, plan }) =>
     plan.kind === "ready" ? [{ benchCase, plan }] : []
   );
+  // One saved signature and one memory per workspace: two files cases at
+  // once would sign with each other's sample.
+  const filesSuite = planned.some(
+    ({ benchCase }) => benchCase.suite === "files"
+  );
+  if (
+    filesSuite &&
+    flags.concurrency !== undefined &&
+    countSchema.parse(flags.concurrency) > 1
+  ) {
+    throw new Error(
+      "Кейсы набора files идут строго по одному (у воркспейса одна сохранённая подпись и одна память): уберите --concurrency."
+    );
+  }
   if (flags["dry-run"]) {
-    for (const { benchCase, plan } of ready) {
+    for (const { benchCase, plan } of planned) {
       console.log(`${benchCase.id}:`);
       for (const step of plan.steps) {
-        const files = step.files.map((file) => file.path).join(", ");
+        const files = [
+          ...step.files.map((file) => file.path),
+          ...(step.voice ?? []),
+        ].join(", ");
+        const gate = step.gate ? ` (после условия ${step.gate.kind})` : "";
         console.log(
-          `  [${step.at}]${step.newConversation ? " (новый разговор)" : ""} ${step.text}${files ? ` + ${files}` : ""}`
+          `  [${step.at}]${step.newConversation ? " (новый разговор)" : ""}${gate} ${step.text}${files ? ` + ${files}` : ""}`
+        );
+      }
+      if (benchCase.suite !== "files") continue;
+      // oxlint-disable-next-line eslint/no-await-in-loop -- printed case by case
+      const missing = await missingFiles(plan.steps);
+      if (missing.length > 0) {
+        console.log(
+          `  ${noFixtures(benchCase.id)} (не хватает: ${missing.join(", ")})`
         );
       }
     }
     return;
   }
+  const ready = await withFixtures(planned, filesDir);
   if (ready.length === 0) throw new Error("No case to run.");
 
   // What the account was seeded with goes into each record for the
@@ -344,14 +508,16 @@ async function runCommand(flags: Values) {
   const maxSteps = flags["max-steps"]
     ? countSchema.min(1).parse(flags["max-steps"])
     : Number.POSITIVE_INFINITY;
-  const concurrency = countSchema.parse(flags.concurrency ?? 4);
+  const concurrency = filesSuite
+    ? 1
+    : countSchema.parse(flags.concurrency ?? 4);
   if (concurrency < 1) throw new Error("--concurrency must be at least 1.");
   if (concurrency > 4) {
     console.warn(
       "Больше четырёх разговоров сразу: Browser Use отвечает 429 с пяти параллельных сессий."
     );
   }
-  const { client, host } = await connection(flags);
+  const { client, cookie, host } = await connection(flags);
   const stamp = new Date().toISOString().replaceAll(/[:.]/gu, "-").slice(0, 19);
   const outDir = resolve(
     flags.out ??
@@ -360,7 +526,7 @@ async function runCommand(flags: Values) {
   );
   await mkdir(outDir, { recursive: true });
   console.log(`Журналы: ${outDir}`);
-  const driverSettings = settings(flags, host, outDir);
+  const driverSettings = settings(flags, host, outDir, cookie);
   const plansById = new Map(
     ready.map(({ benchCase, plan }) => [benchCase.id, plan])
   );
@@ -372,7 +538,7 @@ async function runCommand(flags: Values) {
       const plan = plansById.get(benchCase.id);
       if (plan?.kind !== "ready") return;
       console.log(`${benchCase.id}: старт`);
-      const record = await runCase(
+      const ran = await runCase(
         client,
         benchCase,
         maxSteps < plan.steps.length
@@ -389,6 +555,7 @@ async function runCommand(flags: Values) {
         ],
         driverSettings
       );
+      const record = await afterFilesCase(client, ran, flags, driverSettings);
       records.push(record);
       console.log(summaryLine(record));
     }
@@ -398,6 +565,7 @@ async function runCommand(flags: Values) {
     `${JSON.stringify(
       records.map((record) => ({
         caseId: record.caseId,
+        checks: record.driver.files?.checks ?? null,
         hints: record.hints,
         record: join(outDir, `${record.caseId}.json`),
         status: record.driver.status,
@@ -422,7 +590,7 @@ function recordLocation(flags: Values) {
 }
 
 async function oneCase(caseId: string) {
-  const [benchCase] = selectCases(await loadCases(), {
+  const [benchCase] = selectCases(await loadCases(everySuite), {
     groups: [],
     ids: [caseId],
     risks: [],
@@ -493,7 +661,7 @@ async function sendCommand(flags: Values) {
     throw new Error("Pass exactly one of --text, --code or --option.");
   }
   const text = flags.text ?? flags.code ?? flags.option ?? "";
-  const { client, host } = await connection(flags, record.driver.host);
+  const { client, cookie, host } = await connection(flags, record.driver.host);
   const respond = (pending: readonly InputRequest[]) => {
     const [request, ...others] = pending;
     if (!request) {
@@ -509,38 +677,68 @@ async function sendCommand(flags: Values) {
     }
     return pending.map((each) => responseFromText(each, text));
   };
-  const updated = await continueCase(
-    client,
-    record,
-    settings(flags, host, outDir),
-    { code: flags.code, kind, respond, text }
+  const driverSettings = settings(flags, host, outDir, cookie);
+  const updated = await continueCase(client, record, driverSettings, {
+    code: flags.code,
+    kind,
+    respond,
+    text,
+  });
+  // A cleanup sent by hand is the tester's own; the checks do not read it.
+  console.log(
+    summaryLine(
+      kind === "cleanup"
+        ? updated
+        : await afterFilesCase(client, updated, flags, driverSettings)
+    )
   );
-  console.log(summaryLine(updated));
 }
 
 async function followCommand(flags: Values) {
   const { caseId, outDir } = recordLocation(flags);
   const record = await readRunRecord(outDir, caseId);
-  const { client, host } = await connection(flags, record.driver.host);
-  const updated = await followCase(
-    client,
-    record,
-    settings(flags, host, outDir)
+  const { client, cookie, host } = await connection(flags, record.driver.host);
+  const driverSettings = settings(flags, host, outDir, cookie);
+  const updated = await followCase(client, record, driverSettings);
+  console.log(
+    summaryLine(await afterFilesCase(client, updated, flags, driverSettings))
   );
-  console.log(summaryLine(updated));
 }
 
 async function nextCommand(flags: Values) {
   const { caseId, outDir } = recordLocation(flags);
   const record = await readRunRecord(outDir, caseId);
-  const { client, host } = await connection(flags, record.driver.host);
-  const updated = await nextCase(
-    client,
-    record,
-    settings(flags, host, outDir),
-    { early: flags.early === true }
+  const { client, cookie, host } = await connection(flags, record.driver.host);
+  const driverSettings = settings(flags, host, outDir, cookie);
+  const updated = await nextCase(client, record, driverSettings, {
+    early: flags.early === true,
+  });
+  console.log(
+    summaryLine(await afterFilesCase(client, updated, flags, driverSettings))
   );
-  console.log(summaryLine(updated));
+}
+
+/** `pnpm bench report`: the files suite's totals over one `--out`. */
+async function reportCommand(flags: Values) {
+  const unsupported = list(flags.suite).filter((suite) => suite !== "files");
+  if (unsupported.length > 0) {
+    throw new Error(
+      `pnpm bench report считает только набор files, не ${unsupported.join(", ")}.`
+    );
+  }
+  const outDir = flags.out ?? benchEnv.BENCH_OUT_DIR;
+  if (!outDir) throw new Error("Name the run: --out DIR.");
+  const report = await filesReport({
+    caseIds: list(flags.case),
+    fixturesDir: filesFixturesDir(flags["files-fixtures"]),
+    outDir: resolve(outDir),
+    previews: flags.previews === true,
+    python: benchEnv.BENCH_PYTHON,
+    recheck: flags.recheck === true,
+  });
+  if (report.cases.length === 0) {
+    console.log(`В ${resolve(outDir)} нет записей набора files.`);
+  }
 }
 
 async function observeCommand(flags: Values) {
@@ -552,13 +750,16 @@ async function observeCommand(flags: Values) {
     await readManifest(defaultManifestFile),
     caseId
   );
-  const { client, host } = await connection(flags, existing?.driver.host);
+  const { client, cookie, host } = await connection(
+    flags,
+    existing?.driver.host
+  );
   await mkdir(outDir, { recursive: true });
   const record = await observeCase(
     client,
     benchCase,
     existing,
-    settings(flags, host, outDir),
+    settings(flags, host, outDir, cookie),
     {
       channel: channelSchema.parse(flags.channel ?? "web"),
       durationMs: minutes(flags.minutes, 60),
@@ -757,6 +958,7 @@ const commands = {
   next: nextCommand,
   observe: observeCommand,
   otp: otpCommand,
+  report: reportCommand,
   run: runCommand,
   send: sendCommand,
   verify: verifyCommand,
@@ -769,6 +971,7 @@ const commandSchema = z.enum([
   "next",
   "observe",
   "otp",
+  "report",
   "run",
   "send",
   "verify",
