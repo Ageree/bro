@@ -42,7 +42,7 @@ function answerOf(output: ToolResultPart["output"]) {
  * it, and the person only chose it. An answer resumes the same turn as a
  * tool result, not as a message of theirs.
  */
-function answersThisTurn(messages: readonly ModelMessage[]) {
+export function answersThisTurn(messages: readonly ModelMessage[]) {
   const labels = new Map<string, ReadonlyMap<string, string>>();
   const answers: string[] = [];
   const picked: string[] = [];

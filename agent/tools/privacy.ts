@@ -2,11 +2,14 @@ import { defineDynamic, defineTool } from "eve/tools";
 import { z } from "zod";
 import { crossChannelPilot } from "@agent/lib/conversation/pilot";
 import { memoryDigestPilot } from "@agent/lib/memory/digest/pilot";
+import { taskJobsDecided } from "@agent/lib/model/router/task";
+import { toolRouterListedWorkspace } from "@agent/lib/tool-router/pilot";
 import { schedulesEnabled } from "@agent/lib/schedules/enabled";
 import { resolveModeValue } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { signEnabled } from "@agent/lib/signatures/pilot";
 import { agentMailboxEnabled } from "@db/services/agent-mail";
+import { locationPilot } from "@db/services/location";
 import { phonePilot, readPhoneNumber } from "@db/services/phone";
 import { env } from "@shared/environment";
 import {
@@ -72,27 +75,40 @@ export const privacy = defineTool({
       (env.PHONE_AGENT_ID !== undefined &&
         (await readPhoneNumber(scope)) !== null);
     const signature = signEnabled(scope.workspaceId);
-    const [modelId, google, memoryDigest, conversationLog] = await Promise.all([
-      getWorkspaceModelId(scope),
-      googleNow(scope),
-      // The digest's model reads memory only where the digest runs and asks.
-      schedulesEnabled() && directModelActive()
-        ? memoryDigestPilot(scope, { whenUnknown: true })
-        : false,
-      crossChannelPilot(scope),
-    ]);
+    const [modelId, google, memoryDigest, conversationLog, taskJobs] =
+      await Promise.all([
+        getWorkspaceModelId(scope),
+        googleNow(scope),
+        // The digest's model reads memory only where the digest runs and asks.
+        schedulesEnabled() && directModelActive()
+          ? memoryDigestPilot(scope, { whenUnknown: true })
+          : false,
+        crossChannelPilot(scope),
+        taskJobsDecided(scope),
+      ]);
+    const location = locationPilot(scope);
     return {
-      kept: keptData({ conversationLog, phone, signature }),
+      kept: keptData({
+        conversationLog,
+        ...(location && { location }),
+        phone,
+        signature,
+      }),
       processors: dataProcessors(modelId, {
         memoryDigest,
         agentMail: agentMailboxEnabled(scope),
+        decisionModel:
+          (directModelActive() &&
+            toolRouterListedWorkspace(scope.workspaceId)) ||
+          taskJobs,
+        ...(location && { location }),
         phone,
       }),
       serverLocation: serverLocation(),
       ...(google !== undefined && { google }),
       remove: [
         memoryRemoval(),
-        ...removalOutsideMemory({ signature }),
+        ...removalOutsideMemory({ location, signature }),
         ...(phone
           ? [
               "phone-disable выключает звонки, но сохраняет номер и ежемесячную плату. Постоянное освобождение требует отдельного подтверждения phone-release; operator-required означает, что оператор должен проверить отключение и плата может продолжаться. Удаление памяти не освобождает платный номер.",

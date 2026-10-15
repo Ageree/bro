@@ -1,5 +1,5 @@
 import type { DynamicResolveContext } from "eve";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { isScheduledAgentRunLeaseActive } from "@db/services/scheduled-agent-run-leases";
 import type {
   getFormOfAddress,
@@ -9,6 +9,7 @@ import type * as CompactionRecord from "@agent/lib/compaction/record";
 import type * as ModelSelection from "@agent/lib/model/selection";
 import type * as Provider from "@shared/model/provider";
 import type * as SkillsPilot from "@agent/lib/skills/pilot";
+import type * as RouterTurn from "@agent/lib/tool-router/turn";
 
 const services = vi.hoisted(() => ({
   browserRunReportDelivered: vi.fn<(runId: string) => Promise<boolean>>(),
@@ -28,6 +29,9 @@ const services = vi.hoisted(() => ({
   taskAgentPilot: vi.fn<() => Promise<boolean>>(),
   taskFilesEnabled: vi.fn<(workspaceId: string | undefined) => boolean>(),
   signEnabled: vi.fn<(workspaceId: string | undefined) => boolean>(),
+  routerGroupsOfStep: vi.fn<typeof RouterTurn.routerGroupsOfStep>(),
+  routerSkillNote: vi.fn<typeof RouterTurn.routerSkillNote>(),
+  stampRouterUse: vi.fn<typeof RouterTurn.stampRouterUse>(),
 }));
 
 vi.mock("@db/services/scheduled-agent-run-leases", () => ({
@@ -79,6 +83,15 @@ vi.mock("@agent/lib/compaction/record", async (importOriginal) => {
   services.recordStepHistory.mockImplementation(original.recordStepHistory);
   return { ...original, recordStepHistory: services.recordStepHistory };
 });
+// The person's clock comes with the step's notes in the pilot of the step.
+vi.mock("@db/services/user-profile", () => ({
+  readWorkspaceTimeZone: async () => "Europe/Moscow",
+}));
+vi.mock("@agent/lib/tool-router/turn", () => ({
+  routerGroupsOfStep: services.routerGroupsOfStep,
+  routerSkillNote: services.routerSkillNote,
+  stampRouterUse: services.stampRouterUse,
+}));
 vi.mock("@agent/lib/model/selection", async (importOriginal) => {
   const original = await importOriginal<typeof ModelSelection>();
   services.modelSelection.mockImplementation(original.modelSelection);
@@ -128,6 +141,8 @@ beforeEach(() => {
   services.fastReplyPilot.mockResolvedValue(false);
   services.earlyReplySplitPilot.mockResolvedValue(false);
   services.skillsLayout.mockReturnValue("full");
+  services.routerGroupsOfStep.mockResolvedValue(["mail"]);
+  services.routerSkillNote.mockReturnValue(undefined);
 });
 
 function note(language: "en" | "ru" | undefined, answered = false) {
@@ -925,6 +940,83 @@ describe("interactive delivery enforcement", () => {
     );
   });
 
+  describe("in the pilot of the tool router", () => {
+    const mail = [humanMessage("Ответь Лене на письмо про отпуск")];
+    const event = { data: { stepIndex: 0, turnId: "turn_1" } };
+
+    beforeEach(() => {
+      services.directModelActive.mockReturnValue(true);
+      services.skillsLayout.mockReturnValue("core");
+      services.modelSelection.mockReturnValue("deepseek/deepseek-v4.1-flash");
+    });
+
+    afterEach(() => {
+      vi.stubEnv("TOOL_ROUTER_WORKSPACES", "");
+      vi.stubEnv("TOOL_ROUTER_MODE", "");
+      vi.stubEnv("STEP_CONTEXT_WORKSPACES", "");
+      vi.resetModules();
+    });
+
+    it("leaves the skills' groups in the shadow, and only logs", async () => {
+      const shadow = await routerAgent("shadow");
+      await shadow.model.events["step.started"]?.(
+        event,
+        interactiveContext(mail)
+      );
+      const options = services.modelSelection.mock.lastCall?.[1];
+      expect(services.routerGroupsOfStep).toHaveBeenCalledOnce();
+      expect(services.stampRouterUse).toHaveBeenCalledOnce();
+      expect(options?.routerGroups).toBeUndefined();
+      expect(options?.toolGroups).toContain("google");
+    });
+
+    it("hands the step the router's groups in place of the skills' when on", async () => {
+      services.routerSkillNote.mockReturnValue("load google first");
+      const on = await routerAgent("on");
+      await on.model.events["step.started"]?.(event, interactiveContext(mail));
+      const options = services.modelSelection.mock.lastCall?.[1];
+      expect(options?.routerGroups).toEqual(["mail"]);
+      expect(options?.toolGroups).toBeUndefined();
+      expect(options?.replyNote).toContain("load google first");
+    });
+
+    it("leaves a report's turn to its own tools, and a failure to the skills", async () => {
+      const on = await routerAgent("on");
+      await on.model.events["step.started"]?.(
+        event,
+        interactiveContext(mail, "browser-result", reportAttributes)
+      );
+      expect(services.routerGroupsOfStep).not.toHaveBeenCalled();
+      // The report's step still tells the router what was used.
+      expect(services.stampRouterUse).toHaveBeenCalledOnce();
+      expect(
+        services.modelSelection.mock.lastCall?.[1]?.routerGroups
+      ).toBeUndefined();
+
+      vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      services.routerGroupsOfStep.mockRejectedValue(new Error("down"));
+      await on.model.events["step.started"]?.(event, interactiveContext(mail));
+      const options = services.modelSelection.mock.lastCall?.[1];
+      expect(options?.routerGroups).toBeUndefined();
+      expect(options?.toolGroups).toContain("google");
+    });
+
+    it("is not asked outside the pilot", async () => {
+      vi.stubEnv("TOOL_ROUTER_WORKSPACES", "");
+      vi.resetModules();
+      const outside = (await import("@agent/agent")).default;
+      await outside.model.events["step.started"]?.(
+        event,
+        interactiveContext(mail)
+      );
+      expect(services.routerGroupsOfStep).not.toHaveBeenCalled();
+      expect(services.stampRouterUse).not.toHaveBeenCalled();
+      expect(
+        services.modelSelection.mock.lastCall?.[1]?.routerGroups
+      ).toBeUndefined();
+    });
+  });
+
   it("hands the step what old history to trim only in the pilot", async () => {
     services.directModelActive.mockReturnValue(true);
     // Once per step below: later tests get the real selection back.
@@ -1438,6 +1530,15 @@ function sent(id: string, text: string, value: string) {
       role: "tool" as const,
     },
   ];
+}
+
+/** The agent as a deployment with the tool router's pilot reads it. */
+async function routerAgent(mode: "on" | "shadow") {
+  vi.stubEnv("TOOL_ROUTER_WORKSPACES", "workspace-1");
+  vi.stubEnv("TOOL_ROUTER_MODE", mode);
+  vi.stubEnv("STEP_CONTEXT_WORKSPACES", "*");
+  vi.resetModules();
+  return (await import("@agent/agent")).default;
 }
 
 function humanMessage(text: string) {

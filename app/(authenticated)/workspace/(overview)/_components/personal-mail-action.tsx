@@ -28,9 +28,9 @@ export function PersonalMailAction({
         onClick={() => {
           update.mutate({ action: "disconnect", provider });
         }}
-        size="act-sm"
+        size="sm"
         type="button"
-        variant="act"
+        variant="outline"
       >
         Отключить
       </Button>
@@ -43,9 +43,9 @@ export function PersonalMailAction({
         onClick={() => {
           update.mutate({ action: "connect", provider, access: "full" });
         }}
-        size="act-sm"
+        size="sm"
         type="button"
-        variant="act"
+        variant="outline"
       >
         Подключить
       </Button>
@@ -54,9 +54,9 @@ export function PersonalMailAction({
         onClick={() => {
           update.mutate({ action: "connect", provider, access: "read_only" });
         }}
-        size="act-sm"
+        size="sm"
         type="button"
-        variant="act"
+        variant="outline"
       >
         Только чтение
       </Button>

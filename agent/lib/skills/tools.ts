@@ -99,10 +99,15 @@ const toolGroupEntries = {
   link_telegram: "core",
   list_orders: "core",
   load_skill: "core",
+  location_edit: "core",
+  location_history: "core",
+  location_now: "core",
   "notion-add-task": "apps",
   "notion-read": "apps",
   "notion-search": "apps",
+  open_tools: "core",
   personal_info__update: "core",
+  place_reminder: "core",
   privacy: "core",
   proactive_messages: "core",
   profile__find: "core",
@@ -144,6 +149,8 @@ const toolGroupEntries = {
   workstreams__save: "core",
   yandex: "core",
   yandex_purchase: "core",
+  yoomoney: "core",
+  yoomoney_pay: "core",
 } as const satisfies Readonly<Record<string, ToolGroup | "core">>;
 
 const toolGroupTable = new Map(Object.entries(toolGroupEntries));
@@ -197,7 +204,7 @@ function turnContext(message: ModelMessage | undefined) {
  * turn's context, then the message that opened it — and the conversation
  * before it.
  */
-function splitTurn(messages: readonly ModelMessage[]) {
+export function splitTurn(messages: readonly ModelMessage[]) {
   const opening = messages.findLastIndex(startsTurn);
   if (opening === -1) return { history: [], input: messages };
   let start = opening;

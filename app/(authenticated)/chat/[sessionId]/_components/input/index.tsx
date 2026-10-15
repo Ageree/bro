@@ -26,6 +26,7 @@ import {
 import { messageContent } from "../../../_lib/message-input";
 import { api } from "@web/trpc/client";
 import type { ChatAgent } from "../chat-agent";
+import { ShareLocationButton } from "./location";
 
 export function ChatInput({
   agent,
@@ -72,44 +73,58 @@ export function ChatInput({
   };
 
   return (
-    <div className="absolute bottom-0 left-1/2 z-20 mx-auto w-full max-w-3xl -translate-x-1/2 bg-linear-to-t from-background via-background to-transparent px-4 pt-4 pb-6 sm:px-6">
-      <PromptInput
-        accept={filesPilot ? pilotAccept : undefined}
-        className={paperComposerClassName}
-        compact
-        maxFileSize={webMessageFiles.maxFileSize}
-        maxFiles={webMessageFiles.maxFiles}
-        maxTotalSize={webMessageFiles.maxTotalSize}
-        multiple
-        onError={(error) => {
-          setNotice(refusalText(error.code));
-        }}
-        onSubmit={handleSubmit}
-      >
-        <ComposerAttachments />
-        <PromptInputBody>
-          <PromptInputTextarea
-            className="min-h-0"
-            disabled={agent.status === "submitted"}
-            placeholder="Напиши Bro…"
-          />
-        </PromptInputBody>
-        <PromptInputFooter>
-          <PromptInputTools>
-            {filesPilot ? (
-              <ComposerAttachButton disabled={isRestoring} />
-            ) : null}
-          </PromptInputTools>
-          <PromptInputSubmit
-            className={paperComposerSubmitClassName}
-            disabled={isRestoring}
-            onStop={() => void agent.cancel()}
-            status={isBusy ? agent.status : undefined}
-            variant="paper"
-          />
-        </PromptInputFooter>
-      </PromptInput>
-      <ComposerNotice text={notice} />
+    // The paper fades in under the composer across the whole width, so
+    // scrolling text never shows through beside it.
+    <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 bg-linear-to-t from-background via-background to-transparent px-4 pt-8 pb-6 sm:px-6">
+      <div className="pointer-events-auto mx-auto max-w-3xl">
+        <PromptInput
+          accept={filesPilot ? pilotAccept : undefined}
+          className={paperComposerClassName}
+          compact
+          maxFileSize={webMessageFiles.maxFileSize}
+          maxFiles={webMessageFiles.maxFiles}
+          maxTotalSize={webMessageFiles.maxTotalSize}
+          multiple
+          onError={(error) => {
+            setNotice(refusalText(error.code));
+          }}
+          onSubmit={handleSubmit}
+        >
+          <ComposerAttachments />
+          <PromptInputBody>
+            <PromptInputTextarea
+              className="min-h-0"
+              disabled={agent.status === "submitted"}
+              placeholder="Напиши Bro…"
+            />
+          </PromptInputBody>
+          <PromptInputFooter>
+            <PromptInputTools>
+              {filesPilot ? (
+                <ComposerAttachButton disabled={isRestoring} />
+              ) : null}
+              <ShareLocationButton
+                disabled={isRestoring || agent.status === "submitted"}
+                onShared={async (text) => {
+                  if (sessionId !== undefined) saveChat({ sessionId });
+                  await agent.send(
+                    text,
+                    steer ? { turnPolicy: "steer" } : undefined
+                  );
+                }}
+              />
+            </PromptInputTools>
+            <PromptInputSubmit
+              className={paperComposerSubmitClassName}
+              disabled={isRestoring}
+              onStop={() => void agent.cancel()}
+              status={isBusy ? agent.status : undefined}
+              variant="paper"
+            />
+          </PromptInputFooter>
+        </PromptInput>
+        <ComposerNotice text={notice} />
+      </div>
     </div>
   );
 }

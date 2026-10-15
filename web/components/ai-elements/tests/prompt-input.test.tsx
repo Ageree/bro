@@ -80,7 +80,7 @@ describe("prompt input", () => {
     expect(markup).toContain("Composer tools");
     expect(markup).toContain('aria-label="Submit"');
     expect(markup).toContain("absolute");
-    expect(markup).toContain("right-1.5");
-    expect(markup).toContain("bottom-1.5");
+    expect(markup).toContain("right-1");
+    expect(markup).toContain("bottom-1");
   });
 });

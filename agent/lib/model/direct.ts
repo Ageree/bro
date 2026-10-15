@@ -25,6 +25,11 @@ import {
   markUnreadablePdfs,
   withStagedFiles,
 } from "@agent/lib/staged-files/prompt";
+import {
+  routerGroupsOfTool,
+  routerToolOffered,
+} from "@agent/lib/tool-router/groups";
+import type { RouterGroup } from "@agent/lib/tool-router/questions";
 import type { StepIdentity } from "@agent/lib/turn-kind/step";
 import {
   defuseStepNoteTag,
@@ -555,8 +560,12 @@ const volatileTools = [
  * (`volatileTools`). A group offered later joins after the core, and a
  * change among the volatile tools leaves everything before them as it was.
  */
-function stableOrder(tools: StepTools): StepTools {
+function stableOrder(
+  tools: StepTools,
+  routerGroups?: readonly RouterGroup[]
+): StepTools {
   const volatile = (name: string) => volatileTools.includes(name);
+  if (routerGroups !== undefined) return routerOrder(tools, routerGroups);
   return [
     ...tools.filter(
       (tool) => !volatile(tool.name) && toolGroup(tool.name) === undefined
@@ -564,6 +573,34 @@ function stableOrder(tools: StepTools): StepTools {
     ...toolGroups.flatMap((group) =>
       tools.filter(
         (tool) => !volatile(tool.name) && toolGroup(tool.name) === group
+      )
+    ),
+    ...volatileTools.flatMap((name) =>
+      tools.filter((tool) => tool.name === name)
+    ),
+  ];
+}
+
+/**
+ * The tools in their order in the pilot of the tool router: its core as eve
+ * gives it, then each open group in the turn's order (a tool of several
+ * groups with the first of them open), then the volatile ones. A group
+ * opened later joins in its place, and every schema before it stays.
+ */
+function routerOrder(
+  tools: StepTools,
+  groups: readonly RouterGroup[]
+): StepTools {
+  const volatile = (name: string) => volatileTools.includes(name);
+  const firstOpen = (name: string) =>
+    routerGroupsOfTool(name).find((group) => groups.includes(group));
+  return [
+    ...tools.filter(
+      (tool) => !volatile(tool.name) && firstOpen(tool.name) === undefined
+    ),
+    ...groups.flatMap((group) =>
+      tools.filter(
+        (tool) => !volatile(tool.name) && firstOpen(tool.name) === group
       )
     ),
     ...volatileTools.flatMap((name) =>
@@ -594,7 +631,8 @@ function stableOrder(tools: StepTools): StepTools {
  *
  * In the skills pilot a person's step leaves out the tools of the groups no
  * skill of the conversation offers (`groups`); in the pilot of the step
- * they come after the core tools, group by group.
+ * they come after the core tools, group by group. In the pilot of the tool
+ * router the router's groups (`routerGroups`) take the skills' place.
  */
 export function stepToolsTransform(
   tools: StepTools,
@@ -607,6 +645,12 @@ export function stepToolsTransform(
      */
     readonly groups?: readonly SkillName[];
     readonly offered?: readonly string[];
+    /**
+     * In the pilot of the tool router, the groups a person's turn sees
+     * besides the router's core (`agent/lib/tool-router/groups.ts`), in
+     * place of `groups`. Undefined, no tool is left out by it.
+     */
+    readonly routerGroups?: readonly RouterGroup[];
     readonly stableContext?: boolean;
     readonly withheld: readonly string[];
   }
@@ -626,11 +670,12 @@ export function stepToolsTransform(
     })
     .filter((tool) => !options.withheld.includes(tool.name))
     .filter((tool) => options.offered?.includes(tool.name) ?? true)
-    .filter(
-      (tool) =>
-        options.groups === undefined || toolOffered(tool.name, options.groups)
+    .filter((tool) =>
+      options.routerGroups === undefined
+        ? options.groups === undefined || toolOffered(tool.name, options.groups)
+        : routerToolOffered(tool.name, options.routerGroups)
     );
-  return options.stableContext ? stableOrder(kept) : kept;
+  return options.stableContext ? stableOrder(kept, options.routerGroups) : kept;
 }
 
 /**
@@ -655,6 +700,9 @@ function stepToolsMiddleware(
             .update(JSON.stringify(tools))
             .digest("hex")
             .slice(0, 16),
+          ...(options.routerGroups === undefined
+            ? undefined
+            : { routerGroups: options.routerGroups }),
         });
       }
       return { ...params, tools };
@@ -1410,6 +1458,12 @@ export function directModelSelection(
      */
     readonly reasoningOff?: boolean;
     readonly replyNote?: string;
+    /**
+     * The pilot of the tool router (`agent/lib/tool-router/`): the groups a
+     * person's step sees besides the router's core, in place of
+     * `toolGroups` (`stepToolsTransform`).
+     */
+    readonly routerGroups?: readonly RouterGroup[];
     /** No text of this step may reach the person, empty or not. */
     readonly silent?: boolean;
     /**
@@ -1492,6 +1546,7 @@ export function directModelSelection(
         forcedReply: toolChoice === "required",
         groups: options.toolGroups,
         offered: options.offeredTools,
+        routerGroups: options.routerGroups,
         stableContext: options.stableContext,
         withheld: options.withheldTools ?? [],
       },

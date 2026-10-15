@@ -12,7 +12,13 @@ const nextConfig: NextConfig = {
   devIndicators: false,
   logging: {
     incomingRequests: {
-      ignore: [/\/api\/personal-mail\/[^/?]+\/callback(?:\?|$)/u],
+      ignore: [
+        /\/api\/personal-mail\/[^/?]+\/callback(?:\?|$)/u,
+        /\/api\/yoomoney\/callback(?:\?|$)/u,
+        // A card payment's link carries its secret in the query.
+        /\/pay\/[^/?]+(?:\?|$)/u,
+        /\/api\/yoomoney\/pay\//u,
+      ],
     },
   },
   serverExternalPackages: ["supermemory"],
@@ -27,6 +33,16 @@ const nextConfig: NextConfig = {
           { key: "X-Frame-Options", value: "DENY" },
         ],
         source: "/handoff/:path*",
+      },
+      {
+        // `same-origin`, not `no-referrer`: under that a browser sends
+        // `Origin: null` with the page's own form, and «Оплатить» checks it.
+        headers: [
+          { key: "Content-Security-Policy", value: "frame-ancestors 'none'" },
+          { key: "Referrer-Policy", value: "same-origin" },
+          { key: "X-Frame-Options", value: "DENY" },
+        ],
+        source: "/pay/:path*",
       },
     ];
   },

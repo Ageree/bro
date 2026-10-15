@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   fileNote,
   inboundTurn,
+  inboundWords,
   voiceRetryText,
   voiceUnsupportedText,
 } from "./turn-content";
@@ -222,6 +223,27 @@ describe("inbound turn assembly", () => {
       { text: "[файл: a.csv (text/csv)]", type: "text" },
       expect.objectContaining({ mediaType: "text/csv", type: "file" }),
     ]);
+  });
+
+  it("reads a voice note's words as the person's, like the same words typed", () => {
+    const voice = inboundTurn("", [
+      { kind: "transcript", text: "что рядом поесть?" },
+    ]);
+    expect(inboundWords(voice, "")).toContain("что рядом поесть?");
+    expect(
+      inboundWords(
+        inboundTurn("", [
+          {
+            data: jpeg,
+            filename: "a.jpg",
+            kind: "image",
+            mediaType: "image/jpeg",
+          },
+        ]),
+        ""
+      )
+    ).not.toContain("рядом");
+    expect(inboundWords(undefined, "что рядом?")).toBe("что рядом?");
   });
 });
 

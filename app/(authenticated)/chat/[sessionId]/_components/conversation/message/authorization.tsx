@@ -32,7 +32,7 @@ export function AuthorizationPrompt({
       : "information";
 
   return (
-    <Alert variant={alertVariant}>
+    <Alert className="rounded-2xl px-4 py-3" variant={alertVariant}>
       <Icon />
       <AlertTitle>{authorizationTitle(part)}</AlertTitle>
       <AlertDescription>
@@ -58,7 +58,8 @@ export function AuthorizationPrompt({
                 target="_blank"
               />
             }
-            size="sm"
+            size="lg"
+            variant="paper"
           >
             <ExternalLinkIcon />
             Sign in with {part.displayName}

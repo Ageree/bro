@@ -18,7 +18,13 @@ import {
 import { crossChannelRecap } from "@agent/lib/conversation/recap";
 import { firstContactContext } from "@agent/lib/first-contact";
 import { photonMediaTurn } from "@agent/lib/inbound-media/photon";
-import { voiceFailedNote } from "@agent/lib/inbound-media/turn-content";
+import {
+  inboundWords,
+  voiceFailedNote,
+} from "@agent/lib/inbound-media/turn-content";
+import { locationContext } from "@agent/lib/location/context";
+import { iMessageShare, ingestShared } from "@agent/lib/location/ingest";
+import { locationPilot } from "@db/services/location";
 import {
   prepareAttachmentDelivery,
   taskFilesAttachmentLimits,
@@ -297,9 +303,25 @@ export default photonIMessageChannel({
     // the adapter exposes no URL for them and the model otherwise sees nothing.
     // Spreadsheets and documents reach the model only where the task agent
     // gets them.
+    // A location card is read as a point in the geolocation pilot: stored,
+    // run through the person's place reminders, and told as context lines.
+    const located = locationPilot(scope);
     const media = await photonMediaTurn(message, {
       documents: taskFilesEnabled(scope.workspaceId),
+      ...(located && { location: true }),
     });
+    if (located) {
+      turnContext.push(
+        ...(media?.locations === undefined
+          ? await locationContext(scope, inboundWords(media, message.text))
+          : await ingestShared(
+              scope,
+              media.locations.map((card, index) =>
+                iMessageShare(card, message.id, index)
+              )
+            ))
+      );
+    }
     if (media === undefined) return { auth: sessionAuth, context: turnContext };
     if (media.notice) await context.thread.post({ raw: media.notice });
     if (media.message === undefined) {

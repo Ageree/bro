@@ -1,4 +1,6 @@
 import type { FilePart, UserContent } from "ai";
+import { placeMarker, positionMarker } from "@agent/lib/location/markers";
+import type { CardPoint } from "@agent/lib/location/vcf";
 
 /**
  * What one inbound attachment became once its bytes were resolved. The channel
@@ -28,6 +30,15 @@ export type InboundMediaItem =
       readonly filename: string;
       readonly mediaType: string;
     }
+  | {
+      /**
+       * A location card the person sent (geolocation pilot): the turn
+       * carries a bare marker, and the channel stores the point and adds its
+       * context lines (`agent/lib/location/`).
+       */
+      readonly kind: "location";
+      readonly point: CardPoint;
+    }
   | { readonly kind: "transcript"; readonly text: string }
   | { readonly kind: "voice-failed" }
   | { readonly kind: "voice-unsupported" }
@@ -39,6 +50,23 @@ export interface InboundTurn {
   readonly message: string | UserContent | undefined;
   /** A one-line reply the channel sends itself, before or instead of the turn. */
   readonly notice: string | undefined;
+  /** The location cards the message carried, only when it carried any. */
+  readonly locations?: readonly CardPoint[];
+}
+
+/**
+ * What the person said in a message: its text, with a voice note's
+ * transcript when the turn carries one (`inboundTurn`), or the raw text when
+ * there is no media turn. A check of their words (the geolocation's
+ * «что рядом») reads a voice note as it would the same words typed.
+ */
+export function inboundWords(turn: InboundTurn | undefined, raw: string) {
+  const message = turn?.message;
+  if (message === undefined) return raw;
+  if (!Array.isArray(message)) return message;
+  return message
+    .flatMap((part) => (part.type === "text" ? [part.text] : []))
+    .join("\n");
 }
 
 /** Sent when every voice note failed to transcribe and nothing else was said. */
@@ -99,7 +127,7 @@ const mediaTypeToken = /^[\w.+-]+\/[\w.+-]+$/u;
  * paragraph separators, with the spaces around it, becomes one space.
  * Ordinary names and types are left as they are.
  */
-function lineName(name: string | undefined) {
+export function lineName(name: string | undefined) {
   const plain = name
     ?.replace(/\s*[\p{Cc}\p{Cf}\p{Zl}\p{Zp}[\]/\\]+\s*/gu, " ")
     .trim();
@@ -133,6 +161,7 @@ export function inboundTurn(
   let hasImage = false;
   /** The lines that only name a file the turn carries as a part. */
   let attachedNotes = 0;
+  const locations: CardPoint[] = [];
 
   for (const item of items) {
     switch (item.kind) {
@@ -182,6 +211,13 @@ export function inboundTurn(
         lines.push(item.text);
         break;
       }
+      case "location": {
+        locations.push(item.point);
+        lines.push(
+          item.point.kind === "position" ? positionMarker : placeMarker
+        );
+        break;
+      }
       case "voice-failed": {
         voiceFailed += 1;
         break;
@@ -205,13 +241,14 @@ export function inboundTurn(
   } else if (fileNotes && hasImage && lines.length === attachedNotes) {
     lines.unshift(photoNote);
   }
+  const located = locations.length > 0 ? { locations } : {};
   if (files.length === 0) {
     const message = lines.length > 0 ? lines.join("\n") : undefined;
-    return { message, notice };
+    return { message, notice, ...located };
   }
   const message: UserContent = [
     { text: lines.join("\n"), type: "text" },
     ...files,
   ];
-  return { message, notice };
+  return { message, notice, ...located };
 }

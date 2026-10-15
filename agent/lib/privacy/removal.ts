@@ -30,12 +30,14 @@ export function memoryRemoval() {
  * данные». On 25.09 (RU d14) Bro answered both without naming the Google
  * switch, the cabinet, or what forgetting leaves behind.
  */
-export function removalOutsideMemory(
-  options: {
-    /** Signing with the person's signature is on (`signEnabled`). */
-    readonly signature?: boolean;
-  } = {}
-) {
+export function removalOutsideMemory({
+  location = false,
+  signature = false,
+}: {
+  readonly location?: boolean;
+  /** Signing with the person's signature is on (`signEnabled`). */
+  readonly signature?: boolean;
+} = {}) {
   return [
     `Личные данные (имя, телефон, почта, адрес, дата рождения) — это не память: они убираются в кабинете, ${cabinetPage("/personal-info", "раздел «Личные данные»")}, или просьбой («удали мой адрес»).`,
     ...(googleWorkspaceConfigured()
@@ -49,8 +51,13 @@ export function removalOutsideMemory(
         ]
       : []),
     "Расписания и напоминания — «покажи мои расписания», затем «удали …» или «останови все расписания».",
-    `Сейф — карты, адреса и контакты — в кабинете, ${cabinetPage("/vault", "раздел «Сейф»")}. Сохранённый вход сайта (логин и пароль) — просьбой «забудь мой вход на …».`,
-    ...(options.signature === true
+    ...(location
+      ? [
+          "Геопозиция — «забудь, где я был» (или за период): точки удаляются сразу; напоминания у мест — «покажи мои напоминания у мест», затем «отмени …». Присланное в переписке остаётся в истории чатов.",
+        ]
+      : []),
+    `Сейф — карты, адреса и контакты — в кабинете, ${cabinetPage("/workspace", "раздел «Сейф»")}. Сохранённый вход сайта (логин и пароль) — просьбой «забудь мой вход на …».`,
+    ...(signature
       ? [
           "Образец подписи — «удали мою подпись»; записи о подписаниях и уже подписанные файлы остаются.",
         ]
@@ -69,9 +76,11 @@ export function removalOutsideMemory(
  * memory and how the person removes each part, told without asking whether
  * to remove it.
  */
-export function afterForgetting() {
+export function afterForgetting({
+  location = false,
+}: { readonly location?: boolean } = {}) {
   return {
-    outsideMemory: removalOutsideMemory(),
+    outsideMemory: removalOutsideMemory({ location }),
     reply:
       "In the one message that says what was forgotten, also tell the person what is not memory and stays, and how they remove each part (outsideMemory), in your own words. Do not ask whether to remove any of it, and remove nothing else yourself.",
   };

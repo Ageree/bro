@@ -28,6 +28,7 @@ describe("privacy page", () => {
       "AgentMail",
       "Mail.ru и Яндекс",
       "Песочница для кода",
+      "TypeSafe",
     ]) {
       expect(html).toContain(service);
     }
@@ -36,6 +37,13 @@ describe("privacy page", () => {
     expect(html).toContain('href="mailto:solsav1703@gmail.com"');
     expect(html).toContain('href="/oferta"');
     expect(html).toContain("в течение 30 дней");
+  });
+
+  it("says how long a shared location is kept and what stays", async () => {
+    const { html } = await render("off");
+    expect(html).toContain("геопозиц");
+    expect(html).toContain("до 90 дней");
+    expect(html).toContain("остаётся в истории чатов");
   });
 
   it("promises owner reading only when transcripts are kept", async () => {

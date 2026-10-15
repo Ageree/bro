@@ -1560,7 +1560,7 @@ export const PromptInputSubmit = ({
   return (
     <span className="size-8 shrink-0">
       <m.span
-        className="absolute right-1.5 bottom-1.5 inline-flex"
+        className="absolute right-1 bottom-1 inline-flex"
         layout={layout.animateLayout ? "position" : false}
         transition={{ layout: promptInputLayoutTransition }}
       >

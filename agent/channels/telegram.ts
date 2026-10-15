@@ -27,6 +27,24 @@ import { withApprovalCard } from "@shared/chat/approval-card";
 import { crossChannelRecap } from "@agent/lib/conversation/recap";
 import { firstContactContext } from "@agent/lib/first-contact";
 import { telegramMediaTurn } from "@agent/lib/inbound-media/telegram";
+import {
+  inboundTurn,
+  inboundWords,
+} from "@agent/lib/inbound-media/turn-content";
+import { locationContext } from "@agent/lib/location/context";
+import { ingestShared } from "@agent/lib/location/ingest";
+import { placeMarker, positionMarker } from "@agent/lib/location/markers";
+import {
+  locationButtonMarkup,
+  locationButtonPrompt,
+  locationButtonResultSchema,
+  locationArrived,
+  rememberLocationAsked,
+  takeKeyboardRemoval,
+  takeLocationAsked,
+  telegramLocation,
+} from "@agent/lib/location/telegram";
+import { locationPilot } from "@db/services/location";
 import { pdfByteCap } from "@agent/lib/inbound-media/media-type";
 import {
   prepareAttachmentDelivery,
@@ -194,6 +212,21 @@ export default telegramChannel({
         });
         markTurnDelivered(context, event.turnId);
         await finalizeScheduledReportDelivery(session);
+        return;
+      }
+
+      // `location_now` with `ask` (geolocation pilot): the keyboard button
+      // that sends the person's location, with its one line. The model's own
+      // message follows as usual.
+      if (
+        event.status === "completed" &&
+        locationButtonResultSchema.safeParse(event.result).success
+      ) {
+        await context.telegram.post({
+          reply_markup: locationButtonMarkup,
+          text: locationButtonPrompt,
+        });
+        rememberLocationAsked(context.telegram.chatId);
         return;
       }
 
@@ -383,6 +416,31 @@ export default telegramChannel({
       },
       principalId,
     };
+    // A location the person shared (geolocation pilot): the message keeps a
+    // bare marker, and the point, its address and any reminder it fired go
+    // as context lines (`agent/lib/location/`).
+    const located = locationPilot(scope);
+    const shared = located
+      ? telegramLocation(message, {
+          asked: () => takeLocationAsked(message.chat.id),
+        })
+      : undefined;
+    if (shared) {
+      locationArrived(message.chat.id);
+      const marker = shared.kind === "position" ? positionMarker : placeMarker;
+      const turnContext = [
+        ...(await firstContactContext(scope)),
+        ...(await crossChannelRecap(scope, { channel: "channel:telegram" })),
+        ...(await ingestShared(scope, [shared])),
+      ];
+      return {
+        auth: sessionAuth,
+        context: turnContext,
+        message: inboundTurn(message.text || message.caption, [
+          { kind: "note", text: marker },
+        ]).message,
+      };
+    }
     // Photos, documents and voice notes are resolved to bytes and text here,
     // because eve's lazy resolver drops a photo the Bot API serves without an
     // image content type and never reads a voice note at all. Spreadsheets
@@ -401,6 +459,12 @@ export default telegramChannel({
     const turnContext = [
       ...(await firstContactContext(scope)),
       ...(await crossChannelRecap(scope, { channel: "channel:telegram" })),
+      ...(located
+        ? await locationContext(
+            scope,
+            inboundWords(media, message.text || message.caption)
+          )
+        : []),
     ];
     if (media === undefined) return { auth: sessionAuth, context: turnContext };
     return { auth: sessionAuth, context: turnContext, message: media.message };
@@ -623,6 +687,13 @@ async function sendText(
       ? { ...body, link_preview_options: { is_disabled: true } }
       : body;
   const chatId = context.telegram.chatId;
+  // The location button's keyboard goes with the first words after it
+  // served (geolocation pilot).
+  let removeKeyboard = takeKeyboardRemoval(chatId);
+  const withKeyboard = <Body extends object>(body: Body) =>
+    removeKeyboard
+      ? { ...body, reply_markup: { remove_keyboard: true } }
+      : body;
   const chunks = splitTelegramHtml(toTelegramHtml(text));
   let plainFrom = chunks.length;
   for (const [index, chunk] of chunks.entries()) {
@@ -630,8 +701,11 @@ async function sendText(
       // oxlint-disable-next-line eslint/no-await-in-loop -- Telegram renders split messages in call order.
       await context.telegram.request(
         "sendMessage",
-        withPreview({ chat_id: chatId, parse_mode: "HTML", text: chunk })
+        withPreview(
+          withKeyboard({ chat_id: chatId, parse_mode: "HTML", text: chunk })
+        )
       );
+      removeKeyboard = false;
     } catch (error) {
       if (!(error instanceof Error) || !rejectedMarkup(error)) throw error;
       console.warn("[telegram] markup refused, sent as plain text", {
@@ -649,8 +723,9 @@ async function sendText(
       // oxlint-disable-next-line eslint/no-await-in-loop -- Telegram renders split messages in call order.
       await context.telegram.request(
         "sendMessage",
-        withPreview({ chat_id: chatId, text: plain })
+        withPreview(withKeyboard({ chat_id: chatId, text: plain }))
       );
+      removeKeyboard = false;
     }
   }
 }

@@ -1,0 +1,1 @@
+ALTER TABLE "yoomoney_payments" ADD COLUMN "account" text;

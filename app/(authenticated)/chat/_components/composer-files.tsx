@@ -33,8 +33,8 @@ export function ComposerAttachButton({
 
 /**
  * The files the next message carries, each with a way to take it off: a
- * pasted or dropped file shows here before it is sent. Square, like the
- * paper composer they sit in.
+ * pasted or dropped file shows here before it is sent. Round, like the
+ * pill composer they sit in (`_lib/composer.ts`).
  */
 export function ComposerAttachments() {
   const attachments = usePromptInputAttachments();
@@ -49,7 +49,7 @@ export function ComposerAttachments() {
               : file.filename;
           return (
             <li
-              className="flex max-w-56 items-center gap-1.5 border border-border py-0.5 pr-0.5 pl-1.5 type-caption"
+              className="flex max-w-56 items-center gap-1.5 rounded-full border border-border py-0.5 pr-0.5 pl-1.5 type-caption"
               key={file.id}
             >
               <FileGlyph mediaType={file.mediaType} url={file.url} />
@@ -82,7 +82,11 @@ function FileGlyph({
     return (
       // A local blob URL cannot be declared in Next Image configuration.
       // oxlint-disable-next-line nextjs/no-img-element -- local blob URL of a file not yet sent
-      <img alt="" className="size-5 shrink-0 object-cover" src={url} />
+      <img
+        alt=""
+        className="size-5 shrink-0 rounded-full object-cover"
+        src={url}
+      />
     );
   }
   const Icon = mediaType === "application/pdf" ? FileTextIcon : FileIcon;
@@ -93,7 +97,7 @@ function FileGlyph({
 export function ComposerNotice({ text }: { readonly text?: string }) {
   if (text === undefined) return null;
   return (
-    <p className="type-status pt-1.5 text-destructive" role="alert">
+    <p className="type-status px-5 pt-1.5 text-destructive" role="alert">
       {text}
     </p>
   );

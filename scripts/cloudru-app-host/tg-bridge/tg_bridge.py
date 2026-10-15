@@ -53,8 +53,20 @@ the same files for names not in their environment):
   TG_BRIDGE_RETRY_MAX_S      60     the longest pause between two attempts
   TG_BRIDGE_CONFLICT_PAUSE_S 60     after a 409 or with a webhook set
   TG_BRIDGE_BUSY_POLL_S      2      how often getUpdates looks for new updates while one is in retries
-A number that is not one (or is below its minimum), an unusable TG_BRIDGE_HEALTH or an eve URL that is not
-http://<host>[:<port>]/<path> is a configuration error: exit 2, which the unit does not restart.
+  TG_BRIDGE_LIVE_LOCATION    off    on: also poll edited_message and hand a live location's edits to
+                                    TG_BRIDGE_LIVE_URL (README.md, «Живая геопозиция»)
+  TG_BRIDGE_LIVE_URL         the eve URL's origin + /eve/v1/telegram-location
+A number that is not one (or is below its minimum), an unusable TG_BRIDGE_HEALTH, TG_BRIDGE_LIVE_LOCATION other
+than on/off or an eve URL that is not http://<host>[:<port>]/<path> is a configuration error: exit 2, which the
+unit does not restart.
+
+A live location (TG_BRIDGE_LIVE_LOCATION=on): Telegram sends each move of a shared live location as an
+edited_message, which eve's Telegram channel drops. Those edits go to TG_BRIDGE_LIVE_URL instead, in their own
+queue per chat (live:<chat>) that neither waits behind the chat's messages nor holds them up. They are perishable:
+an edit queued behind a later one of the same live location and within 100 m of it is dropped unsent
+(coalesced), so a short visit (out, in, out) survives; an HTTP error from a running eve (a release without the
+route answers 404) drops the edit at once; only eve down or a wrong secret makes it wait. An edit of a text is
+confirmed without being sent anywhere (skipped). The webhook mode never asks for edits.
 """
 
 import argparse
@@ -79,6 +91,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 ALLOWED_UPDATES = ["message", "callback_query"]
+LIVE_UPDATE = "edited_message"
+# A queued edit of a live location this close to the next queued edit of the same one says nothing new.
+COALESCE_M = 100
+EARTH_RADIUS_M = 6_371_000
 SERVICE = "bro-tg-bridge.service"
 ENV_FILES = ("/etc/bro/env", "/etc/bro/tg-bridge.env")
 TOKEN = re.compile(r"[0-9]+:[A-Za-z0-9_-]+")
@@ -193,6 +209,16 @@ class Settings:
         self.eve_health = env.get("TG_BRIDGE_EVE_HEALTH") or urllib.parse.urljoin(self.eve_url, "/eve/v1/health")
         # An update waiting longer than this makes /health 503: eve down, a broken release, a stuck chat.
         self.stuck_after = number("TG_BRIDGE_STUCK_S", 120)
+        live = (env.get("TG_BRIDGE_LIVE_LOCATION") or "off").strip().lower()
+        if live not in ("on", "off"):
+            self.invalid.append("TG_BRIDGE_LIVE_LOCATION must be on or off")
+        self.live_location = live == "on"
+        self.live_url = env.get("TG_BRIDGE_LIVE_URL") or urllib.parse.urljoin(
+            self.eve_url, "/eve/v1/telegram-location")
+
+    def allowed_updates(self):
+        """What getUpdates asks for: a live location's edits only when they have somewhere to go."""
+        return ALLOWED_UPDATES + [LIVE_UPDATE] if self.live_location else list(ALLOWED_UPDATES)
 
     def problems(self, *, eve=True, service=False):
         """What stops the commands. `service`: what the running bridge itself needs (run, and switch-to-bridge
@@ -214,8 +240,9 @@ class Settings:
                     raise ValueError(self.health)
             except ValueError:
                 found.append("TG_BRIDGE_HEALTH must be <host>:<port>")
-            for name, url in (("TG_BRIDGE_EVE_URL", self.eve_url), ("TG_BRIDGE_EVE_HEALTH", self.eve_health)):
-                if not http_url_ok(url):  # the health URL is derived from the eve URL: one message is enough
+            for name, url in (("TG_BRIDGE_EVE_URL", self.eve_url), ("TG_BRIDGE_EVE_HEALTH", self.eve_health),
+                              ("TG_BRIDGE_LIVE_URL", self.live_url)):
+                if not http_url_ok(url):  # the other URLs derive from the eve URL: one message is enough
                     found.append(f"{name} must be http://<host>[:<port>]/<path>")
                     break
         return found
@@ -376,6 +403,29 @@ def update_kind(update):
     return next((key for key in update if key != "update_id"), "empty")
 
 
+def live_point(update):
+    """(chat id, message id, latitude, longitude) of an edit that moves a live location, else None."""
+    item = update.get(LIVE_UPDATE)
+    if not isinstance(item, dict):
+        return None
+    location = item.get("location")
+    chat = item.get("chat") or {}
+    if not isinstance(location, dict) or not isinstance(chat, dict):
+        return None
+    latitude, longitude = location.get("latitude"), location.get("longitude")
+    numbers = all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in (latitude, longitude))
+    if not numbers or "id" not in chat:
+        return None
+    return chat["id"], item.get("message_id"), float(latitude), float(longitude)
+
+
+def distance_m(a, b):
+    """Great-circle metres between two (latitude, longitude) pairs."""
+    lat1, lon1, lat2, lon2 = map(math.radians, (*a, *b))
+    h = math.sin((lat2 - lat1) / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin((lon2 - lon1) / 2) ** 2
+    return 2 * EARTH_RADIUS_M * math.asin(min(1.0, math.sqrt(h)))
+
+
 def chat_key(update):
     """What orders updates: the chat for messages and buttons; for anything else its sender."""
     kind = update_kind(update)
@@ -464,16 +514,19 @@ class State:
 
 
 class Bridge:
-    def __init__(self, settings, telegram=None, deliver=None):
+    def __init__(self, settings, telegram=None, deliver=None, deliver_live=None):
         self.settings = settings
         self.telegram = telegram or Telegram(settings.token, settings.api, settings.proxy)
         self.deliver = deliver or (lambda body: post_to_eve(settings.eve_url, settings.secret, body))
+        self.deliver_live = deliver_live or (lambda body: post_to_eve(settings.live_url, settings.secret, body))
         self.state = State(settings.state, bot_fingerprint(settings.token))
         self.stop = threading.Event()
         self.lock = threading.Lock()
         self.progress = threading.Condition(self.lock)
         # Update id -> when it was queued (monotonic): the health check's "how long has the oldest waited".
         self.pending = {}
+        # The pending ids that are a live location's edits: perishable, so not what /health waits on.
+        self.live_ids = set()
         self.queues = {}
         # Chat key -> when eve last took one of its updates (monotonic): the gap between two of a chat's
         # updates runs from there, across polls and drains (entries older than the gap are dropped on accept).
@@ -500,7 +553,8 @@ class Bridge:
         now = time.monotonic()
         with self.lock:
             pending = len(self.pending)
-            oldest = now - min(self.pending.values()) if self.pending else None
+            waiting = [t for i, t in self.pending.items() if i not in self.live_ids]
+            oldest = now - min(waiting) if waiting else None
             counters = dict(self.counters)
         fresh = self.last_poll_ok is not None and now - self.last_poll_ok < self.settings.poll_timeout + 60
         stuck = oldest is not None and oldest > self.settings.stuck_after
@@ -569,7 +623,7 @@ class Bridge:
                 updates = self.telegram.call("getUpdates", {
                     "offset": offset,
                     "timeout": timeout,
-                    "allowed_updates": ALLOWED_UPDATES,
+                    "allowed_updates": self.settings.allowed_updates(),
                 }, timeout=timeout + 15)
             except TelegramError as error:
                 if error.status == 409:
@@ -623,6 +677,15 @@ class Bridge:
                 self.pending[update_id] = now
                 self.max_seen = max(self.max_seen, update_id)
                 key = chat_key(update)
+                if update_kind(update) == LIVE_UPDATE:
+                    point = live_point(update) if self.settings.live_location else None
+                    if point is None:
+                        # An edited text (or an edit left from before the flag went off): eve has no use for it.
+                        self._complete(update_id, "skipped")
+                        continue
+                    key = f"live:{point[0]}"
+                    self.live_ids.add(update_id)
+                    self.coalesce(key, point)
                 queue = self.queues.get(key)
                 if queue is not None:
                     queue.append(update)
@@ -630,6 +693,16 @@ class Bridge:
                     self.queues[key] = collections.deque([update])
                     self.pool.submit(self.drain, key)
         return fresh
+
+    def coalesce(self, key, point):
+        """Drop the queued edits of the same live location this new one makes stale (lock held): the last
+        queued, while it is within COALESCE_M of the new one. A far one stays, and so does all before it."""
+        queue = self.queues.get(key)
+        while queue:
+            last = live_point(queue[-1])
+            if last is None or last[1] != point[1] or distance_m(last[2:], point[2:]) >= COALESCE_M:
+                return
+            self._complete(queue.pop()["update_id"], "coalesced")
 
     def drain(self, key):
         try:
@@ -674,12 +747,13 @@ class Bridge:
         answering at all, or answering while its health check fails, is eve's trouble: retried for as long as
         it takes, and the health check reports the wait (oldestPendingAgeS)."""
         update_id, kind = update["update_id"], update_kind(update)
+        live = kind == LIVE_UPDATE
         failures = blamed = 0
         while not self.stop.is_set():
             try:
                 # ASCII JSON: a lone surrogate (half an emoji in a cut name) is a valid \ud83d escape there,
                 # while encoding it as UTF-8 raises.
-                status = self.deliver(json.dumps(update).encode())
+                status = (self.deliver_live if live else self.deliver)(json.dumps(update).encode())
             except OSError as error:
                 status, reason, own = None, type(error).__name__, False
             except Exception as error:  # noqa: BLE001 - one odd update must not stop every chat's delivery
@@ -690,7 +764,7 @@ class Bridge:
                 if self.eve_refused is not None:
                     log("tg-bridge: eve accepts the secret again")
                 self.eve_refused = None
-                self.complete(update_id, delivered=True)
+                self.complete(update_id, delivered=True, counter="liveDelivered" if live else None)
                 return True
             if status in (401, 403):
                 # The secret: eve and the bridge read different values. Wait for a fix, drop nothing.
@@ -701,6 +775,15 @@ class Bridge:
                 blamed = 0  # the streak of the update's own failures is broken: it is not "in a row" any more
                 self.stop.wait(self.settings.retry_max)
                 continue
+            if live and (own or (status is not None and self.eve_alive())):
+                # A live edit is worth something only now, and the next one follows: a running eve that does
+                # not take it (a release without the route) loses it, without retries.
+                self.complete(update_id, delivered=False, counter="liveDropped")
+                with self.lock:
+                    dropped = self.counters["liveDropped"]
+                if dropped % 100 == 1:
+                    log(f"tg-bridge: live location edit {update_id} dropped: eve {reason} ({dropped} so far)")
+                return True
             failures += 1
             self.count("deliveryRetries")
             if own or (status is not None and self.eve_alive()):
@@ -716,21 +799,26 @@ class Bridge:
             self.stop.wait(self.backoff(failures))
         return False
 
-    def complete(self, update_id, *, delivered):
+    def complete(self, update_id, *, delivered, counter=None):
         with self.progress:
-            self.pending.pop(update_id, None)
-            self.state.done.add(update_id)
-            self.state.offset = min(self.pending) if self.pending else self.max_seen + 1
-            self.state.done = {i for i in self.state.done if i >= self.state.offset}
-            # A failed write does not hold polling back: the offset still goes to Telegram. eve has these
-            # updates; not confirming them would only have Telegram send them again after a restart. /health is
-            # 503 meanwhile, and the next write catches the file up.
-            self.state_failing = not self.state.save()
-            if self.state_failing:
-                self.counters["stateWriteErrors"] += 1
-            self.counters["delivered" if delivered else "dropped"] += 1
-            self.completions += 1
-            self.progress.notify_all()
+            self._complete(update_id, counter or ("delivered" if delivered else "dropped"))
+
+    def _complete(self, update_id, counter):
+        """Confirm one update (the lock held): out of pending, into the state file, counted under `counter`."""
+        self.pending.pop(update_id, None)
+        self.live_ids.discard(update_id)
+        self.state.done.add(update_id)
+        self.state.offset = min(self.pending) if self.pending else self.max_seen + 1
+        self.state.done = {i for i in self.state.done if i >= self.state.offset}
+        # A failed write does not hold polling back: the offset still goes to Telegram. eve has these
+        # updates; not confirming them would only have Telegram send them again after a restart. /health is
+        # 503 meanwhile, and the next write catches the file up.
+        self.state_failing = not self.state.save()
+        if self.state_failing:
+            self.counters["stateWriteErrors"] += 1
+        self.counters[counter] += 1
+        self.completions += 1
+        self.progress.notify_all()
 
 
 def serve_health(bridge, listen):

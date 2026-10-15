@@ -34,6 +34,11 @@ export async function proxy(request: NextRequest) {
     // route checks the device that took it.
     pathname.startsWith("/handoff/") ||
     pathname.startsWith("/eve/v1/login-handoff/") ||
+    // A card payment's page from a link in a chat, and where the person's
+    // bank sends them back: the link's HMAC is the secret, and only the
+    // press of «Оплатить» on the page pays (db/services/yoomoney/card.ts).
+    pathname.startsWith("/pay/") ||
+    pathname.startsWith("/api/yoomoney/pay/") ||
     pathname.startsWith("/eve/v1/sandbox-files/") ||
     pathname === "/eve/v1/dev/schedules/dynamic"
   ) {

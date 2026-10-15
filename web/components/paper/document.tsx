@@ -5,10 +5,9 @@ import { cn } from "@web/components/class-names";
 /**
  * Paper — the cabinet, the vault and the offer.
  *
- * The landing is one screen with a figure standing in it; these pages are
- * paper. Same white, same serif, same rule that chrome is text. A page is a
- * single column of sections divided by hairlines: no cards, no radius, no
- * shadow, nothing floating over a photograph.
+ * The landing is one screen with a crowd behind a plate; these pages are the
+ * same plates on the same warm paper. A page is a single column: a serif
+ * title, then one white plate with an ink border per section.
  */
 export function Document({
   children,
@@ -19,10 +18,7 @@ export function Document({
 }) {
   return (
     <div
-      className={cn(
-        "mx-auto w-full max-w-[42rem] px-bro-pad pt-[0.6rem] pb-20",
-        className
-      )}
+      className={cn("mx-auto w-full max-w-[46rem] px-bro-pad py-4", className)}
     >
       {children}
     </div>
@@ -35,9 +31,9 @@ export function DocumentTitle({ children }: { readonly children: ReactNode }) {
 }
 
 /**
- * Every section is the same shape: a serif heading with the current state
- * set small and grey on the same line, then whatever the section has to
- * say. No card, no border but the hairline above it.
+ * Every section is the same shape: a plate with a serif heading and the
+ * current state set small and grey on the same line, then whatever the
+ * section has to say.
  */
 export function Section({
   children,
@@ -51,11 +47,8 @@ export function Section({
   readonly title: string;
 }) {
   return (
-    <section
-      aria-labelledby={headingId}
-      className="mt-8 border-t border-border pt-[1.6rem]"
-    >
-      <div className="mb-[0.55rem] flex items-baseline justify-between gap-4">
+    <section aria-labelledby={headingId} className="mt-6 bro-plate p-6 sm:p-8">
+      <div className="mb-2 flex items-baseline justify-between gap-4">
         <h2 className="type-sec-title" id={headingId}>
           {title}
         </h2>
@@ -93,7 +86,7 @@ export function Row({
   return (
     <li
       className={cn(
-        "flex items-baseline justify-between gap-4 border-t border-border py-[0.6rem] first:border-t-0 first:pt-[0.2rem]",
+        "flex items-center justify-between gap-4 border-t border-border py-3 first:border-t-0 first:pt-1",
         className
       )}
     >
@@ -110,8 +103,8 @@ export function Row({
 }
 
 /**
- * A quota reads as a rule that is partly inked in — square ends. It only
- * illustrates the line of text above it, which carries the numbers.
+ * A quota reads as a rail that is partly inked in. It only illustrates the
+ * line of text above it, which carries the numbers.
  */
 export function Meter({
   allowance,
@@ -127,17 +120,17 @@ export function Meter({
   return (
     <div
       aria-hidden="true"
-      className="mt-[0.45rem] mb-[1.1rem] h-0.5 bg-border last:mb-[0.2rem]"
+      className="mt-2 mb-4 h-1.5 overflow-hidden rounded-full bg-muted last:mb-1"
     >
       <div
-        className="h-full bg-foreground"
+        className="h-full rounded-full bg-foreground"
         style={{ width: `${String(percent)}%` }}
       />
     </div>
   );
 }
 
-/** Actions: text, like the call to action on the landing. */
+/** Actions: a row of pills and text links. */
 export function Actions({
   children,
   className,
@@ -177,11 +170,7 @@ export function StatusLine({
   );
 }
 
-/** The one line that sits between two ink rules: a notice that must be read. */
+/** The one line that is a plate of its own: a notice that must be read. */
 export function Flash({ children }: { readonly children: ReactNode }) {
-  return (
-    <p className="type-row mt-[1.6rem] border-y border-foreground py-[0.9rem]">
-      {children}
-    </p>
-  );
+  return <p className="type-row mt-6 bro-plate px-6 py-4">{children}</p>;
 }

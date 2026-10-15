@@ -95,6 +95,7 @@ export function stubDeployment(environment: Record<string, string>) {
     "AGENT_SANDBOX",
     "BACKGROUND_ACTIONS_WORKSPACES",
     "ERRAND_AUTONOMY_WORKSPACES",
+    "LOCATION_WORKSPACES",
     "SIGN_WORKSPACES",
     "SKILLS_WORKSPACES",
     "SUBSCRIPTIONS_WORKSPACES",

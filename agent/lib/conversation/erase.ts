@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { forgetConversationLines } from "@db/services/conversation-log";
+import { forgetLocation } from "@db/services/location";
 
 /** What of a failed erase is safe to log: the error's kind and SQLSTATE. */
 const eraseFailureSchema = z.object({
@@ -21,6 +22,24 @@ export async function eraseConversationLines(workspaceId: string) {
   } catch (error) {
     const failure = eraseFailureSchema.safeParse(error).data;
     console.error("[cross-channel] the conversation log was not erased", {
+      error: failure?.name,
+      sqlState: failure?.cause?.code,
+    });
+  }
+}
+
+/**
+ * Erases the person's shared locations and the reminders at places that are
+ * over, for «забудь всё» (`docs/location.md`), whether or not geolocation
+ * is on now: points kept from the pilot go too. A live reminder is one of
+ * their schedules and stays. A failure is logged like the lines'.
+ */
+export async function eraseLocationHistory(workspaceId: string) {
+  try {
+    await forgetLocation(workspaceId);
+  } catch (error) {
+    const failure = eraseFailureSchema.safeParse(error).data;
+    console.error("[location] the shared locations were not erased", {
       error: failure?.name,
       sqlState: failure?.cause?.code,
     });

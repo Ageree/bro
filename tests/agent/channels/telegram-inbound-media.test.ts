@@ -15,6 +15,7 @@ import { syntheticCafOpus } from "@tests/helpers/synthetic-caf";
 // oxlint-disable-next-line import/no-unassigned-import -- Loads the production module so the mocked channel factory can capture its configuration.
 import "@agent/channels/telegram";
 import { ooxmlPackage } from "@tests/helpers/office-package";
+import { accessScopeForUser } from "@shared/identity/access-scope";
 
 const botToken = "123456:telegram-test-bot-token";
 
@@ -27,6 +28,9 @@ const capture = vi.hoisted(() => ({
   findIdentity: vi.fn<typeof findChannelIdentity>(),
   claimIntroduction: vi.fn<typeof ScopeService.claimWorkspaceIntroduction>(),
   taskFilesEnabled: vi.fn<typeof SandboxPilot.taskFilesEnabled>(),
+  locationPilot: vi.fn<() => boolean>(() => false),
+  ingestShared: vi.fn<() => Promise<string[]>>(),
+  locationContext: vi.fn<() => Promise<string[]>>(async () => []),
   messageQuotaGate: vi.fn<
     () => Promise<{
       allowed: boolean;
@@ -64,6 +68,15 @@ vi.mock("@db/services/scope", async (importOriginal) => ({
 }));
 vi.mock("@agent/lib/billing/quota", () => ({
   messageQuotaGate: capture.messageQuotaGate,
+}));
+vi.mock("@db/services/location", () => ({
+  locationPilot: capture.locationPilot,
+}));
+vi.mock("@agent/lib/location/ingest", () => ({
+  ingestShared: capture.ingestShared,
+}));
+vi.mock("@agent/lib/location/context", () => ({
+  locationContext: capture.locationContext,
 }));
 vi.mock("@agent/lib/sandbox/pilot", async (importOriginal) => ({
   ...(await importOriginal<typeof SandboxPilot>()),
@@ -118,6 +131,63 @@ describe("Telegram inbound media", () => {
     });
     capture.claimIntroduction.mockResolvedValue(false);
     capture.taskFilesEnabled.mockReturnValue(false);
+    capture.locationPilot.mockReturnValue(false);
+  });
+
+  it("keeps a shared location what it was outside the geolocation pilot", async () => {
+    const { context } = inboundContext();
+    const result = await onMessage(
+      context,
+      telegramMessage({
+        raw: {
+          date: 1_760_000_000,
+          location: {
+            horizontal_accuracy: 10,
+            latitude: 55.75,
+            longitude: 37.61,
+          },
+        },
+      })
+    );
+    expect(result).not.toHaveProperty("message");
+    expect(capture.ingestShared).not.toHaveBeenCalled();
+    expect(capture.locationContext).not.toHaveBeenCalled();
+  });
+
+  it("gives a shared location a bare marker and its lines as context in the pilot", async () => {
+    capture.locationPilot.mockReturnValue(true);
+    capture.ingestShared.mockResolvedValue([
+      "Геопозиция: человек сам прислал свою точку",
+    ]);
+    const { context } = inboundContext();
+    const result = await onMessage(
+      context,
+      telegramMessage({
+        raw: {
+          date: 1_760_000_000,
+          location: {
+            horizontal_accuracy: 10,
+            latitude: 55.75,
+            longitude: 37.61,
+          },
+        },
+      })
+    );
+    expect(result).toMatchObject({
+      context: ["Геопозиция: человек сам прислал свою точку"],
+      message: "[геопозиция]",
+    });
+    expect(capture.ingestShared).toHaveBeenCalledWith(
+      accessScopeForUser("better-auth:user-1"),
+      [
+        expect.objectContaining({
+          kind: "position",
+          lat: 55.75,
+          source: "telegram",
+        }),
+      ]
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   afterEach(() => {

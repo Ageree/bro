@@ -24,6 +24,7 @@ import {
   paperComposerSubmitClassName,
 } from "../../_lib/composer";
 import { chatTitle, messageContent } from "../../_lib/message-input";
+import { cn } from "@web/components/class-names";
 import { api } from "@web/trpc/client";
 
 export function NewChat({ filesPilot }: { readonly filesPilot: boolean }) {
@@ -88,7 +89,10 @@ export function NewChat({ filesPilot }: { readonly filesPilot: boolean }) {
     <div>
       <PromptInput
         accept={filesPilot ? pilotAccept : undefined}
-        className={paperComposerClassName}
+        className={cn(
+          paperComposerClassName,
+          "[&_[data-slot=input-group]]:shadow-none"
+        )}
         compact
         maxFileSize={webMessageFiles.maxFileSize}
         maxFiles={webMessageFiles.maxFiles}

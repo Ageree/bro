@@ -200,6 +200,10 @@ export const env = createEnv({
     PHONE_WORKSPACES: workspaceListSchema.optional(),
     // Bro's own address book (`agent/tools/phone-contacts.ts`): workspace ids or *.
     CONTACTS_WORKSPACES: workspaceListSchema.optional(),
+    // Geolocation (`agent/tools/location.ts`, `docs/location.md`): workspace
+    // ids or *. Unset, nobody: a shared location stays what it was (an empty
+    // Telegram turn, a file note in iMessage).
+    LOCATION_WORKSPACES: workspaceListSchema.optional(),
     PHONE_INIT_SECRET: trimmedValue.min(32).optional(),
     PHONE_WEBHOOK_SECRET: trimmedValue.min(32).optional(),
     MTS_EXOLVE_API_KEY: trimmedValue.optional(),
@@ -710,6 +714,12 @@ export const env = createEnv({
     YANDEX_MAIL_CLIENT_ID: trimmedValue.optional(),
     YANDEX_MAIL_CLIENT_SECRET: trimmedValue.optional(),
     MAIL_WORKSPACES: workspaceListSchema.optional(),
+    // The YooMoney wallet a person connects by OAuth (`agent/tools/yoomoney.ts`):
+    // the app registered at yoomoney.ru/myservices, its Redirect URI
+    // `<origin>/api/yoomoney/callback`. The pilot takes workspace ids or `*`.
+    YOOMONEY_CLIENT_ID: trimmedValue.optional(),
+    YOOMONEY_CLIENT_SECRET: trimmedValue.optional(),
+    YOOMONEY_WORKSPACES: workspaceListSchema.optional(),
     // Which Drizzle driver `db/index.ts` builds. Deployments keep the pooled
     // TCP client; `neon-http` exists for a maintenance run from a machine that
     // can only reach the database over HTTPS.
@@ -1115,6 +1125,50 @@ export const env = createEnv({
     // The decision model that reads the job's kind, on the System One API of
     // RouterAI (`/systemone`).
     MODEL_ROUTER_MODEL: trimmedValue.default("typesafe/jev-1.13"),
+    // The pilot of the tool router: workspace ids or `*` (no emails: an
+    // env-only check, as SKILLS_WORKSPACES). A person's turn sees the core
+    // tools and the groups the decision model chose; only with the direct
+    // model and the skills and step pilots (`agent/lib/tool-router/`).
+    TOOL_ROUTER_WORKSPACES: workspaceListSchema
+      .refine(
+        (entries) => entries.every((entry) => !entry.includes("@")),
+        "TOOL_ROUTER_WORKSPACES takes workspace ids or *, not emails"
+      )
+      .optional(),
+    // shadow: decide and log, hide nothing; on: a person's turn sees the
+    // core and the chosen groups.
+    TOOL_ROUTER_MODE: z.enum(["shadow", "on"]).default("shadow"),
+    // TypeSafe's System One API (api.typesafe.ai), which alone serves Jev
+    // 1.14, and a CONNECT proxy used only for it, with TLS checked.
+    TYPESAFE_API_KEY: pastedKeySchema.optional(),
+    TYPESAFE_PROXY_URL: z
+      .url()
+      .refine(
+        (value) => ["http:", "https:"].includes(new URL(value).protocol),
+        "TYPESAFE_PROXY_URL must be an HTTP or HTTPS proxy URL"
+      )
+      .optional(),
+    // The router's model at TypeSafe, pinned: `jev-1.14` is refused there.
+    TOOL_ROUTER_MODEL: trimmedValue.default("jev-1.14.0"),
+    // The router's model on RouterAI's System One API, when TypeSafe is
+    // slow or held.
+    TOOL_ROUTER_FALLBACK_MODEL: trimmedValue.default("typesafe/jev-1.13"),
+    // Within this many minutes of the last step with the router's block a
+    // turn keeps the groups of the turn before (RunInfra's cache held a
+    // prefix 40 minutes in 7 series of 7, 15.10).
+    TOOL_ROUTER_WARM_MINUTES: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(240)
+      .default(60),
+    // A group whose tool was called this many minutes ago or less stays open.
+    TOOL_ROUTER_RECENT_MINUTES: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(1440)
+      .default(60),
     // The router's models by kind of job (code, design, research, writing,
     // other), as `design=<model>,code=<model>`; a kind left out or with an
     // empty model keeps the default. Unset, every job keeps it and the

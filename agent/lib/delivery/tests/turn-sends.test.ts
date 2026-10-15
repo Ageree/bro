@@ -1809,6 +1809,85 @@ describe("sendRefusal on claims of what a declined or failed call did not do", (
   });
 });
 
+/**
+ * Prod, 15.10: «Запомни: я припарковался здесь» named the point with
+ * `location_edit`, and «Запомнил точку как «парковка»» went back as `undone`:
+ * the check knew no location tool. The model's rewrite, «Точку записал как
+ * «парковка» — карта её так и хранит», read in the turn log as a second copy.
+ */
+describe("sendRefusal on what the location tools did", () => {
+  const parked = userMessage("Запомни: я припарковался здесь");
+  const named = (changed: boolean) =>
+    toolStep(
+      "location_edit",
+      {
+        changed,
+        reply: changed
+          ? "The point is named «парковка». Say that «где парковка?» will find it."
+          : "Nothing was changed: Bro has no location of theirs from the last 15 minutes.",
+      },
+      { action: "label", label: "парковка" }
+    );
+  const remembered =
+    "Запомнил точку как «парковка». Спросишь «где парковка?» — покажу.";
+
+  it("delivers «запомнил» once the point was named, and drops the rephrase", () => {
+    const history = [parked, ...named(true)];
+
+    expect(refusal(history, remembered)).toBeUndefined();
+    expect(
+      refusal(
+        [...history, ...sendMessage("first", remembered)],
+        "Точку записал как «парковка» — карта её так и хранит. Спросишь «где парковка?» — покажу."
+      )
+    ).toEqual({ skipped: "stale" });
+  });
+
+  it("returns «запомнил» when the tool changed nothing", () => {
+    expect(refusal([parked, ...named(false)], remembered)).toEqual({
+      rewrite: "declined",
+    });
+  });
+
+  it("checks a place reminder by what its result says", () => {
+    const asked = userMessage(
+      "Напомни купить хлеб, когда приду на Тверскую, 7"
+    );
+    const set =
+      "Поставил напоминание про хлеб: сработает, когда придёшь на Тверскую, 7.";
+    const reminder = (value: Readonly<Record<string, JSONValue>>) =>
+      toolStep("place_reminder", value, { action: "create" });
+
+    expect(
+      refusal([asked, ...reminder({ created: true, reply: "Set." })], set)
+    ).toBeUndefined();
+    expect(
+      refusal([asked, ...reminder({ created: false, reply: "Not set." })], set)
+    ).toEqual({ rewrite: "declined" });
+    expect(
+      refusal([asked, ...reminder({ reminders: [], reply: "None." })], set)
+    ).toEqual({ rewrite: "undone" });
+  });
+
+  it("lets no reminder that was never set excuse a later claim", () => {
+    const history = [
+      userMessage("напомни позвонить Пете, когда уйду с Моховой"),
+      ...toolStep(
+        "place_reminder",
+        { created: false, reply: "The address matches a whole street." },
+        { action: "create" }
+      ),
+      ...sendMessage("ask", "Какой дом на Моховой?"),
+      userMessage("ладно, потом"),
+      ...sendMessage("ok", "Хорошо."),
+      userMessage("Напомни завтра в 9 позвонить маме"),
+    ];
+    expect(refusal(history, "Поставил напоминание на завтра в 9:00.")).toEqual({
+      rewrite: "undone",
+    });
+  });
+});
+
 describe("sendRefusal on claims no tool made", () => {
   const codeHandedOver = [
     userMessage("код от госуслуг: 123456"),

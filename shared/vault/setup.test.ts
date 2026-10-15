@@ -24,6 +24,7 @@ describe("vault setup", () => {
       })
     );
 
+    expect(url.pathname).toBe("/workspace");
     expect(
       parseVaultSetupSearchParams(Object.fromEntries(url.searchParams))
     ).toMatchObject({

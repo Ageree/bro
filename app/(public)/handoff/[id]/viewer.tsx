@@ -1,7 +1,12 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { ChangeEvent, KeyboardEvent, PointerEvent } from "react";
+import type {
+  ChangeEvent,
+  KeyboardEvent,
+  PointerEvent,
+  ReactNode,
+} from "react";
 import { z } from "zod";
 import { Alert } from "@web/components/ui/alert";
 import { Button } from "@web/components/ui/button";
@@ -81,6 +86,15 @@ async function call<Schema extends z.ZodType>(
   } catch {
     return undefined;
   }
+}
+
+/** A status or a result, set on a plate in the middle of the page. */
+function Sheet({ children }: { readonly children: ReactNode }) {
+  return (
+    <div className="mx-auto flex w-full max-w-[34rem] flex-col gap-4 bro-plate p-6 sm:p-8">
+      {children}
+    </div>
+  );
 }
 
 /**
@@ -438,20 +452,22 @@ export function Viewer({ id }: { readonly id: string }) {
 
   if (phase.kind === "loading") {
     return (
-      <p className="type-body text-muted-foreground">
-        <Spinner className="mr-2 inline" />
-        {loadingText}
-      </p>
+      <Sheet>
+        <p className="type-body text-muted-foreground">
+          <Spinner className="mr-2 inline" />
+          {loadingText}
+        </p>
+      </Sheet>
     );
   }
   if (phase.kind === "problem") {
     return (
-      <div className="flex max-w-[34rem] flex-col gap-4">
+      <Sheet>
         <Alert variant="warning">{phase.text}</Alert>
         {phase.retry ? (
           <div>
             <Button
-              className="w-full sm:w-auto"
+              className="w-full"
               onClick={() => {
                 retries.current = 0;
                 closing.current = false;
@@ -463,7 +479,7 @@ export function Viewer({ id }: { readonly id: string }) {
             </Button>
           </div>
         ) : null}
-      </div>
+      </Sheet>
     );
   }
   if (phase.kind === "intro") {
@@ -478,30 +494,36 @@ export function Viewer({ id }: { readonly id: string }) {
   }
   if (phase.kind === "starting") {
     return (
-      <p className="type-body text-muted-foreground">
-        <Spinner className="mr-2 inline" />
-        {startingText}
-      </p>
+      <Sheet>
+        <p className="type-body text-muted-foreground">
+          <Spinner className="mr-2 inline" />
+          {startingText}
+        </p>
+      </Sheet>
     );
   }
   if (phase.kind === "finishing") {
     return (
-      <p className="type-body text-muted-foreground">
-        <Spinner className="mr-2 inline" />
-        {finishingText}
-      </p>
+      <Sheet>
+        <p className="type-body text-muted-foreground">
+          <Spinner className="mr-2 inline" />
+          {finishingText}
+        </p>
+      </Sheet>
     );
   }
   if (phase.kind === "ended") {
     return (
-      <Alert variant={phase.result === "yes" ? "success" : "default"}>
-        {endedText[phase.result]}
-      </Alert>
+      <Sheet>
+        <Alert variant={phase.result === "yes" ? "success" : "default"}>
+          {endedText[phase.result]}
+        </Alert>
+      </Sheet>
     );
   }
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex items-center gap-2 border border-border px-3 py-2">
+      <div className="flex min-h-11 items-center gap-2 rounded-full border-2 border-foreground bg-card px-4 py-2">
         <span aria-hidden="true">{bar?.secure === true ? "🔒" : "⚠️"}</span>
         <span className="type-label break-all">
           {bar === null ? "…" : bar.host}
@@ -515,7 +537,7 @@ export function Viewer({ id }: { readonly id: string }) {
       <div className="relative">
         <button
           aria-label="Окно компьютера Бро: нажимайте и печатайте прямо здесь"
-          className="block w-full cursor-default touch-none border border-border bg-muted p-0"
+          className="block w-full cursor-default touch-none overflow-hidden rounded-3xl border-2 border-foreground bg-muted p-0 shadow-[0_8px_30px_rgb(20_21_16/8%)] outline-none focus-visible:outline-2 focus-visible:outline-offset-[3px] focus-visible:outline-foreground"
           onClick={onClick}
           onKeyDown={onKeyDown}
           onPointerCancel={onPointerCancel}
@@ -573,7 +595,8 @@ export function Viewer({ id }: { readonly id: string }) {
           onClick={() => {
             void cancel();
           }}
-          variant="quiet"
+          size="paper"
+          variant="outline"
         >
           Отмена
         </Button>

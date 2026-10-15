@@ -59,7 +59,7 @@ export function PhoneOtpAuthForm({
   return (
     <>
       <form
-        className="mt-[0.9rem]"
+        className="mt-5"
         onSubmit={(event) => {
           submit(event);
         }}
@@ -120,7 +120,7 @@ function VerificationCodeForm({
 
   return (
     <form
-      className="mt-[0.9rem]"
+      className="mt-5"
       onSubmit={(event) => {
         submit(event);
       }}
@@ -157,12 +157,12 @@ function VerificationCodeForm({
           {verifyCode.isPending ? "Проверяем…" : "Войти"}
         </Button>
         <Button
-          className="w-full justify-center text-muted-foreground"
+          className="w-full"
           disabled={verifyCode.isPending}
           onClick={onUseDifferentNumber}
-          size="act-sm"
+          size="paper"
           type="button"
-          variant="act"
+          variant="outline"
         >
           Другой номер
         </Button>
@@ -183,18 +183,18 @@ function IMessageCodeNotice({
 }) {
   return phoneNumber ? (
     <Button
-      className="mt-[0.85rem] w-full justify-center text-muted-foreground"
+      className="mt-4 w-full"
       nativeButton={false}
       render={
         <a aria-label="Написать Bro в iMessage" href={`sms:${phoneNumber}`} />
       }
-      size="act-sm"
-      variant="act"
+      size="paper"
+      variant="outline"
     >
       Написать Bro
     </Button>
   ) : (
-    <p className="type-status mt-[0.85rem] text-center text-muted-foreground">
+    <p className="type-status mt-4 text-center text-muted-foreground">
       Код придёт с iMessage-номера этого сервиса.
     </p>
   );
