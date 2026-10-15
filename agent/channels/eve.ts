@@ -218,8 +218,14 @@ const contentLengthSchema = z
  * the bound is refused at once, unread; one within it is exact, since Node's
  * parser holds a body to its `Content-Length`. A body without one (chunked,
  * or a proxy dropped the header) is counted as eve reads it and cut at the
- * bound, and eve's answer to the cut body gives way to a 413. The cut leaves
- * the connection be, so the 413 still reaches the sender.
+ * bound, and eve's answer to the cut body gives way to a 413.
+ *
+ * Node drops the unread rest of a body only when nothing began to read it.
+ * This one was begun, so once eve has answered (the 413, or a refusal that
+ * never read the body) its rest is read and dropped here: otherwise the
+ * kept-alive connection's next request, from Caddy maybe another person's,
+ * would be parsed from the middle of it and fail. Reading on, not closing,
+ * also lets the 413 reach the sender.
  */
 async function withinMessageBound(
   request: Request,
@@ -235,19 +241,25 @@ async function withinMessageBound(
   }
   const body = request.body;
   if (body === null) return await handle(request);
+  const source = body.getReader();
   const read = { bytes: 0 };
-  const counted = body.pipeThrough(
-    new TransformStream<Uint8Array, Uint8Array>({
-      transform(chunk, controller) {
-        read.bytes += chunk.byteLength;
+  const counted = new ReadableStream<Uint8Array>(
+    {
+      async pull(controller) {
+        const chunk = await source.read();
+        if (chunk.done) {
+          controller.close();
+          return;
+        }
+        read.bytes += chunk.value.byteLength;
         if (read.bytes > webMessageBodyBytes) {
           controller.error(new Error("The message body is over its bound."));
           return;
         }
-        controller.enqueue(chunk);
+        controller.enqueue(chunk.value);
       },
-    }),
-    { preventCancel: true }
+    },
+    { highWaterMark: 0 }
   );
   // A stream body needs `duplex`, which the DOM's `RequestInit` lacks.
   const init = {
@@ -263,8 +275,23 @@ async function withinMessageBound(
     await response.body?.cancel();
   } catch (error) {
     if (read.bytes <= webMessageBodyBytes) throw error;
+  } finally {
+    void dropRest(source);
   }
   return messageTooLarge(read.bytes, false);
+}
+
+/** Reads a body to its end and drops it, as Node does with an unread one. */
+async function dropRest(source: ReadableStreamDefaultReader<Uint8Array>) {
+  try {
+    /* oxlint-disable eslint/no-await-in-loop -- A body's chunks come one after another. */
+    for (;;) {
+      if ((await source.read()).done) return;
+    }
+    /* oxlint-enable eslint/no-await-in-loop */
+  } catch {
+    // The sender went away: nothing is left to drop.
+  }
 }
 
 function messageTooLarge(bytes: number, declared: boolean) {

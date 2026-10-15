@@ -117,22 +117,28 @@ describe("Eve message size", () => {
   it("reads a body without a length to its end while it fits", async () => {
     const path = "/eve/v1/session/:sessionId";
     const response = await messageRoute(path).handler(
-      streamedRequest(path, 3, 1024 * 1024),
+      streamedRequest(path, 3, 1024 * 1024).request,
       routeContext()
     );
 
     expect(response.status).toBe(202);
   });
 
-  it("cuts a body without a length past 64 MiB", async () => {
+  // Node drops an unread body's rest only when nothing began to read it: left
+  // in the connection, it would break the next request sent over it.
+  it("cuts a body without a length past 64 MiB and drops its rest", async () => {
     const path = "/eve/v1/session";
+    const streamed = streamedRequest(path, 66, 1024 * 1024);
     const response = await messageRoute(path).handler(
-      streamedRequest(path, 65, 1024 * 1024),
+      streamed.request,
       routeContext()
     );
 
     expect(response.status).toBe(413);
     expect(mocks.claimSession).not.toHaveBeenCalled();
+    await vi.waitFor(() => {
+      expect(streamed.readToEnd()).toBe(true);
+    });
   });
 });
 
@@ -140,21 +146,26 @@ function url(path: string) {
   return `https://assistant.example${path.replace(":sessionId", "wrun_1")}`;
 }
 
+/** A body without a length, as a proxy that dropped the header passes it. */
 function streamedRequest(path: string, chunks: number, chunkBytes: number) {
   const chunk = new Uint8Array(chunkBytes).fill(32);
-  let sent = 0;
+  const state = { ended: false, sent: 0 };
   const body = new ReadableStream<Uint8Array>({
     pull(controller) {
-      if (sent === chunks) {
+      if (state.sent === chunks) {
+        state.ended = true;
         controller.close();
         return;
       }
-      sent += 1;
+      state.sent += 1;
       controller.enqueue(chunk);
     },
   });
   const init = { body, duplex: "half", method: "POST" };
-  return new Request(url(path), init);
+  return {
+    readToEnd: () => state.ended,
+    request: new Request(url(path), init),
+  };
 }
 
 function messageRoute(path: string) {

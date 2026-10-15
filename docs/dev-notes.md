@@ -1894,4 +1894,6 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   POST (`ClientError` до приёма). Маршруты сообщений eve отвечают 413 на тело
   больше 64 МиБ: по `Content-Length` сразу, а без него (прокси облачной сессии
   его снимает) считают байты при чтении (`shared/chat/web-files.ts`,
-  `agent/channels/eve.ts`).
+  `agent/channels/eve.ts`). Начатое и брошенное тело Node сам не дочитывает:
+  остаток после ответа дочитывает обёртка, иначе следующий запрос того же
+  keep-alive соединения (от Caddy — чужой) падал с ECONNRESET.
