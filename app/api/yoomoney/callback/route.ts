@@ -5,6 +5,7 @@ import {
   finishYoomoneyAuthorization,
 } from "@db/services/yoomoney";
 import { applicationOrigin } from "@shared/environment/origin";
+import { YoomoneyError } from "@shared/yoomoney/api";
 import {
   requireRequestScope,
   UnauthenticatedError,
@@ -48,6 +49,11 @@ export async function GET(request: Request) {
     if (error instanceof UnauthenticatedError) {
       url.pathname = "/sign-in";
       url.search = "";
+    } else {
+      console.warn("[yoomoney] callback failed", {
+        code: error instanceof YoomoneyError ? error.code : undefined,
+        name: error instanceof Error ? error.name : "unknown",
+      });
     }
   }
   const response = NextResponse.redirect(url);

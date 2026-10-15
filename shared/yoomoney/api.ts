@@ -170,14 +170,30 @@ export async function readYoomoneyHistory(
   };
 }
 
-/** Ends the token at YooMoney; a failure leaves it to the person's settings. */
+/**
+ * Ends the token at YooMoney, which answers an empty 200. False when that is
+ * not known: the person then revokes it in the wallet's settings.
+ */
 export async function revokeYoomoneyToken(token: string) {
-  await request("/api/revoke", { token }).catch(() => undefined);
+  try {
+    await request("/api/revoke", { empty: true, token });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function request(
   path: string,
-  { body, token }: { readonly body?: URLSearchParams; readonly token?: string }
+  {
+    body,
+    empty = false,
+    token,
+  }: {
+    readonly body?: URLSearchParams;
+    readonly empty?: boolean;
+    readonly token?: string;
+  }
 ) {
   const headers = new Headers({
     "Content-Type": "application/x-www-form-urlencoded",
@@ -198,6 +214,7 @@ async function request(
   }
   if (response.status === 401) throw new YoomoneyError("revoked");
   if (!response.ok) throw new YoomoneyError("unavailable");
+  if (empty) return null;
   try {
     const answer: unknown = await response.json();
     return answer;

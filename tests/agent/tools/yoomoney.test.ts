@@ -1,25 +1,25 @@
-import type { ModelMessage } from "ai";
 import type { DynamicResolveContext, ToolContext } from "eve/tools";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
+  disconnectYoomoney,
   readYoomoneyConnection,
   withYoomoneyToken,
 } from "@db/services/yoomoney";
-import type { yoomoneyEnabled } from "@shared/yoomoney/api";
+import type * as Api from "@shared/yoomoney/api";
 
 const services = vi.hoisted(() => ({
   connection: vi.fn<typeof readYoomoneyConnection>(),
-  enabled: vi.fn<typeof yoomoneyEnabled>(),
+  enabled: vi.fn<typeof Api.yoomoneyEnabled>(),
   withToken: vi.fn<typeof withYoomoneyToken>(),
 }));
 
 vi.mock("@db/services/yoomoney", () => ({
-  disconnectYoomoney: vi.fn(),
+  disconnectYoomoney: vi.fn<typeof disconnectYoomoney>(),
   readYoomoneyConnection: services.connection,
   withYoomoneyToken: services.withToken,
 }));
 vi.mock("@shared/yoomoney/api", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@shared/yoomoney/api")>()),
+  ...(await importOriginal<typeof Api>()),
   yoomoneyEnabled: services.enabled,
 }));
 
@@ -48,10 +48,11 @@ async function tool(authenticator = "authjs") {
   return tools && "yoomoney" in tools ? tools.yoomoney : undefined;
 }
 
+const refuse = (): never => {
+  throw new Error("Not used.");
+};
+
 function callContext(authenticator: string): ToolContext {
-  const refuse = (): never => {
-    throw new Error("Not used.");
-  };
   return {
     abortSignal: new AbortController().signal,
     callId: "call-1",

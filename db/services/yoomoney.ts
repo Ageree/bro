@@ -137,7 +137,8 @@ export async function cancelYoomoneyAuthorization(
     .where(
       and(
         eq(yoomoneyAuthorizations.stateHash, stateHash(state)),
-        eq(yoomoneyAuthorizations.workspaceId, scope.workspaceId)
+        eq(yoomoneyAuthorizations.workspaceId, scope.workspaceId),
+        eq(yoomoneyAuthorizations.userId, scope.userId)
       )
     );
 }
@@ -148,12 +149,14 @@ export async function disconnectYoomoney(scope: AccessScope) {
     .delete(yoomoneyConnections)
     .where(eq(yoomoneyConnections.workspaceId, scope.workspaceId))
     .returning({ encryptedToken: yoomoneyConnections.encryptedToken });
-  if (!connection) return { disconnected: false };
+  if (!connection) return { disconnected: false, revoked: false };
   const token = await decryptToken(scope, connection.encryptedToken).catch(
     () => undefined
   );
-  if (token !== undefined) await revokeYoomoneyToken(token);
-  return { disconnected: true };
+  return {
+    disconnected: true,
+    revoked: token !== undefined && (await revokeYoomoneyToken(token)),
+  };
 }
 
 /**
@@ -177,10 +180,16 @@ export async function withYoomoneyToken<T>(
       result: await read(await decryptToken(scope, connection.encryptedToken)),
     };
   } catch (error) {
+    // Only this token's row: the person may have connected anew meanwhile.
     if (error instanceof YoomoneyError && error.code === "revoked") {
       await db
         .delete(yoomoneyConnections)
-        .where(eq(yoomoneyConnections.workspaceId, scope.workspaceId));
+        .where(
+          and(
+            eq(yoomoneyConnections.workspaceId, scope.workspaceId),
+            eq(yoomoneyConnections.encryptedToken, connection.encryptedToken)
+          )
+        );
     }
     throw error;
   }

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { startYoomoneyAuthorization } from "@db/services/yoomoney";
 import { applicationOrigin } from "@shared/environment/origin";
+import { YoomoneyError } from "@shared/yoomoney/api";
 import {
   requireRequestScope,
   UnauthenticatedError,
@@ -23,6 +24,10 @@ export async function GET() {
     if (error instanceof UnauthenticatedError) {
       return NextResponse.redirect(new URL("/sign-in", applicationOrigin()));
     }
+    console.warn("[yoomoney] connect failed", {
+      code: error instanceof YoomoneyError ? error.code : undefined,
+      name: error instanceof Error ? error.name : "unknown",
+    });
     return NextResponse.redirect(
       new URL("/workspace?yoomoney=failed", applicationOrigin())
     );

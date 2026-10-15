@@ -17,27 +17,27 @@ function wallet(answers: Record<string, () => Response>) {
   const requests: { path: string; body: string; authorization: string }[] = [];
   vi.stubGlobal(
     "fetch",
-    vi.fn(async (input: URL, init: RequestInit) => {
-      const path = new URL(input).pathname;
-      requests.push({
-        path,
-        body: String(init.body),
-        authorization: new Headers(init.headers).get("Authorization") ?? "",
-      });
-      const answer = answers[path];
-      if (!answer) throw new Error(`Unexpected request to ${path}`);
-      return answer();
-    })
+    vi.fn(
+      async (input: URL, init: { body: URLSearchParams; headers: Headers }) => {
+        const path = new URL(input).pathname;
+        requests.push({
+          path,
+          body: init.body.toString(),
+          authorization: new Headers(init.headers).get("Authorization") ?? "",
+        });
+        const answer = answers[path];
+        if (!answer) throw new Error(`Unexpected request to ${path}`);
+        return answer();
+      }
+    )
   );
   return requests;
 }
 
-const json = (body: object, status = 200) => Response.json(body, { status });
-
 const consenting = {
-  "/oauth/token": () => json({ access_token: "token-1" }),
+  "/oauth/token": () => Response.json({ access_token: "token-1" }),
   "/api/account-info": () =>
-    json({
+    Response.json({
       account: "4100111222333",
       balance: 1250.5,
       currency: "643",
@@ -132,7 +132,7 @@ describe("the YooMoney wallet connection", () => {
     const state = stateOf(
       await yoomoney.startYoomoneyAuthorization(alice, origin)
     );
-    wallet({ "/oauth/token": () => json({ access_token: "" }) });
+    wallet({ "/oauth/token": () => Response.json({ access_token: "" }) });
     await expect(
       yoomoney.finishYoomoneyAuthorization(alice, "wrong", state)
     ).rejects.toThrow("ЮMoney");
@@ -167,6 +167,7 @@ describe("the YooMoney wallet connection", () => {
     await yoomoney.finishYoomoneyAuthorization(alice, "code-1", state);
     expect(await yoomoney.disconnectYoomoney(alice)).toEqual({
       disconnected: true,
+      revoked: true,
     });
     expect(requests.at(-1)).toMatchObject({
       path: "/api/revoke",

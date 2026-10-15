@@ -11,7 +11,10 @@ const nextConfig: NextConfig = {
   devIndicators: false,
   logging: {
     incomingRequests: {
-      ignore: [/\/api\/personal-mail\/[^/?]+\/callback(?:\?|$)/u],
+      ignore: [
+        /\/api\/personal-mail\/[^/?]+\/callback(?:\?|$)/u,
+        /\/api\/yoomoney\/callback(?:\?|$)/u,
+      ],
     },
   },
   serverExternalPackages: ["supermemory"],
