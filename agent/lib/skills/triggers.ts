@@ -191,8 +191,9 @@ const wordSignals: Partial<Record<SkillName, RegExp>> = {
     // Not a bare «deck»: a deck of cards is no slides.
     String.raw`(slide|pitch) deck`,
     // Forms, scans and PDFs (the files pilot fills and converts them). Not a
-    // bare «документ» or «подпись»: «свари документы на подпись» is neither.
-    String.raw`pdf|пдф|файл|скан|отскан|распозна|перепечата|впечата|заполн`,
+    // bare «документ» or «подпись»: «свари документы на подпись» is neither;
+    // nor a «скандал» or a «сканворд».
+    String.raw`pdf|пдф|файл|скан(?!д|ворд)|отскан|распозна|перепечата|впечата|заполн`,
     String.raw`анкет|бланк|заявлени|выписк\p{L}* (из )?банк|банковск\p{L}* выписк`,
     String.raw`zip|rar(?!\p{L})|7z|xml|разархив|заархив|распак|архивом(?!\p{L})|закрас|замаж|замаз`,
     String.raw`(сожми|ужми|сжать|склей|объедини|раздели|разбей|поверни|переверни)\s+(\p{L}+\s+){0,2}(pdf|пдф|файл|документ|скан|страниц|фот)`,
@@ -201,10 +202,12 @@ const wordSignals: Partial<Record<SkillName, RegExp>> = {
     String.raw`фото (на|для) (документ|паспорт|загран|виз)|odt|rtf|ics(?!\p{L})|vcf|vcard`,
     String.raw`scan(ned|s)?(?!\p{L})|(this|that) form(?!\p{L})|ocr|redline|tracked changes|unzip`
   ),
+  // Not a subscription («подписка», «подписчик»), and «расписаться», not
+  // «распиши план по дням»; not «парафин» or «sign them up».
   sign: stems(
-    String.raw`подпиш|подпис(?![кч])|распиш|расписаться|роспис(ь|и|ью)(?!\p{L})|параф`,
+    String.raw`подпиш|подпис(?![кч])|распи[сш]\p{L}*(сь|ся)(?!\p{L})|роспис(ь|и|ью)(?!\p{L})|параф(?!ин)`,
     String.raw`эцп|кэп(?!\p{L})|госключ|факсимиле`,
-    String.raw`signatures?|sign (it|this|that|the|here|for me)|e-?sign|initials`
+    String.raw`signatures?|sign (it|this|that|the|here|for me)(?!\p{L})|e-?sign|initials`
   ),
   images: stems(
     String.raw`нарису|рисун|картинк|изображен|открытк|постер|стикер`,

@@ -368,6 +368,7 @@ describe("the skills a turn attaches", () => {
       "убери в архив все рассылки",
       "переведи на английский этот текст",
       "свари документы на подпись",
+      "опять скандал с соседями",
     ]) {
       expect(skillsFor(text)).not.toContain("files");
     }
@@ -387,7 +388,11 @@ describe("the skills a turn attaches", () => {
       "отмени подписку на кинопоиск",
       "сколько у меня подписчиков",
       "скинь расписание секций",
+      // Writing a plan out, a candle, and others signed up.
+      "распиши план тренировок по дням",
+      "купи парафиновые свечи",
       "sign me up for the newsletter",
+      "sign them up for swimming",
     ]) {
       expect(skillsFor(text)).not.toContain("sign");
     }
