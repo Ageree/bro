@@ -15,11 +15,13 @@ export const yoomoneyOrigin = "https://yoomoney.ru";
 /**
  * What Bro asks for: the balance and the history, transfers to other
  * wallets (`payment-p2p`) and payments to the services of YooMoney's
- * catalogue (`payment-shop`), from the wallet's balance only. Every payment
- * still waits for the person's yes to its exact total.
+ * catalogue (`payment-shop`), from the balance or a card linked to the
+ * wallet (`money-source`; YooMoney pays only services with a card). Bro
+ * pays from the balance only so far. Every payment still waits for the
+ * person's yes to its exact total.
  */
 export const yoomoneyScope =
-  "account-info operation-history payment-p2p payment-shop";
+  'account-info operation-history payment-p2p payment-shop money-source("wallet","card")';
 
 export function yoomoneyConfigured() {
   return Boolean(env.YOOMONEY_CLIENT_ID && env.YOOMONEY_CLIENT_SECRET);

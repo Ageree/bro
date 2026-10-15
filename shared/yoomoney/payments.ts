@@ -12,6 +12,17 @@ import { yoomoneyHistoryPage, yoomoneyRequest } from "./api";
  * nothing.
  */
 
+// The wallet's linked cards: whether the person let Bro use them, and
+// whether each payment needs the card's CVV. YooMoney's docs put them both
+// in `money_source` and beside it.
+const cardsSchema = z
+  .object({
+    allowed: z.boolean().optional(),
+    csc_required: z.boolean().optional(),
+    items: z.array(z.object({ id: z.string() })).optional(),
+  })
+  .optional();
+
 const requestSchema = z.object({
   status: z.string(),
   error: z.string().optional(),
@@ -21,8 +32,10 @@ const requestSchema = z.object({
   money_source: z
     .object({
       wallet: z.object({ allowed: z.boolean() }).optional(),
+      cards: cardsSchema,
     })
     .optional(),
+  cards: cardsSchema,
 });
 
 /**
@@ -69,6 +82,14 @@ export async function requestYoomoneyPayment(
     return refused(answer.error ?? "unknown");
   if (answer.money_source?.wallet?.allowed === false)
     return refused("wallet_not_allowed");
+  // What paying from a linked card would take; no card's details.
+  const cards = answer.money_source?.cards ?? answer.cards;
+  console.info("[yoomoney] request-payment ready", {
+    walletAllowed: answer.money_source?.wallet?.allowed,
+    cardsAllowed: cards?.allowed,
+    cscRequired: cards?.csc_required,
+    cards: cards?.items?.length,
+  });
   return {
     kind: "ready" as const,
     requestId: answer.request_id,

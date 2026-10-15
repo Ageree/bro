@@ -93,7 +93,7 @@ describe("the YooMoney wallet connection", () => {
       "https://yoomoney.ru/oauth/authorize"
     );
     expect(page.searchParams.get("scope")).toBe(
-      "account-info operation-history payment-p2p payment-shop"
+      'account-info operation-history payment-p2p payment-shop money-source("wallet","card")'
     );
     const state = stateOf(consent);
     const requests = wallet(consenting);
