@@ -60,9 +60,9 @@ const alwaysStopTools = [
 
 /**
  * The tools of each group. A tool in several groups is shown when any of
- * them is open. `places` lists the location tools of their own pilot
- * (`LOCATION_WORKSPACES`) before they exist here: a name the catalog lacks
- * costs nothing.
+ * them is open. `places` holds the location tools of their own pilot
+ * (`LOCATION_WORKSPACES`): outside it the catalog lacks them, and a name
+ * the catalog lacks costs nothing.
  */
 const groupTools = {
   browser: ["browser_files", "site-login-link", "site_sign_ins", "list_orders"],

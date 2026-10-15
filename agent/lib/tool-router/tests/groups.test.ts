@@ -63,6 +63,8 @@ const everyPilot = {
   TOOL_ROUTER_MODE: "on",
   TOOL_ROUTER_WORKSPACES: "*",
   VIDEO_WORKSPACES: "*",
+  YANDEX_MAIL_CLIENT_ID: "yandex-mail-test-id",
+  YANDEX_MAIL_CLIENT_SECRET: "yandex-mail-test-secret",
 };
 
 describe("the tool router's groups", () => {
@@ -142,6 +144,10 @@ describe("the tool router's groups", () => {
         "agent-mail-send",
         "timepad_events",
         "watch-create",
+        "location_now",
+        "location_history",
+        "location_edit",
+        "place_reminder",
       ]) {
         expect([name, names.has(name)]).toEqual([name, true]);
       }

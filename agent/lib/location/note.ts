@@ -128,7 +128,7 @@ export function whereLine(
 }
 
 /** Whether a line is one of these context lines. */
-function isLocationLine(line: string) {
+export function isLocationLine(line: string) {
   return line.trimStart().startsWith(locationLinePrefix);
 }
 

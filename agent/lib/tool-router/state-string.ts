@@ -1,21 +1,15 @@
 import { createHash } from "node:crypto";
 import type { ModelMessage } from "ai";
 import { z } from "zod";
+import { placeMarker, positionMarker } from "@agent/lib/location/markers";
+import { isLocationLine } from "@agent/lib/location/note";
 import { withoutSecrets } from "@agent/lib/privacy/secrets";
 import { splitTurn } from "@agent/lib/skills/tools";
 import { mediaMarkers, turnWords } from "@agent/lib/skills/triggers";
 import { routerStateLimits } from "./questions";
 
-/**
- * A line of the location pilot's context (`Геопозиция: …`): an address and
- * a time the decision model has no need of. Its bare markers in the
- * person's text — «[геопозиция]», «[место]» — stay: they are what the
- * question of `places` reads.
- */
-const locationLine = /^\s*Геопозиция:/u;
-
 /** The location pilot's markers of a point the person sent. */
-const locationMarker = /\[(?:геопозиция|место)\]/u;
+const locationMarkers = [positionMarker, placeMarker] as const;
 
 /**
  * A run of four digits or more, spaces, dashes, dots and brackets between
@@ -38,11 +32,16 @@ const sendCallSchema = z.object({
 
 const filePartSchema = z.object({ type: z.enum(["file", "image"]) });
 
-/** The text without the location pilot's context lines. */
+/**
+ * The text without the location pilot's context lines (`Геопозиция: …`): an
+ * address and a time the decision model has no need of. Its bare markers in
+ * the person's text — «[геопозиция]», «[место]» — stay: they are what the
+ * question of `places` reads.
+ */
 function withoutLocationLines(text: string) {
   return text
     .split("\n")
-    .filter((line) => !locationLine.test(line))
+    .filter((line) => !isLocationLine(line))
     .join("\n");
 }
 
@@ -122,7 +121,7 @@ export function routerTurnText(messages: readonly ModelMessage[]) {
     digest: createHash("sha256").update(state).digest("hex").slice(0, 32),
     history,
     input,
-    located: locationMarker.test(words),
+    located: locationMarkers.some((marker) => words.includes(marker)),
     mediaOnly:
       (filesSent || mediaPresence.test(words)) && bare.trim().length < 15,
     prevCall: previous?.message,
