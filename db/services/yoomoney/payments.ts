@@ -44,6 +44,9 @@ export async function createYoomoneyPayment(
     | "requestId"
     | "amountMinor"
     | "test"
+    | "cardId"
+    | "cardLabel"
+    | "cscRequired"
     | "confirmationQuestion"
     | "expiresAt"
   >

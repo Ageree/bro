@@ -8,15 +8,18 @@ import type * as connection from "@db/services/yoomoney/connection";
 import type * as stored from "@db/services/yoomoney/payments";
 import type * as Api from "@shared/yoomoney/api";
 import type * as Payments from "@shared/yoomoney/payments";
+import type * as Showcase from "@shared/yoomoney/showcase";
 
 const services = vi.hoisted(() => ({
   claim: vi.fn<typeof stored.claimYoomoneyPayment>(),
   connection: vi.fn<typeof connection.readYoomoneyConnection>(),
   create: vi.fn<typeof stored.createYoomoneyPayment>(),
   enabled: vi.fn<typeof Api.yoomoneyEnabled>(),
+  fill: vi.fn<typeof Showcase.fillYoomoneyService>(),
   history: vi.fn<typeof Payments.findYoomoneyPayment>(),
   inFlight: vi.fn<typeof stored.yoomoneyPaymentInFlight>(),
   judge: vi.fn<() => Promise<{ output: { matches: boolean } }>>(),
+  link: vi.fn<(id: string) => Promise<string>>(),
   process: vi.fn<typeof Payments.processYoomoneyPayment>(),
   read: vi.fn<typeof stored.readYoomoneyPayment>(),
   renew: vi.fn<typeof stored.renewYoomoneyPayment>(),
@@ -32,6 +35,13 @@ vi.mock("@db/services/yoomoney/payments", () => ({
   renewYoomoneyPayment: services.renew,
   settleYoomoneyPayment: services.settle,
   yoomoneyPaymentInFlight: services.inFlight,
+}));
+vi.mock("@db/services/yoomoney/card", () => ({
+  yoomoneyPayLink: services.link,
+}));
+vi.mock("@shared/yoomoney/showcase", async (original) => ({
+  ...(await original<typeof Showcase>()),
+  fillYoomoneyService: services.fill,
 }));
 vi.mock("@db/services/yoomoney/connection", () => ({
   readYoomoneyConnection: services.connection,
@@ -78,6 +88,9 @@ function row(
     requestId: "request-1",
     amountMinor: 10_000,
     test: false,
+    cardId: null,
+    cardLabel: null,
+    cscRequired: null,
     state: "quoted",
     confirmationQuestion: question,
     consentHash: null,
@@ -150,7 +163,14 @@ function answered(text: string, asked = question): ModelMessage[] {
 
 async function call(
   messages: ModelMessage[],
-  input: { action: "confirm" | "status"; paymentId: string }
+  input:
+    | { action: "confirm" | "status"; paymentId: string }
+    | {
+        action: "prepare";
+        kind: "service";
+        serviceId: string;
+        fields: { name: string; value: string }[];
+      }
 ) {
   const context: DynamicResolveContext = {
     channel: { kind: "channel:eve", metadata: {} },
@@ -228,6 +248,74 @@ describe("wallet payments", () => {
       from: ["submitting"],
       state: "paid",
     });
+  });
+
+  it("puts a service the balance cannot cover on the linked card's page, never on a chat yes", async () => {
+    services.fill.mockResolvedValue({
+      kind: "ready",
+      title: "МегаФон (Россия)",
+      params: { pattern_id: "337", topped_up_phone: "9261234567" },
+      shown: [{ label: "Телефон", value: "9261234567" }],
+    });
+    services.create.mockImplementation(async (_scope, input) =>
+      row({ ...input, state: "quoted" })
+    );
+    services.link.mockResolvedValue("https://bro.example/pay/x?t=secret");
+    const ready = {
+      kind: "ready" as const,
+      requestId: "request-1",
+      amountMinor: 10_000,
+      contract: undefined,
+      card: { id: "card-1", label: "••4310", cscRequired: true },
+    };
+    const prepare = {
+      action: "prepare" as const,
+      kind: "service" as const,
+      serviceId: "337",
+      fields: [{ name: "topped_up_phone", value: "9261234567" }],
+    };
+
+    // The balance covers it: the usual question in the chat.
+    services.request.mockResolvedValue({ ...ready, balanceMinor: 20_000 });
+    expect(await call(answered("да"), prepare)).toMatchObject({
+      kind: "quoted",
+    });
+    expect(services.create.mock.calls[0]?.[1].cardId).toBeNull();
+
+    services.request.mockResolvedValue({ ...ready, balanceMinor: 100 });
+    expect(await call(answered("да"), prepare)).toMatchObject({
+      kind: "pay_link",
+      link: "https://bro.example/pay/x?t=secret",
+    });
+    const fromCard = services.create.mock.calls[1]?.[1];
+    expect(fromCard).toMatchObject({ cardId: "card-1", cscRequired: true });
+    expect(fromCard?.confirmationQuestion).toContain("С карты ••4310");
+    expect(fromCard?.confirmationQuestion).not.toContain("Оплачиваю?");
+
+    // A yes in the chat never pays a card payment: the page does.
+    services.read.mockResolvedValue(
+      row({ cardId: "card-1", cardLabel: "••4310", cscRequired: true })
+    );
+    expect(
+      await call(answered("да"), { action: "confirm", paymentId })
+    ).toMatchObject({ kind: "pay_link" });
+    expect(services.claim).not.toHaveBeenCalled();
+    expect(services.process).not.toHaveBeenCalled();
+  });
+
+  it("reads a card payment back by its request alone, never from the balance", async () => {
+    services.read.mockResolvedValue(
+      row({ state: "pending", cardId: "card-1", cardLabel: "••4310" })
+    );
+    services.process.mockResolvedValue({
+      kind: "bank",
+      acsUri: "https://bank.example/3ds",
+      acsParams: {},
+    });
+    expect(
+      await call(answered("ну что там?"), { action: "status", paymentId })
+    ).toMatchObject({ kind: "pending" });
+    expect(services.process.mock.calls[0]?.[2]).toEqual({ kind: "again" });
   });
 
   it("leaves a payment whose answer was lost unknown, not refused", async () => {

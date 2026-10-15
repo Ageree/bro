@@ -195,6 +195,9 @@ describe("wallet payments", () => {
         requestId: `request-${id}`,
         amountMinor: 10_000,
         test: false,
+        cardId: null,
+        cardLabel: null,
+        cscRequired: null,
         confirmationQuestion: `Платёж ${id}. Оплачиваю?`,
         expiresAt: new Date(Date.now() + 60_000),
       });
@@ -239,6 +242,86 @@ describe("wallet payments", () => {
     // One yes pays one payment, however alike the next one is.
     expect((await claim(second, "yes-1")).kind).toBe("consent_spent");
     expect((await claim(second, "yes-2")).kind).toBe("claimed");
+  });
+});
+
+describe("a payment from the wallet's linked card", () => {
+  it("is paid once, by the press on its own page with the link's secret, through the bank", async () => {
+    const yoomoney = await service();
+    const state = stateOf(
+      await yoomoney.startYoomoneyAuthorization(alice, origin)
+    );
+    wallet(consenting);
+    await yoomoney.finishYoomoneyAuthorization(alice, "code-1", state);
+    const payments = await import("@db/services/yoomoney/payments");
+    const card = await import("@db/services/yoomoney/card");
+    const id = "6f0e3c1a-1111-4a8b-9c0d-000000000003";
+    await payments.createYoomoneyPayment(alice, {
+      id,
+      rootSessionId: "session-1",
+      kind: "service",
+      account: "4100111222333",
+      title: "МегаФон (Россия)",
+      requestParams: { pattern_id: "337" },
+      shown: [],
+      requestId: "request-1",
+      amountMinor: 1000,
+      test: false,
+      cardId: "card-1",
+      cardLabel: "••4310",
+      cscRequired: true,
+      confirmationQuestion: `Платёж ${id}.`,
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    const token = new URL(await card.yoomoneyPayLink(id)).searchParams.get("t");
+    if (token === null) throw new Error("Expected the link's secret.");
+    const requests = wallet({
+      ...consenting,
+      "/api/process-payment": () =>
+        Response.json({
+          status: "ext_auth_required",
+          acs_uri: "https://bank.example/3ds",
+          acs_params: { MD: "md-1", PaReq: "pareq-1" },
+        }),
+    });
+
+    expect(await card.payYoomoneyByCard(id, `${token}x`, "123")).toEqual({
+      kind: "unavailable",
+    });
+    expect(await card.payYoomoneyByCard(id, token, undefined)).toEqual({
+      kind: "csc_needed",
+    });
+    expect(await card.payYoomoneyByCard(id, token, "123")).toEqual({
+      kind: "bank",
+      acsUri: "https://bank.example/3ds",
+      acsParams: { MD: "md-1", PaReq: "pareq-1" },
+    });
+    const sent = new URLSearchParams(
+      requests.find(({ path }) => path === "/api/process-payment")?.body
+    );
+    expect(sent.get("money_source")).toBe("card-1");
+    expect(sent.get("csc")).toBe("123");
+    const { applicationOrigin } = await import("@shared/environment/origin");
+    expect(sent.get("ext_auth_success_uri")).toBe(
+      `${applicationOrigin()}/api/yoomoney/pay/${id}/return?t=${token}`
+    );
+    // A second press pays nothing more.
+    expect(await card.payYoomoneyByCard(id, token, "123")).toEqual({
+      kind: "settled",
+    });
+
+    const readBack = wallet({
+      "/api/process-payment": () =>
+        Response.json({ status: "success", payment_id: "payment-1" }),
+    });
+    await card.readBackYoomoneyCardPayment(id, token);
+    expect(new URLSearchParams(readBack[0]?.body).toString()).toBe(
+      "request_id=request-1"
+    );
+    expect(await payments.readYoomoneyPayment(alice, { id })).toMatchObject({
+      state: "paid",
+      paymentId: "payment-1",
+    });
   });
 });
 

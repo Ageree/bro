@@ -2,14 +2,14 @@ import { z } from "zod";
 import { yoomoneyHistoryPage, yoomoneyRequest } from "./api";
 
 /**
- * A payment from the wallet's balance, in YooMoney's two calls:
- * `request-payment` checks it and names the exact sum the wallet pays
- * (`contract_amount`, with the fee), `process-payment` pays it. A
- * `request_id` is paid at most once: `process-payment` with the same one
- * again returns its outcome, which is how an `in_progress` payment or a
- * lost answer is read back. There is no test mode: YooMoney refuses the
- * `test_payment` of its old docs, and `request-payment` alone charges
- * nothing.
+ * A payment from the wallet, in YooMoney's two calls: `request-payment`
+ * checks it and names the exact sum (`contract_amount`, with the fee),
+ * `process-payment` pays it from the balance or from a card linked to the
+ * wallet. A `request_id` is paid at most once: `process-payment` with the
+ * same one again returns its outcome, which is how an `in_progress`
+ * payment, a card payment back from its bank or a lost answer is read
+ * back. There is no test mode: YooMoney refuses the `test_payment` of its
+ * old docs, and `request-payment` alone charges nothing.
  */
 
 // The wallet's linked cards: whether the person let Bro use them, and
@@ -19,7 +19,9 @@ const cardsSchema = z
   .object({
     allowed: z.boolean().optional(),
     csc_required: z.boolean().optional(),
-    items: z.array(z.object({ id: z.string() })).optional(),
+    items: z
+      .array(z.object({ id: z.string(), pan_fragment: z.string().optional() }))
+      .optional(),
   })
   .optional();
 
@@ -29,6 +31,7 @@ const requestSchema = z.object({
   request_id: z.string().optional(),
   contract_amount: z.coerce.number().optional(),
   contract: z.string().optional(),
+  balance: z.coerce.number().optional(),
   money_source: z
     .object({
       wallet: z.object({ allowed: z.boolean() }).optional(),
@@ -39,8 +42,9 @@ const requestSchema = z.object({
 });
 
 /**
- * Checks a payment: `ready` with its `request_id` and the exact sum the
- * wallet pays, or `refused` with YooMoney's reason.
+ * Checks a payment: `ready` with its `request_id`, the exact sum, the
+ * wallet's balance and the linked card the person let Bro pay with, or
+ * `refused` with YooMoney's reason.
  */
 export async function requestYoomoneyPayment(
   token: string,
@@ -90,11 +94,29 @@ export async function requestYoomoneyPayment(
     cscRequired: cards?.csc_required,
     cards: cards?.items?.length,
   });
+  const card = cards?.allowed === true ? cards.items?.[0] : undefined;
+  const lastDigits = (card?.pan_fragment ?? "")
+    .replaceAll(/\D/gu, "")
+    .slice(-4);
   return {
     kind: "ready" as const,
     requestId: answer.request_id,
     amountMinor: Math.round(answer.contract_amount * 100),
     contract: answer.contract,
+    balanceMinor:
+      answer.balance === undefined
+        ? undefined
+        : Math.round(answer.balance * 100),
+    card:
+      card === undefined
+        ? undefined
+        : {
+            id: card.id,
+            // «••4310»: the last digits only, as the person's own app shows it.
+            label: lastDigits ? `••${lastDigits}` : "привязанная",
+            // Unsaid is asked: the CVV field is shown unless YooMoney says no.
+            cscRequired: cards?.csc_required !== false,
+          },
   };
 }
 
@@ -104,25 +126,66 @@ const processSchema = z.object({
   payment_id: z.string().optional(),
   balance: z.coerce.number().optional(),
   next_retry: z.coerce.number().optional(),
+  acs_uri: z.url().optional(),
+  acs_params: z.record(z.string(), z.string()).optional(),
 });
 
 /**
- * Pays a checked payment from the wallet's balance: `paid`, `refused`, or
- * `pending` while YooMoney still processes it (ask again after
- * `nextRetryMs` with the same `request_id`).
+ * How `process-payment` is asked: from the balance; from a linked card
+ * (with its CVV when YooMoney wants one, and where the bank sends the
+ * person back after 3-D Secure); or `again` — the `request_id` alone,
+ * which reads a card payment back and never picks a source for it.
  */
-export async function processYoomoneyPayment(token: string, requestId: string) {
+type PaymentSource =
+  | { readonly kind: "wallet" }
+  | { readonly kind: "again" }
+  | {
+      readonly kind: "card";
+      readonly cardId: string;
+      readonly csc: string | undefined;
+      readonly returnTo: string;
+    };
+
+function processBody(requestId: string, source: PaymentSource) {
+  const body = new URLSearchParams({ request_id: requestId });
+  if (source.kind === "wallet") body.set("money_source", "wallet");
+  if (source.kind === "card") {
+    body.set("money_source", source.cardId);
+    if (source.csc !== undefined) body.set("csc", source.csc);
+    body.set("ext_auth_success_uri", source.returnTo);
+    body.set("ext_auth_fail_uri", source.returnTo);
+  }
+  return body;
+}
+
+/**
+ * Pays a checked payment: `paid`, `refused`, `pending` while YooMoney
+ * still processes it (ask again after `nextRetryMs` with the same
+ * `request_id`), or `bank` — a card payment waiting for the person on
+ * their bank's 3-D Secure page, a form to POST to `acsUri`.
+ */
+export async function processYoomoneyPayment(
+  token: string,
+  requestId: string,
+  source: PaymentSource
+) {
   const parsed = processSchema.safeParse(
     await yoomoneyRequest("/api/process-payment", {
-      body: new URLSearchParams({
-        request_id: requestId,
-        money_source: "wallet",
-      }),
+      body: processBody(requestId, source),
       token,
     })
   );
   if (!parsed.success) return { kind: "pending" as const, nextRetryMs: 5_000 };
   const answer = parsed.data;
+  if (answer.status === "ext_auth_required") {
+    return answer.acs_uri === undefined
+      ? { kind: "pending" as const, nextRetryMs: 5_000 }
+      : {
+          kind: "bank" as const,
+          acsUri: answer.acs_uri,
+          acsParams: answer.acs_params ?? {},
+        };
+  }
   if (answer.status === "success")
     return {
       kind: "paid" as const,
@@ -211,7 +274,10 @@ const refusals = new Map(
       "ЮMoney не принял получателя: проверь номер кошелька, телефон или почту.",
     hold_for_pickup:
       "У получателя нет кошелька ЮMoney: перевод ждал бы, пока он его заведёт. Нужен номер, телефон или почта кошелька.",
+    illegal_param_csc: "Банк не принял CVV карты.",
     limit_exceeded: "Превышен лимит операций кошелька.",
+    money_source_not_available:
+      "Этот платёж нельзя оплатить привязанной картой: ЮMoney принимает её только за услуги.",
     not_connected:
       "Кошелёк ЮMoney не подключён или доступ к нему отозван: подключи его заново.",
     not_enough_funds: "На кошельке не хватает денег.",
