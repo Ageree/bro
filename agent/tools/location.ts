@@ -4,10 +4,20 @@ import { personWordsThisTurn } from "@agent/lib/browser-use/said";
 import { turnAwaitsAnswer } from "@agent/lib/delivery/questions";
 import { pointAddressNow } from "@agent/lib/location/address";
 import { localStamp } from "@agent/lib/location/note";
+import {
+  type LonePoint,
+  type Parked,
+  probableParking,
+  readHistory,
+  type Stay,
+} from "@agent/lib/location/stays";
 import { labelSaid } from "@agent/lib/location/words";
 import { resolveModeValue, startedByPerson } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
-import { openStreetMapAttribution } from "@agent/lib/routes/openstreetmap";
+import {
+  nearbyPlace,
+  openStreetMapAttribution,
+} from "@agent/lib/routes/openstreetmap";
 import {
   stepIdentity,
   stepStartedEventSchema,
@@ -16,6 +26,7 @@ import {
   forgetLocation,
   labelPoint,
   latestPosition,
+  listLocationPoints,
   locationPilot,
 } from "@db/services/location";
 import { readWorkspaceTimeZone } from "@db/services/user-profile";
@@ -23,8 +34,9 @@ import { distanceM } from "@shared/location/geometry";
 
 /**
  * Where the person is, as they shared it (`docs/location.md`): the latest
- * point they sent, by name too («парковка»), and their own names for points
- * and forgetting them. Only the pilot (LOCATION_WORKSPACES) gets these, in
+ * point they sent, by name too («парковка»), the history of where they
+ * stayed and went (`location_history`), and their own names for points and
+ * forgetting them. Only the pilot (LOCATION_WORKSPACES) gets these, in
  * an interactive turn of a person.
  */
 
@@ -231,6 +243,218 @@ async function locationEdit(
   };
 }
 
+const historyInputSchema = z
+  .object({
+    from: z
+      .string()
+      .optional()
+      .describe(
+        "The period's start, ISO 8601 with the offset; leave out for 24 hours before `to`."
+      ),
+    near: z
+      .enum(["here", "anywhere"])
+      .optional()
+      .describe(
+        "`here`: only places within 300 m of the person's latest point («что за кофейня тут была в прошлом месяце»)."
+      ),
+    to: z
+      .string()
+      .optional()
+      .describe(
+        "The period's end, ISO 8601 with the offset; leave out for now."
+      ),
+  })
+  .strict();
+
+/** The track a call reads at most: the latest points are kept. */
+const historyPointCap = 4_000;
+/** What one answer lists at most: the latest. */
+const historyItemCap = 40;
+/** Map lookups one call makes at most (the parking first, then the latest). */
+const historyLookups = 3;
+const historyLookupMs = 8_000;
+const defaultHistoryMs = 24 * 60 * 60_000;
+/** Older points are gone (`locationRetentionDays`). */
+const longestHistoryMs = 90 * 24 * 60 * 60_000;
+/** «Here» in the history: this close to the latest point. */
+const hereM = 300;
+
+const historyReply =
+  "Times are on the person's clock. A trip's mode and where the car was left are guesses from the speed: say «похоже». `nearbyName` is the nearest named place on the map, not necessarily where they were. Bro knows only what the person shared (points they sent, a Telegram live location), so gaps are times it did not see.";
+
+function minutesBetween(start: Date, end: Date) {
+  return Math.round((end.getTime() - start.getTime()) / 60_000);
+}
+
+function rounded(degrees: number) {
+  return Math.round(degrees * 1e5) / 1e5;
+}
+
+/** The period of a history call, or why it does not read. */
+function historyPeriod(
+  input: z.output<typeof historyInputSchema>,
+  now: Date
+): { readonly from: Date; readonly to: Date } | { readonly reply: string } {
+  const to = instant(input.to);
+  const fromGiven = instant(input.from);
+  if (to === null || fromGiven === null) {
+    return {
+      reply:
+        "The period's bounds do not read as dates: give ISO 8601 with the offset.",
+    };
+  }
+  const end = to && to < now ? to : now;
+  const from = fromGiven ?? new Date(end.getTime() - defaultHistoryMs);
+  if (from >= end)
+    return { reply: "The period's start is not before its end." };
+  const earliest = new Date(now.getTime() - longestHistoryMs);
+  return { from: from < earliest ? earliest : from, to: end };
+}
+
+interface Nearby {
+  readonly address?: string;
+  readonly name?: string;
+}
+
+/**
+ * The nearest named place (and an address) for the first few of `places`,
+ * by one map lookup each; a failed or slow lookup ends the rest.
+ */
+async function lookUpNames<
+  Place extends { readonly lat: number; readonly lon: number },
+>(places: readonly Place[], signal: AbortSignal) {
+  const found = new Map<Place, Nearby>();
+  const deadline = AbortSignal.any([
+    signal,
+    AbortSignal.timeout(historyLookupMs),
+  ]);
+  for (const place of places.slice(0, historyLookups)) {
+    try {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- The map takes one request at a time.
+      found.set(place, await nearbyPlace(place.lat, place.lon, deadline));
+    } catch (error) {
+      console.warn("[location] nearby lookup failed", {
+        name: error instanceof Error ? error.name : "error",
+      });
+      break;
+    }
+  }
+  return found;
+}
+
+/** Where a place in the history is: its address, name and point. */
+function whereOf(
+  place: {
+    readonly address: string | null;
+    readonly label: string | null;
+    readonly lat: number;
+    readonly lon: number;
+  },
+  nearby: Nearby | undefined
+) {
+  return {
+    address: place.address ?? nearby?.address ?? null,
+    label: place.label,
+    lat: rounded(place.lat),
+    lon: rounded(place.lon),
+    ...(nearby?.name !== undefined && { nearbyName: nearby.name }),
+  };
+}
+
+async function locationHistory(
+  input: z.output<typeof historyInputSchema>,
+  context: ToolContext
+) {
+  const scope = locationScope(context);
+  const now = new Date();
+  const period = historyPeriod(input, now);
+  if ("reply" in period) return { known: false, reply: period.reply };
+  const [track, timeZone, latest] = await Promise.all([
+    listLocationPoints(scope, { ...period, limit: historyPointCap }),
+    readWorkspaceTimeZone(scope),
+    input.near === "here" ? latestPosition(scope, { now }) : undefined,
+  ]);
+  const here = latest?.point;
+  if (input.near === "here" && here?.kind !== "position") {
+    return {
+      known: false,
+      reply: `Bro does not know where the person is now. ${askForPoint}`,
+    };
+  }
+  const read = readHistory(track.points);
+  const items = read
+    .filter(
+      (item) =>
+        here === undefined ||
+        (item.kind !== "trip" && distanceM(here, item) <= hereM)
+    )
+    .slice(-historyItemCap);
+  if (items.length === 0) {
+    return {
+      known: false,
+      reply:
+        here === undefined
+          ? "No locations the person shared in this period. Say so: Bro knows only the points they sent and a Telegram live location."
+          : "No places the person shared near here in this period. Say so.",
+    };
+  }
+  const parking = here === undefined ? probableParking(read) : null;
+  const places = items
+    .filter((item): item is LonePoint | Stay => item.kind !== "trip")
+    .toReversed()
+    .toSorted((left, right) =>
+      here === undefined ? 0 : distanceM(here, left) - distanceM(here, right)
+    );
+  const named = await lookUpNames<LonePoint | Parked | Stay>(
+    [...(parking ? [parking] : []), ...places],
+    context.abortSignal
+  );
+  const stamp = (at: Date) => ({
+    at: at.toISOString(),
+    local: localStamp(at, timeZone),
+  });
+  return {
+    attribution: openStreetMapAttribution,
+    items: items.map((item) => {
+      if (item.kind === "trip") {
+        return {
+          end: stamp(item.end),
+          km: item.km,
+          kind: item.kind,
+          maxKmh: item.maxKmh,
+          minutes: minutesBetween(item.start, item.end),
+          mode: item.mode,
+          start: stamp(item.start),
+        };
+      }
+      const where = whereOf(item, named.get(item));
+      return item.kind === "stay"
+        ? {
+            ...where,
+            afterDriving: item.afterDriving,
+            end: stamp(item.end),
+            kind: item.kind,
+            minutes: minutesBetween(item.start, item.end),
+            start: stamp(item.start),
+          }
+        : { ...where, at: stamp(item.at), kind: item.kind };
+    }),
+    known: true,
+    parking: parking
+      ? {
+          ...whereOf(
+            { ...parking, address: null, label: null },
+            named.get(parking)
+          ),
+          at: stamp(parking.at),
+        }
+      : null,
+    period: { from: stamp(period.from), to: stamp(period.to) },
+    reply: historyReply,
+    truncated: track.truncated || read.length > items.length,
+  };
+}
+
 export default defineDynamic({
   events: {
     // Only the pilot gets these, the same at every step. What the person
@@ -262,6 +486,15 @@ export default defineDynamic({
           inputSchema: editInputSchema,
           async execute(input, toolContext) {
             return locationEdit(input, toolContext, words);
+          },
+        }),
+        location_history: defineTool({
+          availableInSubagents: false,
+          description:
+            "Where the person stayed and how they moved, by the locations they shared (points they sent, a Telegram live location): stays with their address and the nearest named place, trips with distance, time and a guessed mode (walk, bike, vehicle), and where the car was probably left after the last drive. For «где я оставил машину», «сколько я ехал на велике», «что за кофейня тут была в прошлом месяце», «где я был вчера».",
+          inputSchema: historyInputSchema,
+          async execute(input, toolContext) {
+            return locationHistory(input, toolContext);
           },
         }),
         location_now: defineTool({

@@ -76,4 +76,20 @@ describe("the address of a shared point", () => {
     ).toBeUndefined();
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  it("names the nearest place from the map's place layer, apart from the address", async () => {
+    fetchMock.mockResolvedValue(
+      answer({ ...tverskaya, name: "Кафе\n Пушкин\u200b " })
+    );
+    const { nearbyPlace } = await import("@agent/lib/routes/openstreetmap");
+    const signal = new AbortController().signal;
+    expect(await nearbyPlace(55.761_23, 37.609_87, signal)).toEqual({
+      address: "Тверская улица 7, Москва",
+      name: "Кафе Пушкин",
+    });
+    await nearbyPlace(55.761_25, 37.609_88, signal);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const url = new URL(String(fetchMock.mock.calls[0]?.[0]));
+    expect(url.searchParams.get("layer")).toBe("poi");
+  });
 });

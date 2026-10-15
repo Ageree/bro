@@ -456,6 +456,74 @@ export async function reverseGeocode(
   return address;
 }
 
+const nearbySchema = z.union([
+  z.object({ error: z.string() }),
+  z.object({
+    address: reverseAddressSchema.optional(),
+    name: z.string().nullish(),
+  }),
+]);
+
+const rememberedNearby = new Map<
+  string,
+  {
+    readonly place: { readonly address?: string; readonly name?: string };
+    readonly until: number;
+  }
+>();
+
+/**
+ * The named place on the map nearest a point (a café, a shop, a station)
+ * and its address, for the history of where the person stayed
+ * (`location_history`): «что за кофейня это была». The name is whatever the
+ * map says, which anyone may edit: a tool hands it on as the nearest place,
+ * never as where the person said they were, and never into a turn's context.
+ * Waits for its request slot like any lookup; remembered for a week.
+ */
+export async function nearbyPlace(
+  lat: number,
+  lon: number,
+  signal: AbortSignal
+): Promise<{ readonly address?: string; readonly name?: string }> {
+  const key = `${lat.toFixed(4)},${lon.toFixed(4)}`;
+  const known = recall(rememberedNearby, key);
+  if (known) return known.place;
+  const url = new URL(reverseUrl);
+  url.searchParams.set("lat", lat.toFixed(6));
+  url.searchParams.set("lon", lon.toFixed(6));
+  url.searchParams.set("format", "jsonv2");
+  url.searchParams.set("addressdetails", "1");
+  url.searchParams.set("accept-language", "ru");
+  url.searchParams.set("layer", "poi");
+  url.searchParams.set("zoom", "18");
+  const result = await request(
+    url,
+    "The OpenStreetMap geocoder",
+    nearbySchema,
+    signal
+  );
+  const address = "error" in result ? undefined : shortAddress(result.address);
+  const cleaned =
+    "error" in result
+      ? ""
+      : (result.name ?? "")
+          .replaceAll(/[\p{Cc}\p{Cf}\s]+/gu, " ")
+          .trim()
+          .slice(0, 80);
+  const name = cleaned.length > 0 ? cleaned : undefined;
+  const place = {
+    ...(address !== undefined && { address }),
+    ...(name !== undefined && { name }),
+  };
+  remember(rememberedNearby, key, {
+    place,
+    until:
+      Date.now() +
+      (name === undefined ? missingAddressMemoryMs : addressMemoryMs),
+  });
+  return place;
+}
+
 function shortAddress(parts: z.infer<typeof reverseAddressSchema> | undefined) {
   if (!parts) return undefined;
   const street = [parts.road, parts.house_number]

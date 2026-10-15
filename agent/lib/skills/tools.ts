@@ -100,6 +100,7 @@ const toolGroupEntries = {
   list_orders: "core",
   load_skill: "core",
   location_edit: "core",
+  location_history: "core",
   location_now: "core",
   "notion-add-task": "apps",
   "notion-read": "apps",

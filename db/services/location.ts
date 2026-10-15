@@ -125,6 +125,36 @@ export async function latestPosition(
   return { live, point };
 }
 
+/**
+ * The person's own positions recorded in `[from, to)`, oldest first, for the
+ * history of where they stayed and went (`location_history`). A venue is
+ * left out: it says where they probably were, not a track. Read newest
+ * first, so a cut keeps the latest; `truncated` says one happened.
+ */
+export async function listLocationPoints(
+  scope: AccessScope,
+  range: { readonly from: Date; readonly limit: number; readonly to: Date }
+) {
+  const rows = await db
+    .select()
+    .from(locationPoints)
+    .where(
+      and(
+        eq(locationPoints.workspaceId, scope.workspaceId),
+        eq(locationPoints.kind, "position"),
+        sql`${locationPoints.source} <> 'telegram_venue'`,
+        gte(locationPoints.recordedAt, range.from),
+        lt(locationPoints.recordedAt, range.to)
+      )
+    )
+    .orderBy(desc(locationPoints.recordedAt))
+    .limit(range.limit + 1);
+  return {
+    points: rows.slice(0, range.limit).toReversed(),
+    truncated: rows.length > range.limit,
+  };
+}
+
 /** The latest point of any kind the person shared since `since`. */
 export async function latestSharedPoint(scope: AccessScope, since: Date) {
   const [point] = await db

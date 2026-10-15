@@ -3,13 +3,18 @@ import type { DynamicResolveContext, ToolContext } from "eve/tools";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type * as locationModule from "@db/services/location";
 import type { readWorkspaceTimeZone } from "@db/services/user-profile";
-import type { reverseGeocode } from "@agent/lib/routes/openstreetmap";
+import type {
+  nearbyPlace,
+  reverseGeocode,
+} from "@agent/lib/routes/openstreetmap";
 import { backgroundTurnMarker } from "@shared/chat/background-turn";
 
 const services = vi.hoisted(() => ({
   forget: vi.fn<typeof locationModule.forgetLocation>(),
   label: vi.fn<typeof locationModule.labelPoint>(),
   latest: vi.fn<typeof locationModule.latestPosition>(),
+  list: vi.fn<typeof locationModule.listLocationPoints>(),
+  nearby: vi.fn<typeof nearbyPlace>(),
   pilot: vi.fn<typeof locationModule.locationPilot>(),
   reverse: vi.fn<typeof reverseGeocode>(),
   setAddress: vi.fn<typeof locationModule.setPointAddress>(),
@@ -23,6 +28,7 @@ vi.mock("@db/services/location", () => ({
   forgetLocation: services.forget,
   labelPoint: services.label,
   latestPosition: services.latest,
+  listLocationPoints: services.list,
   locationPilot: services.pilot,
   setPointAddress: services.setAddress,
 }));
@@ -30,6 +36,7 @@ vi.mock("@db/services/user-profile", () => ({
   readWorkspaceTimeZone: services.timeZone,
 }));
 vi.mock("@agent/lib/routes/openstreetmap", () => ({
+  nearbyPlace: services.nearby,
   openStreetMapAttribution: "© OpenStreetMap",
   reverseGeocode: services.reverse,
 }));
@@ -139,6 +146,7 @@ describe("the geolocation tools", () => {
   it("are offered in the pilot", async () => {
     expect(Object.keys((await tools(said("где я?"))) ?? {})).toEqual([
       "location_edit",
+      "location_history",
       "location_now",
     ]);
   });
@@ -275,5 +283,89 @@ describe("the geolocation tools", () => {
       callContext()
     );
     expect(held).toHaveProperty("changed", false);
+  });
+});
+
+describe("the history of shared locations", () => {
+  function track() {
+    const base = now.getTime() - 3 * 60 * 60_000;
+    const rows = [];
+    // Ten minutes at home, a 40 km/h drive of ten minutes, half an hour there.
+    for (let index = 0; index <= 10; index += 1) {
+      rows.push({ lat: 55.75, minute: index });
+    }
+    for (let index = 1; index <= 10; index += 1) {
+      rows.push({ lat: 55.75 + index * 0.006, minute: 10 + index });
+    }
+    for (let index = 1; index <= 30; index += 1) {
+      rows.push({ lat: 55.81, minute: 20 + index });
+    }
+    const { point } = position();
+    return rows.map((row, index) =>
+      Object.assign(structuredClone(point), {
+        id: `point-${String(index)}`,
+        lat: row.lat,
+        recordedAt: new Date(base + row.minute * 60_000),
+      })
+    );
+  }
+
+  async function history() {
+    const set = await tools(said("где я оставил машину?"));
+    if (!set || !("location_history" in set))
+      throw new Error("Expected the tools.");
+    return set.location_history;
+  }
+
+  it("reads stays, the drive and the parking, naming at most three places", async () => {
+    services.list.mockResolvedValue({ points: track(), truncated: false });
+    services.nearby.mockResolvedValue({
+      address: "Ленинградский проспект 1, Москва",
+      name: "Кофемания",
+    });
+    const result = await (await history()).execute({}, callContext());
+    expect(JSON.parse(JSON.stringify(result))).toEqual(result);
+    expect(services.list).toHaveBeenCalledWith(
+      { userId: "alice", workspaceId },
+      {
+        from: new Date(now.getTime() - 24 * 60 * 60_000),
+        limit: 4000,
+        to: now,
+      }
+    );
+    expect(result).toMatchObject({
+      items: [
+        { kind: "stay", minutes: 10 },
+        { kind: "trip", mode: "vehicle" },
+        { afterDriving: true, kind: "stay", nearbyName: "Кофемания" },
+      ],
+      known: true,
+      parking: { lat: 55.81, nearbyName: "Кофемания" },
+    });
+    expect(services.nearby).toHaveBeenCalledTimes(3);
+  });
+
+  it("keeps to places near the latest point with `here`, and says when it has none", async () => {
+    services.list.mockResolvedValue({ points: track(), truncated: false });
+    services.nearby.mockResolvedValue({});
+    const here = position();
+    services.latest.mockResolvedValue({
+      ...here,
+      point: { ...here.point, lat: 55.7505, lon: 37.6099 },
+    });
+    const tool = await history();
+    const near = await tool.execute({ near: "here" }, callContext());
+    expect(near).toMatchObject({
+      items: [{ kind: "stay", lat: 55.75 }],
+      parking: null,
+    });
+    services.list.mockResolvedValue({ points: [], truncated: false });
+    expect(await tool.execute({}, callContext())).toMatchObject({
+      known: false,
+    });
+    expect(await tool.execute({ from: "вчера" }, callContext())).toHaveProperty(
+      "reply",
+      expect.stringContaining("ISO")
+    );
   });
 });

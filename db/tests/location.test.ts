@@ -165,6 +165,44 @@ describe("shared locations", { timeout: 30_000 }, () => {
     expect(left.map((row) => row.id)).toEqual([live.subscription.id]);
   });
 
+  it("lists the person's own positions of a period, oldest first, the latest kept on a cut", async () => {
+    const { location } = await openDatabase();
+    for (const [index, overrides] of [
+      { recordedAt: new Date(now.getTime() - 3 * minute) },
+      { recordedAt: new Date(now.getTime() - 2 * minute) },
+      { recordedAt: new Date(now.getTime() - minute) },
+      // Neither a place they forwarded nor a venue is where they went.
+      { kind: "place" as const, recordedAt: now },
+      { source: "telegram_venue" as const, recordedAt: now },
+      { recordedAt: new Date(now.getTime() - 2 * day) },
+    ].entries()) {
+      await location.insertPoint(
+        alice,
+        point({ ...overrides, externalId: `telegram:1:${String(index)}:1` })
+      );
+    }
+    const range = { from: new Date(now.getTime() - day), to: now };
+    const all = await location.listLocationPoints(alice, {
+      ...range,
+      limit: 10,
+    });
+    expect(all.truncated).toBe(false);
+    expect(all.points.map((row) => row.recordedAt.getTime())).toEqual([
+      now.getTime() - 3 * minute,
+      now.getTime() - 2 * minute,
+      now.getTime() - minute,
+    ]);
+    const cut = await location.listLocationPoints(alice, {
+      ...range,
+      limit: 2,
+    });
+    expect(cut.truncated).toBe(true);
+    expect(cut.points.map((row) => row.recordedAt.getTime())).toEqual([
+      now.getTime() - 2 * minute,
+      now.getTime() - minute,
+    ]);
+  });
+
   it("sweeps points past 90 days and reminders ended a month ago", async () => {
     const { db, location, subscriptions } = await openDatabase();
     await location.insertPoint(
