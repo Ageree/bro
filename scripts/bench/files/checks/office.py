@@ -503,6 +503,11 @@ def xlsx_text_ok(ctx, params, item):
     return passed("кириллица в порядке")
 
 
+def _names_file(cell: str, old: str) -> bool:
+    """The cell names the file `old`, alone or inside an archive: «старое.zip/договор.doc», «старое.zip → договор.doc»."""
+    return cell == old or re.search(r"(?:[/\\>→»]|\s-)\s*" + re.escape(old) + "$", cell) is not None
+
+
 @check("xlsx_inventory", "xlsx")
 def xlsx_inventory(ctx, params, item):
     records = ctx.truth_doc("zip_manifest.json")["records"]
@@ -527,13 +532,13 @@ def xlsx_inventory(ctx, params, item):
     if not params.get("min_rows", 0) <= n <= params.get("max_rows", 10 ** 6):
         return failed(f"{sheet}: строк {n}, нужно {params.get('min_rows')}–{params.get('max_rows')}")
     for old, pattern in params.get("must_mark", {}).items():
-        r = next((r for x, r in olds.items() if x == old or x.endswith("/" + old)), None)
+        r = next((r for x, r in olds.items() if _names_file(x, old)), None)
         if r is None:
             return failed(f"{sheet}: нет строки {old}")
         if not any(re.search(pattern, _cell_text(v)) for i, v in enumerate(rows[r]) if i != c):
             return failed(f"{sheet}: у {old} нет пометки «{pattern}»")
     for old in params.get("must_contain_old_names", []):
-        if not any(x == old or x.endswith("/" + old) for x in olds):
+        if not any(_names_file(x, old) for x in olds):
             return failed(f"{sheet}: старое имя «{old}» не раскодировано")
     return passed(f"{sheet}: {n} строк")
 
