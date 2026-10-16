@@ -3,7 +3,7 @@ import { env } from "@shared/environment";
 
 /**
  * Whether a workspace's Bro may set up watches that code checks
- * (`watch-create`): the pilot named in SUBSCRIPTIONS_WORKSPACES by workspace
+ * (`watch-create`, `parcel-watch`): the pilot named in SUBSCRIPTIONS_WORKSPACES by workspace
  * id or owner's email, or everyone with `*`. Every turn asks, so the verdict
  * by email is remembered for a while; a failed lookup keeps the workspace out
  * for that call.

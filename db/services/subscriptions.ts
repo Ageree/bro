@@ -1,7 +1,15 @@
-import { and, asc, desc, eq, gt, inArray, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, lte, or, sql } from "drizzle-orm";
 import type { AccessScope } from "@shared/identity/access-scope";
 import type { ScheduledRunOutcome } from "@shared/schedules/outcome";
 import type { FlightSource, FlightState } from "@shared/subscriptions/flight";
+import {
+  type ParcelCondition,
+  type ParcelSource,
+  type ParcelState,
+  parcelCheckEverySeconds,
+  parcelWatchDays,
+  unreadParcelState,
+} from "@shared/subscriptions/parcel";
 import type {
   PlaceCondition,
   PlaceSource,
@@ -19,16 +27,18 @@ const liveStatuses = ["active", "paused"] as const;
 
 /**
  * The watches the person set up and manages (`watch-create`,
- * `place_reminder`): their own hidden job carries the reports. A flight's
- * watch is Bro's own, on the proactive job, and is neither listed nor
- * changed by the person's tools.
+ * `place_reminder`, `parcel-watch`): their own hidden job carries the
+ * reports. A parcel watch Bro starts from a carrier's letter is the person's
+ * too, listed and stopped like one. A flight's watch is Bro's own, on the
+ * proactive job, and is neither listed nor changed by the person's tools.
  */
-const personTemplates = ["price", "place"] as const;
+const personTemplates = ["price", "place", "parcel"] as const;
 
 /**
  * When a watch is next due for the subscriptions tick. A place reminder is
  * never read by it: shared points decide it (`evaluatePlaceReminders`), and
- * the tick takes it only when its term ends. A price, a period away.
+ * the tick takes it only when its term ends. A price or a parcel, a period
+ * away.
  */
 function nextCheckOf(
   template: (typeof personTemplates)[number],
@@ -72,6 +82,12 @@ export type NewSubscription = NewSubscriptionBase &
         readonly source: PlaceSource;
         readonly state: PlaceState;
         readonly template: "place";
+      }
+    | {
+        readonly condition: ParcelCondition;
+        readonly source: ParcelSource;
+        readonly state: ParcelState;
+        readonly template: "parcel";
       }
   );
 
@@ -191,6 +207,144 @@ export async function createSubscription(
 }
 
 /**
+ * How long a number from a letter is not watched again: a parcel's journey
+ * and its storage, with room to spare.
+ */
+const mailParcelMemoryMs = 120 * 24 * 60 * 60_000;
+
+/**
+ * Starts a parcel watch for each number in a carrier's letter that the
+ * proactive check read (`agent/schedules/proactive.ts`). A number the person
+ * has a watch of — live, or started in the last 120 days, from their words or
+ * an earlier letter — gets none: a letter of a parcel already watched,
+ * handed over or returned starts nothing. The watch reports where the
+ * proactive job does, and is first read on the next tick. Returns how many
+ * started.
+ */
+export async function startMailParcelWatches(input: {
+  readonly numbers: readonly string[];
+  readonly now: Date;
+  readonly proactiveJobId: string;
+  readonly scope: AccessScope;
+}) {
+  const numbers = [...new Set(input.numbers)].toSorted();
+  if (numbers.length === 0) return 0;
+  const { now, scope } = input;
+  return db.transaction(async (transaction) => {
+    // The same locks as `createSubscription`, in one order: the person
+    // asking for the same number meanwhile waits here, or this waits.
+    for (const number of numbers) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Locks are taken in order.
+      await transaction.execute(
+        sql`SELECT pg_advisory_xact_lock(hashtextextended(${`subscription:${scope.workspaceId}:${scope.userId}:parcel:${number}`}, 0))`
+      );
+    }
+    const [proactive] = await transaction
+      .select({
+        conversationChannel: scheduledAgentJobs.conversationChannel,
+        conversationId: scheduledAgentJobs.conversationId,
+      })
+      .from(scheduledAgentJobs)
+      .where(eq(scheduledAgentJobs.id, input.proactiveJobId));
+    if (!proactive) return 0;
+    const known = await transaction
+      .select({ dedupeKey: subscriptions.dedupeKey })
+      .from(subscriptions)
+      .where(
+        and(
+          eq(subscriptions.workspaceId, scope.workspaceId),
+          eq(subscriptions.createdByUserId, scope.userId),
+          eq(subscriptions.template, "parcel"),
+          inArray(subscriptions.dedupeKey, numbers),
+          or(
+            inArray(subscriptions.status, [...liveStatuses]),
+            gt(
+              subscriptions.createdAt,
+              new Date(now.getTime() - mailParcelMemoryMs)
+            )
+          )
+        )
+      );
+    const watched = new Set(known.map((watch) => watch.dedupeKey));
+    const fresh = numbers.filter((number) => !watched.has(number));
+    const expiresAt = new Date(
+      now.getTime() + parcelWatchDays * 24 * 60 * 60_000
+    );
+    for (const number of fresh) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Each watch needs its own job first.
+      const [job] = await transaction
+        .insert(scheduledAgentJobs)
+        .values({
+          conversationChannel: proactive.conversationChannel,
+          conversationId: proactive.conversationId,
+          createdAt: now,
+          createdByUserId: scope.userId,
+          kind: "subscription",
+          missedRunPolicy: "skip",
+          nextRunAt: null,
+          prompt: `Parcel watch: Russian Post ${number}, from Russian Post's letter.`,
+          status: "active",
+          timing: { at: expiresAt.toISOString(), kind: "once" },
+          updatedAt: now,
+          workspaceId: scope.workspaceId,
+        })
+        .returning({ id: scheduledAgentJobs.id });
+      if (!job) throw new Error("The parcel's job could not be created.");
+      // oxlint-disable-next-line eslint/no-await-in-loop -- The row needs the job just made.
+      await transaction.insert(subscriptions).values({
+        checkEverySeconds: parcelCheckEverySeconds,
+        condition: { kind: "changes" },
+        createdAt: now,
+        createdByUserId: scope.userId,
+        dedupeKey: number,
+        expiresAt,
+        jobId: job.id,
+        nextCheckAt: now,
+        source: { carrier: "pochta", number, origin: "mail", title: null },
+        state: unreadParcelState(now),
+        template: "parcel",
+        updatedAt: now,
+        workspaceId: scope.workspaceId,
+      });
+    }
+    return fresh.length;
+  });
+}
+
+/**
+ * Marks the person's live parcel watches of these numbers as told: a
+ * proactive run carries Russian Post's own letter of each to the person, so
+ * the next reading is a baseline, not a second message of the same news
+ * (`judgeParcelCheck`). A check in flight meanwhile writes its own state over
+ * the mark; that costs one message the letter already gave. Returns how many
+ * were marked.
+ */
+export async function noteParcelLetters(input: {
+  readonly numbers: readonly string[];
+  readonly now: Date;
+  readonly scope: AccessScope;
+}) {
+  if (input.numbers.length === 0) return 0;
+  const marked = await db
+    .update(subscriptions)
+    .set({
+      state: sql`${subscriptions.state} || '{"letterPending":true}'::jsonb`,
+      updatedAt: input.now,
+    })
+    .where(
+      and(
+        eq(subscriptions.workspaceId, input.scope.workspaceId),
+        eq(subscriptions.createdByUserId, input.scope.userId),
+        eq(subscriptions.template, "parcel"),
+        inArray(subscriptions.dedupeKey, [...input.numbers]),
+        inArray(subscriptions.status, [...liveStatuses])
+      )
+    )
+    .returning({ id: subscriptions.id });
+  return marked.length;
+}
+
+/**
  * Leases the watches due for a check. The lease is the next check time
  * itself, so a crashed tick retries after `leaseForMs`; each claim carries it
  * as `leaseUntil`, which the check's own result must still find
@@ -261,12 +415,19 @@ export type ClaimedSubscription = Awaited<
   ReturnType<typeof claimDueSubscriptions>
 >[number];
 
+/** What a check of a price or a parcel remembers. */
+type CheckedState = ParcelState | PriceState;
+
 /**
  * What one check found:
  * - `quiet`: a reading, nothing to tell; the next check is a period away.
  * - `failed`: no reading. The next check backs off; the third failure in a
  *   row ends the watch with `outcome`, so the person hears once.
  * - `hit`: news for the person (`outcome`); the watch has done its job.
+ * - `news`: news for the person (`outcome`), and the watch goes on: a
+ *   parcel arrived, and its storage may still run out.
+ * - `done`: the watch has done its job with nothing to tell (a parcel
+ *   handed over); it ends without a word.
  * - `expired`: the term ran out; `outcome` tells the person.
  * - `held`: not checked now (the workspace left the pilot); the next check
  *   is at `nextCheckAt`, and nothing else changes.
@@ -276,8 +437,15 @@ export type SubscriptionCheck =
   | {
       readonly kind: "expired" | "hit";
       readonly outcome: ScheduledRunOutcome;
-      readonly state?: PriceState;
+      readonly state?: CheckedState;
     }
+  | {
+      readonly kind: "news";
+      readonly nextCheckAt: Date;
+      readonly outcome: ScheduledRunOutcome;
+      readonly state: CheckedState;
+    }
+  | { readonly kind: "done"; readonly state: CheckedState }
   | {
       readonly kind: "failed";
       readonly error: string;
@@ -287,7 +455,7 @@ export type SubscriptionCheck =
   | {
       readonly kind: "quiet";
       readonly nextCheckAt: Date;
-      readonly state: PriceState;
+      readonly state: CheckedState;
     }
   | { readonly kind: "held"; readonly nextCheckAt: Date }
   | { readonly kind: "lapsed" };
@@ -362,6 +530,46 @@ export async function settleSubscriptionCheck(
         .where(eq(subscriptions.id, claim.id));
       return "quiet" as const;
     }
+    if (check.kind === "done") {
+      await transaction
+        .update(subscriptions)
+        .set({
+          ...counted,
+          failures: 0,
+          lastError: null,
+          state: check.state,
+          status: "fired",
+        })
+        .where(eq(subscriptions.id, claim.id));
+      await transaction
+        .update(scheduledAgentJobs)
+        .set({ status: "completed", updatedAt: now })
+        .where(eq(scheduledAgentJobs.id, claim.jobId));
+      return "done" as const;
+    }
+    if (check.kind === "news") {
+      await transaction
+        .update(subscriptions)
+        .set({
+          ...counted,
+          failures: 0,
+          hits: sql`${subscriptions.hits} + 1`,
+          lastError: null,
+          lastHitAt: now,
+          nextCheckAt: check.nextCheckAt,
+          state: check.state,
+        })
+        .where(eq(subscriptions.id, claim.id));
+      // The job stays active: it carries the reports still to come.
+      await transaction
+        .update(scheduledAgentJobs)
+        .set({ lastRunAt: now, updatedAt: now })
+        .where(eq(scheduledAgentJobs.id, claim.jobId));
+      await transaction
+        .insert(scheduledAgentRuns)
+        .values(reportRun(claim, check.outcome, now));
+      return "news" as const;
+    }
     if (
       check.kind === "failed" &&
       current.failures + 1 < maximumSubscriptionFailures
@@ -403,21 +611,35 @@ export async function settleSubscriptionCheck(
       .update(scheduledAgentJobs)
       .set({ lastRunAt: now, status: "completed", updatedAt: now })
       .where(eq(scheduledAgentJobs.id, claim.jobId));
-    await transaction.insert(scheduledAgentRuns).values({
-      attempts: 1,
-      completedAt: now,
-      createdAt: now,
-      jobId: claim.jobId,
-      outcome: check.outcome,
-      reportSequence: 1,
-      reportStatus: "pending",
-      scheduledFor: now,
-      startedAt: now,
-      status: "completed",
-      updatedAt: now,
-    });
+    await transaction
+      .insert(scheduledAgentRuns)
+      .values(reportRun(claim, check.outcome, now));
     return ended;
   });
+}
+
+/**
+ * A run of a watch's job written already finished, its report pending: the
+ * schedule tick (`agent/schedules/dynamic.ts`) delivers it like any other.
+ */
+function reportRun(
+  claim: Pick<ClaimedSubscription, "jobId">,
+  outcome: ScheduledRunOutcome,
+  now: Date
+) {
+  return {
+    attempts: 1,
+    completedAt: now,
+    createdAt: now,
+    jobId: claim.jobId,
+    outcome,
+    reportSequence: 1,
+    reportStatus: "pending" as const,
+    scheduledFor: now,
+    startedAt: now,
+    status: "completed" as const,
+    updatedAt: now,
+  };
 }
 
 type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -545,14 +767,21 @@ function isPersonTemplate(template: string) {
   return personTemplates.some((person) => person === template);
 }
 
-/** The wake rule of the watch a job reports for (`subscriptions.wake`). */
-export async function readSubscriptionWake(jobId: string) {
+/**
+ * How the watch a job reports for may reach the person: its wake rule
+ * (`subscriptions.wake`), and whether Bro started it unasked, from Russian
+ * Post's own letter (`startMailParcelWatches`).
+ */
+export async function readSubscriptionDelivery(jobId: string) {
   const [row] = await db
-    .select({ wake: subscriptions.wake })
+    .select({
+      unasked: sql<boolean>`${subscriptions.template} = 'parcel' AND ${subscriptions.source}->>'origin' = 'mail'`,
+      wake: subscriptions.wake,
+    })
     .from(subscriptions)
     .where(eq(subscriptions.jobId, jobId))
     .limit(1);
-  return row?.wake ?? "day_only";
+  return { unasked: row?.unasked === true, wake: row?.wake ?? "day_only" };
 }
 
 /** A flight's watch key: its event and start, as its reminders' keys begin. */

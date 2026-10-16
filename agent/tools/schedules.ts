@@ -25,7 +25,7 @@ import {
 import { siteHostname } from "@agent/lib/browser-use/host";
 import { backgroundActionsOfCaller } from "@agent/lib/schedules/delegation/pilot";
 import { subscriptionsPilot } from "@agent/lib/subscriptions/pilot";
-import { placeWatchOf } from "@agent/lib/subscriptions/watches";
+import { parcelWatchOf, placeWatchOf } from "@agent/lib/subscriptions/watches";
 import { locationPilot } from "@db/services/location";
 import { skillsLayout } from "@agent/lib/skills/pilot";
 import {
@@ -264,6 +264,7 @@ function watchSummary(
   timeZone: string
 ) {
   if (watch.template === "place") return placeSummary(watch, timeZone);
+  if (watch.template === "parcel") return parcelSummary(watch, timeZone);
   return {
     id: watch.id,
     kind: "price watch, checked by code every few hours",
@@ -304,6 +305,42 @@ function placeSummary(
   };
 }
 
+/**
+ * A parcel watch as the schedule tools show it: the number and what Russian
+ * Post said last, which code read.
+ */
+function parcelSummary(
+  watch: Awaited<ReturnType<typeof listLiveSubscriptions>>[number],
+  timeZone: string
+) {
+  const parcel = parcelWatchOf(watch);
+  return {
+    id: watch.id,
+    kind: "parcel watch: code reads Russian Post every few hours and tells only of a change",
+    nextCheckLocal:
+      watch.status === "active"
+        ? localRunLabel(watch.nextCheckAt, timeZone)
+        : null,
+    parcel: parcel
+      ? {
+          // `mail`: Bro started it from Russian Post's letter to the person.
+          from: parcel.source.origin,
+          number: parcel.source.number,
+          title: parcel.source.title,
+        }
+      : null,
+    status: watch.status === "cancelled" ? "deleted" : watch.status,
+    untilLocal: localRunLabel(watch.expiresAt, timeZone),
+    lastRead: parcel
+      ? {
+          expectedOn: parcel.state.expectedOn,
+          lastEvent: parcel.state.lastEvent,
+          storageUntil: parcel.state.storageUntil,
+        }
+      : null,
+  };
+}
+
 const placeChangeRefusal =
   "That is a place reminder: it can only be paused, resumed or deleted (status). For other words, place or term, call place_reminder again.";
 /** For a workspace whose geolocation is switched off. */
@@ -312,13 +349,19 @@ const heldPlaceRefusal =
 
 const watchChangeRefusal =
   "That is a price watch: it can only be paused, resumed or deleted (status). For a new threshold or term, call watch-create again with the same link.";
+const parcelChangeRefusal =
+  "That is a parcel watch: it can only be paused, resumed or deleted (status). For a new term, call parcel-watch again with the same number.";
+/** For a workspace whose watches are switched off (no `parcel-watch`). */
+const heldParcelRefusal =
+  "That is a parcel watch, and watches are switched off here now: it is not checked, and can only be paused or deleted (status). Say so plainly.";
 /** For a workspace whose watches are switched off (no `watch-create`). */
 const heldWatchRefusal =
   "That is a price watch, and watches are switched off here now: it is not checked, and can only be paused or deleted (status). Say so plainly; offer a daily browser check (schedules-create) instead.";
 
 /**
- * A change to one of the person's price watches, which schedules-update
- * also reaches by id. Undefined when the id is no live watch of theirs.
+ * A change to one of the person's watches (a price, a parcel or a place),
+ * which schedules-update also reaches by id. Undefined when the id is no
+ * live watch of theirs.
  */
 async function updateWatch(
   scope: ReturnType<typeof scheduleScope>,
@@ -334,14 +377,19 @@ async function updateWatch(
     ? locationPilot(scope)
     : await subscriptionsPilot(scope);
   if (status === undefined || (status === "active" && !inPilot)) {
+    const parcel = found.template === "parcel";
     throw new Error(
       place
         ? inPilot
           ? placeChangeRefusal
           : heldPlaceRefusal
-        : inPilot
-          ? watchChangeRefusal
-          : heldWatchRefusal
+        : parcel
+          ? inPilot
+            ? parcelChangeRefusal
+            : heldParcelRefusal
+          : inPilot
+            ? watchChangeRefusal
+            : heldWatchRefusal
     );
   }
   const [watch, timeZone] = await Promise.all([

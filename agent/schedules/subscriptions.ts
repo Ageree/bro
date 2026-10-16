@@ -3,9 +3,19 @@ import { within } from "@agent/lib/browser-use/deadline";
 import { schedulesEnabled } from "@agent/lib/schedules/enabled";
 import { judgePriceCheck } from "@agent/lib/subscriptions/check";
 import { readPricePage } from "@agent/lib/subscriptions/page";
+import { judgeParcelCheck } from "@agent/lib/subscriptions/parcel/check";
+import {
+  type ParcelRead,
+  readPochtaParcel,
+} from "@agent/lib/subscriptions/parcel/pochta";
 import { subscriptionsPilot } from "@agent/lib/subscriptions/pilot";
-import { placeWatchOf, priceWatchOf } from "@agent/lib/subscriptions/watches";
+import {
+  parcelWatchOf,
+  placeWatchOf,
+  priceWatchOf,
+} from "@agent/lib/subscriptions/watches";
 import { locationPilot } from "@db/services/location";
+import { readProactiveMessages } from "@db/services/user-profile";
 import {
   type ClaimedSubscription,
   type SubscriptionCheck,
@@ -70,8 +80,8 @@ async function runSubscriptionChecks() {
 }
 
 /**
- * Watches grouped by the shop they read, so one shop gets one request at a
- * time from a tick however many people watch it.
+ * Watches grouped by the shop or the carrier they read, so one gets one
+ * request at a time from a tick however many people watch it.
  */
 function byHost(due: readonly ClaimedSubscription[]) {
   const groups = new Map<string, ClaimedSubscription[]>();
@@ -83,6 +93,8 @@ function byHost(due: readonly ClaimedSubscription[]) {
 }
 
 function hostOf(subscription: ClaimedSubscription) {
+  const carrier = parcelWatchOf(subscription)?.source.carrier;
+  if (carrier) return `carrier:${carrier}`;
   const url = priceWatchOf(subscription)?.source.url;
   return (url && URL.parse(url)?.hostname) ?? subscription.id;
 }
@@ -104,10 +116,23 @@ async function checkInTurn(
 }
 
 /**
+ * A held watch: nothing is read and nothing is sent, and one whose term ran
+ * out ends quietly. Once no longer held, it goes on from where it was.
+ */
+function hold(subscription: ClaimedSubscription, now: Date): SubscriptionCheck {
+  return subscription.expiresAt.getTime() <= now.getTime()
+    ? { kind: "lapsed" }
+    : {
+        kind: "held",
+        nextCheckAt: new Date(
+          now.getTime() + subscription.checkEverySeconds * 1_000
+        ),
+      };
+}
+
+/**
  * A watch outside the pilot (SUBSCRIPTIONS_WORKSPACES taken back, or a
- * lookup that failed) is held: nothing is read and nothing is sent, and one
- * whose term ran out ends quietly. Back in the pilot, it goes on from where
- * it was. Undefined for a watch of the pilot.
+ * lookup that failed) is held. Undefined for a watch of the pilot.
  */
 async function heldCheck(
   subscription: ClaimedSubscription,
@@ -117,15 +142,7 @@ async function heldCheck(
     userId: subscription.createdByUserId,
     workspaceId: subscription.workspaceId,
   });
-  if (inPilot) return undefined;
-  return subscription.expiresAt.getTime() <= now.getTime()
-    ? { kind: "lapsed" }
-    : {
-        kind: "held",
-        nextCheckAt: new Date(
-          now.getTime() + subscription.checkEverySeconds * 1_000
-        ),
-      };
+  return inPilot ? undefined : hold(subscription, now);
 }
 
 /** A price watch's check: the page read by code, judged by code. */
@@ -141,6 +158,37 @@ async function checkPrice(subscription: ClaimedSubscription) {
         watch.expiresAt.getTime() <= now.getTime()
           ? { kind: "no-price" }
           : await readSafely(watch.source.url),
+        new Date()
+      )
+    : { kind: "lapsed" };
+  return { check, outcome: await settle(subscription, check) };
+}
+
+/**
+ * A parcel's check: its carrier read by code, judged by code. A term that ran
+ * out reads nothing.
+ */
+async function checkParcel(subscription: ClaimedSubscription) {
+  const now = new Date();
+  const watch = parcelWatchOf(subscription);
+  // Bro started a letter's watch on its own, as the proactive check: while
+  // the person has Bro's own messages off, it is held, not read.
+  const held =
+    (await heldCheck(subscription, now)) ??
+    (watch?.source.origin === "mail" &&
+    !(await readProactiveMessages({
+      userId: subscription.createdByUserId,
+      workspaceId: subscription.workspaceId,
+    }))
+      ? hold(subscription, now)
+      : undefined);
+  if (held) return { check: held, outcome: await settle(subscription, held) };
+  const check: SubscriptionCheck = watch
+    ? judgeParcelCheck(
+        watch,
+        watch.expiresAt.getTime() <= now.getTime()
+          ? { kind: "unreadable", reason: "expired" }
+          : await readParcelSafely(watch.source.number),
         new Date()
       )
     : { kind: "lapsed" };
@@ -192,7 +240,9 @@ async function checkSubscription(subscription: ClaimedSubscription) {
     const { check, outcome } =
       subscription.template === "place"
         ? await checkPlace(subscription)
-        : await checkPrice(subscription);
+        : subscription.template === "parcel"
+          ? await checkParcel(subscription)
+          : await checkPrice(subscription);
     console.info("[subscriptions] check", {
       ...logged,
       outcome: outcome ?? "lease_lost",
@@ -219,6 +269,18 @@ async function readSafely(url: string) {
   } catch (error) {
     return {
       kind: "unreachable" as const,
+      reason: error instanceof Error ? error.name : "error",
+    };
+  }
+}
+
+/** A carrier's reading that cannot throw, as `readSafely` for a page. */
+async function readParcelSafely(number: string): Promise<ParcelRead> {
+  try {
+    return await readPochtaParcel(number);
+  } catch (error) {
+    return {
+      kind: "unreachable",
       reason: error instanceof Error ? error.name : "error",
     };
   }

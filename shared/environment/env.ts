@@ -1015,7 +1015,8 @@ export const env = createEnv({
     HISTORY_TRIM_WORKSPACES: workspaceListSchema.optional(),
     // The pilot of event subscriptions (docs/roadmap.md, 27): workspace ids
     // or owners' emails, or `*` for every workspace, whose Bro may set up a
-    // price watch that code checks without the model (`watch-create`).
+    // price or parcel watch that code checks without the model
+    // (`watch-create`, `parcel-watch`).
     SUBSCRIPTIONS_WORKSPACES: workspaceListSchema.optional(),
     // The pilot of the agentic worker (`agent/lib/agency/pilot.ts`): workspace
     // ids, or `*` for every workspace, whose proactive checks run as the
