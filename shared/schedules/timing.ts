@@ -172,35 +172,84 @@ const personZoneSchema = timezoneSchema
     "IANA timezone, e.g. Europe/Moscow. Leave it out: a new schedule takes the person's own zone from their profile, and a changed one keeps its own. Name one only when they asked for another («по Нью-Йорку»)."
   );
 
+/** The fields of a one-off moment, before any pilot adds to them. */
+function onceFields(personZone: typeof personZoneSchema) {
+  return {
+    at: z
+      .string()
+      .trim()
+      .refine(
+        (at) =>
+          instantSchema.safeParse(at).success ||
+          wallClockSchema.safeParse(at).success,
+        {
+          message:
+            "Use the wall-clock time YYYY-MM-DDTHH:MM, or an ISO datetime with its offset.",
+        }
+      )
+      .describe(
+        "When it happens: the wall-clock time YYYY-MM-DDTHH:MM in `timezone`, e.g. 2026-09-26T09:00 for «завтра в 9», or an exact ISO datetime with an offset."
+      ),
+    kind: z.literal("once"),
+    timezone: personZone,
+  };
+}
+
+/** The longest lead before an event: a month. */
+const longestLeadMinutes = 44_640;
+
 /**
- * The schedule tools' timing with the words of its zone and holidays given:
- * the full ones, or the short ones of the skills pilot, whose schedules
- * skill says the rest (`agent/tools/schedules.ts`).
+ * A one-off in the pilot of event zones (SCHEDULE_EVENT_ZONE_WORKSPACES):
+ * `at` may be the event itself on the clock where it happens, and the run
+ * comes `minutesBefore` earlier. EN D2 (roadmap, item 18): the model counted
+ * check-in for a flight out of another city itself and sent
+ * «2026-10-01T09:17» with no zone, so the window opened on the person's
+ * clock, not the airport's.
  */
-function timingInputSchemaWith(
+function eventOnceFields(words: {
+  readonly minutesBefore: string;
+  readonly timezone: string;
+}) {
+  return {
+    ...onceFields(timezoneSchema.optional().describe(words.timezone)),
+    minutesBefore: z
+      .number()
+      .int()
+      .min(0)
+      .max(longestLeadMinutes)
+      .optional()
+      .describe(words.minutesBefore),
+  };
+}
+
+/** The pilot's words for those fields, in full and short. */
+const eventOnceWords = {
+  full: {
+    minutesBefore:
+      "Only for a run a set time before an event, above all online check-in before a flight: at is then the event's own time on the clock where it happens (the departure as the booking shows it), timezone the IANA zone of that place (the departure airport's), and the run happens this many minutes earlier. For check-in it is the airline's lead: the departure minus the moment check-in opens, from a report's Next or the airline's rules; 1440 only when that moment is unknown. Never subtract it from at yourself or move at to the person's clock. Leave it out otherwise.",
+    timezone:
+      "IANA timezone, e.g. Europe/Moscow. Leave it out: a new schedule takes the person's own zone from their profile, and a changed one keeps its own. Name one only when they asked for another («по Нью-Йорку»), or with minutesBefore for an event elsewhere: the zone of the place where it happens, for a flight its departure airport's (JFK America/New_York, ORD America/Chicago), never the person's.",
+  },
+  short: {
+    minutesBefore:
+      "Only for a run before an event (check-in before a flight): at is the event's time where it happens, timezone its zone, and the run comes this many minutes earlier (for check-in the airline's lead; 1440 only if unknown). Never subtract it yourself.",
+    timezone:
+      "IANA timezone. Leave it out (the person's zone, or the schedule's own); only for another zone they named, or with minutesBefore the zone where the event happens (a flight's departure airport).",
+  },
+};
+
+/**
+ * The schedule tools' timing with its one-off and the words of its zone and
+ * holidays given: the full ones, or the short ones of the skills pilot, whose
+ * schedules skill says the rest (`agent/tools/schedules.ts`).
+ */
+function timingInputSchemaWith<OneOff extends z.ZodObject>(
+  once: OneOff,
   personZone: typeof personZoneSchema,
   words: typeof fullCalendarWords
 ) {
   return z.discriminatedUnion("kind", [
-    z.strictObject({
-      at: z
-        .string()
-        .trim()
-        .refine(
-          (at) =>
-            instantSchema.safeParse(at).success ||
-            wallClockSchema.safeParse(at).success,
-          {
-            message:
-              "Use the wall-clock time YYYY-MM-DDTHH:MM, or an ISO datetime with its offset.",
-          }
-        )
-        .describe(
-          "When it happens: the wall-clock time YYYY-MM-DDTHH:MM in `timezone`, e.g. 2026-09-26T09:00 for «завтра в 9», or an exact ISO datetime with an offset."
-        ),
-      kind: z.literal("once"),
-      timezone: personZone,
-    }),
+    once,
     newIntervalTimingSchema,
     calendarTimingSchemaFor(personZone, words).refine(
       yearlyDayExists,
@@ -216,35 +265,56 @@ function timingInputSchemaWith(
  * only reads the date and time, and `resolveScheduleTiming` does the rest.
  */
 export const scheduleTimingInputSchema = timingInputSchemaWith(
+  z.strictObject(onceFields(personZoneSchema)),
   personZoneSchema,
   fullCalendarWords
 );
+
+/** The same in the pilot of event zones: a one-off may lead an event. */
+export const eventScheduleTimingInputSchema = timingInputSchemaWith(
+  z.strictObject(eventOnceFields(eventOnceWords.full)),
+  personZoneSchema,
+  fullCalendarWords
+);
+
+const shortPersonZoneSchema = timezoneSchema
+  .optional()
+  .describe(
+    "IANA timezone. Leave it out (the person's zone, or the schedule's own); only for another zone they named."
+  );
+
+/** A short calendar rule's day, time and holidays, in a few words each. */
+const shortCalendarWords = {
+  dayOfMonth: z
+    .union([z.number().int().min(1).max(31), z.literal("last")])
+    .describe('1 to 31, or "last".'),
+  localTime: z
+    .string()
+    .regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/u, "Use a 24-hour HH:MM time.")
+    .describe("HH:MM, 24-hour."),
+  skipHolidays: z
+    .boolean()
+    .optional()
+    .describe(
+      "true only when the person asked to skip holidays; false to run on them again."
+    ),
+};
 
 /**
  * The same, with its zone, holidays, day and time in a few words each: the
  * schedules skill's body says how to fill them (`agent/tools/schedules.ts`).
  */
 export const shortScheduleTimingInputSchema = timingInputSchemaWith(
-  timezoneSchema
-    .optional()
-    .describe(
-      "IANA timezone. Leave it out (the person's zone, or the schedule's own); only for another zone they named."
-    ),
-  {
-    dayOfMonth: z
-      .union([z.number().int().min(1).max(31), z.literal("last")])
-      .describe('1 to 31, or "last".'),
-    localTime: z
-      .string()
-      .regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/u, "Use a 24-hour HH:MM time.")
-      .describe("HH:MM, 24-hour."),
-    skipHolidays: z
-      .boolean()
-      .optional()
-      .describe(
-        "true only when the person asked to skip holidays; false to run on them again."
-      ),
-  }
+  z.strictObject(onceFields(shortPersonZoneSchema)),
+  shortPersonZoneSchema,
+  shortCalendarWords
+);
+
+/** The short timing in the pilot of event zones. */
+export const shortEventScheduleTimingInputSchema = timingInputSchemaWith(
+  z.strictObject(eventOnceFields(eventOnceWords.short)),
+  shortPersonZoneSchema,
+  shortCalendarWords
 );
 
 // Weekly schedules written before `weekdays` named their single day.
@@ -579,10 +649,13 @@ function skipsHolidays(timing: ScheduleTiming | undefined) {
  * holidays — and for a new one from the person's profile zone. «Сдвинь на
  * 9:30» sent without either had moved a New York rule to Moscow and put a
  * «кроме праздников» digest back on holidays. Only an explicit `false`
- * clears the holiday flag.
+ * clears the holiday flag. A one-off that leads an event (`minutesBefore`,
+ * the pilot of event zones) runs that much before the event's instant, as
+ * `flightFacts` counts check-in: whole hours, whatever a clock change
+ * between them does to the wall clock.
  */
 export function resolveScheduleTiming(
-  timing: z.infer<typeof scheduleTimingInputSchema>,
+  timing: z.infer<typeof eventScheduleTimingInputSchema>,
   personTimeZone: string,
   current?: ScheduleTiming
 ): z.infer<typeof scheduleTimingSchema> {
@@ -612,8 +685,14 @@ export function resolveScheduleTiming(
     }
     return zoned;
   }
+  const lead = timing.minutesBefore ?? 0;
   if (instantSchema.safeParse(timing.at).success) {
-    return { at: timing.at, kind: "once" };
+    return lead === 0
+      ? { at: timing.at, kind: "once" }
+      : {
+          at: new Date(Date.parse(timing.at) - lead * 60_000).toISOString(),
+          kind: "once",
+        };
   }
   const [year, month, day, hour, minute] = timing.at
     .split(/[-T:]/u)
@@ -624,7 +703,7 @@ export function resolveScheduleTiming(
     hour ?? 0,
     minute ?? 0
   );
-  return { at: new Date(at).toISOString(), kind: "once" };
+  return { at: new Date(at - lead * 60_000).toISOString(), kind: "once" };
 }
 
 function twoDigits(value: number) {

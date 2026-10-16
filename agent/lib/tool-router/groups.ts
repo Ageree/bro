@@ -136,7 +136,7 @@ const groupTools = {
     "location_edit",
     "place_reminder",
   ],
-  schedules: ["schedules-create", "watch-create"],
+  schedules: ["schedules-create", "watch-create", "parcel-watch"],
   settings: ["form_of_address", "link_telegram", "request_vault_setup"],
   yandex: ["yandex", "yandex_purchase"],
 } as const satisfies Readonly<Record<RouterGroup, readonly string[]>>;

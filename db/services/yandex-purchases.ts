@@ -10,6 +10,7 @@ import {
   yandexPurchases,
   type YandexPurchase,
 } from "@db";
+import { claimDirectPurchase } from "./direct-purchases";
 import { ensureScope } from "./scope";
 import { lockWorkspaceSpending } from "./spending";
 
@@ -191,6 +192,8 @@ export async function claimYandexPurchase(
     "id" | "rootSessionId" | "confirmationQuestion"
   > & {
     callId: string;
+    /** The person's request that pays it without a question, spent here. */
+    directConsentKey?: string;
     refresh?: Pick<YandexPurchase, "expiresAt" | "providerSnapshot">;
   }
 ) {
@@ -257,6 +260,15 @@ export async function claimYandexPurchase(
       )
       .limit(1);
     if (active) return { kind: "unavailable" as const };
+    if (
+      input.directConsentKey !== undefined &&
+      !(await claimDirectPurchase(
+        scope,
+        { consentKey: input.directConsentKey, ref: `yandex:${purchase.id}` },
+        transaction
+      ))
+    )
+      return { kind: "consent_spent" as const, purchase };
     const [claimed] = await transaction
       .update(yandexPurchases)
       .set({

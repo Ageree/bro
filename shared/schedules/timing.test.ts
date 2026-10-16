@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   computeLatestRun,
   computeNextRun,
+  eventScheduleTimingInputSchema,
   localRunLabel,
   resolveScheduleTiming,
   scheduleTimingInputSchema,
@@ -479,6 +480,28 @@ describe("what the schedule tools accept", () => {
       scheduleTimingInputSchema.safeParse({ at: "завтра в 9", kind: "once" })
         .success
     ).toBe(false);
+  });
+
+  // The pilot of event zones. The run leads the event by whole hours, as an
+  // airline counts check-in: across the end of summer time in New York, 24 h
+  // before a 09:00 departure is 10:00 there the day before.
+  it("leads an event by whole hours from its instant where it happens", () => {
+    const lead = (timing: Readonly<Record<string, string>>) =>
+      resolveScheduleTiming(
+        eventScheduleTimingInputSchema.parse({
+          ...timing,
+          kind: "once",
+          minutesBefore: 1440,
+        }),
+        moscow
+      );
+    expect(
+      lead({ at: "2026-11-01T09:00", timezone: "America/New_York" })
+    ).toEqual({ at: "2026-10-31T14:00:00.000Z", kind: "once" });
+    expect(lead({ at: "2026-10-02T09:17:00-04:00" })).toEqual({
+      at: "2026-10-01T13:17:00.000Z",
+      kind: "once",
+    });
   });
 
   it("names a run on the person's clock", () => {

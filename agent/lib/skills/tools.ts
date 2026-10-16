@@ -30,8 +30,9 @@ import { skillsForTurn } from "./triggers";
  * - apps: Notion, Slack and the other apps through Composio.
  * - money: the spend limit and standing permissions. Taking a permission
  *   back has a trigger of its own («спрашивай меня снова», `triggers.ts`).
- * - schedules: creating and changing one, and price watches (`watch-create`;
- *   «следи за ценой» is its trigger). The list stays in the core, and
+ * - schedules: creating and changing one, and price and parcel watches
+ *   (`watch-create`, `parcel-watch`; «следи за ценой», «отслеживай посылку»
+ *   are its triggers). The list stays in the core, and
  *   so does `schedules-answer`, which has its own gate; stopping a schedule
  *   has a trigger of its own («больше не присылай»).
  *
@@ -107,6 +108,7 @@ const toolGroupEntries = {
   "notion-read": "apps",
   "notion-search": "apps",
   open_tools: "core",
+  "parcel-watch": "schedules",
   personal_info__update: "core",
   place_reminder: "core",
   privacy: "core",

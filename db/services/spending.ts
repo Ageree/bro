@@ -78,7 +78,10 @@ export async function lockWorkspaceSpending(
   );
 }
 
-async function refuseUnresolvedPurchase(tx: Database, scope: AccessScope) {
+export async function refuseUnresolvedPurchase(
+  tx: Database,
+  scope: AccessScope
+) {
   const [purchase] = await tx
     .select({ id: yandexPurchases.id })
     .from(yandexPurchases)

@@ -308,6 +308,21 @@ export const env = createEnv({
         "YANDEX_PURCHASE_WORKSPACES takes workspace ids or *, not emails"
       )
       .optional(),
+    // The person's own request pays without «Оплачиваю?» (owner 15.10,
+    // `agent/lib/payments/direct.ts`): «купи корм», «оплати интернет». Up to
+    // the budget they named, or DIRECT_PURCHASE_MAX_RUB without one; above
+    // it, or when what was found differs, one question. Workspace ids or `*`.
+    DIRECT_PURCHASE_WORKSPACES: workspaceListSchema
+      .refine(
+        (entries) => entries.every((entry) => !entry.includes("@")),
+        "DIRECT_PURCHASE_WORKSPACES takes workspace ids or *, not emails"
+      )
+      .optional(),
+    DIRECT_PURCHASE_MAX_RUB: z.coerce
+      .number()
+      .int()
+      .positive("DIRECT_PURCHASE_MAX_RUB must be greater than zero")
+      .default(5000),
     // Bro carries an errand on by itself (`agent/lib/browser-use/autonomy.ts`):
     // after a site never lets the run past its anti-bot check, the free part
     // of the errand goes on at a fallback site with no new word from the
@@ -1015,7 +1030,8 @@ export const env = createEnv({
     HISTORY_TRIM_WORKSPACES: workspaceListSchema.optional(),
     // The pilot of event subscriptions (docs/roadmap.md, 27): workspace ids
     // or owners' emails, or `*` for every workspace, whose Bro may set up a
-    // price watch that code checks without the model (`watch-create`).
+    // price or parcel watch that code checks without the model
+    // (`watch-create`, `parcel-watch`).
     SUBSCRIPTIONS_WORKSPACES: workspaceListSchema.optional(),
     // The pilot of the agentic worker (`agent/lib/agency/pilot.ts`): workspace
     // ids, or `*` for every workspace, whose proactive checks run as the
@@ -1036,6 +1052,30 @@ export const env = createEnv({
       .refine(
         (entries) => entries.every((entry) => !entry.includes("@")),
         "BACKGROUND_ACTIONS_WORKSPACES takes workspace ids or *, not emails"
+      )
+      .optional(),
+    // The pilot of routines set up whole (docs/roadmap.md, item 13,
+    // `agent/lib/schedules/routine.ts`): workspace ids, or `*` for every
+    // workspace, whose new recurring schedule that gathers something (a
+    // summary, a check) runs once right away as a trial, and whose
+    // `schedules-create` asks the person before adding one like an active
+    // schedule of theirs. Unset, nobody: a trial is only offered, and a
+    // second summary is made beside the first.
+    ROUTINE_SETUP_WORKSPACES: workspaceListSchema
+      .refine(
+        (entries) => entries.every((entry) => !entry.includes("@")),
+        "ROUTINE_SETUP_WORKSPACES takes workspace ids or *, not emails"
+      )
+      .optional(),
+    // The pilot of one-off schedules on the clock of an event elsewhere
+    // (docs/roadmap.md, item 18): workspace ids, or `*` for every workspace,
+    // whose `schedules-create` takes a flight's departure on its airport's
+    // clock and how long before it to run (`minutesBefore`), and code counts
+    // the moment. Unset, nobody: the tools read as before.
+    SCHEDULE_EVENT_ZONE_WORKSPACES: workspaceListSchema
+      .refine(
+        (entries) => entries.every((entry) => !entry.includes("@")),
+        "SCHEDULE_EVENT_ZONE_WORKSPACES takes workspace ids or *, not emails"
       )
       .optional(),
     // The pilot of the person's files for the task agent (docs/roadmap.md,
