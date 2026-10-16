@@ -132,12 +132,14 @@ def new_ink_share(ctx, pdf, page: int, rect, *, blank: str | None, dpi: int = 20
     return float(np.mean(dark)) if dark.size else 0.0
 
 
-def ocr(ctx, img, *, psm: int = 7, lang: str = "rus") -> str:
+def ocr(ctx, img, *, psm: int = 7, lang: str = "rus", tsv: bool = False) -> str:
+    """tesseract's text of the image; with `tsv`, its TSV table (one row per word with the word's box in pixels)."""
     import uuid
 
     path = ctx.scratch("ocr") / f"{uuid.uuid4().hex}.png"
     img.save(path)
-    out = ctx.run_tool("tesseract", [str(path), "stdout", "-l", lang, "--psm", str(psm)], timeout=120)
+    args = [str(path), "stdout", "-l", lang, "--psm", str(psm)] + (["tsv"] if tsv else [])
+    out = ctx.run_tool("tesseract", args, timeout=120)
     return out.decode("utf-8", "replace")
 
 
@@ -576,13 +578,10 @@ def raster_legibility(ctx, params, item):
     pdf = item.path
     dpi = int(params.get("dpi", 150))
     need = float(params["min_corr"])
-    if params.get("templates"):
-        folder = ctx.truth_dir / params["templates"]
-        refs = sorted(folder.glob("*.png"))
-        size = tuple(params.get("size", [620, 877]))
-    else:
-        refs = _phone_refs(ctx)
-        size = None
+    if not params.get("templates"):
+        raise CheckError("нужен templates")
+    refs = sorted((ctx.truth_dir / params["templates"]).glob("*.png"))
+    size = tuple(params.get("size", [620, 877]))
     if not refs:
         raise CheckError("нет эталонных страниц")
     count = ctx.page_count(pdf)
@@ -592,10 +591,9 @@ def raster_legibility(ctx, params, item):
     for page, ref in enumerate(refs, start=1):
         with Image.open(ref) as im:
             want = im.convert("L")
-        target = size or want.size
-        if want.size != target:
-            want = want.resize(target, Image.LANCZOS)
-        got = ctx.render(pdf, page, dpi, gray=True).resize(target, Image.LANCZOS)
+        if want.size != size:
+            want = want.resize(size, Image.LANCZOS)
+        got = ctx.render(pdf, page, dpi, gray=True).resize(size, Image.LANCZOS)
         corr = _pearson(np.asarray(got, dtype=np.float32), np.asarray(want, dtype=np.float32))
         worst = min(worst, corr)
     if worst < need:
@@ -603,11 +601,132 @@ def raster_legibility(ctx, params, item):
     return passed(f"мин. корреляция {worst:.3f}")
 
 
-def _phone_refs(ctx) -> list:
-    doc = ctx.truth.get("phone_scan.json")
-    if not doc:
-        return []
-    return [p for n in range(1, 4) for p in [ctx.truth_dir / f"phone_scan_page{n}_300x424.png"] if p.exists()]
+# ------------------------------------------------------------------ OCR legibility of a scan
+OCR_ANCHORS_MIN = 8
+
+
+def ocr_words(ctx, img, *, psm: int, lang: str, min_len: int, dpi: float) -> list:
+    """(word, x mm, y mm) of every OCR word of the image: lower case, «ё» read as «е», letters only (a token with a hyphen
+    or a digit splits), at least min_len letters; the position is the centre of the word's box."""
+    import csv
+    import io
+
+    table = ocr(ctx, img, psm=psm, lang=lang, tsv=True)
+    mm = 25.4 / dpi
+    out = []
+    for row in csv.DictReader(io.StringIO(table), delimiter="\t", quoting=csv.QUOTE_NONE):
+        text = (row.get("text") or "").strip().lower().replace("ё", "е")
+        if not text:
+            continue
+        try:
+            x, y, w, h = (int(row[k]) for k in ("left", "top", "width", "height"))
+        except (KeyError, TypeError, ValueError):
+            continue
+        for token in re.findall(r"[^\W\d_]+", text):
+            if len(token) >= min_len:
+                out.append((token, (x + w / 2) * mm, (y + h / 2) * mm))
+    return out
+
+
+def _normalizing(points):
+    import numpy as np
+
+    p = np.asarray(points, dtype=np.float64)
+    c = p.mean(axis=0)
+    d = float(np.sqrt(((p - c) ** 2).sum(axis=1)).mean()) or 1.0
+    k = 2 ** 0.5 / d
+    return np.array([[k, 0.0, -k * c[0]], [0.0, k, -k * c[1]], [0.0, 0.0, 1.0]])
+
+
+def _project(m, points):
+    import numpy as np
+
+    p = np.c_[np.asarray(points, dtype=np.float64), np.ones(len(points))] @ m.T
+    return p[:, :2] / p[:, 2:3]
+
+
+def _homography(src, dst):
+    """Least-squares homography src → dst (normalised DLT)."""
+    import numpy as np
+
+    ts, td = _normalizing(src), _normalizing(dst)
+    rows = []
+    for (x, y), (u, v) in zip(_project(ts, src), _project(td, dst)):
+        rows.append([x, y, 1, 0, 0, 0, -u * x, -u * y, -u])
+        rows.append([0, 0, 0, x, y, 1, -v * x, -v * y, -v])
+    _, _, vt = np.linalg.svd(np.asarray(rows))
+    return np.linalg.inv(td) @ vt[-1].reshape(3, 3) @ ts
+
+
+def projective_residuals(src, dst):
+    """Distances between dst and src mapped by the best homography; fitted three times, each time without the 10 % of
+    words that fit worst (a misread or repeated word)."""
+    import numpy as np
+
+    src, dst = np.asarray(src, dtype=np.float64), np.asarray(dst, dtype=np.float64)
+    keep = np.ones(len(src), dtype=bool)
+    for _ in range(3):
+        r = np.hypot(*(_project(_homography(src[keep], dst[keep]), src) - dst).T)
+        keep = r <= np.quantile(r, 0.9)
+    return r
+
+
+@check("ocr_legibility", "pdf", quantifier="all")
+def ocr_legibility(ctx, params, item):
+    """Each page of the answer against the truth render of the same page (`references`, one PNG per page at `ref_dpi`),
+    both read by tesseract. Recall: the share of the reference's words (≥ min_len letters, repeats counted) read on the
+    answer's page. Place: the words that occur once on both are matched; after the best homography from the answer's
+    positions to the reference's (any crop, scale, margin or residual keystone), 90 % of them lie within max_shift_mm of
+    their place. A flat scan is a homography of the page; a bilinear «quad» flattening or a curled page is not."""
+    import collections
+
+    import numpy as np
+    from PIL import Image
+
+    pdf = item.path
+    refs = list(params.get("references") or [])
+    if not refs:
+        raise CheckError("нужен references")
+    ref_dpi = float(params.get("ref_dpi", 150))
+    dpi = int(params.get("dpi", ref_dpi))
+    psm, lang, min_len = int(params.get("psm", 4)), params.get("lang", "rus"), int(params.get("min_len", 4))
+    need = float(params.get("min_recall", 0.9))
+    limit = params.get("max_shift_mm")
+    count = ctx.page_count(pdf)
+    if count != len(refs):
+        return failed(f"{count} стр., эталонов {len(refs)}")
+    notes, problems = [], []
+    for page, name in enumerate(refs, start=1):
+        key = ("ocr-words", name, psm, lang, min_len)
+        if key not in ctx._cache:
+            with Image.open(ctx.truth_path(name)) as im:
+                ctx._cache[key] = ocr_words(ctx, im.convert("L"), psm=psm, lang=lang, min_len=min_len, dpi=ref_dpi)
+        want = ctx._cache[key]
+        if not want:
+            raise CheckError(f"на эталоне {name} OCR не нашёл слов")
+        got = ocr_words(ctx, ctx.render(pdf, page, dpi, gray=True), psm=psm, lang=lang, min_len=min_len, dpi=dpi)
+        want_n = collections.Counter(w for w, _, _ in want)
+        got_n = collections.Counter(w for w, _, _ in got)
+        recall = sum((want_n & got_n).values()) / sum(want_n.values())
+        note = f"стр. {page}: слов {recall:.0%}"
+        if recall < need:
+            problems.append(note + f" < {need:.0%}")
+            continue
+        if limit is not None:
+            once = [w for w in want_n if want_n[w] == 1 and got_n.get(w) == 1]
+            if len(once) < OCR_ANCHORS_MIN:
+                raise CheckError(f"стр. {page}: слов на своих местах не измерить, общих слов {len(once)}")
+            want_at = {w: (x, y) for w, x, y in want if w in once}
+            got_at = {w: (x, y) for w, x, y in got if w in once}
+            shift = float(np.quantile(projective_residuals([got_at[w] for w in once], [want_at[w] for w in once]), 0.9))
+            note += f", 90 % слов в {shift:.2f} мм от места"
+            if shift > float(limit):
+                problems.append(note + f" > {float(limit)} мм")
+                continue
+        notes.append(note)
+    if problems:
+        return failed("; ".join(problems))
+    return passed("; ".join(notes))
 
 
 @check("ocr_region", "pdf")

@@ -166,6 +166,52 @@ class Look(unittest.TestCase):
         self.assertEqual((item["kind"], item["unit"], item["pages_total"]), ("office", "pt", 1))
         self.assertEqual(len(os.listdir(os.path.join(self.cache, "render"))), 1)
 
+    @unittest.skipUnless(shutil.which("soffice"), "LibreOffice is not installed")
+    def test_a_deck_with_a_wall_of_text_is_named_slide_by_slide(self):
+        import pptx
+        from pptx.util import Inches
+
+        def words(count):
+            return " ".join("слово" for _ in range(count))
+
+        def deck(name, dense):
+            presentation = pptx.Presentation()
+            for number in range(1, 4):
+                slide = presentation.slides.add_slide(presentation.slide_layouts[5])
+                slide.shapes.title.text = "Итоги квартала, часть %d" % number
+                if number == 2 and dense:
+                    # 4 + 56 + 60 = 120: a grouped text box and table cells count, not only text frames.
+                    group = slide.shapes.add_group_shape()
+                    group.shapes.add_textbox(Inches(1), Inches(2), Inches(8), Inches(2)).text_frame.text = words(56)
+                    table = slide.shapes.add_table(2, 2, Inches(1), Inches(4.5), Inches(8), Inches(2)).table
+                    for cell in (table.cell(0, 0), table.cell(0, 1), table.cell(1, 0), table.cell(1, 1)):
+                        cell.text = words(15)
+                else:
+                    slide.shapes.add_textbox(Inches(1), Inches(2), Inches(8), Inches(2)).text_frame.text = "— выручка растёт\n— расходы падают"
+                    # What the speaker says is no text on the slide.
+                    slide.notes_slide.notes_text_frame.text = words(200)
+            path = os.path.join(folder, name)
+            presentation.save(path)
+            return path
+
+        # A folder and cache of its own: other tests count the conversions in the shared
+        # cache and expect six.pdf among the first files of the root.
+        folder = os.path.join(self.root, "slides")
+        os.makedirs(folder, exist_ok=True)
+        cache = os.path.join(folder, "cache")
+        dense = deck("board.pptx", dense=True)
+        code, result = brokit("look", dense, "--out", self.out(), "--pages", "1", cache=cache)
+        self.assertEqual(code, 0, result)
+        (warning,) = [text for text in result["warnings"] if "слайд" in text]
+        self.assertIn("слайд 2: 120 слов", warning)
+        self.assertNotIn("слайд 1", warning)
+        self.assertNotIn("слайд 3", warning)
+        self.assertIn("speaker notes", warning)
+        light = deck("light.pptx", dense=False)
+        code, result = brokit("look", light, "--out", self.out(), "--pages", "1", cache=cache)
+        self.assertEqual(code, 0, result)
+        self.assertEqual(result["warnings"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

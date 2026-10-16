@@ -15,6 +15,7 @@ import re
 import zipfile
 
 from . import CheckError, check, failed, passed
+from .context import area
 
 W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 NS = {"w": W}
@@ -106,12 +107,16 @@ def _close(a, b, tol, absolute=False) -> bool:
     return abs(a - b) <= tol
 
 
-def _find_number(sheets, value, tol, absolute=False):
+def _cells_with(sheets, value, tol, absolute=False):
+    """Every cell holding the number: (sheet name, row, column)."""
     for name, rows in sheets:
         for r, c, v in _cells(rows):
             if _close(_number(v), value, tol, absolute):
-                return name, r, c
-    return None
+                yield name, r, c
+
+
+def _find_number(sheets, value, tol, absolute=False):
+    return next(_cells_with(sheets, value, tol, absolute), None)
 
 
 def _is_date(v) -> bool:
@@ -126,10 +131,17 @@ def xlsx_find_value(ctx, params, item):
     sheets = grids(ctx, item.path)
     tol = float(params.get("tol", 0.01))
     absolute = bool(params.get("abs_compare"))
+    # A forbidden total may also be a number the source prints (a statement's «Всего списаний»): a row that cites it for
+    # a reconciliation, its label (first text cell) matched by forbid_skip_row_regex, is not the answer's own total.
+    # Only the label: a wrong «Итого расходов» with a note «списания …» beside it still fails.
+    skip = params.get("forbid_skip_row_regex")
+    rows_of = dict(sheets)
     for bad in params.get("forbid_values", []):
-        hit = _find_number(sheets, bad, tol, absolute)
-        if hit:
-            return failed(f"есть запрещённое {bad} ({hit[0]}!R{hit[1] + 1}C{hit[2] + 1})")
+        for name, r, c in _cells_with(sheets, bad, tol, absolute):
+            label = next((v for v in rows_of[name][r] if isinstance(v, str) and v.strip()), "")
+            if skip and re.search(skip, label):
+                continue
+            return failed(f"есть запрещённое {bad} ({name}!R{r + 1}C{c + 1})")
     wanted = params["values"] if "values" in params else [params["value"]]
     alts = params.get("alt_values", [])
     found = []
@@ -1009,29 +1021,40 @@ def pptx_text_contains(ctx, params, item):
 def render_no_overflow(ctx, params, item):
     prs = presentation(ctx, item.path)
     sw, sh = prs.slide_width, prs.slide_height
-    limit = float(params.get("max_overlap", 0.05))
+    max_words = int(params.get("max_words", 90))
+    wordy = []
     for n, slide in enumerate(prs.slides, start=1):
         words = len(_slide_text(slide).split())
-        if words > int(params.get("max_words", 90)):
-            return failed(f"слайд {n}: {words} слов")
-        boxes = []
+        if words > max_words:
+            wordy.append(f"слайд {n} — {words}")
         for s in _shapes(slide.shapes):
             if s.left is None or s.width is None:
                 continue
             if s.left < -sw * 0.01 or s.top < -sh * 0.01 or s.left + s.width > sw * 1.01 or s.top + s.height > sh * 1.01:
                 return failed(f"слайд {n}: «{s.name}» выходит за слайд")
-            if getattr(s, "has_text_frame", False) and s.has_text_frame and s.text_frame.text.strip():
-                boxes.append((s.name, (s.left, s.top, s.left + s.width, s.top + s.height)))
-        for i, (na, a) in enumerate(boxes):
-            for nb, b in boxes[i + 1:]:
-                inter = max(0, min(a[2], b[2]) - max(a[0], b[0])) * max(0, min(a[3], b[3]) - max(a[1], b[1]))
-                small = min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1])) or 1
-                if inter / small > limit:
-                    return failed(f"слайд {n}: «{na}» и «{nb}» перекрываются на {inter / small:.0%}")
+    if wordy:
+        return failed(f"больше {max_words} слов: " + ", ".join(wordy))
+    # Text frames are no measure of overlap: python-pptx leaves a frame as tall as it was drawn, not as its text, so frames
+    # of a valid slide overlap; what the reader sees collide is the rendered words.
+    limit = float(params.get("max_word_overlap", 0.2))
     pdf = ctx.as_pdf(item.path)
     for page in range(1, ctx.page_count(pdf) + 1):
         box = ctx.geometry(pdf, page).box
-        for w in ctx.words(pdf, page):
+        words = ctx.words(pdf, page)
+        for w in words:
             if w.rect[0] < box[0] - 1 or w.rect[2] > box[2] + 1 or w.rect[1] < box[1] - 1 or w.rect[3] > box[3] + 1:
                 return failed(f"стр. {page}: «{w.text}» за краем слайда")
+        words = sorted(words, key=lambda w: w.rect[0])
+        for i, a in enumerate(words):
+            for b in words[i + 1:]:
+                if b.rect[0] >= a.rect[2]:
+                    break
+                dx = min(a.rect[2], b.rect[2]) - b.rect[0]
+                dy = min(a.rect[3], b.rect[3]) - max(a.rect[1], b.rect[1])
+                # Neighbouring lines and kerned neighbours touch by a fraction of a point.
+                if dx <= 1 or dy <= 1:
+                    continue
+                small = min(area(a.rect), area(b.rect)) or 1
+                if dx * dy / small > limit:
+                    return failed(f"стр. {page}: «{a.text}» и «{b.text}» налезают друг на друга на {dx * dy / small:.0%}")
     return passed(f"{len(prs.slides)} слайдов без переполнения")

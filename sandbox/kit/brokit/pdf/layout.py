@@ -22,7 +22,7 @@ from brokit import labels
 from brokit.pdf import crypt, geom
 from brokit.util import KitError, need_file, parse_pages, parser, run
 
-LAYOUT_VERSION = 1
+LAYOUT_VERSION = 2
 DARK = 150
 TEXT_DPI = 100
 SCAN_DPI = 200
@@ -204,7 +204,10 @@ def find_boxes(dark, segments, scale, reach):
                 # Cells drawn apart leave narrow gaps between double sides: those are not cells.
                 cells = [w for w in widths if w > 0.5 * middle]
                 gaps_only = all(w <= 0.4 * middle for w in widths if w <= 0.5 * middle)
-                if len(cells) >= 5 and gaps_only and max(cells) <= 1.25 * min(cells):
+                even = gaps_only and len(cells) >= 2 and max(cells) <= 1.25 * min(cells)
+                # 2–4 cells a character each (kopecks, ДД/ММ, a short code) are a comb too; wider even cells are a table.
+                glyph = 6 <= height <= 30 and 0.5 <= middle * scale / height <= 1.4
+                if even and (len(cells) >= 5 or glyph):
                     box.update(kind="comb", cells=len(cells))
                 elif width >= 12 and height >= 8:
                     box["kind"] = "box"

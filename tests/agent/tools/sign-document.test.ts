@@ -76,6 +76,7 @@ const { default: signTools } = await import("@agent/tools/sign_document");
 
 const scope = { userId: "alice", workspaceId: "workspace:alice" };
 const signingId = "6f6f5d78-641b-4c80-aacf-eec05af14e53";
+const otherId = "7f6f5d78-641b-4c80-aacf-eec05af14e53";
 const sampleId = "0d6f5d78-641b-4c80-aacf-eec05af14e53";
 const shareId = "a1".repeat(12);
 const link = `https://example.com/eve/v1/sandbox-files/${shareId}/anketa.pdf?sig=${sandboxFileLinkSignature(`sandbox/files/${shareId}/anketa.pdf`)}`;
@@ -209,13 +210,67 @@ function person(text: string, photos: string[] = []): ModelMessage {
   );
 }
 
-const taskReport = Object.assign(
-  {
-    content: `Background task task_1 (task) is completed.\n\nResult:\nАнкета заполнена, места подписи отмечены: ${link}`,
-    role: "user" as const,
-  },
-  { kind: "execution.background_task" }
+/** The task agent's report of the filled file, as eve delivers it. */
+function reportOf(result: string, taskId = "task_1"): ModelMessage {
+  return Object.assign(
+    {
+      content: `Background task ${taskId} (task) is completed.\n\nResult:\n${result}`,
+      role: "user" as const,
+    },
+    { kind: "execution.background_task" }
+  );
+}
+
+const taskReport = reportOf(
+  `Анкета заполнена, места подписи отмечены: ${link}`
 );
+
+/**
+ * Bro's `task` call, a start or (with `continues`) a continuation, and eve's
+ * receipt of it: `{ status: "working", taskId, agentId }`.
+ */
+function gave(
+  taskId = "task_1",
+  { agentId = `ag_${taskId}`, continues = false } = {}
+): ModelMessage[] {
+  const toolCallId = `call-${taskId}`;
+  return [
+    {
+      content: [
+        {
+          input: continues
+            ? { agentId, message: "Исправь и пришли снова" }
+            : { message: "Заполни анкету" },
+          toolCallId,
+          toolName: "task",
+          type: "tool-call",
+        },
+      ],
+      role: "assistant",
+    },
+    {
+      content: [
+        {
+          output: {
+            type: "json",
+            value: { agentId, status: "working", taskId },
+          },
+          toolCallId,
+          toolName: "task",
+          type: "tool-result",
+        },
+      ],
+      role: "tool",
+    },
+  ];
+}
+
+/** The person's words, the task Bro gave on them and its report. */
+const reported = (words: string, photos: string[] = []) => [
+  person(words, photos),
+  ...gave(),
+  taskReport,
+];
 
 const asked: ModelMessage[] = [
   person("Заполни анкету и подпиши"),
@@ -428,6 +483,7 @@ beforeEach(() => {
   }));
   services.settle.mockResolvedValue(true);
   services.release.mockResolvedValue(undefined);
+  services.list.mockResolvedValue([]);
   services.share.mockImplementation(async (input) => ({
     bytes: input.bytes.byteLength,
     mediaType: input.mediaType,
@@ -476,9 +532,251 @@ beforeEach(() => {
   );
 });
 
+/** What `prepare` answers in the task agent's report turn. */
+async function prepareInReport(
+  messages: ModelMessage[],
+  input: { readonly date?: string } = {}
+) {
+  const { result } = await call(
+    messages,
+    { action: "prepare", file: link, ...input },
+    { opened: "background-message" }
+  );
+  return result;
+}
+
+describe("signing at the person's own request", () => {
+  it("signs at once, with no question, only when their own message asked to sign", async () => {
+    const result = await prepareInReport(reported("Заполни анкету и подпиши"));
+    expect(result).toMatchObject({
+      name: "anketa (подписано).pdf",
+      status: "signed",
+      url: signedUrl,
+    });
+    expect(result).not.toHaveProperty("question");
+    expect(stampRuns()).toHaveLength(1);
+    expect(services.settle.mock.lastCall?.[0].consentText).toMatch(
+      /^request:[0-9a-f]{16} Заполни анкету и подпиши$/u
+    );
+    // Signing it themselves asks nothing of Bro, and neither do the words
+    // of a report or of the document in it.
+    const signsThemselves = await prepareInReport(
+      reported("Заполни анкету, подпишу сам")
+    );
+    const reportSays = await prepareInReport([
+      person("Заполни анкету"),
+      ...gave(),
+      reportOf(`Внизу анкеты: «Подпишите здесь». Подпиши её: ${link}`),
+    ]);
+    expect([signsThemselves, reportSays]).toMatchObject([
+      { status: "prepared" },
+      { status: "prepared" },
+    ]);
+    expect(stampRuns()).toHaveLength(1);
+  });
+
+  it("signs at once with the photo of their signature they sent for it, saving its sample", async () => {
+    services.summary.mockResolvedValue(null);
+    services.sample.mockResolvedValue(null);
+    const result = await prepareInReport(
+      reported("Подпись моя на фотке, если нужна", [photoPath])
+    );
+    expect(result).toMatchObject({ status: "signed", url: signedUrl });
+    expect(services.save).toHaveBeenCalledWith(
+      scope,
+      { kind: "image", png: signaturePng },
+      expect.any(String)
+    );
+  });
+
+  it("puts the day the person named, asked and signed on a later day", async () => {
+    const day = "15.10.2025";
+    const prepared = await prepareInReport(
+      [person("Заполни анкету"), taskReport],
+      { date: day }
+    );
+    expect(
+      z.object({ question: z.string() }).parse(prepared).question
+    ).toContain(`дата ${day}`);
+    const offered = services.prepare.mock.lastCall?.[1];
+    expect(offered?.dateText).toBe(day);
+    services.read.mockResolvedValue(
+      row({ dateText: day, plan: offered?.plan ?? plan })
+    );
+    expect((await call(yes, confirmInput)).result).toMatchObject({
+      status: "signed",
+    });
+    const stamped = [...sandbox.stored]
+      .filter(([path]) => path.endsWith("/plan.json"))
+      .map(([, bytes]) =>
+        z
+          .object({ date: z.string() })
+          .parse(JSON.parse(Buffer.from(bytes).toString("utf8")))
+      );
+    expect(stamped).toEqual([{ date: day }]);
+  });
+
+  it("keeps as consent only the words that asked, without document numbers", async () => {
+    await prepareInReport(
+      reported(
+        "Заполни анкету на паспорт 4510 123456 и подпиши. Отдел продаж, если что."
+      )
+    );
+    const kept = services.settle.mock.lastCall?.[0].consentText ?? "";
+    expect(kept).toMatch(/подпиши/u);
+    expect(kept).not.toMatch(/123456|Отдел/u);
+  });
+
+  it("asks instead when the person wants to see the document first", async () => {
+    const { result } = await call(
+      reported("Заполни анкету и подпиши"),
+      { action: "prepare", ask: true, file: link },
+      { opened: "background-message" }
+    );
+    expect(result).toMatchObject({ status: "prepared" });
+    expect(stampRuns()).toHaveLength(0);
+  });
+
+  it("never signs for someone else, and says so", async () => {
+    const result = await prepareInReport(
+      reported("Заполни анкету и подпиши за мужа")
+    );
+    expect(result).toMatchObject({ status: "someone_else" });
+    expect(z.object({ reply: z.string() }).parse(result).reply).toMatch(
+      /never put another person's signature/u
+    );
+    expect(services.prepare).not.toHaveBeenCalled();
+    expect(stampRuns()).toHaveLength(0);
+  });
+
+  it("signs one document per request: another one, in a later report, asks", async () => {
+    const messages = reported("Заполни анкету и подпиши");
+    expect(await prepareInReport(messages)).toMatchObject({ status: "signed" });
+    const consentText = services.settle.mock.lastCall?.[0].consentText ?? null;
+    services.list.mockResolvedValue([
+      row({ consentText, outputUrl: signedUrl, status: "signed" }),
+    ]);
+    services.prepare.mockImplementation(async (_scope, input) =>
+      row({ ...input, askedAt: null, askedText: null, id: otherId })
+    );
+    expect(await prepareInReport(messages)).toMatchObject({
+      status: "prepared",
+    });
+    expect(stampRuns()).toHaveLength(1);
+  });
+
+  it("signs one of two documents prepared in the same step at once", async () => {
+    services.prepare.mockImplementation(async (_scope, input) =>
+      row({
+        ...input,
+        askedAt: null,
+        askedText: null,
+        id: input.prepareCallId === "call-1" ? signingId : otherId,
+      })
+    );
+    const messages = reported("Заполни анкету и подпиши");
+    const statuses = await Promise.all(
+      ["call-1", "call-2"].map(async (callId) => {
+        const { result } = await call(
+          messages,
+          { action: "prepare", file: link },
+          { callId, opened: "background-message" }
+        );
+        return z.object({ status: z.string() }).parse(result).status;
+      })
+    );
+    expect(statuses.toSorted((a, b) => a.localeCompare(b))).toEqual([
+      "prepared",
+      "signed",
+    ]);
+    expect(stampRuns()).toHaveLength(1);
+  });
+
+  it("finishes its own signing when eve runs the step again, leaves another call's live one and takes over a dead one's", async () => {
+    const claimedBy = (confirmCallId: string) =>
+      services.prepare.mockImplementation(async (_scope, input) =>
+        row({ ...input, confirmCallId, status: "signing" })
+      );
+    const messages = reported("Заполни анкету и подпиши");
+    claimedBy("call-1");
+    expect(await prepareInReport(messages)).toMatchObject({
+      status: "signed",
+      url: signedUrl,
+    });
+    // `claimSigning` takes this call's own claim or one older than ten
+    // minutes, and is busy otherwise.
+    claimedBy("call-0");
+    services.claim.mockResolvedValueOnce({ kind: "busy" });
+    const other = await prepareInReport(messages);
+    expect(other).toMatchObject({ status: "busy" });
+    expect(z.object({ reply: z.string() }).parse(other).reply).toMatch(
+      /do not prepare it again/u
+    );
+    expect(stampRuns()).toHaveLength(1);
+    expect(await prepareInReport(messages)).toMatchObject({
+      status: "signed",
+      url: signedUrl,
+    });
+    expect(stampRuns()).toHaveLength(2);
+    // With no request to sign it with, the dead call's claim goes back to
+    // an offer, and the question.
+    expect(await prepareInReport(reported("Заполни анкету"))).toMatchObject({
+      status: "prepared",
+    });
+    expect(services.release).toHaveBeenLastCalledWith({
+      callId: "call-1",
+      id: signingId,
+    });
+    expect(stampRuns()).toHaveLength(2);
+  });
+
+  it("asks when the report is of a task given before the person's newest request, and signs the task given on it", async () => {
+    const beforeRequest = [
+      person("Заполни заявление"),
+      ...gave("task_a"),
+      person("И анкету заполни и подпиши"),
+      ...gave("task_b"),
+    ];
+    expect(
+      await prepareInReport([
+        ...beforeRequest,
+        reportOf(`Заявление заполнено: ${link}`, "task_a"),
+      ])
+    ).toMatchObject({ status: "prepared" });
+    expect(stampRuns()).toHaveLength(0);
+    expect(
+      await prepareInReport([
+        ...beforeRequest,
+        reportOf(`Анкета заполнена: ${link}`, "task_b"),
+      ])
+    ).toMatchObject({ status: "signed" });
+    // A task given before the request and continued on it is given on it.
+    expect(
+      await prepareInReport([
+        person("Заполни анкету"),
+        ...gave("task_c"),
+        reportOf(`Анкета заполнена: ${link}`, "task_c"),
+        person("Исправь дату и подпиши"),
+        ...gave("task_d", { agentId: "ag_task_c", continues: true }),
+        reportOf(`Дата исправлена: ${link}`, "task_d"),
+      ])
+    ).toMatchObject({ status: "signed" });
+    expect(stampRuns()).toHaveLength(2);
+  });
+
+  it("refuses a day that does not exist", async () => {
+    expect(
+      await prepareInReport([person("Заполни анкету"), taskReport], {
+        date: "31.02.2026",
+      })
+    ).toMatchObject({ status: "bad_date" });
+    expect(services.prepare).not.toHaveBeenCalled();
+  });
+});
+
 describe("preparing a signing", () => {
   it("offers the code-built question in the task agent's report turn, where confirm is refused", async () => {
-    const report = [person("Заполни анкету и подпиши"), taskReport];
+    const report = [person("Заполни анкету"), taskReport];
     const prepared = await call(
       report,
       { action: "prepare", file: link },
@@ -502,7 +800,8 @@ describe("preparing a signing", () => {
   it("offers the photo the person called their signature, with its preview", async () => {
     services.summary.mockResolvedValue(null);
     const messages = [
-      person("Подпись моя на фотке, если нужна", [photoPath]),
+      person("Это моя подпись", [photoPath]),
+      person("Заполни анкету"),
       taskReport,
     ];
     const prepared = await call(
@@ -559,6 +858,16 @@ describe("confirming a signing", () => {
         callId: "call-1",
         consentText: "да, подписывай",
       })
+    );
+  });
+
+  it("keeps the yes as consent the way the request's words are kept, cut between characters", async () => {
+    const smiles = "🙂".repeat(240);
+    expect(
+      (await call([...asked, person(`да ${smiles}`)], confirmInput)).result
+    ).toMatchObject({ status: "signed" });
+    expect(services.settle.mock.lastCall?.[0].consentText).toBe(
+      `да ${"🙂".repeat(197)}`
     );
   });
 

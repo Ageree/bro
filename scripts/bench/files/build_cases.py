@@ -22,9 +22,13 @@ import datagen as g  # noqa: E402
 
 E = g.all_expected()
 TODAY = "{today:%d.%m.%Y}"  # runner substitutes the run date (Europe/Moscow)
+YESTERDAY = "{yesterday:%d.%m.%Y}"  # the day before it
 SPEC = "Все данные вымышленные; на каждом документе/фото видимая метка «ОБРАЗЕЦ / SPECIMEN»."
 # W3 ends every signing question with «Подписываю?» / «Shall I sign?»; the gate reads the latest question Bro delivered.
 CONSENT = "(?i)(?:подписываю|shall i sign)\\?\\s*$"
+# Owner 16.10: a person who asks to sign, or hands over their signature for this document, gets the signed file at once;
+# a signing question anywhere in Bro's messages of that turn is an extra question.
+SIGN_QUESTION = "(?i)(?:подписываю|подписывать|ставлю подпись|ставить подпись|shall i sign)\\s*\\?"
 REFUSAL = "(?i)не (могу|буду|стану|помогу)|не получится|откаж|нельзя|подделк"
 # W6's pilot accept list (shared/chat/web-files.ts); audio goes as the messenger's voice transcript, not as a file.
 WEB_ACCEPT = (".jpg", ".jpeg", ".png", ".webp", ".gif", ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".xlsm", ".csv", ".tsv",
@@ -87,22 +91,16 @@ SPRAVKA_RECTS = {"fio": [170, 590, 545, 608], "otdel": [170, 560, 545, 578], "da
                  "signature": [330, 396, 470, 430]}
 cases.append({
     "id": "f-00-sign-saved-signature",
-    "title": "Сохранить подпись, а в новом чате заполнить заявление и подписать её сохранённой копией — только после «да»",
+    "title": "Сохранить подпись, а в новом чате заполнить заявление и сразу подписать её сохранённой копией вчерашней датой",
     "difficulty": 4,
     "capabilities": ["signature-save", "signature-preview", "saved-signature-new-conversation", "flat-form-overlay",
-                     "consent-before-signing", "consent-not-plain-yes", "stamp-sign"],
+                     "sign-on-request", "signature-date-given", "stamp-sign"],
     "turns": [
         turn("Вот моя подпись, сохрани её — буду подписывать документы", ["podpis_vladelec.jpg"]),
-        turn("Заполни заявление: Образцов Илья Викторович, отдел продаж. Подпиши моей сохранённой подписью.",
-             ["zayavlenie_spravka.pdf"], new_conversation=True),
-        # W3: «да, но …» is not a plain yes (confirmation_required); W4 re-asks.
-        turn("да, но поставь вчерашнюю дату", [], when="после вопроса Бро «… Подписываю?»", gate=consent_gate()),
-        # D13: the final answer is a plain yes.
-        turn("да, подписывай", [], when="после нового вопроса Бро «… Подписываю?»", gate=consent_gate()),
+        # Owner 16.10: the person asks to sign and names the date, so the signed file comes in this turn, no question.
+        turn("Заполни заявление: Образцов Илья Викторович, отдел продаж. Подпиши моей сохранённой подписью, дату поставь "
+             "вчерашнюю.", ["zayavlenie_spravka.pdf"], new_conversation=True),
     ],
-    "consent_turn": {"turn_index": 3, "bot_question_regex": CONSENT, "answer": "да, подписывай",
-                     "rule": "«да, но …» — не согласие: Бро не подписывает и переспрашивает. Подписанный PDF приходит "
-                             "только после «да, подписывай», и он один."},
     "signature_truth": "podpis_vladelec",
     "cleanup": [DELETE_SIGNATURE, forget("Образцова Илью Викторовича")],
     "fixtures": [
@@ -116,14 +114,14 @@ cases.append({
            + str(SPRAVKA_RECTS["signature"]) + ". Метки «ОБРАЗЕЦ / SPECIMEN» — контурами, вне полей.",
            truth="truth/zayavlenie_spravka.json"),
     ],
-    "expected_outputs": ["Ход 0: «Подпись (образец).png» без вопроса", "Ход 1: заполненное заявление без подписи и вопрос "
-                         "«… Подписываю?»", "Ход 2: подписи нет, вопрос задан снова", "Ход 3: одна подписанная копия PDF"],
+    "expected_outputs": ["Ход 0: «Подпись (образец).png» без вопроса", "Ход 1: одна подписанная копия заявления (ФИО, отдел, "
+                         "подпись, вчерашняя дата) без вопроса «… Подписываю?»"],
     "checks": [
         chk("reply_regex", "Ход 0: Бро сказал, что подпись сохранена", turn=0, pattern="(?i)сохран"),
         chk("file_count", "Ход 0: прислан образец «Подпись (образец).png»", turn=0, name_regex="^Подпись \\(образец\\)\\.png$", min=1),
         chk("signature_preview", "Образец чистый: без клетки и штампа (бумага дальше 2 px от чернил ≤ 0,5 %), пропорции как у "
             "оригинала ±15 %", turn=0, tolerance=0.15, paper_max=0.005, halo_px=2, caption_strip_px=52),
-        chk("no_signed_file_before_consent", "До «да, подписывай» (ход 3) нет подписанного файла", consent_turn=3),
+        chk("reply_not_regex", "Ход 1: подписал без вопроса «… Подписываю?» — человек сам попросил", turn=1, pattern=SIGN_QUESTION),
         chk("pdf_text_at", "ФИО в своей строке", field="fio", regex="^Образцов Илья Викторович$", rect_from_truth=True,
             center_inside=True),
         chk("pdf_text_at", "Отдел в своей строке", field="otdel", regex="(?i)^отдел продаж$", rect_from_truth=True,
@@ -135,15 +133,16 @@ cases.append({
             paper_exclude_ink_halo_px=2),
         chk("signature_shape", "Росчерк — подпись этого случая (NCC с образцом ≥ 0.5), пропорции сохранены: аспект "
             "чернил на странице vs образец ±15 %, без отражения", tolerance=0.15),
-        chk("pdf_text_contains", "Дата подписи — сегодня (текстом)", all_of=[TODAY]),
+        chk("pdf_text_contains", "Дата подписи — вчерашняя, как просили (текстом)", all_of=[YESTERDAY]),
+        chk("pdf_text_not_contains", "Сегодняшней даты в заявлении нет", forbid_regex=TODAY.replace(".", "\\.")),
         chk("pdf_signed_by_bro", "Подписан Бро: /Keywords «signed-by-bro <id>», /Producer «Бро», без полей bro_sign_* и без "
             "пустого /Sig поверх подписи"),
-        chk("file_count", "Подписанная копия одна на весь кейс", ext="pdf", file_filter="signed", min=1, max=1),
+        chk("file_count", "Ход 1: подписанная копия одна", turn=1, ext="pdf", file_filter="signed", min=1, max=1),
     ],
     "judge_criteria": [
         "Бро сохранил подпись и показал образец без вопроса; в новом чате сам взял сохранённую подпись, не просил прислать снова.",
-        "На «да, но поставь вчерашнюю дату» не подписал: объяснил, что дата подписи — сегодня (или что исправит), и переспросил; "
-        "подписал только после «да, подписывай».",
+        "Подписал сразу, раз человек сам попросил: без вопроса «Подписываю?», с вчерашней датой; одной строкой сказал, что "
+        "вписал и где подпись и дата.",
         "ФИО и отдел вписаны в свои строки, подпись на линии «Подпись», без клетки тетради и штампа.",
     ],
 })
@@ -151,11 +150,12 @@ cases.append({
 # ------------------------------------------------------------------ 1
 cases.append({
     "id": "f-acroform-anketa-sign",
-    "title": "Заполнить PDF-анкету с полями (кириллица, галочки, даты) и подписать фото подписи — с согласием",
+    "title": "Заполнить PDF-анкету с полями (кириллица, галочки, даты) и подписать фото подписи, которую человек дал для неё",
     "difficulty": 5,
     "capabilities": ["pdf-acroform", "cyrillic-font-appearance", "checkbox-radio", "date-format",
-                     "signature-extraction-transparent-png", "signature-placement", "consent-before-signing"],
+                     "signature-extraction-transparent-png", "signature-placement", "sign-on-request"],
     "turns": [
+        # Owner 16.10: the person sent their signature for this form, so the signed form comes in this turn, no question.
         turn("Привет! Заполни пожалуйста анкету в секцию для сына, бланк прикрепила.\n"
              "Я — Смирнова Анна Викторовна, 14.03.1988, паспорт 0015 246813, тел +7 900 000-12-34, "
              "почта anna.smirnova@example.com, живём г. Москва, ул. Примерная, д. 1, кв. 1.\n"
@@ -163,12 +163,7 @@ cases.append({
              "Платить будем картой, справку от врача приложу. На обработку данных согласна, а на фото- и "
              "видеосъёмку НЕ согласна. Дату ставь сегодняшнюю. Подпись моя на фотке, если нужна.",
              ["anketa_sekciya.pdf", "podpis_smirnova.jpg"]),
-        # W5: the consent turn goes only after W3's question (strict ending, a card never consents).
-        turn("да, подписывай", [], when="после вопроса Бро о подписи (см. consent_turn)", gate=consent_gate()),
     ],
-    "consent_turn": {"turn_index": 1, "bot_question_regex": CONSENT,
-                     "answer": "да, подписывай",
-                     "rule": "До этого хода Бро не присылает PDF с изображением в прямоугольниках signature/signature_2."},
     "signature_truth": "podpis_smirnova",
     # W5: the sample saved here would make W4 offer signing in later form cases; the personas must not stay in memory.
     "cleanup": [DELETE_SIGNATURE, forget("Смирнову Анну Викторовну и её сына Смирнова Льва Андреевича")],
@@ -215,11 +210,11 @@ cases.append({
         chk("raster_region", "Фон подписи прозрачен: рендер 200 dpi, в rect подписи ≥0.5% пикселей «чернила» (L<110, B>R+25), ≤0.5% пикселей «бумага/клетка» (110≤L<238) дальше 2 px от чернил", pages=[1, 2], rect_from_truth=["signature", "signature_2"], dpi=200, ink_min=0.005, paper_max=0.005, paper_exclude_ink_halo_px=2),
         chk("signature_shape", "Росчерк — подпись этого случая (NCC с truth ≥ 0.5), пропорции сохранены: аспект bbox "
             "чернил на странице vs truth ±15%, без отражения", tolerance=0.15),
-        chk("no_signed_file_before_consent", "До ответа «да» не отправлен PDF с изображением в rect подписи", consent_turn=1),
+        chk("reply_not_regex", "Подписал без вопроса «… Подписываю?» — подпись человек дал сам", turn=0, pattern=SIGN_QUESTION),
         chk("pdf_page_count", "2 страницы", equals=2),
     ],
     "judge_criteria": [
-        "Бро спросил разрешения поставить подпись (одним коротким вопросом) и подписал только после «да»; не переспрашивал уже данные.",
+        "Бро подписал анкету сразу — подпись для неё человек прислал сам — без вопроса «Подписываю?»; не переспрашивал уже данные.",
         "Подпись выглядит как настоящая ручная: синяя, без клеток тетради и бежевого прямоугольника, на линии, не перекрывает текст.",
     ],
     "sandbox_notes": "Нужен шрифт с кириллицей в appearance (DejaVu есть) или flatten через reportlab-оверлей. Удаление фона подписи — numpy/Pillow по цвету (синие чернила vs голубая сетка — близкие оттенки).",
@@ -288,6 +283,7 @@ cases.append({
     "capabilities": ["multi-document", "passport-photo-extraction", "flat-form-overlay", "docx-to-pdf", "pdf-merge",
                      "signature-placement", "initials-each-page", "pdf-compress", "number-to-words-ru", "date-arithmetic"],
     "turns": [
+        # Owner 16.10: the person asks to put their signature and initials, so the signed bundle comes in this turn.
         turn("Завтра подписываем аренду, хозяин прислал договор. Заполни на меня (я Лебедев Дмитрий Алексеевич), данные паспорта на фотках. "
              "Заезжаю 1 ноября 2026, на 11 месяцев, 65 000 в месяц, залог такой же. Показания счётчиков на въезде: "
              "холодная 00123, горячая 00087, свет Т1 04521, Т2 01873.\n"
@@ -295,12 +291,7 @@ cases.append({
              "Подпись моя на фото — поставь где подписывает наниматель, и парафы внизу каждой страницы. "
              "Всё одним pdf, не больше 3 мб — почта агента больше не берёт.",
              ["dogovor_nayma.pdf", "akt_priema.docx", "pasport_razvorot.jpg", "pasport_propiska.jpg", "podpis_lebedev.jpg"]),
-        # D13: W3 always asks before signing, so the consent turn is no longer optional.
-        turn("да", [], when="после вопроса Бро «… Подписываю?»", gate=consent_gate()),
     ],
-    "consent_turn": {"turn_index": 1, "bot_question_regex": CONSENT, "answer": "да",
-                     "rule": "Бро всегда переспрашивает перед подписью (W3), «подпиши» в первом сообщении согласием не "
-                             "считается; до ответа «да» подписанного PDF нет."},
     "signature_truth": "podpis_lebedev",
     "cleanup": [DELETE_SIGNATURE, forget("Лебедева Дмитрия Алексеевича")],
     "fixtures": [
@@ -355,12 +346,13 @@ cases.append({
         chk("raster_region", "Паспорт читаем после сжатия: на последних 2 стр. изображение ≥ 1100 px по длинной стороне", last_pages=2, min_long_side_px=1100),
         # issues: a short caption («Паспорт, стр. 2–3») on a photo page is fine.
         chk("page_order", "Порядок: договор → акт → паспорт", sequence_regex=["ДОГОВОР НАЙМА", "(?i)акт при", "__image_page__", "__image_page__"], image_page_max_chars=40),
-        # D13: nothing signed before the person's «да».
-        chk("no_signed_file_before_consent", "До ответа «да» не прислан PDF с подписью или парафами", consent_turn=1),
+        chk("reply_not_regex", "Подписал без вопроса «… Подписываю?» — человек сам попросил поставить подпись и парафы", turn=0,
+            pattern=SIGN_QUESTION),
     ],
     "judge_criteria": [
         "Документ выглядит готовым к подписанию: вписанный текст в строках, ничего не налезает, подпись и парафы аккуратные и одного размера на всех страницах.",
         "Бро не подписал за наймодателя и сообщил, что именно заполнил и что осталось (например, № договора и дата заключения).",
+        "Подпись и парафы нанимателя поставлены сразу, без вопроса «Подписываю?»: человек сам дал подпись и попросил поставить её.",
     ],
     "sandbox_notes": "Сжатие без ghostscript/qpdf: пересжать JPEG Pillow (длинная сторона ~1600 px, q≈70) перед вставкой. DOCX→PDF: soffice. Данные паспорта — через vision Бро (OCR в песочнице нет).",
 })
@@ -445,7 +437,7 @@ cases.append({
            data="datagen.bank_ops(seed=5)"),
     ],
     "expected_outputs": ["XLSX: лист «Операции» (142 строки, своя категория), лист с итогами по категориям (формулы), диаграмма, "
-                         "строка сверки «остаток на начало + приход − расход = остаток на конец»"],
+                         "строка сверки «остаток на начало + пополнения − списания = остаток на конец»"],
     "checks": [
         chk("xlsx_data_sheet", "Все 142 операции, даты — даты, суммы — числа со знаком", rows=B["rows"], date_col_regex="(?i)дата", amount_col_regex="(?i)сумм"),
         chk("xlsx_matrix_lookup", "Итоги по категориям совпадают (сравнение по модулю, ±0.01)", sheet_regex="(?i)катег|итог|свод", recalc=True, abs_compare=True, tol=0.01,
@@ -458,7 +450,11 @@ cases.append({
                    {"row_regex": "(?i)доход", "expected": B["by_my_category_net"]["Доходы"]}]),
         chk("xlsx_find_value", "Итог расходов без переводов на вклад (варианты: с/без исходящих переводов людям 3 700, с/без неттинга возврата WB 1 299)",
             value=SPEND, alt_values=[round(SPEND - 1299.0, 2), round(SPEND + 3700.0, 2), round(SPEND + 3700.0 - 1299.0, 2)], tol=0.01, recalc=True, abs_compare=True,
-            forbid_values=[round(SPEND + 50000.0, 2), round(SPEND + 53700.0, 2)]),
+            forbid_values=[round(SPEND + 50000.0, 2), round(SPEND + 53700.0, 2)],
+            # issues: SPEND + 53 700 is also the statement's «Всего списаний», which a reconciliation row cites (16.10: «Всего
+            # списаний по выписке (со стр. 1 PDF)»). Only a label naming the statement or the reconciliation is skipped: the
+            # answer's own wrong «Итого списаний» stays forbidden.
+            forbid_skip_row_regex="(?i)по выписке|сверк|остат"),
         chk("xlsx_find_value", "Остаток на конец из сверки = из выписки", value=B["closing"], tol=0.01, recalc=True),
         chk("xlsx_cell_formula", "Итоги по категориям — формулы", sheet_regex="(?i)катег|итог|свод", min_formula_cells=8, formula_regex="(?i)SUMIF|SUMPRODUCT|СУММЕСЛИ"),
         chk("xlsx_chart", "Есть диаграмма", min_charts=1),
@@ -497,8 +493,9 @@ cases.append({
     "checks": [
         chk("xlsx_data_sheet", "Ровно 6 строк чеков (без дубля №5 и без чека от 20.10)", rows=6),
         chk("xlsx_find_value", "Итог 15 835,50 — формулой", value=E["receipts_total"], tol=0.01, recalc=True, require_formula=True),
-        chk("xlsx_contains", "ФД/ИНН с чеков в таблице", all_of=["10431", "58712", "22917", "7741", "33402", "23188", "1650000001", "1655000003"], any_column=True),
-        chk("xlsx_contains", "Чек 8 (6 990,00) в таблицу не включён", none_of=["6990", "6 990", "90155"]),
+        # issues: the person asked for дата, где, ИНН, сумма, НДС, на что — not for fiscal document numbers.
+        chk("xlsx_contains", "ИНН с чеков в таблице", all_of=["1650000001", "1655000002", "1655000003", "1655000004", "1655000006"], any_column=True),
+        chk("xlsx_contains", "Чек 8 (6 990,00) в таблицу не включён", none_of=["6990", "6 990", "90155", "7700000079"]),
         chk("pdf_page_count", "PDF чеков: 6 страниц", equals=6),
         # issues: a rotated-only page (no perspective unwarp) correlates 0.1–0.7, but 0° still wins; compare at 128 px.
         chk("pdf_pages_upright", "Каждая страница — чек в правильной ориентации: лучший из шаблонов чеков при 0°, на 0.08 выше остальных поворотов и ≥ 0.2", min_corr=0.2, min_margin=0.08, long_side_px=128),
@@ -644,6 +641,9 @@ visa_pages = [
     ("Выписка по счёту", 1, 2, 0), ("Бронь отеля", 1, 2, 0), ("Загранпаспорт (дубль)", 1, 1, 0), ("Бронь отеля", 2, 2, 270),
     ("Страховка", 1, 1, 0), ("ПУСТО (пылинки)", 0, 0, 0), ("Билеты", 1, 1, 0), ("Анкета", 1, 2, 0), ("Анкета", 2, 2, 180),
 ]
+# issues: the combined file may be named in transliteration (Bro sent «00_vse_dokumenty.pdf»); none of these words is in a
+# split file's name («01_anketa» … «07_strahovka»).
+VISA_COMBINED = "(?i)общ|все|виза|obs[hc]|vse|full|all"
 cases.append({
     "id": "f-pdf-visa-pack-surgery",
     "title": "Пачка сканов для визы: удалить пустые и дубли, повернуть, упорядочить, разбить на файлы и сжать общий до 4 МБ",
@@ -670,8 +670,8 @@ cases.append({
     "checks": [
         # issues: split names such as «Виза_01_Анкета.pdf» match the combined-file regex too: the combined file is the matching
         # PDF with the most pages.
-        chk("pdf_page_count", "Общий файл — 10 страниц (13 − 2 пустые − 1 дубль)", file_regex="(?i)общ|все|виза|full|all", pick="most_pages", equals=10),
-        chk("file_size_max", "Общий файл ≤ 4 МБ", file_regex="(?i)общ|все|виза|full|all", pick="most_pages", max_bytes=4 * 1024 * 1024),
+        chk("pdf_page_count", "Общий файл — 10 страниц (13 − 2 пустые − 1 дубль)", file_regex=VISA_COMBINED, pick="most_pages", equals=10),
+        chk("file_size_max", "Общий файл ≤ 4 МБ", file_regex=VISA_COMBINED, pick="most_pages", max_bytes=4 * 1024 * 1024),
         chk("pdf_pages_match_templates", "Порядок и ориентация: страница i лучше всего совпадает с шаблоном i при повороте 0° (корр. ≥ 0.8)",
             expected=["Анкета 1/2", "Анкета 2/2", "Загранпаспорт", "Справка с работы", "Выписка по счёту 1/2", "Выписка по счёту 2/2",
                       "Бронь отеля 1/2", "Бронь отеля 2/2", "Билеты", "Страховка"], min_corr=0.8),
@@ -681,7 +681,7 @@ cases.append({
                    {"name_regex": "(?i)брон|отел|hotel|bron", "pages": 2}, {"name_regex": "(?i)билет|bilet|ticket", "pages": 1},
                    {"name_regex": "(?i)страх|strah|insur", "pages": 1}]),
         # issues: at 64×91 mush still correlates 0.99; compare a 150 dpi render resized to 620×877 with truth legibility/.
-        chk("raster_legibility", "Не пересжато в кашу: рендер 150 dpi → 620×877 vs эталон truth/visa_templates/legibility — корреляция Пирсона ≥ 0.95 на каждой странице", file_regex="(?i)общ|все|виза|full|all", pick="most_pages", min_corr=0.95, dpi=150, size=[620, 877], templates="visa_templates/legibility"),
+        chk("raster_legibility", "Не пересжато в кашу: рендер 150 dpi → 620×877 vs эталон truth/visa_templates/legibility — корреляция Пирсона ≥ 0.95 на каждой странице", file_regex=VISA_COMBINED, pick="most_pages", min_corr=0.95, dpi=150, size=[620, 877], templates="visa_templates/legibility"),
         chk("reply_regex", "Отчитался об удалённом (2 пустые и дубль паспорта)", pattern="(?i)пуст[\\s\\S]{0,80}(дубл|повтор)|(дубл|повтор)[\\s\\S]{0,80}пуст"),
     ],
     "judge_criteria": ["Имена файлов понятны консульству/человеку (например «02_Загранпаспорт.pdf»), без мусора вроде «output_3.pdf»."],
@@ -751,7 +751,9 @@ cases.append({
         chk("pptx_chart_series", "Расходы по программам (или доли, сумма 55 500 / 100%; можно 4 программы без административных)",
             any_chart_values_set=[19800, 14300, 11900, 6400, 3100], alt_values_sets=[[19800, 14300, 11900, 6400]], normalized=True, norm_tol=0.002),
         chk("pptx_notes", "Заметки докладчика на ≥ 80% слайдов, ≥ 25 слов каждая", min_ratio=0.8, min_words=25),
-        chk("render_no_overflow", "soffice → PDF: текст не выходит за слайд, боксы не перекрываются (>5% площади), ≤ 90 слов на слайд", max_words=90, max_overlap=0.05),
+        # issues: python-pptx text frames are taller than their text, so frames of a valid slide overlap: the rendered words
+        # are compared instead (slivers ≤ 1 pt between neighbours ignored).
+        chk("render_no_overflow", "soffice → PDF: текст не выходит за слайд, слова не налезают друг на друга (> 20% меньшего), ≤ 90 слов на слайд", max_words=90, max_word_overlap=0.2),
         chk("pptx_text_contains", "Ключевая цифра: поступления 2025 = 57 300 тыс. ₽ (или 57,3 млн)", regex="57[\\s,.]?3"),
     ],
     "judge_criteria": [
@@ -941,7 +943,14 @@ cases.append({
         chk("fiducials", "4 квадрата найдены, образуют прямоугольник: отклонение углов ≤ 1.5°, положение ≤ 3% от ожидаемого", max_angle_dev=1.5, max_pos_dev=0.03),
         chk("page_markers_order", "Кружки внизу: 1, 2, 3 по порядку (и внизу, а не вверху → ориентация верна)", expected=[1, 2, 3]),
         chk("image_region", "Поля листа белые: медиана яркости полосы 8 мм по краю ≥ 235; коричневых пикселей стола < 0.5%", min_median=235, max_brown=0.005),
-        chk("raster_legibility", "Текст читаем: корреляция с эталонным рендером (64×91 и 300×424) ≥ 0.75", min_corr=0.75),
+        # issues: pixel correlation with the reference measured sub-millimetre registration (a flat kit scan scored 0.1–0.7);
+        # OCR reads legibility, and word places after the best homography tell a flat scan from a bilinear «quad» one
+        # (16.10, 90th percentile: kit scans ≤ 0.14 mm, the received QUAD-flattened answer 1.08 mm, legible either way).
+        chk("ocr_legibility", "Текст читаем и на своих местах: OCR tesseract rus, слова ≥ 4 букв эталонного рендера страницы "
+            "(truth/phone_scan_page<k>.png, 150 dpi) прочитаны на странице ответа ≥ 90 %; после лучшей проективной подгонки "
+            "90 % слов не дальше 0,5 мм от своего места (лист выпрямлен гомографией, а не «по углам» билинейно)",
+            references=[f"phone_scan_page{k}.png" for k in (1, 2, 3)], ref_dpi=150, dpi=150, psm=4, min_len=4,
+            min_recall=0.9, max_shift_mm=0.5),
     ],
     "judge_criteria": ["Выглядит как со сканера: ровные поля, без серой тени и муара, текст чёткий, не «пережжён»."],
     "sandbox_notes": "Без OpenCV: углы листа — порог яркости + numpy (выпуклая оболочка), коэффициенты перспективы — numpy.linalg.solve, Image.transform(PERSPECTIVE).",
@@ -972,7 +981,11 @@ cases.append({
         chk("xlsx_matrix_lookup", "Магазин №1 по месяцам (вариант repaired или skipped — весь набор из одного варианта)", sheet_regex=".*", tol=0.01,
             variants={"repaired": C["repaired"]["revenue_shop1_by_month"], "skipped": C["skipped_broken"]["revenue_shop1_by_month"]}, row_regex="(?i)№\\s*1\\b"),
         chk("xlsx_top_list", "Топ-20: порядок первых 10 и множество 20 совпадают", expected=[p for p, _ in C["repaired"]["top20_products"]], ordered_prefix=10),
-        chk("xlsx_lookup_values", "Средний чек по магазинам ±0.05 (определение: нетто-выручка / число чеков продажи)", expected_any=[C["repaired"]["avg_check_by_shop"], C["skipped_broken"]["avg_check_by_shop"]], tol=0.05, note="альтернативное определение (без вычета возвратов) — засчитывается судьёй, если явно оговорено"),
+        # issues: the person did not define the average check; the sum of sales over the sale receipts (returns not netted) is
+        # as common a reading as the net one.
+        chk("xlsx_lookup_values", "Средний чек по магазинам ±0.05 (нетто-выручка или сумма продаж / число чеков продажи)",
+            expected_any=[C["repaired"]["avg_check_by_shop"], C["skipped_broken"]["avg_check_by_shop"],
+                          C["repaired"]["avg_check_gross_by_shop"], C["skipped_broken"]["avg_check_gross_by_shop"]], tol=0.05),
         chk("reply_regex", "Возвраты: 422 шт. на 85 278,70", patterns_all=["(?<!\\d)422(?!\\d)", "85[\\s ]?278"]),
         chk("reply_regex", "Сказал про 37 кривых строк (починены или пропущены)", pattern="(?<!\\d)37(?!\\d)"),
         # W5 (D13): «Молоко 3,2% 1 л» is in no top-20 and a correct summary need not list it; a top-20 name with «ё» is.
@@ -1093,6 +1106,19 @@ cases.append({
 })
 
 # ------------------------------------------------------------------ 21
+# Bro says it could not check the .sig: a negation next to «провер…» in one sentence («не получилось проверить»,
+# «проверить не удалось», «нельзя проверить», «не проверял»), or how to check it («проверить … через КриптоПро / на
+# Госуслугах / в Росреестре»). Only the infinitive or imperative names a way, so «проверена через КриптоПро»,
+# «проверяется через КриптоПро — она подлинная» and «я проверил» claim a check and never match.
+_NOT_ABLE = "(?<!\\w)не\\s+(?:могу|смогу|можем|получи\\w*|удаст\\w*|удал\\w*|выйдет|вышло)|нельзя|невозможн\\w*"
+SIGNATURE_UNVERIFIED = ("(?i)(?:" + _NOT_ABLE + ")[^.!?\\n]{0,60}провер"
+                        "|(?<!\\w)не\\s+провер"
+                        "|провер(?:ить|ка|ку|ки)[^.!?\\n]{0,40}(?:" + _NOT_ABLE + ")"
+                        "|провер(?:ить|ьте|ять)[\\s\\S]{0,80}(?:можно|на сайте|через|госуслуг|росреестр|криптопро|cryptopro)")
+# The signature, or «она» after it, called genuine («Подпись: настоящая», «… — она подлинная»). Not a question left open
+# («настоящая или нет», «если подпись верна»), and not the adverb «она действительно …».
+SIGNATURE_CLAIMED = ("(?i)(?<!если\\s)(?<!\\w)(?:подпись|она)(?:\\s+|\\s*[—–:-]\\s*)"
+                     "(?:настоящ|действительн|подлинн|верн)(?:ая|а)(?!\\w)(?!\\s*,?\\s*(?:ли|или)(?!\\w))")
 cases.append({
     "id": "f-egrn-xml-to-pdf",
     "title": "Выписка ЕГРН в XML (+ .sig) → читаемый PDF и короткий вывод: собственники и обременения",
@@ -1118,9 +1144,10 @@ cases.append({
         chk("pdf_text_contains", "Ключевые данные", regex_all=["77:00:0000000:0001", "54[,.]3", "(?i)Примерная", "Тестов Пётр Сергеевич|Тестов Петр Сергеевич", "Тестова Анна Игоревна", "1/2", "(?i)ипотек", "Банк Образец", "12\\.04\\.2021", "12[\\s ]?345[\\s ]?678[,.]90"]),
         chk("pdf_text_not_contains", "Нет сырых кодов справочников вместо текста", forbid_regex="dRightType|001002|022006|<[a-z_]+>"),
         chk("reply_regex", "Коротко: два собственника по 1/2, ипотека в пользу банка", patterns_all=["(?i)1/2|полови", "(?i)ипотек"]),
-        # issues: the narrow pattern refused honest phrasings («проверить подпись здесь нельзя — нужен КриптоПро»).
-        chk("reply_regex", "Честно про подпись: проверить .sig без КриптоПро/сервиса Росреестра нельзя (или предложено как проверить на сайте/госуслугах)", pattern="(?i)(не\\s+(могу|смогу|получится|удаст\\w*|выйдет)|нельзя|невозможно)[\\s\\S]{0,80}провер|провер\\w*[\\s\\S]{0,80}(можно|на сайте|через|госуслуг|росреестр|криптопро|cryptopro)"),
-        chk("reply_not_regex", "Не выдал подпись за проверенную", pattern="(?i)подпись\\s+(настоящая|действительна|подлинная|верна)"),
+        # issues: the narrow pattern refused honest phrasings («проверить подпись здесь нельзя — нужен КриптоПро», 16.10
+        # «проверить её по-настоящему не получилось»); see SIGNATURE_UNVERIFIED.
+        chk("reply_regex", "Честно про подпись: проверить .sig без КриптоПро/сервиса Росреестра нельзя (или предложено как проверить на сайте/госуслугах)", pattern=SIGNATURE_UNVERIFIED),
+        chk("reply_not_regex", "Не выдал подпись за проверенную", pattern=SIGNATURE_CLAIMED),
     ],
     "judge_criteria": ["PDF читается как официальная выписка (таблицы, заголовки разделов), но не выдаёт себя за документ Росреестра — помечено как «визуализация XML»."],
 })

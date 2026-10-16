@@ -35,14 +35,19 @@ const putInbox = vi.hoisted(() =>
 const putPersonSend = vi.hoisted(() =>
   vi.fn<typeof inbox.putPersonSend>(() => Promise.resolve())
 );
+const putPersonRequest = vi.hoisted(() =>
+  vi.fn<typeof inbox.putPersonRequest>(() => Promise.resolve())
+);
 vi.mock("@agent/lib/sandbox/inbox", async (importOriginal) => ({
   ...(await importOriginal<typeof inbox>()),
   putInbox,
+  putPersonRequest,
   putPersonSend,
 }));
 
 import taskFilesHook from "@agent/hooks/task-files";
 import { inboxKey } from "@agent/lib/sandbox/inbox";
+import { backgroundTurnMarker } from "@shared/chat/background-turn";
 import { zipWith } from "@tests/helpers/zip-archive";
 
 const workspaceId = "personal:0123456789abcdef0123456789abcdef";
@@ -230,6 +235,7 @@ describe("the person's files for the task agent", () => {
       named: 2,
       recorded: 1,
       refused: 0,
+      requests: 1,
     });
   });
 
@@ -253,6 +259,7 @@ describe("the person's files for the task agent", () => {
     expect(putInbox).not.toHaveBeenCalled();
     expect(console.info).toHaveBeenCalledWith("[task-files] calls", {
       recorded: 1,
+      requests: 1,
     });
   });
 
@@ -358,6 +365,7 @@ describe("the person's files for the task agent", () => {
       named: 1,
       recorded: 0,
       refused: 0,
+      requests: 1,
     });
   });
 
@@ -438,6 +446,7 @@ describe("the person's files for the task agent", () => {
     }
 
     expect(putInbox).not.toHaveBeenCalled();
+    expect(putPersonRequest).not.toHaveBeenCalled();
   });
 
   it("copies nothing in another turn, or one that brought no message", async () => {
@@ -462,6 +471,7 @@ describe("the person's files for the task agent", () => {
 
     expect(sandbox.readFile).not.toHaveBeenCalled();
     expect(putInbox).not.toHaveBeenCalled();
+    expect(putPersonRequest).not.toHaveBeenCalled();
     expect(putPersonSend).toHaveBeenCalledExactlyOnceWith(
       workspaceId,
       "session-1",
@@ -578,6 +588,7 @@ describe("the person's files for the task agent", () => {
       named: 2,
       recorded: 1,
       refused: 0,
+      requests: 1,
     });
   });
 
@@ -674,5 +685,146 @@ describe("the person's files for the task agent", () => {
       inboxKey(workspaceId, "session-1", table.path),
       inboxKey(workspaceId, "session-1", table.path),
     ]);
+  });
+});
+
+describe("the person's own words for the task agent", () => {
+  it("go beside each `task` call of the person's turn, files or not", async () => {
+    // Bro retells the request and drops its condition; the words keep it.
+    const ctx = context();
+    await emit("turn.started", { sequence: 3, turnId: "turn_3" }, ctx);
+    await emit(
+      "message.received",
+      {
+        message: "Замаскируй номера карт, кроме последних 4 цифр",
+        sequence: 3,
+        turnId: "turn_3",
+      },
+      ctx
+    );
+    await emit(
+      "message.received",
+      { message: "[file: cards.xlsx (sheet)]", sequence: 3, turnId: "turn_3" },
+      ctx
+    );
+    await requested(
+      [
+        taskCall("Замаскируй номера карт в таблице"),
+        taskCall("Проверь итог", "task", "tool-call", "ag_task:0a1b"),
+      ],
+      ctx
+    );
+
+    const words =
+      "Замаскируй номера карт, кроме последних 4 цифр\n\n[file: cards.xlsx (sheet)]";
+    expect(putPersonRequest.mock.calls).toEqual([
+      [
+        workspaceId,
+        "session-1",
+        {
+          callId: "call-task",
+          kind: "start",
+          message: "Замаскируй номера карт в таблице",
+          turnId: "turn_3",
+        },
+        words,
+        expect.any(AbortSignal),
+      ],
+      [
+        workspaceId,
+        "session-1",
+        { agentId: "ag_task:0a1b", kind: "continue", message: "Проверь итог" },
+        words,
+        expect.any(AbortSignal),
+      ],
+    ]);
+  });
+
+  it("are never a task report's or a turn Bro opened for itself", async () => {
+    const report = context();
+    await emit("turn.started", { sequence: 3, turnId: "turn_3" }, report);
+    await emit(
+      "message.received",
+      {
+        kind: "execution.background_task",
+        message:
+          "Background task task_1 (task) is completed.\n\nResult:\nВ таблице 12 карт.",
+        sequence: 3,
+        turnId: "turn_3",
+      },
+      report
+    );
+    await requested([taskCall("Проверь 12 карт")], report);
+    // A turn Bro opens for itself under the person's caller: its prompt is
+    // nobody's words, though the turn counts as the person's for the files.
+    const own = context();
+    await emit("turn.started", { sequence: 4, turnId: "turn_4" }, own);
+    await emit(
+      "message.received",
+      {
+        message: `${backgroundTurnMarker}\n\nYour own check of the person's mail found a bill.`,
+        sequence: 4,
+        turnId: "turn_4",
+      },
+      own
+    );
+    await emit(
+      "actions.requested",
+      {
+        actions: [taskCall("Разбери счёт")],
+        sequence: 4,
+        stepIndex: 0,
+        turnId: "turn_4",
+      },
+      own
+    );
+
+    expect(putPersonRequest).not.toHaveBeenCalled();
+    expect(putPersonSend).toHaveBeenCalledTimes(1);
+  });
+
+  it("are the turn's own: a later turn of the person's brings its words alone", async () => {
+    const ctx = context();
+    await personTurn(ctx, "turn_3");
+    await requested([taskCall("Разбери таблицу")], ctx);
+    await emit("turn.started", { sequence: 4, turnId: "turn_4" }, ctx);
+    await emit(
+      "message.received",
+      { message: "Только за сентябрь", sequence: 4, turnId: "turn_4" },
+      ctx
+    );
+    await emit(
+      "actions.requested",
+      {
+        actions: [taskCall("Оставь сентябрь", "task", "tool-call", "ag_1")],
+        sequence: 4,
+        stepIndex: 0,
+        turnId: "turn_4",
+      },
+      ctx
+    );
+
+    expect(putPersonRequest.mock.calls.map(([, , , words]) => words)).toEqual([
+      "Разбери таблицу",
+      "Только за сентябрь",
+    ]);
+  });
+
+  it("go nowhere once a report came into the person's turn", async () => {
+    const ctx = context();
+    await personTurn(ctx);
+    await emit(
+      "message.received",
+      {
+        kind: "execution.background_task",
+        message: "Background task task_1 (task) is completed.",
+        sequence: 3,
+        turnId: "turn_3",
+      },
+      ctx
+    );
+    await requested([taskCall("Проверь итог")], ctx);
+
+    expect(putPersonRequest).not.toHaveBeenCalled();
   });
 });

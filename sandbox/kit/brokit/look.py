@@ -47,6 +47,9 @@ HEIC_BRANDS = (b"heic", b"heix", b"hevc", b"hevx", b"heim", b"heis", b"mif1", b"
 # or refused. JPEG includes MPO, the JPEG of many phone cameras.
 IMAGE_FORMATS = ("AVIF", "BMP", "GIF", "JPEG", "PNG", "TIFF", "WEBP")
 FONT_PATHS = ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "DejaVuSans.ttf")
+# A picture of a slide does not say how much text it carries: a deck of
+# 95–164 words a slide at 12 pt looked fine to the task agent.
+SLIDE_WORDS = 80
 
 
 def grid_step(long_side):
@@ -245,6 +248,44 @@ class ImageFrames:
         return None
 
 
+def word_count(text):
+    """Words of `text`: runs between spaces with a letter or a digit, so bullets and dashes are not words."""
+    return sum(1 for token in text.split() if any(char.isalnum() for char in token))
+
+
+def shape_words(shapes):
+    from pptx.shapes.group import GroupShape
+
+    total = 0
+    for shape in shapes:
+        if isinstance(shape, GroupShape):
+            total += shape_words(shape.shapes)
+        elif shape.has_text_frame:
+            total += word_count(shape.text_frame.text)
+        elif getattr(shape, "has_table", False):
+            # A merged cell's spanned parts would count its text again.
+            total += sum(word_count(cell.text_frame.text) for row in shape.table.rows for cell in row.cells if not cell.is_spanned)
+    return total
+
+
+def dense_slides(path, warnings):
+    """One warning for a .pptx whose slides carry more than SLIDE_WORDS words (charts and notes are not counted)."""
+    try:
+        import pptx
+
+        counts = [shape_words(slide.shapes) for slide in pptx.Presentation(path).slides]
+    except Exception:  # noqa: BLE001 — a deck python-pptx refuses is still drawn by LibreOffice
+        return
+    from brokit.ru.amount import plural
+
+    dense = ["слайд %d: %d %s" % (number, words, plural(words, ("слово", "слова", "слов"))) for number, words in enumerate(counts, 1) if words > SLIDE_WORDS]
+    if dense:
+        warnings.append(
+            "%s has too much text on a slide: %s. A slide holds a heading and 3–5 short points (≤ %d words, body text ≥ 16 pt); "
+            "move the rest to the speaker notes." % (path, "; ".join(dense), SLIDE_WORDS)
+        )
+
+
 def font(size):
     from PIL import ImageFont
 
@@ -394,6 +435,8 @@ def main(argv):
                 warnings.append("not shown, over this call's pictures: " + path)
                 continue
             source = ImageFrames(path) if kind == "image" else PdfPages(path, kind, warnings, work)
+            if extension(path) == "pptx":
+                dense_slides(path, warnings)
             item["pages_total"] = source.total
             pages = wanted_pages(args.pages, source.total, warnings, path)
             if region is not None and args.pages is None:

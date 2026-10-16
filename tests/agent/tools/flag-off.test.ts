@@ -351,7 +351,7 @@ const stepCases: Record<
     },
     {
       messages: taskReport,
-      offeredTools: ["react_to_message", "send_message", "task", "task_cancel"],
+      offeredTools: ["react_to_message", "send_message", "task"],
       toolChoice: "required",
       turn: taskReport,
       withheldTools: ["task"],
@@ -372,32 +372,32 @@ const deployments = {
     environment: {},
     hashes: {
       "browser-report":
-        "53789d1e0ca1bd4291419e0ac8d915d2cb2e39078f3ea0b57568ac99a84a7f45",
+        "c2d4030efdb3eb4379bd191628d0717d1fb185c25ff2532a0034c0ab77a0154d",
       "proactive-worker":
-        "f64785ae8b046077b0c14e9ebea087c4202c6fa4c1c1835b9133d91c3d6500e7",
+        "6578f08bf581df3bfe73a4337b7b34a5a4367aef476e5088053e6f490396b283",
       "scheduled-report":
-        "7c6be34e4ffd8b7ba4bff987b7c9705f52f97bc949b0cd3ab07b7780d4013386",
+        "84b6c93b5f69b1e65b6e053cdf356926c6d739af7cd3c138609b7488ae902c40",
       "scheduled-worker":
-        "346c07d34b6b912dbf8e1b278992c3b17dd62e84a9a78acbd7822c573a1c0e89",
+        "755a85bd72c853243d2e023c0c6524910f482fa5ab09e62d697c742251759df5",
       telegram:
-        "d006110961293089203b95caec2e1097489546919fa33ac00201aabba56f1074",
-      web: "3381a609cc816413f2480b611c3425af187d8ef90f39865f739d9de4e2e8a1c9",
+        "4b49d376ca016bf827dde6639a51197400592cd4166823f7f85759e5af18efdb",
+      web: "1d89efa360c96cbd1cd29d8b36857485801d3de6ee87bfe9f9b615a982d5ff84",
     } satisfies Record<Kind, string>,
   },
   full: {
     environment: fullDeployment,
     hashes: {
       "browser-report":
-        "c363aa9587347737470e84ca872807cffd857960f434389fac155ff7504c9490",
+        "fb7da2d562dfa2ec56af6036ed5d5b948f35329ebf3ecf762a7eb11cc1610090",
       "proactive-worker":
-        "7fb5aed27a8d42f68ff09907efb2fb4a3a6ebd9d4189162cc57e27c9cc9f7b41",
+        "b91af917ead6214fddadc0a64d8ee6ad3cf141416c46e92fe479d938bacd5fe1",
       "scheduled-report":
-        "109492b831042316b18975869eb310a692dcb9f5a2dd643b3588c3c4d9fb366a",
+        "15f6762fe666f2324b3f6ec90b4ca91c7578402a16a4a445c7374f9e49fa333b",
       "scheduled-worker":
-        "7902364a2836434346255031a24563f1dfa484e36f53e1d241fc1ac829cb9c61",
+        "1c1b0e58338a005d3a2201a13d3097025d74adcd39af2ca33acad230dc80ab1d",
       telegram:
-        "9a587280aa8c44408de0cfc7d49f0ac5787a09c3e7850315c6d561ec0cd85124",
-      web: "347e37da106d0d6b22b45115d276d0afa690f4389239a7f8308a92d7aadddceb",
+        "7dec54b9752cc1097e7e8c93aad50894eb2685267300deba420660c0820f20a3",
+      web: "aa601bbe35709a0c4a0430e51711d81394f8e631821bcd4410470da1c5ff3b35",
     } satisfies Record<Kind, string>,
   },
 };

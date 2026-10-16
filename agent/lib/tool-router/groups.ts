@@ -59,7 +59,6 @@ const alwaysStopTools = [
   "workstreams__forget_all",
   "schedules-update",
   "phone-disable",
-  "task_cancel",
   "contact-delete",
 ] as const;
 
@@ -199,7 +198,6 @@ const coreToolUses: ReadonlyMap<string, RouterGroup> = new Map([
   ["contact-delete", "phone"],
   ["phone-disable", "phone"],
   ["schedules-update", "schedules"],
-  ["task_cancel", "files"],
 ]);
 
 /** The groups a call of a tool marks as used (`stampRouterUse`). */

@@ -27,7 +27,7 @@ def rolled(point):
     return (CENTER[0] + dx * math.cos(angle) + dy * math.sin(angle), CENTER[1] - dx * math.sin(angle) + dy * math.cos(angle))
 
 
-def selfie(path, busy=False):
+def selfie(path, busy=False, irises=True):
     person = Image.new("RGBA", SIZE, (0, 0, 0, 0))
     draw = ImageDraw.Draw(person)
     draw.polygon([(250, 2000), (420, 1160), (1080, 1160), (1250, 2000)], fill=SHIRT)
@@ -37,7 +37,8 @@ def selfie(path, busy=False):
     draw.ellipse([cx - 165, cy - 215, cx + 165, cy + 215], fill=SKIN)
     for x, y in EYES:
         draw.ellipse([x - 30, y - 14, x + 30, y + 14], fill=(245, 245, 240))
-        draw.ellipse([x - 13, y - 13, x + 13, y + 13], fill=(35, 35, 40))
+        if irises:
+            draw.ellipse([x - 13, y - 13, x + 13, y + 13], fill=(35, 35, 40))
     draw.line([(705, 960), (795, 960)], fill=(180, 90, 90), width=10)
     person = person.rotate(ROLL, resample=Image.BICUBIC, center=CENTER)
     gradient = np.linspace(10, -10, SIZE[1], dtype=np.float32)[:, None, None]
@@ -108,6 +109,22 @@ class IdPhotoTest(unittest.TestCase):
         self.assertEqual(result["copies"], 6)
         with Image.open(result["sheet"]) as sheet:
             self.assertEqual(sheet.size, (1181, 1772))
+
+    def test_mistyped_eyes_show_in_the_measured_roll(self):
+        # Eyes typed as if the head were upright: nothing is turned, and the result is measured tilted.
+        eyes = ",".join("%.1f,%.1f" % point for point in EYES)
+        code, result = kit("img", "idphoto", self.selfie, "--eyes", eyes, "-o", self.path("mistyped.jpg"))
+        self.assertEqual(code, 0, result)
+        self.assertEqual(result["roll_fixed_deg"], 0)
+        self.assertAlmostEqual(result["roll_deg"], -ROLL, delta=1.0)
+
+    def test_eyes_not_found_on_the_result_leave_the_roll_unknown(self):
+        selfie(self.path("no_irises.jpg"), irises=False)
+        eyes = ",".join("%.1f,%.1f" % rolled(point) for point in EYES)
+        code, result = kit("img", "idphoto", self.path("no_irises.jpg"), "--eyes", eyes, "-o", self.path("no_irises_out.jpg"))
+        self.assertEqual(code, 0, result)
+        self.assertIsNone(result["roll_deg"])
+        self.assertTrue(any("not re-measured" in w for w in result["warnings"]), result["warnings"])
 
     def test_busy_background_works_from_given_eyes_and_chin(self):
         selfie(self.path("shelf.jpg"), busy=True)

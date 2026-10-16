@@ -52,6 +52,14 @@ class ContextTest(unittest.TestCase):
         self.assertEqual(sorted(ctx.truth), ["a.json", "c.json"])
         self.assertEqual(ctx.field_rect("fio"), [1, 2, 3, 4])
 
+    def test_yesterday_is_the_day_before_across_a_month(self):
+        import datetime as dt
+
+        from checks.context import substitute_params
+
+        params = {"all_of": ["{yesterday:%d.%m.%Y}", "{today:%-d.%m}"]}
+        self.assertEqual(substitute_params(params, dt.date(2026, 11, 1)), {"all_of": ["31.10.2026", "1.11"]})
+
     def test_the_date_comes_from_the_message_the_file_came_in(self):
         late = pdf(texts=[(60, 700, "16.10.2026")])
         ctx = self.context(files=[(0, late, "a.pdf", "2026-10-15T21:30:00Z")], started_at="2026-10-15T20:00:00Z")

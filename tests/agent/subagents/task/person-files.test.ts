@@ -63,10 +63,16 @@ const marks = vi.hoisted(() => ({
     Promise.resolve(false)
   ),
 }));
+const getPersonRequest = vi.hoisted(() =>
+  vi.fn<typeof inbox.getPersonRequest>(() =>
+    Promise.resolve({ kind: "missing" })
+  )
+);
 vi.mock("@agent/lib/sandbox/inbox", async (importOriginal) => ({
   ...(await importOriginal<typeof inbox>()),
   ...marks,
   getInbox,
+  getPersonRequest,
   markSandboxHoldsPersonFiles,
   markSandboxOffWeb,
 }));
@@ -77,6 +83,7 @@ import { offlineRefusal } from "@agent/lib/sandbox/offline";
 
 const workspaceId = "personal:0123456789abcdef0123456789abcdef";
 const notReceived = "/workspace/attachments/NOT_RECEIVED.txt";
+const request = "/workspace/attachments/REQUEST.txt";
 const parent = {
   callId: "call-1",
   rootSessionId: "session-bro",
@@ -234,6 +241,7 @@ beforeEach(() => {
   pilot.taskFilesGuarded.mockReturnValue(true);
   pilot.taskFilesOfCaller.mockReturnValue(true);
   getInbox.mockResolvedValue({ kind: "missing" });
+  getPersonRequest.mockResolvedValue({ kind: "missing" });
   markSandboxHoldsPersonFiles.mockImplementation(markInOrder);
   markSandboxOffWeb.mockImplementation(offWebInOrder);
   marks.conversationHoldsPersonFiles.mockResolvedValue(false);
@@ -742,5 +750,181 @@ describe("a task agent of a conversation that gave the person's files away", () 
     // The conversation was marked already: the sandbox's mark is enough.
     expect(order).toEqual(["off sb-task", `write ${table.path}`]);
     expect(markSandboxHoldsPersonFiles).not.toHaveBeenCalled();
+  });
+});
+
+/** The person's words Bro's hook stored beside the sends named, and no others. */
+function wordsBeside(
+  ...beside: readonly (readonly [inbox.PersonSend, string])[]
+) {
+  getPersonRequest.mockImplementation((_workspace, _session, send) => {
+    const found = beside.find(
+      ([sent]) => JSON.stringify(sent) === JSON.stringify(send)
+    );
+    return Promise.resolve(
+      found === undefined
+        ? { kind: "missing" as const }
+        : { kind: "words" as const, words: found[1] }
+    );
+  });
+}
+
+/** The conversation's files took this task agent's sandbox off the web before. */
+function sandboxOffWeb() {
+  marks.conversationHoldsPersonFiles.mockResolvedValue(true);
+  marks.sandboxHoldsPersonFiles.mockResolvedValue(true);
+}
+
+describe("the person's own words in the task agent's sandbox", () => {
+  it("gives a helper on the web no words, and does not open its sandbox for them, until files take it off", async () => {
+    const sandbox = sandboxOf();
+    const ctx = context(sandbox);
+    const opened = vi.spyOn(ctx, "getSandbox");
+    wordsBeside([start("Найди курс евро"), "Найди курс евро, я Иван Петров"]);
+    await received(firstMessage("Найди курс евро"), ctx, "turn_0");
+    wordsBeside([await continuation("Добавь юань"), "Добавь юань"]);
+    await received("Добавь юань", ctx, "turn_1");
+    // Bro steers the busy helper.
+    await received("И фунт", ctx, "turn_1");
+
+    // Nothing of these messages could take it off the web: no words are
+    // read, and the sandbox, which may need a snapshot restored or room on
+    // the host, stays shut.
+    expect(getPersonRequest).not.toHaveBeenCalled();
+    expect(opened).not.toHaveBeenCalled();
+    expect(sandbox.files.has(request)).toBe(false);
+
+    inboxHolds(table);
+    const withFile = `Посчитай итог в ${table.path}`;
+    wordsBeside([await continuation(withFile), "Посчитай итог без НДС"]);
+    await received(withFile, ctx, "turn_2");
+
+    expect(order).toEqual(["mark sb-task", `write ${table.path}`]);
+    expect(text(sandbox.files.get(request))).toBe("Посчитай итог без НДС\n");
+  });
+
+  it("withholds the words when the files Bro named did not come", async () => {
+    wordsBeside([start(table.path), "Посчитай итог без НДС"]);
+    const sandbox = sandboxOf();
+    await received(firstMessage(table.path), context(sandbox));
+
+    expect(markSandboxHoldsPersonFiles).not.toHaveBeenCalled();
+    expect(sandbox.files.has(request)).toBe(false);
+    expect(text(sandbox.files.get(notReceived))).toContain(table.path);
+  });
+
+  it("puts the words of the turn that started the task in REQUEST.txt of a helper off the web, files or not", async () => {
+    sandboxOffWeb();
+    const said = "Замаскируй номера карт, кроме последних 4 цифр";
+    wordsBeside([start("Замаскируй номера в таблице"), said]);
+    const sandbox = sandboxOf();
+    await received(
+      firstMessage("Замаскируй номера в таблице"),
+      context(sandbox)
+    );
+
+    expect(text(sandbox.files.get(request))).toBe(`${said}\n`);
+    expect(getPersonRequest).toHaveBeenCalledWith(
+      workspaceId,
+      "session-bro",
+      start("Замаскируй номера в таблице"),
+      expect.any(AbortSignal)
+    );
+    // Words are no file: nothing marked, no list of missing files.
+    expect(markSandboxHoldsPersonFiles).not.toHaveBeenCalled();
+    expect(markSandboxOffWeb).not.toHaveBeenCalled();
+    expect(sandbox.files.has(notReceived)).toBe(false);
+  });
+
+  it("brings the words beside the files, which arrive as before", async () => {
+    wordsBeside([start(table.path), "Посчитай итог за 14 календарных дней"]);
+    inboxHolds(table);
+    const sandbox = sandboxOf();
+    await received(firstMessage(table.path), context(sandbox));
+
+    expect(text(sandbox.files.get(request))).toBe(
+      "Посчитай итог за 14 календарных дней\n"
+    );
+    expect(sandbox.files.get(table.path)).toEqual(table.bytes);
+    expect(order).toEqual(["mark sb-task", `write ${table.path}`]);
+  });
+
+  it("replaces the words with a continuation's, and takes them away when one brings none", async () => {
+    sandboxOffWeb();
+    const sandbox = sandboxOf();
+    const ctx = context(sandbox);
+    wordsBeside([start("Сделай отчёт"), "Сделай отчёт без НДС"]);
+    await received(firstMessage("Сделай отчёт"), ctx, "turn_0");
+    wordsBeside([
+      await continuation("Добавь сентябрь"),
+      "Добавь сентябрь, но без НДС",
+    ]);
+    await received("Добавь сентябрь", ctx, "turn_1");
+    expect(text(sandbox.files.get(request))).toBe(
+      "Добавь сентябрь, но без НДС\n"
+    );
+
+    // A report's turn continues the task: no words of the person's came.
+    wordsBeside();
+    await received("Исправь итог в строке 12", ctx, "turn_2");
+
+    expect(sandbox.files.has(request)).toBe(false);
+  });
+
+  it("keeps the words when a steered message brings none, and waits a little for its own", async () => {
+    vi.useFakeTimers();
+    try {
+      sandboxOffWeb();
+      const sandbox = sandboxOf();
+      const ctx = context(sandbox);
+      wordsBeside([start("Сделай отчёт"), "Сделай отчёт без НДС"]);
+      await received(firstMessage("Сделай отчёт"), ctx, "turn_0");
+      wordsBeside();
+      const steered = received("Проверь строку 12", ctx, "turn_0");
+      await vi.advanceTimersByTimeAsync(5000);
+      await steered;
+      expect(text(sandbox.files.get(request))).toBe("Сделай отчёт без НДС\n");
+
+      // Bro's hook stores the words of the person's steered message a moment
+      // after eve hands it over.
+      const late = await continuation("И без доставки");
+      getPersonRequest
+        .mockResolvedValueOnce({ kind: "missing" })
+        .mockResolvedValueOnce({ kind: "words", words: "И без доставки" });
+      const second = received("И без доставки", ctx, "turn_0");
+      await vi.advanceTimersByTimeAsync(5000);
+      await second;
+
+      expect(getPersonRequest).toHaveBeenLastCalledWith(
+        workspaceId,
+        "session-bro",
+        late,
+        expect.any(AbortSignal)
+      );
+      expect(text(sandbox.files.get(request))).toBe("И без доставки\n");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("brings no words without the pilot", async () => {
+    pilot.taskFilesOfCaller.mockReturnValue(false);
+    wordsBeside([start("Сделай отчёт"), "Сделай отчёт без НДС"]);
+    const sandbox = sandboxOf();
+    await received(firstMessage("Сделай отчёт"), context(sandbox));
+
+    expect(getPersonRequest).not.toHaveBeenCalled();
+    expect(sandbox.files.size).toBe(0);
+  });
+
+  it("still brings the files when the words cannot be read", async () => {
+    getPersonRequest.mockRejectedValue(new Error("Object Storage 500"));
+    inboxHolds(table);
+    const sandbox = sandboxOf();
+    await received(firstMessage(table.path), context(sandbox));
+
+    expect(sandbox.files.get(table.path)).toEqual(table.bytes);
+    expect(sandbox.files.has(request)).toBe(false);
+    expect(sandbox.files.has(notReceived)).toBe(false);
   });
 });

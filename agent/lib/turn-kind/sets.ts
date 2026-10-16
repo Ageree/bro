@@ -11,7 +11,6 @@ export const backgroundTaskTurnTools = [
   "react_to_message",
   "send_message",
   taskAgentTool,
-  "task_cancel",
 ] as const;
 
 /**

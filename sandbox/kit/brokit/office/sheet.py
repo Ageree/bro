@@ -1,7 +1,8 @@
 """brokit xlsx inspect / recalc and csv sniff.
 
 inspect: what a workbook holds before touching it — sheets (hidden ones too),
-used range, merged cells, formulas, the header row, data validations, charts.
+used range, merged cells (each one holding a value with the row and column labels
+around it), formulas, the header row, data validations, charts.
 
 recalc: openpyxl writes formulas without values, and Excel's cached values may
 be stale, so a workbook is recalculated by LibreOffice. LibreOffice never
@@ -9,6 +10,11 @@ recalculates a value already cached in an .xlsx by default, so the cached
 values of formula cells are dropped first (a zip-level edit: everything else
 stays byte for byte); then `soffice --convert-to xlsx` computes every formula.
 Formula errors are listed; `lost` names what the LibreOffice re-save dropped.
+
+Both list the columns that hold dates or sums as text (`text_dates`,
+`text_numbers`): such a workbook looks right but sorts, filters and sums by
+date wrongly. Bare digit strings (ИНН, account and phone numbers) are not
+listed: they must stay text.
 
 sniff: encoding (BOM, UTF-8, else charset detection with cp1251 preferred for
 Russian), separator, decimal comma, thousands separator, quoting, header, row
@@ -33,6 +39,32 @@ SAMPLE_BYTES = 4 * 1024 * 1024
 FIELD_LIMIT = 16 * 1024 * 1024
 LONG_RECORD_LINES = 50
 SHEET_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+_TIME = r"(?:[ T](?:[01]?\d|2[0-3]):[0-5]\d(?::[0-5]\d)?)?"
+TEXT_DATE = re.compile(
+    # A two-digit year only with a padded day and month: «1.1.10» is an outline number, not a date.
+    r"(?:(?:0?[1-9]|[12]\d|3[01])\.(?:0?[1-9]|1[0-2])\.\d{4}"
+    r"|(?:0[1-9]|[12]\d|3[01])\.(?:0[1-9]|1[0-2])\.\d{2}"
+    r"|\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01]))" + _TIME
+)
+# Sums as Russian banks and 1C print them: thousands grouped by a space or a
+# no-break space, or a decimal comma, or digits with a currency mark. A bare
+# digit string is an ИНН, an account or a phone as often as a sum.
+_RUB = r"\s?(?:₽|руб\.?|р\.)"
+TEXT_NUMBER = re.compile(
+    r"[-+\u2212]?(?:(?:\d{1,3}(?:[ \u00a0\u202f]\d{3})+(?:,\d+)?|\d+,\d+)(?:%s)?|\d+%s)" % (_RUB, _RUB)
+)
+SCAN_ROWS = 1000
+# '#,##0.00' is how the file stores the grouping Russian Excel shows as
+# «1 234,56»; '# ##0.00' would group only the last three digits.
+TEXT_HINT = (
+    "dates or sums stored as text break sorting, filters and SUMIFS by date: in a workbook you make, write "
+    "datetime / float into these cells and set number_format ('DD.MM.YYYY', 'DD.MM.YYYY HH:MM', '#,##0.00'); "
+    "in a file you only read, parse them"
+)
+MERGED_HINT = (
+    "a merged cell's value covers its whole range (pandas/openpyxl see it only in the top-left cell, the rest "
+    "read empty): merged_values gives each range's rows and the labels of its first and last row"
+)
 
 
 def load(path, **options):
@@ -56,7 +88,12 @@ def load(path, **options):
 
 
 def header_row(sheet, limit=15):
-    """The first of the top rows that is mostly text and is followed by data."""
+    """The first of the top rows that is mostly text and is followed by data.
+
+    A header across most of the sheet counts over a sparse grid too: a timetable's next row
+    holds a time and one lesson.
+    """
+    columns = sheet.max_column
     rows = list(sheet.iter_rows(min_row=1, max_row=limit + 1, values_only=True))
     for index, row in enumerate(rows[:-1]):
         filled = [value for value in row if value not in (None, "")]
@@ -64,9 +101,69 @@ def header_row(sheet, limit=15):
             continue
         texts = [value for value in filled if isinstance(value, str)]
         following = [value for value in rows[index + 1] if value not in (None, "")]
-        if len(texts) >= 0.8 * len(filled) and len(following) >= max(2, len(filled) // 2):
+        dense = len(following) >= max(2, len(filled) // 2)
+        wide = bool(following) and len(filled) >= columns / 2
+        if len(texts) >= 0.8 * len(filled) and (dense or wide):
             return index + 1
     return None
+
+
+def _filled(value):
+    return value is not None and not (isinstance(value, str) and not value.strip())
+
+
+def _plain(value):
+    """A cell value for JSON: numbers stay numbers, dates and times in ISO form, text cut to 60 characters."""
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)[:60]
+
+
+def merged_values(sheet, header):
+    """([merged ranges holding a value, where each lies], whether one of them covers data cells).
+
+    A row label is the value left of the range in the label column (the leftmost column holding
+    data below the header: times, names, numbers); the column label is the header's cell above it.
+    """
+    from openpyxl.cell.cell import MergedCell
+
+    ranges = sorted(sheet.merged_cells.ranges, key=lambda r: (r.min_row, r.min_col))
+    valued = [r for r in ranges if _filled(sheet.cell(r.min_row, r.min_col).value)]
+    if not valued:
+        return [], False
+    if header is not None:
+        spread = any(r.min_row > header for r in valued)
+    else:
+        spread = any(r.max_row > r.min_row for r in valued)
+    start = (header or 0) + 1
+    label_column = None
+    for row in sheet.iter_rows(min_row=start, max_row=min(sheet.max_row, start + 200), values_only=True):
+        column = next((n for n, value in enumerate(row, 1) if _filled(value)), None)
+        if column is not None and (label_column is None or column < label_column):
+            label_column = column
+
+    def shown(row, column):
+        cell = sheet.cell(row, column)
+        if isinstance(cell, MergedCell):
+            owner = next((r for r in ranges if r.min_row <= row <= r.max_row and r.min_col <= column <= r.max_col), None)
+            return _plain(sheet.cell(owner.min_row, owner.min_col).value) if owner else None
+        return _plain(cell.value)
+
+    listed = []
+    for r in valued[:MAX_LISTED]:
+        labelled = label_column is not None and label_column < r.min_col
+        listed.append(
+            {
+                "range": str(r),
+                "value": _plain(sheet.cell(r.min_row, r.min_col).value),
+                "rows": [r.min_row, r.max_row],
+                "row_labels": [shown(row, label_column) if labelled else None for row in (r.min_row, r.max_row)],
+                "column_label": shown(header, r.min_col) if header is not None and r.min_row > header else None,
+            }
+        )
+    return listed, spread
 
 
 def inspect(argv):
@@ -88,26 +185,78 @@ def inspect(argv):
             {"ranges": str(v.sqref), "type": v.type, "formula": v.formula1}
             for v in sheet.data_validations.dataValidation
         ]
-        sheets.append(
-            {
-                "name": sheet.title,
-                "hidden": sheet.sheet_state != "visible",
-                "dims": sheet.dimensions,
-                "max_row": sheet.max_row,
-                "max_column": sheet.max_column,
-                "merged": [str(r) for r in sheet.merged_cells.ranges][:MAX_LISTED],
-                "formulas": {"count": count, "examples": formulas},
-                "header_row": header_row(sheet),
-                "validations": validations[:MAX_LISTED],
-                "conditional_formats": len(sheet.conditional_formatting),
-                "charts": len(getattr(sheet, "_charts", [])),
-                "images": len(getattr(sheet, "_images", [])),
-                "tables": list(sheet.tables.keys()),
-                "freeze": sheet.freeze_panes,
-            }
-        )
+        # Before header_row and merged_values: reading a cell past the used range creates it.
+        dims, max_row, max_column = sheet.dimensions, sheet.max_row, sheet.max_column
+        header = header_row(sheet)
+        valued, spread = merged_values(sheet, header)
+        entry = {
+            "name": sheet.title,
+            "hidden": sheet.sheet_state != "visible",
+            "dims": dims,
+            "max_row": max_row,
+            "max_column": max_column,
+            "merged": [str(r) for r in sheet.merged_cells.ranges][:MAX_LISTED],
+            "merged_values": valued,
+            "formulas": {"count": count, "examples": formulas},
+            "header_row": header,
+            "validations": validations[:MAX_LISTED],
+            "conditional_formats": len(sheet.conditional_formatting),
+            "charts": len(getattr(sheet, "_charts", [])),
+            "images": len(getattr(sheet, "_images", [])),
+            "tables": list(sheet.tables.keys()),
+            "freeze": sheet.freeze_panes,
+        }
+        if spread:
+            entry["hint"] = MERGED_HINT
+        sheets.append(entry)
     names = list(workbook.defined_names.keys()) if hasattr(workbook.defined_names, "keys") else []
-    return {"sheets": sheets, "defined_names": names[:MAX_LISTED], "features": features(args.file)}
+    result = {"sheets": sheets, "defined_names": names[:MAX_LISTED], "features": features(args.file)}
+    result.update(text_typed(args.file))
+    return result
+
+
+def text_typed(path):
+    """Columns holding dates or sums as text in the first SCAN_ROWS rows of each sheet, and a hint when any."""
+    from openpyxl.utils import get_column_letter
+
+    workbook = load(path, read_only=True, data_only=True)
+    found = {"text_dates": [], "text_numbers": []}
+    try:
+        for sheet in workbook.worksheets:
+            # A dimension tag some writers get wrong would cut the rows short.
+            sheet.reset_dimensions()
+            filled = {}
+            hits = {"text_dates": {}, "text_numbers": {}}
+            for row in sheet.iter_rows(max_row=SCAN_ROWS, values_only=True):
+                for column, value in enumerate(row, 1):
+                    text = value.strip() if isinstance(value, str) else value
+                    if text is None or text == "":
+                        continue
+                    filled[column] = filled.get(column, 0) + 1
+                    if not isinstance(text, str):
+                        continue
+                    if TEXT_DATE.fullmatch(text):
+                        hits["text_dates"].setdefault(column, []).append(text)
+                    elif TEXT_NUMBER.fullmatch(text):
+                        hits["text_numbers"].setdefault(column, []).append(text)
+            for kind, columns in hits.items():
+                for column in sorted(columns):
+                    cells = columns[column]
+                    if len(cells) >= 5 or 2 * len(cells) >= filled[column]:
+                        found[kind].append(
+                            {
+                                "sheet": sheet.title,
+                                "column": get_column_letter(column),
+                                "cells": len(cells),
+                                "example": cells[0],
+                            }
+                        )
+    finally:
+        workbook.close()
+    result = {kind: columns[:MAX_LISTED] for kind, columns in found.items()}
+    if any(result.values()):
+        result["hint"] = TEXT_HINT
+    return result
 
 
 def features(path):
@@ -197,7 +346,9 @@ def recalc(argv):
             errors=errors[:MAX_LISTED],
             output=args.output,
         )
-    return {"output": args.output, "errors": errors[:MAX_LISTED], "error_count": len(errors), "lost": lost}
+    result = {"output": args.output, "errors": errors[:MAX_LISTED], "error_count": len(errors), "lost": lost}
+    result.update(text_typed(args.output))
+    return result
 
 
 # ---------------------------------------------------------------- csv

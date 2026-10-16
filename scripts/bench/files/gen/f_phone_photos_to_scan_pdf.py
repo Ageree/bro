@@ -12,8 +12,11 @@ balance, JPEG q=85.
 
 truth/phone_scan.json             file → page, page quad in each photo, fiducial/marker geometry (mm and
                                   share of the page), expected order
-truth/phone_scan_page<k>.png      reference render of page k (gray, 150 dpi, 1240×1754)
-truth/phone_scan_page<k>_300x424.png, _64x91.png  downsampled references for raster_legibility
+truth/phone_scan_page<k>.png      reference render of page k (gray, 150 dpi, 1240×1754): ocr_legibility reads its
+                                  words with tesseract and looks for them, in their places, on page k of the answer
+truth/phone_scan_page<k>_300x424.png, _64x91.png  downsampled references of the former raster_legibility check (pixel
+                                  correlation measured sub-millimetre registration, not legibility); no check reads
+                                  them now
 """
 
 from __future__ import annotations

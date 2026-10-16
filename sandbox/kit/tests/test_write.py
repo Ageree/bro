@@ -9,7 +9,7 @@ import tempfile
 import unittest
 
 from tests.pdf_fixtures import A4, kit, render, scan_form, write_json
-from tests.test_layout import vector_form
+from tests.test_layout import KOPECKS_X, small_cells_form, vector_form
 
 
 def word_boxes(path):
@@ -76,6 +76,24 @@ class Write(unittest.TestCase):
         again = os.path.join(self.directory, "again.pdf")
         code, refused = kit("pdf", "write", output, write_json(again + ".json", [{"at": line["id"], "text": "x"}]), "-o", again, cache=self.cache)
         self.assertEqual((code, refused["code"]), (2, "filled_blank"))
+
+    def test_two_cell_comb_gets_a_character_per_cell(self):
+        import numpy
+
+        form = small_cells_form(os.path.join(self.directory, "cells.pdf"))
+        kopecks = self.blank(form, lambda b: abs(b["box"][0] - KOPECKS_X) < 2)
+        output, result = self.write(form, [{"at": kopecks["id"], "text": "50"}])
+        self.assertEqual(result["items"][0]["status"], "ok")
+        new = render(output, 1, dpi=144, gray=True) < 100
+        x0, y0, x1, y1 = kopecks["box"]
+        width = (x1 - x0) / 2
+        for index in range(2):
+            left = x0 + index * width
+            # The cell inside its sides, at 2 px per pt.
+            ys, xs = numpy.nonzero(new[round(2 * y0 + 4) : round(2 * y1 - 4), round(2 * left + 4) : round(2 * (left + width) - 4)])
+            self.assertGreater(len(xs), 20, index)
+            centre = left + 2 + xs.mean() / 2
+            self.assertLess(abs(centre - (left + width / 2)), 1.5, (index, centre, kopecks["box"]))
 
     def test_text_on_a_skewed_scan_follows_the_rule(self):
         import numpy

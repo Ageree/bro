@@ -1,5 +1,6 @@
 """brokit xlsx inspect / recalc and csv sniff (W2 spec §6.11, §9)."""
 
+import datetime
 import os
 import tempfile
 import unittest
@@ -28,6 +29,49 @@ def workbook(path):
     hidden = book.create_sheet("old")
     hidden.sheet_state = "hidden"
     hidden["A1"] = "старое"
+    book.save(path)
+
+
+def statement(path):
+    """A bank statement as the task agent built it: dates and sums typed as text."""
+    book = openpyxl.Workbook()
+    sheet = book.active
+    sheet.title = "Операции"
+    sheet.append(["Дата", "Сумма", "ИНН", "Счёт", "Телефон", "Проведено", "Списано", "Описание"])
+    for n in range(1, 8):
+        sheet.append(
+            [
+                "%02d.09.2026 08:%02d" % (n, n),
+                "\u2212%d %03d,%02d" % (n, n * 7, n) if n % 2 else "%d,50 ₽" % (n * 100),
+                "77070838%02d" % n,
+                "4081781009991000%04d" % n,
+                "+7916123456%d" % n,
+                datetime.datetime(2026, 9, n, 8, n),
+                -1234.5 * n,
+                "Перевод %d,5 тыс." % n,
+            ]
+        )
+    sheet["G9"] = "1 234,56"
+    totals = book.create_sheet("Итоги")
+    totals.append(["Остаток на начало", "154 215,37"])
+    totals.append(["Остаток на конец", "69 335,42"])
+    book.save(path)
+
+
+def timetable(path):
+    """A weekly timetable: days across row 2, times down column A, a lesson merged over its slots."""
+    book = openpyxl.Workbook()
+    sheet = book.active
+    sheet.title = "Неделя"
+    sheet["A1"] = "Расписание кружков"
+    sheet.merge_cells("A1:H1")
+    for column, day in enumerate(["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"], 2):
+        sheet.cell(2, column, day)
+    for index in range(10):
+        sheet.cell(3 + index, 1, datetime.time(*divmod(9 * 60 + 30 * index, 60)))
+    sheet["B3"] = "Английский\nкаб. 12"
+    sheet.merge_cells("B3:B5")
+    sheet["E8"] = "Шахматы"
     book.save(path)
 
 
@@ -64,10 +108,56 @@ class SheetTest(unittest.TestCase):
         first, hidden = result["sheets"]
         self.assertEqual(first["name"], "Январь")
         self.assertEqual(first["merged"], ["A1:C1"])
+        self.assertEqual(
+            first["merged_values"],
+            [{"range": "A1:C1", "value": "Продажи за январь", "rows": [1, 1], "row_labels": [None, None], "column_label": None}],
+        )
+        # A title above the header is not data a merge hides.
+        self.assertNotIn("hint", first)
         self.assertEqual(first["header_row"], 2)
         self.assertEqual(first["formulas"]["count"], 2)
         self.assertEqual(first["validations"][0]["ranges"], "C3:C4")
         self.assertEqual((hidden["name"], hidden["hidden"]), ("old", True))
+        self.assertEqual((result["text_dates"], result["text_numbers"]), ([], []))
+        self.assertNotIn("hint", result)
+
+    def test_inspect_names_columns_of_dates_and_sums_typed_as_text(self):
+        statement(self.path("statement.xlsx"))
+        code, result = kit("xlsx", "inspect", self.path("statement.xlsx"))
+        self.assertEqual(code, 0, result)
+        self.assertEqual(
+            result["text_dates"], [{"sheet": "Операции", "column": "A", "cells": 7, "example": "01.09.2026 08:01"}]
+        )
+        # ИНН, account and phone columns stay text; one text sum among the
+        # numbers of «Списано» is not a text column.
+        self.assertEqual(
+            result["text_numbers"],
+            [
+                {"sheet": "Операции", "column": "B", "cells": 7, "example": "\u22121 007,01"},
+                {"sheet": "Итоги", "column": "B", "cells": 2, "example": "154 215,37"},
+            ],
+        )
+        self.assertIn("'DD.MM.YYYY HH:MM'", result["hint"])
+
+    def test_inspect_places_merged_values_of_a_timetable(self):
+        timetable(self.path("timetable.xlsx"))
+        code, result = kit("xlsx", "inspect", self.path("timetable.xlsx"))
+        self.assertEqual(code, 0, result)
+        sheet = result["sheets"][0]
+        # The day row is the header although the rows under it hold a time and at most one lesson.
+        self.assertEqual(sheet["header_row"], 2)
+        lesson = next(item for item in sheet["merged_values"] if item["range"] == "B3:B5")
+        self.assertEqual(
+            lesson,
+            {
+                "range": "B3:B5",
+                "value": "Английский\nкаб. 12",
+                "rows": [3, 5],
+                "row_labels": ["09:00:00", "10:00:00"],
+                "column_label": "Пн",
+            },
+        )
+        self.assertIn("covers its whole range", sheet["hint"])
 
     def test_csv_sniff_reads_cp1251_semicolons_and_decimal_commas(self):
         lines = ["Дата;Товар;Кол-во;Цена"]
@@ -106,6 +196,14 @@ class SheetTest(unittest.TestCase):
         self.assertEqual(formulas["B5"].value, "=SUM(B3:B4)")
         code, result = kit("xlsx", "recalc", self.path("stale.xlsx"), "-o", self.path("checked.xlsx"), "--check")
         self.assertEqual((code, result["code"]), (2, "formula_errors"))
+
+    @unittest.skipUnless(has("soffice"), "LibreOffice is not installed")
+    def test_recalc_names_dates_and_sums_typed_as_text(self):
+        statement(self.path("statement-recalc.xlsx"))
+        code, result = kit("xlsx", "recalc", self.path("statement-recalc.xlsx"), "-o", self.path("statement-out.xlsx"))
+        self.assertEqual(code, 0, result)
+        self.assertEqual([(c["sheet"], c["column"]) for c in result["text_dates"]], [("Операции", "A")])
+        self.assertEqual([(c["sheet"], c["column"]) for c in result["text_numbers"]], [("Операции", "B"), ("Итоги", "B")])
 
 
 if __name__ == "__main__":

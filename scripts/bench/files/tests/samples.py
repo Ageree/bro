@@ -125,3 +125,12 @@ def pdf(images=(), *, texts=(), size=(595.28, 841.89), in_form=False, form_matri
 def context(case: dict, case_dir: pathlib.Path, fixtures_dir: pathlib.Path | None = None) -> Context:
     run = json.loads((case_dir / "files-run.json").read_text(encoding="utf-8"))
     return Context(case=case, run=run, case_dir=case_dir, fixtures_dir=fixtures_dir or pathlib.Path(tempfile.mkdtemp()))
+
+
+SUITE = FILES.parents[2] / "docs" / "benchmarks" / "files" / "cases.json"
+
+
+def suite_check(case_id: str, description_start: str) -> tuple:
+    """(case, check) of the committed suite: the check whose description starts with description_start."""
+    case = next(c for c in json.loads(SUITE.read_text(encoding="utf-8")) if c["id"] == case_id)
+    return case, next(c for c in case["checks"] if c["description"].startswith(description_start))

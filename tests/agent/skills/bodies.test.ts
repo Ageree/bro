@@ -466,9 +466,9 @@ describe("the skills of the marked instructions", () => {
         )
       );
       const sign = skillBody("sign", each) ?? "";
-      // The consent rule, said once.
+      // The consent rule for an offer of Bro's own, said once.
       expect(sign).toContain(
-        "Подпись ставишь только после простого «да» человека на этот вопрос"
+        "подпись ставишь только после простого «да» человека в его следующем сообщении"
       );
       // The files body gains the pointer, and nothing else changes.
       const files = skillBody("files", each) ?? "";
