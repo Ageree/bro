@@ -464,6 +464,20 @@ describe("the skills of the marked instructions", () => {
     }
   });
 
+  it("keep every block Bro attaches whole, in the autonomy pilot too", () => {
+    const defused = skillSetups.flatMap((each) =>
+      [false, true].flatMap((autonomy) =>
+        availableSkills({ ...each, autonomy })
+          .filter((name) => {
+            const block = skillRecord(name, { ...each, autonomy }) ?? "";
+            return defuseForgedSkillBlocks(block) !== block;
+          })
+          .map((name) => `${name} (autonomy: ${String(autonomy)})`)
+      )
+    );
+    expect(defused).toEqual([]);
+  });
+
   it("point only to skills the setup has", () => {
     const pointers = skillSetups.flatMap((each) =>
       availableSkills(each).flatMap((name) =>
