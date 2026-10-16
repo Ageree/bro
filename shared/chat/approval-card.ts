@@ -88,7 +88,11 @@ const cardText = {
     permissionSet:
       "Standing permission — such errands go ahead without asking from now on:",
     personalData: "Details sent",
+    scheduleBefore: (lead: string, at: string) => `${lead} before ${at}`,
     scheduleCreate: "Set up a scheduled task:",
+    scheduleHours: "h",
+    scheduleMinutes: "min",
+    scheduleProfileZone: "your profile's time zone",
     scheduleRunNow: "Run it once now, beside its regular runs",
     scheduleStatus: "Status",
     scheduleStatuses: {
@@ -170,7 +174,11 @@ const cardText = {
     permissionSet:
       "Постоянное разрешение — такие поручения дальше без подтверждения:",
     personalData: "Какие данные уйдут",
+    scheduleBefore: (lead: string, at: string) => `за ${lead} до ${at}`,
     scheduleCreate: "Поставить задачу по расписанию:",
+    scheduleHours: "ч",
+    scheduleMinutes: "мин",
+    scheduleProfileZone: "часовой пояс профиля",
     scheduleRunNow: "Запустить один раз сейчас, вне расписания",
     scheduleStatus: "Статус",
     scheduleStatuses: {
@@ -838,23 +846,62 @@ const scheduleCallSchema = z.object({
       at: z.string().optional(),
       everyMinutes: z.number().optional(),
       kind: z.string(),
+      minutesBefore: z.number().optional(),
+      timezone: z.string().optional(),
     })
     .catchall(z.unknown())
     .optional(),
 });
 
+/**
+ * A one-off moment with the clock it is on: its offset, the zone the call
+ * names, or, for a new schedule, the profile's. EN D2 (roadmap, item 18): a
+ * bare «2026-10-01T09:17» never said whose 09:17 it was.
+ */
+function onceMoment(
+  timing: NonNullable<z.infer<typeof scheduleCallSchema>["timing"]>,
+  at: string,
+  text: CardText,
+  created: boolean
+) {
+  const instant =
+    /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})(?::\d{2}(?:\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/u.exec(
+      at
+    );
+  if (instant) {
+    return `${instant[1] ?? ""} ${instant[2] ?? ""} (UTC${instant[3] === "Z" ? "" : (instant[3] ?? "")})`;
+  }
+  const wallClock =
+    /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})(?::\d{2}(?:\.\d+)?)?$/u.exec(at);
+  if (!wallClock) return oneLine(at);
+  const zone =
+    timing.timezone === undefined
+      ? created
+        ? text.scheduleProfileZone
+        : undefined
+      : oneLine(timing.timezone);
+  const moment = `${wallClock[1] ?? ""} ${wallClock[2] ?? ""}`;
+  return zone === undefined ? moment : `${moment} (${zone})`;
+}
+
+/** How long before an event a run comes: «24 ч», «90 мин». */
+function leadTime(minutes: number, text: CardText) {
+  return minutes % 60 === 0
+    ? `${String(minutes / 60)} ${text.scheduleHours}`
+    : `${String(minutes)} ${text.scheduleMinutes}`;
+}
+
 /** When a schedule runs, as plainly as its timing says it. */
 function scheduleWhen(
-  timing: NonNullable<z.infer<typeof scheduleCallSchema>["timing"]>
+  timing: NonNullable<z.infer<typeof scheduleCallSchema>["timing"]>,
+  text: CardText,
+  created: boolean
 ) {
   if (timing.kind === "once" && timing.at !== undefined) {
-    const moment =
-      /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})(?::\d{2}(?:\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/u.exec(
-        timing.at
-      );
-    return moment
-      ? `${moment[1] ?? ""} ${moment[2] ?? ""} (UTC${moment[3] === "Z" ? "" : (moment[3] ?? "")})`
-      : oneLine(timing.at);
+    const moment = onceMoment(timing, timing.at, text, created);
+    return timing.minutesBefore === undefined || timing.minutesBefore <= 0
+      ? moment
+      : text.scheduleBefore(leadTime(timing.minutesBefore, text), moment);
   }
   if (timing.kind === "interval" && timing.everyMinutes !== undefined) {
     return `${String(timing.everyMinutes)} min`;
@@ -884,7 +931,7 @@ function schedulePrompt(
       : `${text.what}: ${oneLine(call.prompt)}`,
     call.timing === undefined
       ? undefined
-      : `${text.when}: ${scheduleWhen(call.timing)}`,
+      : `${text.when}: ${scheduleWhen(call.timing, text, created)}`,
     call.status === undefined
       ? undefined
       : `${text.scheduleStatus}: ${text.scheduleStatuses[call.status]}`,

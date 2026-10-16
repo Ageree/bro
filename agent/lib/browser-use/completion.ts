@@ -65,6 +65,10 @@ import {
   laterStepInstruction,
   placedOrderInstruction,
 } from "./guidance";
+import {
+  eventZonePilot,
+  laterStepEventZoneNote,
+} from "@agent/lib/schedules/event-zone";
 import { errandAutonomyPilot } from "./autonomy";
 import { gosuslugiFallback } from "./public-services";
 import { siteHostMissing, siteHostname } from "./host";
@@ -727,6 +731,11 @@ function deliveryInstruction(
     readonly ordered: boolean;
     /** What to do without a public-service site that would not let it in. */
     readonly stuck?: string;
+    /**
+     * The pilot of event zones: a later step before a flight is set by the
+     * departure itself (`laterStepEventZoneNote`).
+     */
+    readonly eventZone: boolean;
     /** A read-only check after a broken-off run could not tell. */
     readonly unclear: boolean;
     /** The network error that kept the site from loading, when that did. */
@@ -784,6 +793,7 @@ function deliveryInstruction(
     facts.booking === "booked" ? calendarInstruction : undefined,
     links,
     facts.next ? laterStepInstruction : undefined,
+    facts.next && facts.eventZone ? laterStepEventZoneNote : undefined,
     tail,
   ]
     .filter((line) => line !== undefined)
@@ -913,6 +923,7 @@ function browserRunReport(
       booking: options.booking,
       checked: options.checked === true,
       confirmed: options.confirmed === true,
+      eventZone: eventZonePilot(row.workspaceId),
       hasCharges: options.hasCharges === true,
       hasItems: options.hasItems === true,
       hasLinks: options.hasLinks === true,

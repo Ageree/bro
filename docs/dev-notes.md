@@ -1315,9 +1315,10 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   при загрузке. Ядро держит `tests/agent/skills/core.test.ts` (≤ 10 тыс.
   токенов, запаса почти нет): новая строка ядра — за счёт другой, а
   укороченную сверьте с фразами `bodies.test.ts`.
-- Флаг, который меняет тело навыка (как `autonomy` в `skillSetup`), должен
-  войти в перебор `genuineBlocks` (`agent/lib/skills/render.ts`): иначе
-  дефузер показывает модели настоящий блок как подделку. До 16.10 так шли
+- Флаг, который меняет тело навыка (как `autonomy` и `eventZone` в
+  `skillSetup`), должен войти в перебор `genuineBlocks`
+  (`agent/lib/skills/render.ts`) и в тест «keep every block…» `bodies.test.ts`:
+  иначе дефузер показывает модели настоящий блок как подделку. До 16.10 так шли
   browser, money и gov-services у всех в пилоте автономии.
 - id хода eve — `turn_N`, счётчик своей сессии (и заново с `turn_0` в
   преемнике): кэш вердикта пилота — по сессии и ходу
@@ -1929,6 +1930,18 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
 - Правка расписания берёт недостающее из расписания, не из профиля
   (`shared/schedules/timing.ts`). Праздники — только постановление № 1466 на
   2026 год: следующее допишите (`shared/schedules/holidays.ts`).
+- Шаг перед событием в другом городе (пилот `SCHEDULE_EVENT_ZONE_WORKSPACES`,
+  id или `*`; п. 18 роадмапа): у `once` есть `minutesBefore`, модель шлёт вылет
+  по часам аэропорта, его пояс и упреждение авиакомпании (из `Next` отчёта или
+  её правил; 1440 — лишь если неизвестно: правил авиакомпаний код не знает), а
+  `resolveScheduleTiming` только вычитает его целыми часами, как `flightFacts`.
+  Без флага инструменты прежние байт в байт.
+  Тексты «ставь на момент открытия» (`follow-through.md`, тело навыка,
+  `laterStepInstruction`) пилот переписывает (`agent/lib/schedules/event-zone.ts`),
+  иначе модель вычитала бы сутки дважды; ядро навыков (бюджет 10k) не трогает.
+  Варианты `schedules-*` — один `defineTool` в резолвере: тернарник схем в
+  `inputSchema` TypeScript сужает до самой узкой схемы (без `delegate`), поэтому
+  схему выбирает функция с широким типом результата (`createInputSchemaOf`).
 - `schedules-answer` принимает лишь run id, чей вопрос доставлен в этот чат
   после прошлого сообщения человека (`answerableScheduledQuestions`).
 - `eve dev` не запускает расписания по cron: `POST /eve/v1/dev/schedules/<имя>`.
