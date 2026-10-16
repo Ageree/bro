@@ -832,12 +832,19 @@ export async function deleteGmailDrafts(
   // Outside the call Google may make again after a rate limit: a draft
   // deleted before it is gone, and the retry would no longer find it.
   const deleted = new Map<string, string>();
+  // Kept across that retry too: a draft named by both its ids and deleted
+  // under one of them is no longer listed under the other.
+  const drafts = new Map<string, string>();
   const missing = new Set<string>();
   try {
     await withGoogleAuth(ctx, async (google) => {
       missing.clear();
       const pending = requested.filter((id) => !deleted.has(id));
-      const drafts = await draftIdsOf(google, pending);
+      const listed = await draftIdsOf(
+        google,
+        pending.filter((id) => !drafts.has(id))
+      );
+      for (const [id, draftId] of listed) drafts.set(id, draftId);
       for (const id of pending) {
         const draftId = drafts.get(id);
         // A draft named by both its ids is deleted once.
