@@ -1,11 +1,13 @@
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
+import { parseFilesSuite, turnGateSchema } from "./files/suite.ts";
 
 /**
  * The published benchmark tasks, read from `docs/benchmarks`: the Russian
- * suite's `cases.json` and the English suite's `cases.tsv` of first replies.
- * Both are parsed here so a renamed field fails the run before any
- * conversation starts, not halfway through one.
+ * suite's `cases.json`, the English suite's `cases.tsv` of first replies and
+ * the files suite's `files/cases.json`. All are parsed here so a renamed
+ * field fails the run before any conversation starts, not halfway through
+ * one.
  */
 
 const riskLevelSchema = z.enum([
@@ -18,6 +20,12 @@ export type RiskLevel = z.infer<typeof riskLevelSchema>;
 
 const scriptEntrySchema = z.object({
   at: z.string().min(1),
+  /** The files suite's attachments, by fixture name. */
+  files: z.array(z.string().min(1)).optional(),
+  /** The files suite's condition for sending this turn. */
+  gate: turnGateSchema.optional(),
+  /** The files suite: this turn opens a new conversation. */
+  newConversation: z.boolean().optional(),
   note: z.string().optional(),
   send: z.string().min(1).nullable(),
 });
@@ -54,11 +62,18 @@ const ruSuiteSchema = z.object({
   version: z.string().min(1),
 });
 
-const suiteSchema = z.enum(["ru", "en"]);
+const suiteSchema = z.enum(["ru", "en", "files"]);
 
 export type Suite = z.infer<typeof suiteSchema>;
 
-const suites = suiteSchema.options;
+export const everySuite = suiteSchema.options;
+
+/**
+ * What a run without `--suite` plans: the files suite sends real documents
+ * through the owner's account and saves and deletes his signature, so it
+ * runs only when asked for.
+ */
+const defaultSuites: readonly Suite[] = ["ru", "en"];
 
 /** A task the driver can run, whichever suite it came from. */
 export interface BenchCase {
@@ -127,18 +142,25 @@ function parseEnSuite(text: string): BenchCase[] {
     });
 }
 
+/** Each suite's file and its parser. */
+const suiteSources = {
+  en: { file: "en/cases.tsv", parse: parseEnSuite },
+  files: { file: "files/cases.json", parse: parseFilesSuite },
+  ru: { file: "ru/cases.json", parse: parseRuSuite },
+} as const satisfies Readonly<
+  Record<
+    Suite,
+    { readonly file: string; readonly parse: (text: string) => BenchCase[] }
+  >
+>;
+
 /** Every published case of the requested suites, in file order. */
-export async function loadCases(wanted: readonly Suite[] = suites) {
+export async function loadCases(wanted: readonly Suite[] = defaultSuites) {
   const loaded = await Promise.all(
-    wanted.map(async (suite) =>
-      suite === "ru"
-        ? parseRuSuite(
-            await readFile(new URL("ru/cases.json", casesDirectory), "utf8")
-          )
-        : parseEnSuite(
-            await readFile(new URL("en/cases.tsv", casesDirectory), "utf8")
-          )
-    )
+    wanted.map(async (suite) => {
+      const { file, parse } = suiteSources[suite];
+      return parse(await readFile(new URL(file, casesDirectory), "utf8"));
+    })
   );
   return loaded.flat();
 }
@@ -196,7 +218,7 @@ export function parseRiskLevels(values: readonly string[]) {
 
 export function parseSuites(values: readonly string[]) {
   return values.length === 0
-    ? suites
+    ? defaultSuites
     : values.map((value) => suiteSchema.parse(value));
 }
 

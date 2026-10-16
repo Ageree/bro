@@ -11,7 +11,11 @@ import { withGroupedRoubles } from "../lib/delivery/amounts";
 import { withHttpsLinks, withVisibleLinks } from "../lib/delivery/links";
 import { withExactLoginHandoffLink } from "../lib/login-handoff/exact-link";
 import { isSharedFileLink } from "../lib/sandbox/files";
-import { reportTurnHoldsFiles } from "../lib/sandbox/pilot";
+import {
+  knownSharedLinks,
+  withExactSharedLinks,
+} from "../lib/sandbox/exact-link";
+import { reportTurnHoldsFiles, taskFilesOfCaller } from "../lib/sandbox/pilot";
 import { skillsLayout } from "../lib/skills/pilot";
 import { markTurnDelivered } from "../lib/delivery/holds";
 import { withoutEmptyDeliveryMarker } from "../lib/delivery/empty";
@@ -161,7 +165,9 @@ function withoutBookkeeping(message: SentMessage): SentMessage | undefined {
  * message that goes out is recorded for the turn's card tools
  * (`markTurnDelivered`). In the early-reply pilot (`earlyReply`) a person's
  * turn may open with one short heads-up, and its result tells the model the
- * answer is still owed (`headsUpDeliveredNotice`).
+ * answer is still owed (`headsUpDeliveredNotice`). In the files pilot a
+ * task file link the model miswrote is sent as the conversation's link it
+ * stands for (`sharedLinks`, `withExactSharedLinks`).
  */
 function defineSendMessage(
   turn: ReturnType<typeof turnSends>,
@@ -169,7 +175,8 @@ function defineSendMessage(
   loadSkill: boolean,
   taskReport: boolean,
   earlyReply: boolean,
-  phoneReport: boolean
+  phoneReport: boolean,
+  sharedLinks: readonly string[]
 ) {
   return defineTool({
     description:
@@ -179,7 +186,12 @@ function defineSendMessage(
       const emit = () => {
         if (pastAnswer) return { skipped: "past" as const };
         const outgoing = withoutBookkeeping(
-          withHttpsLinksInText(withExactLoginHandoffLink(message))
+          withHttpsLinksInText(
+            withExactSharedLinks(
+              withExactLoginHandoffLink(message),
+              sharedLinks
+            )
+          )
         );
         if (!outgoing) return { skipped: "sentinel" as const };
         const refused = sendRefusal(outgoing, turn, earlyReply);
@@ -298,7 +310,9 @@ export default defineDynamic({
           context,
           stepStartedEventSchema.safeParse(event).data
         ),
-        phoneReport
+        phoneReport,
+        // The links the task agent's files have in this conversation.
+        taskFilesOfCaller(context) ? knownSharedLinks(context.messages) : []
       );
       const messageOnly = { send_message };
       const interactive = delivery

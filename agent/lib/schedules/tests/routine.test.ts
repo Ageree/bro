@@ -2,6 +2,7 @@ import type { ModelMessage, ToolResultPart } from "ai";
 import { describe, expect, it } from "vitest";
 import type { ScheduleTiming } from "@shared/schedules/timing";
 import {
+  askedToReplace,
   routineAnswerOwed,
   similarRefusalOpening,
   similarSchedules,
@@ -217,5 +218,65 @@ describe("the person's answer about a schedule like theirs", () => {
         results(refusal, delivered),
       ])
     ).toBe(false);
+  });
+
+  describe("which schedules replaces may delete", () => {
+    const id = "00000000-0000-4000-8000-000000000002";
+    const alike: ToolResultPart = {
+      ...refusal,
+      output: {
+        type: "error-text",
+        value: `${similarRefusalOpening} like this one: [{"id":"${id}"}].`,
+      },
+    };
+    const asked = [
+      person("каждый будний день присылай сводку"),
+      results(alike),
+      ...sent("Такая сводка уже приходит в 8:00. Заменить её?"),
+    ];
+
+    it("is the one put to the person, once their own message answers", () => {
+      expect(askedToReplace([...asked, person("замени")])).toEqual([id]);
+      // Not yet in the turn that asked.
+      expect(askedToReplace(asked)).toEqual([]);
+    });
+
+    it("is none the person was not asked about, or only near in time", () => {
+      expect(
+        askedToReplace([
+          person("сводку"),
+          results(alike),
+          ...sent("Сейчас настрою."),
+          person("замени"),
+        ])
+      ).toEqual([]);
+      const nearby: ToolResultPart = {
+        ...refusal,
+        output: {
+          type: "error-text",
+          value: `${similarRefusalOpening} at about the same time: [{"id":"${id}"}].`,
+        },
+      };
+      expect(
+        askedToReplace([
+          person("сводку"),
+          results(nearby),
+          ...sent("Заменить её?"),
+          person("замени"),
+        ])
+      ).toEqual([]);
+    });
+
+    it("is none in a turn the person's words did not open", () => {
+      // The task agent's report keeps the person as its caller.
+      const report = Object.assign(
+        {
+          content: "Background task task_1 (task) is completed.",
+          role: "user" as const,
+        },
+        { kind: "execution.background_task" }
+      );
+      expect(askedToReplace([...asked, report])).toEqual([]);
+    });
   });
 });

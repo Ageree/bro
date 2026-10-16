@@ -5,6 +5,7 @@ import {
   maximumAttachmentBatchBytes,
   maximumAttachmentBytes,
   prepareAttachmentDelivery,
+  taskFilesAttachmentLimits,
 } from "./attachments";
 
 /**
@@ -319,6 +320,29 @@ describe("prepareAttachmentDelivery", () => {
     ]);
     // The fourth attachment is never requested: the budget is already gone.
     expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("sends files up to 20 MB, 50 MB a message, in the files pilot", async () => {
+    const megabytes = 1024 * 1024;
+    fetchMock.mockImplementation(async () =>
+      served(filledJpeg(15 * megabytes), "image/jpeg")
+    );
+    const urls = [1, 2, 3, 4].map(
+      (index) => `https://media.example/scan-${String(index)}.jpg`
+    );
+    const scans = urls.map((url) => ({ kind: "image", url }) as const);
+
+    const standard = await prepareAttachmentDelivery(scans.slice(0, 1));
+    expect(standard.failures).toEqual([{ reason: "oversize", url: urls[0] }]);
+
+    const pilot = await prepareAttachmentDelivery(
+      scans,
+      taskFilesAttachmentLimits
+    );
+    expect(pilot.files).toHaveLength(3);
+    expect(pilot.failures).toEqual([
+      { reason: "batch-oversize", url: urls[3] },
+    ]);
   });
 
   it("strips path separators and invisible characters from a name", async () => {

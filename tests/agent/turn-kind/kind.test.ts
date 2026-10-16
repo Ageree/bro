@@ -1,7 +1,12 @@
+import type { ModelMessage } from "ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cardToolsBeforeOutcome } from "@agent/lib/delivery/browser-report";
 import { actionsHeldForAnswer } from "@agent/lib/delivery/questions";
-import { turnKind } from "@agent/lib/turn-kind/kind";
+import { browserNoticeTurn, turnKind } from "@agent/lib/turn-kind/kind";
+import {
+  backgroundNoticeMessage,
+  backgroundTurnMarker,
+} from "@shared/chat/background-turn";
 import {
   agenticWriteTools,
   backgroundTaskTurnTools,
@@ -48,6 +53,65 @@ describe("the kind of a turn", () => {
     ).toBe("background-task");
   });
 });
+
+describe("a web chat's notice of an undelivered report", () => {
+  const step = { sessionId: "session-1", stepIndex: 0, turnId: "turn_1" };
+  const notice = person(backgroundNoticeMessage("Поручение закончено."));
+  const answer = { content: "Готово.", role: "assistant" as const };
+  // A report turn that failed on its first step leaves its message unanswered.
+  const failedReport = person(
+    `${backgroundTurnMarker}\n\nBrowser run run-1 finished.`
+  );
+
+  it("calls no model past the browser reports whose turns failed", () => {
+    expect(
+      browserNoticeTurn(
+        noticeContext([answer, failedReport, failedReport, notice])
+      )
+    ).toBe(true);
+  });
+
+  it("leaves a task report beside it, or after it, the task's turn", () => {
+    for (const messages of [
+      // Coalesced, or left by a turn that failed.
+      [answer, backgroundTask, notice],
+      // Delivered after it: eve keeps the notice's caller.
+      [answer, notice, answer, backgroundTask],
+    ]) {
+      expect(browserNoticeTurn(noticeContext(messages))).toBe(false);
+      expect(turnKind(noticeContext(messages), step)).toBe("background-task");
+    }
+  });
+
+  it("never passes for the person once its caller outlives it", () => {
+    expect(
+      turnKind(noticeContext([answer, notice, answer, failedReport]), step)
+    ).toBe("background-task");
+  });
+});
+
+/** A web chat's turn under the notice's caller (`abandoned-notice.ts`). */
+function noticeContext(messages: readonly ModelMessage[]) {
+  const context = catalogContext("web", messages);
+  return {
+    ...context,
+    session: {
+      ...context.session,
+      auth: {
+        ...context.session.auth,
+        current: {
+          ...context.session.auth.current,
+          authenticator: "browser-notice",
+        },
+      },
+    },
+  };
+}
+
+function person(content: string) {
+  // eve adds `kind` to every user-role message it keeps in history.
+  return Object.assign({ content, role: "user" as const }, { kind: "user" });
+}
 
 describe("the tools of a step", () => {
   const quiet = {
@@ -104,6 +168,19 @@ describe("the tools of a step", () => {
       offeredTools: backgroundTaskTurnTools,
       withheldTools: [],
     });
+  });
+
+  it("lets the task agent's report offer to sign its file in the signing pilot", () => {
+    const report = {
+      ...quiet,
+      kind: "background-task",
+      taskAgent: true,
+    } as const;
+    expect(turnTools({ ...report, signing: true }).offeredTools).toEqual([
+      "sign_document",
+      ...backgroundTaskTurnTools,
+    ]);
+    expect(turnTools(report).offeredTools).toEqual(backgroundTaskTurnTools);
   });
 
   it("gives a browser report one set in the pilot, whatever its step", () => {

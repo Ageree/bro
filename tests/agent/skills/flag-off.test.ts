@@ -27,6 +27,24 @@ vi.mock("@db/services/chats", () => ({
 const sha256 = (text: string) =>
   createHash("sha256").update(text).digest("hex");
 
+/** Every kind of turn's prompt in a deployment, in `turnKinds`' order. */
+async function promptsOf(environment: Record<string, string>) {
+  stubDeployment(environment);
+  return Promise.all(
+    Object.values(turnKinds).map((context) => systemPrompt(context))
+  );
+}
+
+/**
+ * The turns that read signing as asked like paying: every interactive one,
+ * so a session's system prefix stays the same from turn to turn.
+ */
+const signingKinds: readonly string[] = [
+  "browser-result",
+  "interactive",
+  "telegram",
+];
+
 beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-10-02T09:41:00Z"));
@@ -169,6 +187,47 @@ describe("instructions outside the skills pilot", () => {
     ]) {
       expect(byKind.get(kind)).not.toContain(heading);
     }
+  });
+
+  it("add the rules for signing and its question only where the workspace signs", async () => {
+    // Bro's own code sandbox runs the kit that stamps.
+    const agent = {
+      ...fullDeployment,
+      ...taskAgentDeployment,
+      AGENT_SANDBOX: "bro-cloudru",
+    };
+    const files = { ...agent, TASK_FILES_WORKSPACES: "workspace-1" };
+    // Not without the files, and not for another workspace.
+    expect(await promptsOf({ ...agent, SIGN_WORKSPACES: "*" })).toEqual(
+      await promptsOf(agent)
+    );
+    const before = await promptsOf(files);
+    expect(
+      await promptsOf({ ...files, SIGN_WORKSPACES: "workspace-2" })
+    ).toEqual(before);
+    const after = await promptsOf({ ...files, SIGN_WORKSPACES: "workspace-1" });
+    const { instructionText } = await import("@agent/lib/skills/catalog");
+    const { withSigningConsent } = await import("@agent/lib/skills/signing");
+    const sign = instructionText("sign", "full");
+    // The block in a person's turns, the question before signing in every
+    // turn that can sign, and nothing else.
+    expect(
+      Object.keys(turnKinds).filter((_kind, index) =>
+        after[index]?.includes(sign)
+      )
+    ).toEqual(["interactive", "telegram"]);
+    expect(
+      Object.keys(turnKinds).filter(
+        (_kind, index) => after[index] !== before[index]
+      )
+    ).toEqual(signingKinds);
+    expect(after.map((prompt) => prompt.replace(`\n\n${sign}`, ""))).toEqual(
+      before.map((prompt, index) =>
+        signingKinds.includes(Object.keys(turnKinds)[index] ?? "")
+          ? withSigningConsent(prompt)
+          : prompt
+      )
+    );
   });
 
   it("stay so on the Gateway, where nobody is in the pilot", async () => {

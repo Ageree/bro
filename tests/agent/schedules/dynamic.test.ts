@@ -17,6 +17,8 @@ import type {
   restoreScheduledAgentRunInput,
   setScheduledRunSession,
 } from "@db/services/scheduled-agent-jobs";
+import type { readSubscriptionDelivery } from "@db/services/subscriptions";
+import type { readProactiveMessages } from "@db/services/user-profile";
 
 const services = vi.hoisted(() => ({
   absorb: vi.fn<typeof absorbHeldProactiveReports>(),
@@ -32,6 +34,10 @@ const services = vi.hoisted(() => ({
   releaseReport: vi.fn<typeof releaseScheduledReport>(),
   releaseRun: vi.fn<typeof releaseScheduledAgentRun>(),
   setSession: vi.fn<typeof setScheduledRunSession>(),
+}));
+const profile = vi.hoisted(() => ({
+  enabled: vi.fn<typeof readProactiveMessages>(() => Promise.resolve(true)),
+  watch: vi.fn<typeof readSubscriptionDelivery>(),
 }));
 
 vi.mock("@db/services/scheduled-agent-jobs", () => ({
@@ -50,8 +56,11 @@ vi.mock("@db/services/scheduled-agent-jobs", () => ({
   setScheduledRunSession: services.setSession,
 }));
 vi.mock("@db/services/user-profile", () => ({
-  readProactiveMessages: () => Promise.resolve(true),
+  readProactiveMessages: profile.enabled,
   readWorkspaceTimeZone: () => Promise.resolve("Europe/Moscow"),
+}));
+vi.mock("@db/services/subscriptions", () => ({
+  readSubscriptionDelivery: profile.watch,
 }));
 vi.mock("@agent/channels/photon", () => ({
   default: { channel: "photon" },
@@ -205,6 +214,47 @@ describe("dynamic schedule dispatch", () => {
     expect(send).toHaveBeenCalledOnce();
     expect(send.mock.calls[0]?.[0]).toContain(
       "Earlier outcome, held for the person's morning"
+    );
+  });
+
+  it("sends nothing of a letter's parcel watch found before the person turned Bro's own messages off", async () => {
+    // 14:00 in Moscow: by day the news would go out at once.
+    vi.useFakeTimers({
+      now: new Date("2026-09-24T11:00:00.000Z"),
+      toFake: ["Date"],
+    });
+    const report = scheduledReport();
+    report.job.kind = "subscription";
+    services.listReports.mockResolvedValue([
+      {
+        carriesEvent: false,
+        conversationChannel: "photon",
+        jobId: report.job.id,
+        jobKind: "subscription",
+        runId: report.run.id,
+        scheduledFor: new Date("2026-09-23T20:30:00.000Z"),
+        scope: { userId: "user-1", workspaceId: "workspace-1" },
+        timeSensitive: false,
+      },
+    ]);
+    services.claimReports.mockResolvedValue(report);
+    profile.watch.mockResolvedValue({ unasked: true, wake: "day_only" });
+    profile.enabled.mockResolvedValueOnce(false);
+    const send = vi.fn<ReturnType<ScheduleToFn>["send"]>();
+    const to = vi.fn<ScheduleToFn>(() => ({ send }));
+
+    try {
+      await runSchedule(to);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(send).not.toHaveBeenCalled();
+    // Closed as Bro's own check closes its reports, not left to go later.
+    expect(services.dropReport).toHaveBeenCalledExactlyOnceWith(
+      report.run.id,
+      report.run.reportLeaseToken,
+      new Date("2026-09-24T11:00:00.000Z")
     );
   });
 

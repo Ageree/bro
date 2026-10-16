@@ -1015,7 +1015,8 @@ export const env = createEnv({
     HISTORY_TRIM_WORKSPACES: workspaceListSchema.optional(),
     // The pilot of event subscriptions (docs/roadmap.md, 27): workspace ids
     // or owners' emails, or `*` for every workspace, whose Bro may set up a
-    // price watch that code checks without the model (`watch-create`).
+    // price or parcel watch that code checks without the model
+    // (`watch-create`, `parcel-watch`).
     SUBSCRIPTIONS_WORKSPACES: workspaceListSchema.optional(),
     // The pilot of the agentic worker (`agent/lib/agency/pilot.ts`): workspace
     // ids, or `*` for every workspace, whose proactive checks run as the
@@ -1051,6 +1052,17 @@ export const env = createEnv({
         "ROUTINE_SETUP_WORKSPACES takes workspace ids or *, not emails"
       )
       .optional(),
+    // The pilot of one-off schedules on the clock of an event elsewhere
+    // (docs/roadmap.md, item 18): workspace ids, or `*` for every workspace,
+    // whose `schedules-create` takes a flight's departure on its airport's
+    // clock and how long before it to run (`minutesBefore`), and code counts
+    // the moment. Unset, nobody: the tools read as before.
+    SCHEDULE_EVENT_ZONE_WORKSPACES: workspaceListSchema
+      .refine(
+        (entries) => entries.every((entry) => !entry.includes("@")),
+        "SCHEDULE_EVENT_ZONE_WORKSPACES takes workspace ids or *, not emails"
+      )
+      .optional(),
     // The pilot of the person's files for the task agent (docs/roadmap.md,
     // item 30): workspace ids, or `*` for every workspace, whose Telegram and
     // iMessage documents (tables, texts, decks) reach Bro's sandbox and,
@@ -1063,6 +1075,15 @@ export const env = createEnv({
       .refine(
         (entries) => entries.every((entry) => !entry.includes("@")),
         "TASK_FILES_WORKSPACES takes workspace ids or *, not emails"
+      )
+      .optional(),
+    // Signing PDFs with the person's own signature (W3): workspace ids or
+    // `*`, only with TASK_FILES and AGENT_SANDBOX=bro-cloudru (`signEnabled`
+    // in `agent/lib/signatures/pilot.ts`): the kit signs in Bro's sandbox.
+    SIGN_WORKSPACES: workspaceListSchema
+      .refine(
+        (entries) => entries.every((entry) => !entry.includes("@")),
+        "SIGN_WORKSPACES takes workspace ids or *, not emails"
       )
       .optional(),
     // The pilot of compacting a long conversation (docs/roadmap.md, item 28):

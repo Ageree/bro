@@ -11,7 +11,8 @@ export function AttachmentPart({ part }: { readonly part: EveFilePart }) {
     .filter(Boolean)
     .join(" · ");
   const isImage = part.mediaType.startsWith("image/") && part.url !== undefined;
-  const Icon = isImage ? ImageIcon : FileIcon;
+  // A photo sent without a thumbnail (bare base64, no URL) still reads as one.
+  const Icon = part.mediaType.startsWith("image/") ? ImageIcon : FileIcon;
   const content = (
     <>
       {isImage ? (

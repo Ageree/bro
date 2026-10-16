@@ -5,7 +5,7 @@ import type {
 } from "eve/tools";
 import type { ModelMessage } from "ai";
 import { z } from "zod";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   createScheduledAgentJob,
   getScheduledAgentJob,
@@ -1165,8 +1165,8 @@ function toolContext(
 }
 
 /** The person's own turn in the chat of workspace-1. */
-function personTurn(): DynamicResolveContext {
-  const context = dynamicContext("photon-imessage", "channel:photon");
+function personTurn(messages: ModelMessage[] = []): DynamicResolveContext {
+  const context = dynamicContext("photon-imessage", "channel:photon", messages);
   return {
     ...context,
     session: {
@@ -1204,16 +1204,20 @@ interface ResolvedCreate {
  * `schedules-create` of the person's turn with the pilots of schedules that
  * act and of routines set up whole: each variant takes its own input.
  */
-async function resolvedCreate(pilots: {
-  readonly background: string;
-  readonly routine?: string;
-}) {
+async function resolvedCreate(
+  pilots: {
+    readonly background: string;
+    readonly routine?: string;
+  },
+  messages: ModelMessage[] = []
+) {
   vi.resetModules();
   vi.stubEnv("BACKGROUND_ACTIONS_WORKSPACES", pilots.background);
   vi.stubEnv("ROUTINE_SETUP_WORKSPACES", pilots.routine ?? "");
+  vi.stubEnv("SCHEDULE_EVENT_ZONE_WORKSPACES", "");
   const { default: tools } = await import("@agent/tools/schedules");
   const resolve = tools.events["turn.started"];
-  const resolved = resolve ? await resolve({}, personTurn()) : null;
+  const resolved = resolve ? await resolve({}, personTurn(messages)) : null;
   const create =
     resolved && "schedules-create" in resolved
       ? resolved["schedules-create"]
@@ -1396,10 +1400,126 @@ describe("schedules that act (BACKGROUND_ACTIONS_WORKSPACES)", () => {
   });
 });
 
+// EN D2 (roadmap, item 18): check-in for a flight out of another city came
+// as «2026-10-01T09:17» with no zone, and opened on the person's clock.
+describe("a one-off on the clock of an event elsewhere (SCHEDULE_EVENT_ZONE_WORKSPACES)", () => {
+  async function createTool(pilot: string) {
+    vi.resetModules();
+    vi.stubEnv("SCHEDULE_EVENT_ZONE_WORKSPACES", pilot);
+    const { default: tools } = await import("@agent/tools/schedules");
+    const resolve = tools.events["turn.started"];
+    const context = dynamicContext("photon-imessage", "channel:photon");
+    const resolved = resolve
+      ? await resolve(
+          {},
+          {
+            ...context,
+            session: {
+              ...context.session,
+              auth: {
+                current: {
+                  ...context.session.auth.current,
+                  attributes: { workspaceId: "workspace-1" },
+                },
+                initiator: null,
+              },
+            },
+          }
+        )
+      : null;
+    const create =
+      resolved && "schedules-create" in resolved
+        ? resolved["schedules-create"]
+        : undefined;
+    if (!create) throw new Error("Expected the schedules-create tool.");
+    return create;
+  }
+
+  // The departure as the booking shows it, on the clock of JFK.
+  const input = {
+    missedRunPolicy: "run_latest" as const,
+    prompt: "Открой онлайн-регистрацию на рейс DL 2101 Нью-Йорк — Чикаго.",
+    timing: {
+      at: "2026-10-02T09:17",
+      kind: "once" as const,
+      minutesBefore: 1440,
+      timezone: "America/New_York",
+    },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers({ now: new Date("2026-09-25T12:00:00.000Z") });
+    services.timeZone.mockResolvedValue("Europe/Moscow");
+    services.report.mockImplementation((job) =>
+      Promise.resolve({
+        delivery: {
+          conversationChannel: job.conversationChannel,
+          conversationId: job.conversationId,
+          replyAnchorMessageId: null,
+        },
+        fallbacks: [],
+      })
+    );
+    services.create.mockImplementation((_scope, created) =>
+      Promise.resolve({
+        ...scheduledJob(),
+        nextRunAt:
+          created.timing.kind === "once" ? new Date(created.timing.at) : null,
+        timing: created.timing,
+      })
+    );
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("opens check-in 24 h before a New York departure on the airport's clock, for a person in Moscow", async () => {
+    const create = await createTool("workspace-1");
+    if (!(create.inputSchema instanceof z.ZodType)) {
+      throw new TypeError("Expected an authored Zod input schema.");
+    }
+    expect(create.inputSchema.safeParse(input).success).toBe(true);
+
+    const result = await create.execute(
+      input,
+      toolContext("schedules-create", "photon-imessage")
+    );
+
+    // 09:17 in New York (UTC−4) on 1 October is 13:17 UTC, 16:17 in Moscow.
+    expect(services.create.mock.calls[0]?.[1]).toMatchObject({
+      timing: { at: "2026-10-01T13:17:00.000Z", kind: "once" },
+    });
+    expect(result).toMatchObject({
+      nextRunEventLocal: "2026-10-01 09:17, Thursday (America/New_York)",
+      nextRunLocal: "2026-10-01 16:17, Thursday (Europe/Moscow)",
+    });
+  });
+
+  it("sets no moment already past: check-in is open before the flight, the date is wrong after it", async () => {
+    const create = await createTool("workspace-1");
+    const context = toolContext("schedules-create", "photon-imessage");
+
+    vi.setSystemTime(new Date("2026-10-01T20:00:00.000Z"));
+    await expect(create.execute(input, context)).rejects.toThrow(
+      "check-in is already open"
+    );
+    // A flight gone already — a wrong year, an old letter — is no open
+    // check-in to start.
+    vi.setSystemTime(new Date("2026-10-03T08:00:00.000Z"));
+    await expect(create.execute(input, context)).rejects.toThrow(
+      "the event itself is already in the past"
+    );
+    expect(services.create).not.toHaveBeenCalled();
+  });
+});
+
 /** `schedules-update` as a deployment with or without the pilot reads it. */
 async function updateTool(routinePilot: string) {
   vi.resetModules();
   vi.stubEnv("ROUTINE_SETUP_WORKSPACES", routinePilot);
+  vi.stubEnv("SCHEDULE_EVENT_ZONE_WORKSPACES", "");
   return (await import("@agent/tools/schedules")).updateSchedule;
 }
 
@@ -1413,8 +1533,37 @@ describe("routines set up whole (ROUTINE_SETUP_WORKSPACES)", () => {
   };
   const zoned = { ...weekdays, timezone: "Asia/Yekaterinburg" };
 
-  const createTool = async (pilot: string, background = "") =>
-    resolvedCreate({ background, routine: pilot });
+  const createTool = async (
+    pilot: string,
+    background = "",
+    messages: ModelMessage[] = []
+  ) => resolvedCreate({ background, routine: pilot }, messages);
+
+  /**
+   * An earlier turn found this schedule alike the new one and put it to the
+   * person, whose message now opens this turn.
+   */
+  function askedAbout(id: string): ModelMessage[] {
+    return [
+      person("каждый будний день присылай сводку"),
+      {
+        content: [
+          {
+            output: {
+              type: "error-text",
+              value: `Nothing was created: the person already has an active schedule like this one: [{"id":"${id}"}].`,
+            },
+            toolCallId: "call-refused",
+            toolName: "schedules-create",
+            type: "tool-result",
+          },
+        ],
+        role: "tool",
+      },
+      ...assistantSend("Такая сводка уже приходит в 8:00. Заменить её?"),
+      person("замени"),
+    ];
+  }
 
   /** The summary the person set up in an earlier turn. */
   function morningSummary(
@@ -1662,12 +1811,12 @@ describe("routines set up whole (ROUTINE_SETUP_WORKSPACES)", () => {
 
   // A changed schedule would keep the letter it sends in the person's name.
   it("replaces a schedule by deleting it after the new one is made", async () => {
-    const create = await createTool("workspace-1");
     const existing = morningSummary({
       about: "показания счётчиков",
       kind: "email",
       to: ["buh@example.com"],
     });
+    const create = await createTool("workspace-1", "", askedAbout(existing.id));
     services.list.mockResolvedValue([existing]);
     services.update.mockResolvedValue({ ...existing, status: "deleted" });
 
@@ -1690,6 +1839,72 @@ describe("routines set up whole (ROUTINE_SETUP_WORKSPACES)", () => {
     // The new summary gets its trial as any other.
     expect(services.runNow).toHaveBeenCalledOnce();
     expect(result.reply).toContain("now deleted");
+  });
+
+  it("deletes nothing the person was never asked about", async () => {
+    // The id came from schedules-list: no question, no answer.
+    const create = await createTool("workspace-1");
+    const existing = morningSummary();
+    services.list.mockResolvedValue([existing]);
+
+    await expect(
+      create.execute(
+        { ...repeat, replaces: [existing.id] },
+        toolContext("schedules-create", "photon-imessage")
+      )
+    ).rejects.toThrow("whether to replace it or keep both");
+    expect(services.create).not.toHaveBeenCalled();
+    expect(services.update).not.toHaveBeenCalled();
+  });
+
+  it("keeps a schedule only near in time, and says what still runs", async () => {
+    const summaryJob = morningSummary();
+    // Other work at the same hour, which a summary's refusal also names.
+    const rates = {
+      ...morningSummary(),
+      id: "00000000-0000-4000-8000-000000000003",
+      prompt: "Пришли курс доллара и евро.",
+    };
+    const create = await createTool(
+      "workspace-1",
+      "",
+      askedAbout(summaryJob.id)
+    );
+    services.list.mockResolvedValue([summaryJob, rates]);
+    services.update.mockResolvedValue({ ...summaryJob, status: "deleted" });
+
+    const result = await create.execute(
+      { ...repeat, replaces: [summaryJob.id, rates.id] },
+      toolContext("schedules-create", "photon-imessage")
+    );
+
+    expect(services.update).toHaveBeenCalledExactlyOnceWith(
+      { userId: "user-1", workspaceId: "workspace-1" },
+      summaryJob.id,
+      { status: "deleted" }
+    );
+    expect(result.reply).toContain("were not deleted and still run");
+    expect(result.reply).toContain(rates.id);
+  });
+
+  it("says the old schedule still runs when the new one is no longer like it", async () => {
+    // «Замени, только в 10:00»: the new time is two hours away.
+    const existing = morningSummary();
+    const create = await createTool("workspace-1", "", askedAbout(existing.id));
+    services.list.mockResolvedValue([existing]);
+
+    const result = await create.execute(
+      {
+        ...repeat,
+        replaces: [existing.id],
+        timing: { ...weekdays, localTime: "10:00" },
+      },
+      toolContext("schedules-create", "photon-imessage")
+    );
+
+    expect(services.create).toHaveBeenCalledOnce();
+    expect(services.update).not.toHaveBeenCalled();
+    expect(result.reply).toContain("were not deleted and still run");
   });
 
   // EN D7 across languages: the words share nothing, the time is the same.
@@ -1757,6 +1972,12 @@ describe("routines set up whole (ROUTINE_SETUP_WORKSPACES)", () => {
       )
     ).rejects.toThrow("a new task does not inherit it");
     expect(services.update).not.toHaveBeenCalled();
+    // The address it lacked goes in after its own words.
+    await pilot.execute(
+      { id: acting.id, prompt: `${acting.prompt} Адрес работы: Ленина, 1.` },
+      toolContext("schedules-update")
+    );
+    expect(services.update).toHaveBeenCalledOnce();
     // Its time still moves.
     await pilot.execute(
       {
@@ -1765,14 +1986,14 @@ describe("routines set up whole (ROUTINE_SETUP_WORKSPACES)", () => {
       },
       toolContext("schedules-update")
     );
-    expect(services.update).toHaveBeenCalledOnce();
+    expect(services.update).toHaveBeenCalledTimes(2);
 
     const outside = await updateTool("");
     await outside.execute(
       { id: acting.id, prompt: "Присылай мне курс доллара." },
       toolContext("schedules-update")
     );
-    expect(services.update).toHaveBeenCalledTimes(2);
+    expect(services.update).toHaveBeenCalledTimes(3);
   });
 
   it("never asks about a schedule made in this same turn", async () => {

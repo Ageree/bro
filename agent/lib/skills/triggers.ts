@@ -22,7 +22,8 @@ import { type SkillName, skillNames } from "./catalog";
  *   `[голосовое]` transcripts, or a browser report the page wrote (it only
  *   picks among Bro's own rules, never a tool or an approval); media
  *   markers are not words, and photos sent with no word are meter readings;
- * - the files of the turn: a document, or its marker, is for the task agent;
+ * - the files of the turn: a document or a PDF, or its marker, is for the
+ *   task agent, and so is a picture where the turn is about signing;
  * - links in those words, public services' sites among them, and the
  *   `site` of every `browser_task` of the conversation;
  * - the domain tools the conversation already called, Bro's own question
@@ -188,7 +189,25 @@ const wordSignals: Partial<Record<SkillName, RegExp>> = {
     String.raw`график\p{L}*\s+(продаж|расход|доход|трат|выручк|динамик|рост|цен|курс|температур|по (месяц|дн|недел|годам|данн|таблиц))`,
     String.raw`spreadsheets?|slides?(?!\p{L})|charts?(?!\p{L})|presentations?`,
     // Not a bare «deck»: a deck of cards is no slides.
-    String.raw`(slide|pitch) deck`
+    String.raw`(slide|pitch) deck`,
+    // Forms, scans and PDFs (the files pilot fills and converts them). Not a
+    // bare «документ» or «подпись»: «свари документы на подпись» is neither;
+    // nor a «скандал» or a «сканворд».
+    String.raw`pdf|пдф|файл|скан(?!д|ворд)|отскан|распозна|перепечата|впечата|заполн`,
+    String.raw`анкет|бланк|заявлени|выписк\p{L}* (из )?банк|банковск\p{L}* выписк`,
+    String.raw`zip|rar(?!\p{L})|7z|xml|разархив|заархив|распак|архивом(?!\p{L})|закрас|замаж|замаз`,
+    String.raw`(сожми|ужми|сжать|склей|объедини|раздели|разбей|поверни|переверни)\s+(\p{L}+\s+){0,2}(pdf|пдф|файл|документ|скан|страниц|фот)`,
+    String.raw`переве(ди|сти)\s+(\p{L}+\s+){0,2}(документ|справк|договор|файл|pdf|пдф|скан|выписк|диплом|свидетельств)`,
+    String.raw`(сравни|сверь)\s+(\p{L}+\s+){0,2}(договор|верси|документ|файл|акт)|режим\p{L}* (правок|исправлен|рецензир)|рецензирован`,
+    String.raw`фото (на|для) (документ|паспорт|загран|виз)|odt|rtf|ics(?!\p{L})|vcf|vcard`,
+    String.raw`scan(ned|s)?(?!\p{L})|(this|that) form(?!\p{L})|ocr|redline|tracked changes|unzip`
+  ),
+  // Not a subscription («подписка», «подписчик»), and «расписаться», not
+  // «распиши план по дням»; not «парафин» or «sign them up».
+  sign: stems(
+    String.raw`подпиш|подпис(?![кч])|распи[сш]\p{L}*(сь|ся)(?!\p{L})|роспис(ь|и|ью)(?!\p{L})|параф(?!ин)`,
+    String.raw`эцп|кэп(?!\p{L})|госключ|факсимиле`,
+    String.raw`signatures?|sign (it|this|that|the|here|for me)(?!\p{L})|e-?sign|initials`
   ),
   images: stems(
     String.raw`нарису|рисун|картинк|изображен|открытк|постер|стикер`,
@@ -222,15 +241,18 @@ export const mediaMarkers =
   /\[(?:фото|документ|голосовое не распозналось|геопозиция|место|файл:[^\]]*)\]|\[голосовое\]/giu;
 
 /**
- * A file's marker of any type but a picture or a PDF, which the model reads
- * itself: a document for the task agent, or one that did not come through.
+ * A file's marker of any type but a picture, which the model reads itself:
+ * a document or a PDF for the task agent, or one that did not come through.
  * The type is the last parenthesis before the bracket or the reason.
  */
-const documentMarker =
-  /\[файл:[^\]]*\((?!image\/|application\/pdf\))[^()\]]*\)(?:, [^\]]*)?\]/u;
+const documentMarker = /\[файл:[^\]]*\((?!image\/)[^()\]]*\)(?:, [^\]]*)?\]/u;
 
 /** A photo's marker: meter readings come as photos alone. */
 const photoMarker = /\[фото\]/iu;
+
+/** A picture's marker, a photo's or a file's, as the files pilot notes it. */
+const pictureMarker =
+  /\[фото\]|\[файл:[^\]]*\(image\/[^()\]]*\)(?:, [^\]]*)?\]/iu;
 
 /** What a person sends with photos when the photos are the message. */
 const photoFiller =
@@ -308,23 +330,17 @@ const filePartSchema = z.object({
 });
 
 /**
- * Whether the turn's own messages carry a file the model does not read
- * itself, as the web sends one: not a picture, not a PDF.
+ * The types of the files the turn's own messages carry, as the web sends
+ * them.
  */
-function sentDocument(input: readonly ModelMessage[]) {
-  return turnMessages(input).some(
-    (message) =>
-      Array.isArray(message.content) &&
-      message.content.some((part) => {
-        const mediaType = filePartSchema
-          .safeParse(part)
-          .data?.mediaType.toLowerCase();
-        return (
-          mediaType !== undefined &&
-          !mediaType.startsWith("image/") &&
-          mediaType !== "application/pdf"
-        );
-      })
+function sentMediaTypes(input: readonly ModelMessage[]) {
+  return turnMessages(input).flatMap((message) =>
+    Array.isArray(message.content)
+      ? message.content.flatMap((part) => {
+          const mediaType = filePartSchema.safeParse(part).data?.mediaType;
+          return mediaType === undefined ? [] : [mediaType.toLowerCase()];
+        })
+      : []
   );
 }
 
@@ -423,11 +439,19 @@ function toolSkills(toolName: string): readonly SkillName[] {
   if (/^(?:notion|slack)-|^(?:apps|connect_app)$/u.test(toolName)) {
     return ["apps"];
   }
-  if (toolName.startsWith("schedules-") || toolName === "watch-create") {
+  if (
+    toolName.startsWith("schedules-") ||
+    toolName === "watch-create" ||
+    toolName === "parcel-watch"
+  ) {
     return ["schedules"];
   }
   // A job of the task agent's is followed by its edits («добавь слайд»).
   if (toolName === "task") return ["files"];
+  // A signing waits for the person's «да», or for their signature.
+  if (toolName === "signature" || toolName === "sign_document") {
+    return ["sign"];
+  }
   if (
     toolName === "generate_image" ||
     toolName === "generate_video" ||
@@ -517,7 +541,16 @@ export function skillsForTurn(turn: {
   for (const name of skillNames) {
     if (wordSignals[name]?.test(words)) wanted.add(name);
   }
-  if (documentMarker.test(said) || sentDocument(turn.input)) {
+  const sent = sentMediaTypes(turn.input);
+  // A document or a PDF for the task agent; with signing, a picture too:
+  // the photo of the signature goes by the rules for the person's files.
+  if (
+    documentMarker.test(said) ||
+    sent.some((type) => !type.startsWith("image/")) ||
+    (wanted.has("sign") &&
+      (pictureMarker.test(said) ||
+        sent.some((type) => type.startsWith("image/"))))
+  ) {
     wanted.add("files");
   }
   if (photoMarker.test(said) && photoFiller.test(words)) {

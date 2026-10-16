@@ -1,20 +1,33 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { deferScheduledReport } from "@db/services/scheduled-agent-jobs";
-import type { readSubscriptionWake } from "@db/services/subscriptions";
-import type { readWorkspaceTimeZone } from "@db/services/user-profile";
+import type {
+  claimScheduledReport,
+  deferScheduledReport,
+  dropScheduledReport,
+} from "@db/services/scheduled-agent-jobs";
+import type { readSubscriptionDelivery } from "@db/services/subscriptions";
+import type {
+  readProactiveMessages,
+  readWorkspaceTimeZone,
+} from "@db/services/user-profile";
 
 const services = vi.hoisted(() => ({
+  claim: vi.fn<typeof claimScheduledReport>(),
   defer: vi.fn<typeof deferScheduledReport>(),
+  drop: vi.fn<typeof dropScheduledReport>(),
+  enabled: vi.fn<typeof readProactiveMessages>(),
   timeZone: vi.fn<typeof readWorkspaceTimeZone>(),
-  wake: vi.fn<typeof readSubscriptionWake>(),
+  watch: vi.fn<typeof readSubscriptionDelivery>(),
 }));
 vi.mock("@db/services/scheduled-agent-jobs", () => ({
+  claimScheduledReport: services.claim,
   deferScheduledReport: services.defer,
+  dropScheduledReport: services.drop,
 }));
 vi.mock("@db/services/subscriptions", () => ({
-  readSubscriptionWake: services.wake,
+  readSubscriptionDelivery: services.watch,
 }));
 vi.mock("@db/services/user-profile", () => ({
+  readProactiveMessages: services.enabled,
   readWorkspaceTimeZone: services.timeZone,
 }));
 
@@ -37,13 +50,14 @@ const day = new Date("2026-10-03T11:00:00.000Z");
 describe("when a watch's news may go out", () => {
   it("goes out by day", async () => {
     services.timeZone.mockResolvedValue("Europe/Moscow");
+    services.watch.mockResolvedValue({ unasked: false, wake: "day_only" });
     expect(await subscriptionReportDue(report, day)).toBe(true);
     expect(services.defer).not.toHaveBeenCalled();
   });
 
   it("holds a price found at night for the morning", async () => {
     services.timeZone.mockResolvedValue("Europe/Moscow");
-    services.wake.mockResolvedValue("day_only");
+    services.watch.mockResolvedValue({ unasked: false, wake: "day_only" });
     expect(await subscriptionReportDue(report, night)).toBe(false);
     expect(
       await subscriptionReportDue({ ...report, timeSensitive: true }, night)
@@ -58,10 +72,21 @@ describe("when a watch's news may go out", () => {
 
   it("wakes the person only for urgent news of a watch that may", async () => {
     services.timeZone.mockResolvedValue("Europe/Moscow");
-    services.wake.mockResolvedValue("urgent_at_night");
+    services.watch.mockResolvedValue({
+      unasked: false,
+      wake: "urgent_at_night",
+    });
     expect(
       await subscriptionReportDue({ ...report, timeSensitive: true }, night)
     ).toBe(true);
     expect(await subscriptionReportDue(report, night)).toBe(false);
+  });
+
+  it("keeps the person's own watch speaking while Bro's own messages are off", async () => {
+    services.timeZone.mockResolvedValue("Europe/Moscow");
+    services.enabled.mockResolvedValue(false);
+    services.watch.mockResolvedValue({ unasked: false, wake: "day_only" });
+    expect(await subscriptionReportDue(report, day)).toBe(true);
+    expect(services.drop).not.toHaveBeenCalled();
   });
 });

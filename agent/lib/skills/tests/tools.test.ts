@@ -110,6 +110,7 @@ describe("the tools that follow skills", () => {
       "standing_permission",
     ]);
     expect(gatedTools(["schedules"])).toEqual([
+      "parcel-watch",
       "schedules-create",
       "schedules-update",
       "watch-create",
@@ -268,17 +269,19 @@ describe("the skills of a turn in the pilot of compaction", () => {
 
 describe("a skill's body", () => {
   it("names another group's tool only with the way to get it", async () => {
-    const { availableSkills, skillBody } =
+    const { availableSkills, skillBody, skillSetups } =
       await import("@agent/lib/skills/catalog");
-    const unreachable = availableSkills(setup).flatMap((skill) => {
-      const body = skillBody(skill, setup) ?? "";
-      return groupedToolNames.flatMap((name) => {
-        const group = toolGroup(name);
-        if (group === undefined || !body.includes(`\`${name}\``)) return [];
-        if (toolOffered(name, [skill])) return [];
-        return body.includes(`load_skill ${group}`) ? [] : [[skill, name]];
-      });
-    });
+    const unreachable = skillSetups.flatMap((each) =>
+      availableSkills(each).flatMap((skill) => {
+        const body = skillBody(skill, each) ?? "";
+        return groupedToolNames.flatMap((name) => {
+          const group = toolGroup(name);
+          if (group === undefined || !body.includes(`\`${name}\``)) return [];
+          if (toolOffered(name, [skill])) return [];
+          return body.includes(`load_skill ${group}`) ? [] : [[skill, name]];
+        });
+      })
+    );
     expect(unreachable).toEqual([]);
   });
 

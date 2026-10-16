@@ -92,10 +92,13 @@ export function stubDeployment(environment: Record<string, string>) {
   for (const name of new Set([
     ...Object.keys(fullDeployment),
     ...Object.keys(taskAgentDeployment),
+    "AGENT_SANDBOX",
     "BACKGROUND_ACTIONS_WORKSPACES",
     "ERRAND_AUTONOMY_WORKSPACES",
     "LOCATION_WORKSPACES",
     "ROUTINE_SETUP_WORKSPACES",
+    "SCHEDULE_EVENT_ZONE_WORKSPACES",
+    "SIGN_WORKSPACES",
     "SKILLS_WORKSPACES",
     "SUBSCRIPTIONS_WORKSPACES",
     "TASK_FILES_WORKSPACES",

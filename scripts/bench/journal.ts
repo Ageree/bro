@@ -17,6 +17,8 @@ import { oneTimeCodesIn } from "@agent/lib/browser-use/said";
 import { withApprovalCard } from "@shared/chat/approval-card";
 import { isBackgroundTurnText } from "@shared/chat/background-turn";
 import { sendMessageToolResultSchema } from "@shared/chat/message-delivery";
+import { everySuite } from "./cases.ts";
+import { turnGateSchema } from "./files/suite.ts";
 import { maskPersonalData } from "./personal-data.ts";
 
 /**
@@ -34,6 +36,9 @@ import { maskPersonalData } from "./personal-data.ts";
  * a line is written (§2.5 of the benchmark forbids keeping them). Neither do
  * passport, SNILS and card numbers or exact addresses (§2.3,
  * `personal-data.ts`).
+ *
+ * A files case also keeps `<case>/`: the files Bro sent and what the checks
+ * found (`files/collect.ts`, `files/checker.ts`).
  *
  * A fresh run of a case moves the previous run's files to
  * `previous/<case>-<time>/`: a rerun replaces the score, and the old journal
@@ -96,10 +101,40 @@ const plannedStepSchema = z.object({
   files: z.array(
     z.object({ mediaType: z.string(), path: z.string(), shows: z.string() })
   ),
+  gate: turnGateSchema.optional(),
   manual: z.string().optional(),
   newConversation: z.boolean(),
   text: z.string(),
+  turn: z.number().int().nonnegative().optional(),
+  voice: z.array(z.string()).default([]),
+  waitBefore: z.boolean().default(false),
 });
+
+const countSchema = z.number().int().nonnegative();
+
+/**
+ * A files case at a glance (`files/collect.ts`): what Bro sent and the
+ * driver saved, whether each turn's condition held, and what the machine
+ * checks found (`files/checker.ts`; null until they ran).
+ */
+const filesSummarySchema = z.object({
+  checks: z
+    .object({
+      errors: countSchema,
+      failed: countSchema,
+      /** The descriptions of failed and unanswerable checks, first 12. */
+      failing: z.array(z.string()).max(12),
+      manual: countSchema,
+      passed: countSchema,
+      total: countSchema,
+    })
+    .nullable(),
+  failedDownloads: countSchema,
+  gates: z.array(z.object({ met: z.boolean(), turn: countSchema })),
+  received: countSchema,
+});
+
+export type FilesSummary = z.infer<typeof filesSummarySchema>;
 
 const driverStatusSchema = z.enum([
   "completed",
@@ -172,6 +207,8 @@ export const runRecordSchema = z.object({
     approvedTools: z.array(z.string()).default([]),
     /** Browser errands still due to report, for `send` and `follow`. */
     backgroundRuns: z.array(z.string()).default([]),
+    /** Background tasks (`task`) still due to wake Bro, likewise. */
+    backgroundTasks: z.array(z.string()).default([]),
     supersededRuns: z.array(z.string()).default([]),
     /**
      * Upper bound, in roubles, up to which a payment card is confirmed for
@@ -196,6 +233,8 @@ export const runRecordSchema = z.object({
      */
     declinedTools: z.array(z.string()).default([]),
     fixtures: z.array(z.object({ file: z.string(), shows: z.string() })),
+    /** A files case: received files, conditions and checks. */
+    files: filesSummarySchema.nullable().default(null),
     /**
      * Tools whose approval card `run` (or a later `send`/`follow`/`next`/
      * `observe`) leaves for the owner (`--hold`), widened the same way as
@@ -221,7 +260,7 @@ export const runRecordSchema = z.object({
     sessions: z.array(sessionCursorSchema),
     status: driverStatusSchema,
     statusDetail: z.string().nullable(),
-    suite: z.enum(["ru", "en"]),
+    suite: z.enum(everySuite),
     title: z.string(),
     turns: z.array(
       z.object({
@@ -256,6 +295,8 @@ export type RunRecord = z.infer<typeof runRecordSchema>;
 export function journalPaths(outDir: string, caseId: string) {
   return {
     events: join(outDir, `${caseId}.events.jsonl`),
+    /** A files case's directory: `files-run.json`, `received/`, checks. */
+    files: join(outDir, caseId),
     log: join(outDir, `${caseId}.log`),
     record: join(outDir, `${caseId}.json`),
   };
@@ -458,7 +499,8 @@ export class CaseJournal {
     await writeFile(record, text);
   }
 
-  #mask(text: string) {
+  /** A text as the journal may keep it: codes and personal data masked. */
+  mask(text: string) {
     return maskCodes(maskPersonalData(text), this.knownCodes);
   }
 
@@ -479,7 +521,7 @@ export class CaseJournal {
   async event(sessionId: string, event: MessageStreamEvent) {
     this.rememberMessage(event);
     const line = maskJsonStrings(JSON.stringify({ event, sessionId }), (text) =>
-      this.#mask(text)
+      this.mask(text)
     );
     await appendFile(this.paths.events, `${line}\n`);
     const readable = describeEvent(event);
@@ -488,7 +530,7 @@ export class CaseJournal {
 
   async line(text: string) {
     const stamp = isoWithOffset(new Date(), this.#timeZone).slice(11, 19);
-    const lines = this.#mask(text)
+    const lines = this.mask(text)
       .split("\n")
       .map((line) => `[${stamp}] ${line}`)
       .join("\n");
@@ -499,14 +541,21 @@ export class CaseJournal {
     const parsed = runRecordSchema.parse(record);
     const masked = runRecordSchema.parse(
       JSON.parse(
-        maskJsonStrings(JSON.stringify(parsed), (text) => this.#mask(text))
+        maskJsonStrings(JSON.stringify(parsed), (text) => this.mask(text))
       )
     );
-    // Session and run ids are how `send` and `follow` pick the run up; a
-    // lookalike inside an id must not break that.
+    // Session, run and task ids are how `send` and `follow` pick the run
+    // up; a lookalike inside an id must not break that.
     masked.driver.sessions = parsed.driver.sessions;
     masked.driver.backgroundRuns = parsed.driver.backgroundRuns;
+    masked.driver.backgroundTasks = parsed.driver.backgroundTasks;
     masked.driver.supersededRuns = parsed.driver.supersededRuns;
+    // The files suite's turns are sent later exactly as published: its
+    // persons are fictional (SPECIMEN), and a masked passport number in a
+    // saved step would reach Bro as «******».
+    if (parsed.driver.suite === "files") {
+      masked.driver.remainingSteps = parsed.driver.remainingSteps;
+    }
     await writeFile(this.paths.record, `${JSON.stringify(masked, null, 2)}\n`);
   }
 }

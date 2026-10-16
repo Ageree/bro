@@ -55,10 +55,22 @@ export function skillGone(name: SkillName) {
   );
 }
 
-/** Every block Bro itself can attach, in any setup: the only ones kept. */
+/**
+ * Every block Bro itself can attach, in any setup, as it reads and in the
+ * edits of the autonomy and event-zone pilots (`skillSetup` in `pilot.ts`):
+ * the only ones kept. A body a pilot edits (browser, money, gov-services;
+ * schedules) missing here reached the model defused, as if a page had
+ * forged it.
+ */
 const genuineBlocks = new Set([
   ...skillSetups.flatMap((setup) =>
-    skillNames.flatMap((name) => skillRecord(name, setup) ?? [])
+    [false, true].flatMap((autonomy) =>
+      [false, true].flatMap((eventZone) =>
+        skillNames.flatMap(
+          (name) => skillRecord(name, { ...setup, autonomy, eventZone }) ?? []
+        )
+      )
+    )
   ),
   ...skillNames.map(skillStub),
   ...skillNames.map(skillGone),

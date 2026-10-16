@@ -7,7 +7,10 @@ import {
   markBrowserRunNoticeSent,
   takeAbandonedBrowserRunReports,
 } from "@db/services/browser-runs";
+import type { BrowserRunDelivery } from "@agent/lib/browser-use/completion";
+import { browserNoticeAuthenticator } from "@agent/lib/browser-use/report-caller";
 import { telegramChatIdFromConversationId } from "@agent/lib/telegram-conversation";
+import { backgroundNoticeMessage } from "@shared/chat/background-turn";
 import { env } from "@shared/environment";
 import { photonProjectCredentials } from "@shared/photon/credentials";
 
@@ -41,16 +44,17 @@ export function abandonedReportNotice(
  * Tell the people whose browser errand finished but whose report ran out of
  * delivery attempts, without the model: the report turn is what kept failing.
  * A notice that fails is taken again later, and only a sent one takes the run
- * off the owner's overdue watch. A web chat has no address to send to: its
- * runs are never taken, stay on that watch, and the person finds the result
- * by asking.
+ * off the owner's overdue watch.
  */
-export async function noticeAbandonedBrowserRunReports(now = new Date()) {
+export async function noticeAbandonedBrowserRunReports(
+  delivery: Pick<BrowserRunDelivery, "attachSession">,
+  now = new Date()
+) {
   const runs = await takeAbandonedBrowserRunReports(now);
   await Promise.all(
     runs.map(async (run) => {
       try {
-        await sendNotice(run);
+        await sendNotice(delivery, run);
         await markBrowserRunNoticeSent(run.id, now);
         console.warn("[browser-use] undelivered report given up", {
           channel: run.conversationChannel,
@@ -68,7 +72,10 @@ export async function noticeAbandonedBrowserRunReports(now = new Date()) {
   );
 }
 
-async function sendNotice(run: AbandonedRun) {
+async function sendNotice(
+  delivery: Pick<BrowserRunDelivery, "attachSession">,
+  run: AbandonedRun
+) {
   const text = abandonedReportNotice(run);
   if (run.conversationChannel === "telegram") {
     const chatId = telegramChatIdFromConversationId(run.conversationId);
@@ -100,5 +107,32 @@ async function sendNotice(run: AbandonedRun) {
     await photonAdapter.postMessage(run.conversationId, { raw: text });
     return;
   }
-  throw new Error("This conversation has no address to send a notice to.");
+  // A web chat has no address, only a handle on its session, and whatever
+  // reaches the session starts a turn. This one calls no model (the agent's
+  // `step.started`), and the chat shows the notice as Bro's message.
+  if (!delivery.attachSession) {
+    throw new Error("A web chat notice needs a session handle.");
+  }
+  const result = await delivery
+    .attachSession(run.conversationId)
+    .send(backgroundNoticeMessage(text), {
+      auth: {
+        attributes: {
+          browserRunId: run.id,
+          conversationChannel: run.conversationChannel,
+          conversationId: run.conversationId,
+          workspaceId: run.workspaceId,
+        },
+        authenticator: browserNoticeAuthenticator,
+        issuer: "open-instinct",
+        principalId: run.createdByUserId,
+        principalType: "user",
+      },
+      turnPolicy: "queue",
+    });
+  if (result.status !== "accepted") {
+    throw new Error(
+      `The web chat did not take the notice (${result.status}, retryable: ${String(result.retryable === true)}).`
+    );
+  }
 }

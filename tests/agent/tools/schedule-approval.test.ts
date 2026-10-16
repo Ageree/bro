@@ -20,6 +20,21 @@ function session(authenticator: string) {
   };
 }
 
+/** The «Когда» line of the card for a new schedule with this timing. */
+function when(timing: Readonly<Record<string, number | string>>) {
+  return withApprovalCard(
+    {
+      action: {
+        input: { prompt: "Открой онлайн-регистрацию на рейс.", timing },
+        toolName: "schedules-create",
+      },
+      kind: "tool-approval",
+      prompt: "Approve tool call: schedules-create",
+    },
+    "ru"
+  ).prompt.split("\n")[2];
+}
+
 describe("a schedule set up outside the person's own turn", () => {
   it("continues delegated scheduling after a browser report but denies workers", async () => {
     // The page writes a report turn's text, and a schedule's prompt is run
@@ -67,6 +82,21 @@ describe("a schedule set up outside the person's own turn", () => {
         "Когда: 2026-10-02 09:35 (UTC+03:00)",
       ].join("\n")
     );
+  });
+
+  // EN D2 (roadmap, item 18): «2026-10-01T09:17» never said whose 09:17.
+  it("says whose clock a one-off is on, and how long before an event it runs", () => {
+    expect(when({ at: "2026-10-01T09:17", kind: "once" })).toBe(
+      "Когда: 2026-10-01 09:17 (часовой пояс профиля)"
+    );
+    expect(
+      when({
+        at: "2026-10-02T09:17",
+        kind: "once",
+        minutesBefore: 1440,
+        timezone: "America/New_York",
+      })
+    ).toBe("Когда: за 24 ч до 2026-10-02 09:17 (America/New_York)");
   });
 
   it("names a change and a pause on the card of an update", () => {

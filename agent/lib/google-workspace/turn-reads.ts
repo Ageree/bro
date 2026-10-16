@@ -37,6 +37,7 @@ const googleWriteTools = new Set([
   "calendar-create-event",
   "calendar-delete-event",
   "calendar-update-event",
+  "gmail-delete-draft",
   "gmail-draft",
   "gmail-send",
   "gmail-update",

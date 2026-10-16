@@ -2,8 +2,6 @@ import { createHash } from "node:crypto";
 import { defineState, type SessionParent } from "eve/context";
 import { defineHook, type HookContext } from "eve/hooks";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
-import { browserFilesEnabled } from "@agent/lib/browser-use/files";
-import { documentByteCap } from "@agent/lib/inbound-media/media-type";
 import {
   attachmentsPerMessage,
   conversationHoldsPersonFiles,
@@ -27,8 +25,10 @@ import { taskAgentTool } from "@agent/lib/turn-kind/sets";
 
 /** What the task agent reads when a file Bro named is not there. */
 const notReceivedPath = "/workspace/attachments/NOT_RECEIVED.txt";
-/** All files of one message are fetched within this. */
-const messageBudgetMs = 60_000;
+/** All files of one message are fetched within this, a few at a time. */
+const messageBudgetMs = 120_000;
+/** How many files are fetched and written at once, which bounds the memory. */
+const copiesAtOnce = 3;
 /** The checks of whether the task agent may stay on the web, all of them. */
 const relayBudgetMs = 20_000;
 /** Where Bro's staged files live; a mention of it may still name none. */
@@ -243,7 +243,10 @@ export default defineHook({
           });
         }
         for (const path of named.slice(attachmentsPerMessage)) {
-          missing.push({ path, reason: "больше 10 файлов в одном сообщении" });
+          missing.push({
+            path,
+            reason: `больше ${String(attachmentsPerMessage)} файлов в одном сообщении`,
+          });
         }
         await (missing.length === 0
           ? open.removePath({ force: true, path: notReceivedPath })
@@ -380,13 +383,19 @@ async function receive(input: {
 }) {
   const deadline = AbortSignal.timeout(messageBudgetMs);
   const reasons = new Map<string, string | undefined>();
+  // Each file's write waits for the sandbox's mark (`input.offline`, one
+  // promise for all of them), so the mark still goes in before any file.
   const pass = async (paths: readonly string[]) => {
-    for (const path of paths) {
-      // oxlint-disable-next-line eslint/no-await-in-loop -- One file at a time, within the message's budget.
-      const reason = await receiveOne(input, path, deadline).catch(
-        () => "не удалось получить файл"
+    for (let start = 0; start < paths.length; start += copiesAtOnce) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- one shared deadline, 3 at a time
+      await Promise.all(
+        paths.slice(start, start + copiesAtOnce).map(async (path) => {
+          const reason = await receiveOne(input, path, deadline).catch(
+            () => "не удалось получить файл"
+          );
+          reasons.set(path, reason);
+        })
       );
-      reasons.set(path, reason);
     }
   };
   await pass(input.paths);
@@ -431,10 +440,7 @@ async function receiveOne(
   if (await sandboxHasFile(input.sandbox, path, signal)) return undefined;
   const stored = await getInbox(
     inboxKey(input.workspaceId, input.sessionId, path),
-    signal,
-    ...(browserFilesEnabled(input.workspaceId)
-      ? ([documentByteCap] as const)
-      : ([] as const))
+    signal
   );
   if (stored.kind === "missing") return notSent;
   if (stored.kind === "stale") return sentEarlier;

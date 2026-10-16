@@ -1,0 +1,2 @@
+ALTER TABLE "subscriptions" DROP CONSTRAINT "subscriptions_template_check";--> statement-breakpoint
+ALTER TABLE "subscriptions" ADD CONSTRAINT "subscriptions_template_check" CHECK ("subscriptions"."template" IN ('price', 'flight', 'place', 'parcel'));

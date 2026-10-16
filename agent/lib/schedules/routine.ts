@@ -1,10 +1,13 @@
 import type { ModelMessage, ToolResultPart } from "ai";
 import { z } from "zod";
+import { actionsHeldForAnswer } from "@agent/lib/delivery/questions";
 import {
   currentTurnMessages,
   sendReachedPerson,
+  startsTurn,
 } from "@agent/lib/delivery/turn-sends";
 import type { resolveModeValue } from "@agent/lib/mode";
+import { isBackgroundTurnText } from "@shared/chat/background-turn";
 import { env } from "@shared/environment";
 import type { ScheduleTiming } from "@shared/schedules/timing";
 
@@ -246,6 +249,9 @@ export function similarSchedules<
 export const similarRefusalOpening =
   "Nothing was created: the person already has an active schedule";
 
+/** How it opens the refusal over one the code found alike (`alike`). */
+const alikeRefusalOpening = `${similarRefusalOpening} like this one:`;
+
 function resultText(output: ToolResultPart["output"]) {
   switch (output.type) {
     case "error-text":
@@ -259,15 +265,30 @@ function resultText(output: ToolResultPart["output"]) {
   }
 }
 
+/** The texts of the refusals of `schedules-create` a message carries. */
+function similarRefusals(message: ModelMessage) {
+  return message.role === "tool"
+    ? message.content.flatMap((part) => {
+        if (part.type !== "tool-result" || part.toolName !== "schedules-create")
+          return [];
+        const text = resultText(part.output);
+        return text.includes(similarRefusalOpening) ? [text] : [];
+      })
+    : [];
+}
+
 function refusedAsSimilar(message: ModelMessage) {
-  return (
-    message.role === "tool" &&
-    message.content.some(
-      (part) =>
-        part.type === "tool-result" &&
-        part.toolName === "schedules-create" &&
-        resultText(part.output).includes(similarRefusalOpening)
-    )
+  return similarRefusals(message).length > 0;
+}
+
+/** The ids a refusal over a schedule alike the new one named. */
+function alikeIds(message: ModelMessage) {
+  return similarRefusals(message).flatMap((text) =>
+    text.includes(alikeRefusalOpening)
+      ? (text.match(
+          /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/giu
+        ) ?? [])
+      : []
   );
 }
 
@@ -313,8 +334,60 @@ function deliveredTexts(messages: readonly ModelMessage[]) {
 export function routineAnswerOwed(messages: readonly ModelMessage[]) {
   const turn = currentTurnMessages(messages);
   const refused = turn.findLastIndex(refusedAsSimilar);
-  return (
-    refused !== -1 &&
-    deliveredTexts(turn.slice(refused + 1)).some((text) => /[?？]/u.test(text))
-  );
+  return refused !== -1 && askedAfter(turn.slice(refused + 1));
+}
+
+/** Whether a question reached the person in these messages. */
+function askedAfter(messages: readonly ModelMessage[]) {
+  return deliveredTexts(messages).some((text) => /[?？]/u.test(text));
+}
+
+const messageKindSchema = z.object({ kind: z.string() });
+
+/** Whether the person's own words, not a report or a wakeup, opened it. */
+function personOpened(message: ModelMessage | undefined) {
+  if (message?.role !== "user") return false;
+  if ((messageKindSchema.safeParse(message).data?.kind ?? "user") !== "user")
+    return false;
+  const text = Array.isArray(message.content)
+    ? message.content
+        .flatMap((part) => (part.type === "text" ? [part.text] : []))
+        .join("\n")
+    : message.content;
+  return !isBackgroundTurnText(text);
+}
+
+/**
+ * The ids of the person's schedules `replaces` may delete in this turn: ones
+ * a refused `schedules-create` found alike the new one (never only near it in
+ * time, which may be other work at that hour), put to the person by a
+ * question in an earlier turn, which their own message now opening this turn
+ * answers. A call that took ids from `schedules-list`, or a turn a report or
+ * a wakeup opened, deletes nothing. What they answered, code does not read.
+ */
+export function askedToReplace(messages: readonly ModelMessage[]) {
+  const opening = messages.findLastIndex(startsTurn);
+  if (opening === -1 || !personOpened(messages[opening])) return [];
+  const earlier = messages.slice(0, opening);
+  const ids = earlier.flatMap((message, at) => {
+    const named = alikeIds(message);
+    return named.length > 0 && askedAfter(earlier.slice(at + 1))
+      ? named.map((id) => id.toLowerCase())
+      : [];
+  });
+  return [...new Set(ids)];
+}
+
+/**
+ * What the step is told while `schedules-create` waits for the person's
+ * answer in the pilot of routines set up whole, beside the actions the
+ * turn's question holds (`heldForAnswer`): the same message may have asked
+ * for another schedule, which waits too and is not made.
+ */
+export function routineHeldNote(heldForAnswer: boolean) {
+  const held = [
+    ...(heldForAnswer ? actionsHeldForAnswer : []),
+    "schedules-create",
+  ];
+  return `You asked the person a question in this turn, and they have not answered yet. Until their next message these tools are not available: ${held.join(", ")}. So no schedule is made in this turn, not even another one their message asked for: do not say any is made, say which ones wait for their answer, end the turn and act on their answer.`;
 }

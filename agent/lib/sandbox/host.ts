@@ -23,7 +23,8 @@ const fileTimeoutMs = 31 * 60_000;
 /** `sandboxd`'s own ceiling for a command that names none. */
 const defaultExecTimeoutMs = 600_000;
 
-class SandboxHostError extends Error {
+/** A refusal of `sandboxd`: its HTTP status and error code (`sandbox/README.md`). */
+export class SandboxHostError extends Error {
   readonly code: string;
   readonly status: number;
 
@@ -33,14 +34,6 @@ class SandboxHostError extends Error {
     this.code = code;
     this.status = status;
   }
-}
-
-export function sandboxHostConfigured() {
-  return (
-    env.SANDBOX_HOST_ID !== undefined &&
-    env.SANDBOX_HOST_ORIGIN !== undefined &&
-    env.SANDBOX_SIGNING_KEY !== undefined
-  );
 }
 
 function host() {
@@ -131,7 +124,10 @@ export interface SandboxOpenRequest {
   readonly workspace: string;
 }
 
-/** Creates the sandbox, or takes up the live one with fresh links and token. */
+/**
+ * Creates the sandbox, or takes up the live one with fresh links and token.
+ * A host without room for it answers 507 `host_full` (`openWithRoom` waits).
+ */
 export async function openSandbox(sandboxId: string, body: SandboxOpenRequest) {
   const response = await send("PUT", sandboxPath(sandboxId), {
     json: body,
