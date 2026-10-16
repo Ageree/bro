@@ -1011,20 +1011,25 @@ def watermark_present(ctx, params, item):
     # watermark is large text, 1800 px reads it, and one turn's failure only skips that turn.
     if max(img.size) > 1800:
         img.thumbnail((1800, 1800))
-    best, failures = 1.0, []
-    for angle in (0, 20, -20, 35, -35, 45, -45):
+    # issues: 16.10 sparse-text mode alone (psm 11) did not read a plain bold line under the scan (CER 0.68, 0.00 in
+    # the page mode psm 3), and a tiled watermark at −25° fell between the turns tried.
+    turns = [0] + [sign * step for step in range(5, 50, 5) for sign in (1, -1)]
+    best, failures, tried = 1.0, [], 0
+    for angle in turns:
         view = img.rotate(angle, expand=True, fillcolor=255) if angle else img
-        try:
-            text = ocr(ctx, view, psm=11)
-        except CheckError as error:
-            if isinstance(error, MissingToolError):
-                raise
-            failures.append(f"{angle}°: {error}")
-            continue
-        best = min(best, best_window_cer(text, want))
-        if best <= limit:
-            return passed(f"OCR: CER {best:.2f} (поворот {angle}°)")
-    if len(failures) == 7:
+        for psm in (3, 11):
+            tried += 1
+            try:
+                text = ocr(ctx, view, psm=psm)
+            except CheckError as error:
+                if isinstance(error, MissingToolError):
+                    raise
+                failures.append(f"{angle}°: {error}")
+                continue
+            best = min(best, best_window_cer(text, want))
+            if best <= limit:
+                return passed(f"OCR: CER {best:.2f} (поворот {angle}°)")
+    if len(failures) == tried:
         raise CheckError("; ".join(failures[:2]))
     return failed(f"надпись не найдена (лучший CER {best:.2f})")
 
