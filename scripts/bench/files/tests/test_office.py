@@ -122,6 +122,24 @@ class TopListTest(OfficeTest):
         self.assertEqual(outcome.status, "fail")
 
 
+class LeftOutReceiptTest(OfficeTest):
+    """f-receipts: the receipt out of the trip's dates may be named in a note, not put in the table."""
+
+    def setUp(self):
+        super().setUp()
+        _, self.item = suite_check("f-receipts-expense-report", "Чек 8")
+
+    def test_a_note_naming_it_left_out_passes(self):
+        rows = [("Такси", 1250), ("Примечание: чек от 20.10.2026 на 6990,00 ₽ вне дат командировки, в итог не включён",)]
+        outcome = self.run_check(self.item, xlsx_bytes(rows), "otchet.xlsx")
+        self.assertEqual(outcome.status, "pass", outcome.detail)
+
+    def test_its_row_fails_whatever_its_note_says(self):
+        rows = [("Такси", 1250), ("Одежда-Образец (вне дат, не включён в итог)", 6990)]
+        outcome = self.run_check(self.item, xlsx_bytes(rows), "otchet.xlsx")
+        self.assertEqual(outcome.status, "fail")
+
+
 class RenderNoOverflowTest(OfficeTest):
     ITEM = {"kind": "render_no_overflow", "params": {"max_words": 90, "max_word_overlap": 0.2}}
 

@@ -460,7 +460,11 @@ def xlsx_contains(ctx, params, item):
     missing = [s for s in params.get("all_of", []) if not any(_norm(s) in t for t in texts)]
     if missing:
         return failed("нет: " + ", ".join(missing))
-    hits = [s for s in params.get("none_of", []) if any(_norm(s) in t for t in texts)]
+    # A note that names the left-out document as left out («…вне дат командировки, в итог не включён») is no
+    # inclusion: only the cells such a note is in are skipped, its amount in a cell of its own still counts.
+    skip = params.get("none_of_skip_regex")
+    kept = [t for t in texts if not (skip and re.search(skip, t))]
+    hits = [s for s in params.get("none_of", []) if any(_norm(s) in t for t in kept)]
     if hits:
         return failed("есть: " + ", ".join(hits))
     if params.get("none_of_numeric") or params.get("none_of_cells"):

@@ -143,6 +143,19 @@ class VcfTest(unittest.TestCase):
         self.assertEqual(tels[1][0], ["TYPE=CELL"])
         self.assertFalse(any("does not start with +" in w for w in result["warnings"]), result["warnings"])
 
+    def test_a_note_that_is_only_an_extension_joins_the_phone(self):
+        spec = {"contacts": [{"name": "Офис", "phones": ["+74950000001"], "note": "доб. 123"},
+                             {"name": "Склад", "phones": ["+74950000002", "+74950000003"], "note": "доб. 5"}]}
+        code, result, raw = self.write(spec)
+        self.assertEqual(code, 0, result)
+        office, store = parse(raw)
+        self.assertEqual(office["TEL"][0][1], "+74950000001,123")
+        self.assertNotIn("NOTE", office)
+        self.assertIn("extension", " | ".join(result["warnings"]))
+        # Two phones: whose extension it is cannot be told, the note stays a note.
+        self.assertEqual([value for _, value in store["TEL"]], ["+74950000002", "+74950000003"])
+        self.assertEqual(components(store["NOTE"][0][1]), ["доб. 5"])
+
     def test_bad_specs_are_refused(self):
         refused = [
             {"contacts": [{"note": "без имени и номера", "emails": ["a@b.ru"]}]},

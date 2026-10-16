@@ -502,7 +502,9 @@ cases.append({
         chk("xlsx_find_value", "Итог 15 835,50 — формулой", value=E["receipts_total"], tol=0.01, recalc=True, require_formula=True),
         # issues: the person asked for дата, где, ИНН, сумма, НДС, на что — not for fiscal document numbers.
         chk("xlsx_contains", "ИНН с чеков в таблице", all_of=["1650000001", "1655000002", "1655000003", "1655000004", "1655000006"], any_column=True),
-        chk("xlsx_contains", "Чек 8 (6 990,00) в таблицу не включён", none_of=["6990", "6 990", "90155", "7700000079"]),
+        # issues: 17.10 the table left the receipt out and its note said so («…вне дат, в таблицу и итог не включён»).
+        chk("xlsx_contains", "Чек 8 (6 990,00) в таблицу не включён", none_of=["6990", "6 990", "90155", "7700000079"],
+            none_of_skip_regex="(?i)не\\s*включ|исключ|не\\s*вош[её]л|вне\\s+дат"),
         chk("pdf_page_count", "PDF чеков: 6 страниц", equals=6),
         # issues: a rotated-only page (no perspective unwarp) correlates 0.1–0.7, but 0° still wins; compare at 128 px.
         chk("pdf_pages_upright", "Каждая страница — чек в правильной ориентации: лучший из шаблонов чеков при 0°, на 0.08 выше остальных поворотов и ≥ 0.2", min_corr=0.2, min_margin=0.08, long_side_px=128),
