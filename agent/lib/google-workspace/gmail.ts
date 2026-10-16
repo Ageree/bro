@@ -65,6 +65,11 @@ const gmailDraftSchema = z.object({
     .optional(),
 });
 
+const gmailDraftListSchema = z.object({
+  drafts: z.array(gmailDraftSchema).optional(),
+  nextPageToken: z.string().optional(),
+});
+
 const gmailAttachmentSchema = z.object({ data: z.string().optional() });
 
 export const GMAIL_UPDATE_ACTIONS = [
@@ -96,6 +101,16 @@ export const gmailReadThreadInputSchema = z.object({
 export const gmailUpdateInputSchema = z.object({
   messageIds: z.array(z.string().min(1).max(200)).min(1).max(100),
   update: z.enum(GMAIL_UPDATE_ACTIONS),
+});
+
+export const gmailDeleteDraftInputSchema = z.object({
+  draftIds: z
+    .array(z.string().min(1).max(200))
+    .min(1)
+    .max(20)
+    .describe(
+      "The drafts to delete: the `draftId` gmail-draft returned, or the Gmail message `id` of a draft gmail-search or gmail-read-thread found (its labels include DRAFT)."
+    ),
 });
 
 export const gmailComposeSchema = z
@@ -794,6 +809,113 @@ export async function draftGmail(ctx: ToolContext, payload: GmailCompose) {
       url: googleUrl(gmailApi, "/drafts"),
     })
   );
+}
+
+/** Pages of 500 drafts a deletion reads at most to find the ones it names. */
+const draftListPages = 10;
+
+/**
+ * Deletes Gmail drafts for good: `drafts.delete` skips the Trash. Each id
+ * is a draft's own, as `gmail-draft` returns it, or its message's, as a
+ * search finds it; one the mailbox holds no draft for comes back in
+ * `notFound`, not deleted. Archiving a draft (`gmail-update`) leaves it in
+ * Drafts, and Bro once told the person «убрал оба черновика» after it.
+ * A failure after some drafts went returns what went and what did not
+ * (`failed`): those are gone for good, and an error would read as nothing
+ * deleted. With none deleted the failure itself is the answer.
+ */
+export async function deleteGmailDrafts(
+  ctx: ToolContext,
+  ids: readonly string[]
+) {
+  const requested = [...new Set(ids)];
+  // Outside the call Google may make again after a rate limit: a draft
+  // deleted before it is gone, and the retry would no longer find it.
+  const deleted = new Map<string, string>();
+  // Kept across that retry too: a draft named by both its ids and deleted
+  // under one of them is no longer listed under the other.
+  const drafts = new Map<string, string>();
+  const missing = new Set<string>();
+  try {
+    await withGoogleAuth(ctx, async (google) => {
+      missing.clear();
+      const pending = requested.filter((id) => !deleted.has(id));
+      const listed = await draftIdsOf(
+        google,
+        pending.filter((id) => !drafts.has(id))
+      );
+      for (const [id, draftId] of listed) drafts.set(id, draftId);
+      for (const id of pending) {
+        const draftId = drafts.get(id);
+        // A draft named by both its ids is deleted once.
+        if (draftId !== undefined && [...deleted.values()].includes(draftId)) {
+          deleted.set(id, draftId);
+          continue;
+        }
+        // oxlint-disable-next-line eslint/no-await-in-loop -- One draft at a time, like Gmail's per-user limit wants.
+        if (draftId === undefined || !(await deleteDraft(google, draftId))) {
+          missing.add(id);
+          continue;
+        }
+        deleted.set(id, draftId);
+      }
+    });
+  } catch (error) {
+    if (deleted.size === 0) throw error;
+    console.warn("[gmail] draft deletion stopped partway", {
+      deleted: deleted.size,
+      status: googleApiErrorStatus(error),
+    });
+  }
+  return {
+    deleted: requested.filter((id) => deleted.has(id)),
+    failed: requested.filter((id) => !deleted.has(id) && !missing.has(id)),
+    notFound: requested.filter((id) => missing.has(id)),
+  };
+}
+
+/**
+ * The draft id behind each of `ids` the person's Drafts hold, found by the
+ * draft's own id or its message's.
+ */
+async function draftIdsOf(google: GoogleClient, ids: readonly string[]) {
+  const wanted = new Set(ids);
+  const found = new Map<string, string>();
+  let pageToken: string | undefined;
+  for (
+    let page = 0;
+    page < draftListPages && found.size < wanted.size;
+    page += 1
+  ) {
+    // oxlint-disable-next-line eslint/no-await-in-loop -- Each page needs the token of the one before.
+    const listed = await google.json(gmailDraftListSchema, {
+      url: googleUrl(gmailApi, "/drafts", { maxResults: 500, pageToken }),
+    });
+    for (const draft of listed.drafts ?? []) {
+      for (const id of [draft.id, draft.message?.id]) {
+        if (draft.id && id !== undefined && wanted.has(id)) {
+          found.set(id, draft.id);
+        }
+      }
+    }
+    pageToken = listed.nextPageToken;
+    if (pageToken === undefined) break;
+  }
+  return found;
+}
+
+/** Deletes one draft; false when Gmail no longer has it. */
+async function deleteDraft(google: GoogleClient, draftId: string) {
+  try {
+    await google.json(z.unknown(), {
+      method: "DELETE",
+      url: googleUrl(gmailApi, `/drafts/${encodeURIComponent(draftId)}`),
+    });
+    return true;
+  } catch (error) {
+    if (googleApiErrorStatus(error) === 404) return false;
+    throw error;
+  }
 }
 
 /** A subject as a person compares it: reply and forward marks, quotes and case aside. */
