@@ -60,9 +60,17 @@ def best_window_cer(text: str, want: str) -> float:
 
 
 def words_in_rect(ctx, pdf, page: int, rect) -> str:
-    words = [w for w in ctx.words(pdf, page) if inside(w.center, rect)]
-    words.sort(key=lambda w: (-round(w.rect[3] / 3), w.rect[0]))
-    return norm_text(" ".join(w.text for w in words))
+    """The words inside `rect` in reading order: pdftotext's lines top to bottom, each left to right.
+
+    By pdftotext's line, not by a rounded top edge: on a tilted scan the top of a typed line climbs along it
+    (703.3 → 703.8 pt), and a rounding boundary split «Менеджер по продажам» into «по продажам Менеджер».
+    """
+    lines: dict[int, list] = {}
+    for w in ctx.words(pdf, page):
+        if inside(w.center, rect):
+            lines.setdefault(w.line, []).append(w)
+    ordered = sorted(lines.values(), key=lambda line: -sum(w.center[1] for w in line) / len(line))
+    return norm_text(" ".join(w.text for line in ordered for w in sorted(line, key=lambda w: w.rect[0])))
 
 
 def page_texts(ctx, pdf) -> list:

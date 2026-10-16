@@ -64,6 +64,7 @@ COMMANDS = {
     ("files", "survey"): ("brokit.survey", "main", "files survey DIR"),
     ("ru", "decline"): ("brokit.ru.decline", "main", 'ru decline "Фамилия Имя [Отчество]" --case gen|dat|acc|ins|pre [--gender auto|m|f] [--order fio|if] [--file NAMES.txt]'),
     ("ru", "amount"): ("brokit.ru.amount", "main", "ru amount N [--kop K] [--currency rub|none]"),
+    ("ru", "vacation"): ("brokit.ru.vacation", "main", "ru vacation --start DD.MM.YYYY (--days N | --end DD.MM.YYYY) [--extra D,D]  (annual paid leave)"),
     ("qr", ""): ("brokit.qr", "main", "qr (--gost FIELDS.json | --text T) -o OUT.png|pdf [--size-mm 30]"),
 }
 
