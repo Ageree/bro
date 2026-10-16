@@ -1846,6 +1846,9 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   id или `*`; п. 18 роадмапа): у `once` есть `minutesBefore`, модель шлёт вылет
   по часам аэропорта и его пояс, а момент (целые часы, как `flightFacts`)
   считает `resolveScheduleTiming`. Без флага инструменты прежние байт в байт.
+  Тексты «ставь на момент открытия» (`follow-through.md`, тело навыка,
+  `laterStepInstruction`) пилот переписывает (`agent/lib/schedules/event-zone.ts`),
+  иначе модель вычитала бы сутки дважды; ядро навыков (бюджет 10k) не трогает.
   Варианты `schedules-*` — один `defineTool` в резолвере: тернарник схем в
   `inputSchema` TypeScript сужает до самой узкой схемы (без `delegate`), поэтому
   схему выбирает функция с широким типом результата (`createInputSchemaOf`).

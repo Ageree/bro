@@ -1461,13 +1461,20 @@ describe("a one-off on the clock of an event elsewhere (SCHEDULE_EVENT_ZONE_WORK
     });
   });
 
-  it("says check-in is open now rather than set a moment already past", async () => {
+  it("sets no moment already past: check-in is open before the flight, the date is wrong after it", async () => {
     const create = await createTool("workspace-1");
-    vi.setSystemTime(new Date("2026-10-01T20:00:00.000Z"));
+    const context = toolContext("schedules-create", "photon-imessage");
 
-    await expect(
-      create.execute(input, toolContext("schedules-create", "photon-imessage"))
-    ).rejects.toThrow("check-in is already open");
+    vi.setSystemTime(new Date("2026-10-01T20:00:00.000Z"));
+    await expect(create.execute(input, context)).rejects.toThrow(
+      "check-in is already open"
+    );
+    // A flight gone already — a wrong year, an old letter — is no open
+    // check-in to start.
+    vi.setSystemTime(new Date("2026-10-03T08:00:00.000Z"));
+    await expect(create.execute(input, context)).rejects.toThrow(
+      "the event itself is already in the past"
+    );
     expect(services.create).not.toHaveBeenCalled();
   });
 });

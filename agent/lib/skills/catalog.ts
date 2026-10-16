@@ -15,6 +15,7 @@ import roleInteractive from "@agent/instructions/content/role/interactive.md?raw
 import taskAgentText from "@agent/instructions/content/task-agent.md?raw";
 import taskFilesText from "@agent/instructions/content/task-files.md?raw";
 import { withBackgroundActions } from "@agent/lib/schedules/delegation/text";
+import { withEventZoneRules } from "@agent/lib/schedules/event-zone";
 import { autonomyEdits } from "./autonomy";
 
 /**
@@ -173,6 +174,11 @@ export interface SkillSetup {
    * (`withBackgroundActions`); absent is no, as before the pilot.
    */
   readonly backgroundActions?: boolean;
+  /**
+   * A step before an event elsewhere is set by the event's own clock
+   * (`withEventZoneRules`); absent is no, as before the pilot.
+   */
+  readonly eventZone?: boolean;
 }
 
 /** Who reads a run of lines: every layout, one layout, or one skill. */
@@ -392,7 +398,9 @@ export function skillBody(name: SkillName, setup: SkillSetup) {
       : regions;
   if (regions.length === 0) return undefined;
   const body = titled.join("\n\n");
-  return setup.backgroundActions === true ? withBackgroundActions(body) : body;
+  const acting =
+    setup.backgroundActions === true ? withBackgroundActions(body) : body;
+  return setup.eventZone === true ? withEventZoneRules(acting) : acting;
 }
 
 /** The skills this setup has a body for, in the index's order. */

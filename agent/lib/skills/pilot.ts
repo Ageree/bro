@@ -5,6 +5,7 @@ import { browserUseConfigured } from "@agent/lib/browser-use/client";
 import { imageGenerationScope } from "@agent/lib/image-artifact/generation";
 import { resolveModeValue } from "@agent/lib/mode";
 import { backgroundActionsOfCaller } from "@agent/lib/schedules/delegation/pilot";
+import { eventZoneOfCaller } from "@agent/lib/schedules/event-zone";
 import { taskFilesOfCaller } from "@agent/lib/sandbox/pilot";
 import { env } from "@shared/environment";
 import { directModelActive } from "@shared/model/provider";
@@ -86,7 +87,11 @@ export function skillSetup(context: SkillsContext): SkillSetup {
     ? { ...withFiles, autonomy: true }
     : withFiles;
   // Without the pilot of schedules that act the setup reads as before it.
-  return backgroundActionsOfCaller(context)
+  const withActions: SkillSetup = backgroundActionsOfCaller(context)
     ? { ...withAutonomy, backgroundActions: true }
     : withAutonomy;
+  // And so without the pilot of event zones.
+  return eventZoneOfCaller(context)
+    ? { ...withActions, eventZone: true }
+    : withActions;
 }
