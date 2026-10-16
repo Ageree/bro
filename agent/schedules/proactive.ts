@@ -320,9 +320,9 @@ async function pilotParcels(
     userId: watch.createdByUserId,
     workspaceId: watch.workspaceId,
   };
-  const failed = (step: string, error: unknown) => {
+  const failed = (step: string, name: string) => {
     console.warn("[proactive] parcel watches", {
-      name: error instanceof Error ? error.name : "error",
+      name,
       step,
       workspaceId: watch.workspaceId,
     });
@@ -351,7 +351,7 @@ async function pilotParcels(
       });
       if (started > 0) logged = { parcels: started };
     } catch (error) {
-      failed("start", error);
+      failed("start", error instanceof Error ? error.name : "error");
     }
   }
   return {
@@ -368,7 +368,7 @@ async function pilotParcels(
       try {
         await noteParcelLetters({ numbers, now, scope });
       } catch (error) {
-        failed("note", error);
+        failed("note", error instanceof Error ? error.name : "error");
       }
     },
   };
