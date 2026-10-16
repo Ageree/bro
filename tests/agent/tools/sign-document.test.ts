@@ -627,14 +627,30 @@ describe("signing at the person's own request", () => {
     expect(kept).not.toMatch(/123456|Отдел/u);
   });
 
-  it("asks instead when the person wants to see the document first", async () => {
-    const { result } = await call(
-      reported("Заполни анкету и подпиши"),
-      { action: "prepare", ask: true, file: link },
-      { opened: "background-message" }
-    );
-    expect(result).toMatchObject({ status: "prepared" });
-    expect(stampRuns()).toHaveLength(0);
+  it("asks only when the person's words say so, never on the model's say", async () => {
+    // Live 16.10: the form, the photo and these words, and the model held the
+    // signing back with `ask: true` — nothing was signed.
+    services.summary.mockResolvedValue(null);
+    services.sample.mockResolvedValue(null);
+    const words =
+      "Заполни анкету. Дату ставь сегодняшнюю. Подпись моя на фотке, если нужна.";
+    const schema = (await resolve(reported(words, [photoPath])))?.inputSchema;
+    if (!(schema instanceof z.ZodType)) {
+      throw new TypeError("Expected the tool's Zod input schema.");
+    }
+    expect(
+      schema.safeParse({ action: "prepare", ask: true, file: link }).data
+    ).toStrictEqual({ action: "prepare", file: link });
+    expect(await prepareInReport(reported(words, [photoPath]))).toMatchObject({
+      status: "signed",
+      url: signedUrl,
+    });
+    expect(
+      await prepareInReport(
+        reported(`${words} Только сначала покажи.`, [photoPath])
+      )
+    ).toMatchObject({ status: "prepared" });
+    expect(stampRuns()).toHaveLength(1);
   });
 
   it("never signs for someone else, and says so", async () => {

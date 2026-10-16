@@ -97,6 +97,24 @@ export function taskFilesOfCaller(context: {
 }
 
 /**
+ * Whether the task agent's file kit lines are chosen by the decision model
+ * for this caller's workspace (TASK_KIT_ROUTER_WORKSPACES, workspace ids or
+ * `*`, `agent/lib/kit-router/`): only where the kit reaches the task agent
+ * at all (`taskFilesOfCaller`), and decided without a lookup, so the
+ * instructions and the turn's hearing of the job agree.
+ */
+export function taskKitRouted(context: {
+  readonly session: Pick<SessionContext["session"], "auth">;
+}) {
+  const workspaceId = callerWorkspaceId(context);
+  if (workspaceId === undefined || !taskFilesEnabled(workspaceId)) {
+    return false;
+  }
+  const list = env.TASK_KIT_ROUTER_WORKSPACES ?? [];
+  return list.includes("*") || list.includes(workspaceId);
+}
+
+/**
  * Whether the guards over the person's files run: whenever Object Storage
  * is configured, whatever TASK_FILES_WORKSPACES says now. A conversation
  * whose task agent was given the files keeps their content in its history

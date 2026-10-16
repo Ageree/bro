@@ -169,6 +169,58 @@ describe("the pilot of the person's files", () => {
   });
 });
 
+describe("the pilot of the kit router", () => {
+  const filesPilot = {
+    OPENROUTER_API_KEY: "openrouter-test-key",
+    SANDBOX_WORKSPACES: workspaceId,
+    TASK_FILES_WORKSPACES: workspaceId,
+  };
+  const caller = {
+    session: {
+      auth: {
+        current: {
+          attributes: { workspaceId },
+          authenticator: "telegram-webhook",
+          principalId: "user-1",
+          principalType: "user" as const,
+        },
+        initiator: null,
+      },
+    },
+  };
+
+  async function routed(overrides: Readonly<Record<string, string>>) {
+    const { taskKitRouted } = await importWithSandbox(
+      async () => await import("@agent/lib/sandbox/pilot"),
+      { ...filesPilot, ...overrides }
+    );
+    return taskKitRouted(caller);
+  }
+
+  it("names the workspaces it lists by id or `*`, only where the person's files reach the task agent", async () => {
+    expect(await routed({ TASK_KIT_ROUTER_WORKSPACES: workspaceId })).toBe(
+      true
+    );
+    expect(await routed({ TASK_KIT_ROUTER_WORKSPACES: "*" })).toBe(true);
+    expect(await routed({ TASK_KIT_ROUTER_WORKSPACES: "" })).toBe(false);
+    expect(await routed({ TASK_KIT_ROUTER_WORKSPACES: "personal:other" })).toBe(
+      false
+    );
+    expect(
+      await routed({
+        TASK_FILES_WORKSPACES: "personal:other",
+        TASK_KIT_ROUTER_WORKSPACES: "*",
+      })
+    ).toBe(false);
+  });
+
+  it("takes no emails in the list", async () => {
+    await expect(
+      routed({ TASK_KIT_ROUTER_WORKSPACES: "alice@example.com" })
+    ).rejects.toThrow(/Invalid environment variables/u);
+  });
+});
+
 /**
  * What Object Storage was asked: the listing of the workspace's
  * conversations' marks, a GET or PUT of the conversation's mark by its
