@@ -63,6 +63,7 @@ import { historyTrimPilot } from "@agent/lib/history/pilot";
 import { turnCostSource } from "@agent/lib/costs/turns";
 import { clockModes, localClock } from "@agent/lib/local-time";
 import { resolveModeValue } from "@agent/lib/mode";
+import { emptyTurnSelection } from "@agent/lib/model/empty-turn";
 import { modelSelection } from "@agent/lib/model/selection";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { stepContextPilot } from "@agent/lib/step-context/pilot";
@@ -71,7 +72,7 @@ import { offeredSkills, turnOfferedSkills } from "@agent/lib/skills/tools";
 import { readWorkspaceTimeZone } from "@db/services/user-profile";
 import { taskAgentPilot, taskFilesEnabled } from "@agent/lib/sandbox/pilot";
 import { signEnabled } from "@agent/lib/signatures/pilot";
-import { turnKind } from "@agent/lib/turn-kind/kind";
+import { browserNoticeTurn, turnKind } from "@agent/lib/turn-kind/kind";
 import {
   stepIdentity,
   stepStartedEventSchema,
@@ -109,6 +110,10 @@ export default defineAgent({
   model: defineDynamic({
     events: {
       "step.started": async (event, ctx) => {
+        // A web chat's notice of a report that never got through is code's
+        // text, which the chat shows as Bro's message: the turn ends without
+        // a model call (`agent/lib/browser-use/abandoned-notice.ts`).
+        if (browserNoticeTurn(ctx)) return emptyTurnSelection;
         const scheduledRun = scheduledRunIdentity(ctx.session.auth);
         if (
           scheduledRun &&

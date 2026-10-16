@@ -35,11 +35,13 @@ const nextConfig: NextConfig = {
         source: "/handoff/:path*",
       },
       {
-        // `same-origin`, not `no-referrer`: under that a browser sends
-        // `Origin: null` with the page's own form, and «Оплатить» checks it.
+        // `strict-origin`: the link's secret in the address never leaves the
+        // page, and its forms carry the site's origin — under `no-referrer`
+        // (or `same-origin`, for the bank's form) a browser sends
+        // `Origin: null`, and «Оплатить» checks it.
         headers: [
           { key: "Content-Security-Policy", value: "frame-ancestors 'none'" },
-          { key: "Referrer-Policy", value: "same-origin" },
+          { key: "Referrer-Policy", value: "strict-origin" },
           { key: "X-Frame-Options", value: "DENY" },
         ],
         source: "/pay/:path*",

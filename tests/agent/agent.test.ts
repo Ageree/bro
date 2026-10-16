@@ -118,7 +118,11 @@ import {
   rewriteSendNotice,
   skippedSendNotice,
 } from "@agent/lib/delivery/turn-sends";
-import { backgroundTurnMarker } from "@shared/chat/background-turn";
+import { emptyTurnSelection } from "@agent/lib/model/empty-turn";
+import {
+  backgroundNoticeMessage,
+  backgroundTurnMarker,
+} from "@shared/chat/background-turn";
 import { defaultFormOfAddress } from "@shared/chat/form-of-address";
 
 const runId = "00000000-0000-4000-8000-000000000001";
@@ -182,6 +186,56 @@ describe("root agent model resolution", () => {
       agent.model.events["step.started"]?.({}, scheduledWorkerContext())
     ).rejects.toThrow("The scheduled run lease is no longer active.");
     expect(services.getModel).not.toHaveBeenCalled();
+  });
+
+  it("calls no model in a web chat's notice of an undelivered report", async () => {
+    const model = await agent.model.events["step.started"]?.(
+      {},
+      interactiveContext(
+        [humanMessage(backgroundNoticeMessage("Поручение закончено."))],
+        "browser-notice",
+        reportAttributes
+      )
+    );
+
+    expect(model).toBe(emptyTurnSelection);
+    expect(services.getModel).not.toHaveBeenCalled();
+  });
+
+  it("hands the model a turn that keeps the notice's caller but not its message", async () => {
+    // eve opens the task agent's report in a turn that keeps the previous
+    // caller, here the notice's; queued deliveries share one turn.
+    const notice = humanMessage(
+      backgroundNoticeMessage("Поручение закончено.")
+    );
+    const taskReport = Object.assign(
+      {
+        content:
+          "Background task task_1 (task) is completed.\n\nResult:\nГотово",
+        role: "user" as const,
+      },
+      { kind: "execution.background_task" }
+    );
+    const quietEnd = {
+      content: "<eve-empty-delivery/>",
+      role: "assistant" as const,
+    };
+    // The task agent's report is held to its tools on the direct model only.
+    services.directModelActive.mockReturnValue(true);
+    services.modelSelection.mockReturnValue("deepseek/deepseek-v4.1-flash");
+
+    for (const messages of [
+      [notice, quietEnd, taskReport],
+      [quietEnd, taskReport, notice],
+    ]) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Each turn is resolved on its own.
+      const model = await agent.model.events["step.started"]?.(
+        {},
+        interactiveContext(messages, "browser-notice", reportAttributes)
+      );
+      expect(model).not.toBe(emptyTurnSelection);
+    }
+    expect(services.getModel).toHaveBeenCalledTimes(2);
   });
 });
 
