@@ -1101,6 +1101,17 @@ export const env = createEnv({
         "SIGN_WORKSPACES takes workspace ids or *, not emails"
       )
       .optional(),
+    // The pilot of the kit router: workspace ids or `*`, only inside
+    // TASK_FILES_WORKSPACES (`taskKitRouted` in `agent/lib/sandbox/pilot.ts`).
+    // The decision model reads the task agent's job once and its file kit
+    // lines carry only the blocks the job may need (`agent/lib/kit-router/`).
+    // Unset, every task agent gets every line, as before.
+    TASK_KIT_ROUTER_WORKSPACES: workspaceListSchema
+      .refine(
+        (entries) => entries.every((entry) => !entry.includes("@")),
+        "TASK_KIT_ROUTER_WORKSPACES takes workspace ids or *, not emails"
+      )
+      .optional(),
     // The pilot of compacting a long conversation (docs/roadmap.md, item 28):
     // workspace ids or owners' emails, or `*` for every workspace, whose
     // turns let eve summarize the older history once a step's whole input

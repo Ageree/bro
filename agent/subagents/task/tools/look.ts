@@ -6,6 +6,7 @@ import {
   toolOutputPart,
 } from "eve/tools";
 import { z } from "zod";
+import { hearKitJob } from "@agent/lib/kit-router/route";
 import { rememberLookImage } from "@agent/lib/model/tool-images";
 import { resolveSandboxPath } from "@agent/lib/sandbox/backend";
 import { readSandboxFileWithin } from "@agent/lib/sandbox/inbox";
@@ -65,11 +66,16 @@ function lookPath(path: string) {
  * untrusted input, as a fetched page is: `look` reaches no network, and a
  * task agent that holds the person's files is off the web before its first
  * model call (`hooks/person-files.ts`), `share_file` its only way out.
+ *
+ * Its resolver also lets the kit router hear the turn's message
+ * (`hearKitJob`): eve resolves tools before instructions and with the
+ * turn's message, which the kit's instructions never see.
  */
 export default defineDynamic({
   events: {
-    "turn.started": (_event, context) =>
-      taskFilesOfCaller(context)
+    "turn.started": async (_event, context) => {
+      await hearKitJob(context);
+      return taskFilesOfCaller(context)
         ? defineTool({
             description:
               "See files as pictures: PDF pages, images (scans, photos) or office files rendered to pages. Up to 4 pictures per call across `paths`. `pages` picks pages, `region` zooms into a box, `grid` draws coordinates (PDF points from the top-left of the page as displayed; pixels for images). Use it to read scans and photos and to check every page of a file you made before share_file. Only your last two looks stay visible: look again if you need an older picture.",
@@ -239,6 +245,7 @@ export default defineDynamic({
               ]);
             },
           })
-        : null,
+        : null;
+    },
   },
 });

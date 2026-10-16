@@ -4,6 +4,7 @@ import type { Prompt } from "@agent/lib/model/prompt";
 
 const pilot = vi.hoisted(() => ({
   taskFilesOfCaller: vi.fn<() => boolean>(() => true),
+  taskKitRouted: vi.fn<() => boolean>(() => false),
 }));
 vi.mock("@agent/lib/sandbox/pilot", () => pilot);
 

@@ -3,7 +3,7 @@ import { z } from "zod";
 import { modelEndpoint } from "@agent/lib/model/endpoint";
 import { alertOwner } from "@agent/lib/owner-alert";
 import { env } from "@shared/environment";
-import { routerQuestions } from "./questions";
+import { type RouterQuestion, routerQuestions } from "./questions";
 
 /**
  * The tool router's client of System One: one request of a `noul` question
@@ -135,9 +135,13 @@ type Attempt =
       readonly status?: number;
     };
 
+/** The questions of one request, each named after what it decides. */
+type Questions = Readonly<Record<string, RouterQuestion>>;
+
 async function request(
   target: Target,
   state: string,
+  questions: Questions,
   signal: AbortSignal,
   proxy: ProxyAgent | undefined
 ): Promise<Attempt> {
@@ -146,7 +150,7 @@ async function request(
     response = await fetch(target.url, {
       body: JSON.stringify({
         model: target.model,
-        questions: routerQuestions,
+        questions,
         state,
       }),
       dispatcher: proxy,
@@ -203,11 +207,13 @@ function holdTypesafe(attempt: Attempt, now: number) {
 /**
  * Asks the router's questions about `state` and waits at most `waitMs`.
  * Never throws: a failure is `{ failure }`. A provider's own words never
- * reach the result or a log.
+ * reach the result or a log. Another router passes its own `questions` (the
+ * task agent's kit, `agent/lib/kit-router/`) and shares the providers' holds.
  */
 export async function askRouterQuestions(
   state: string,
-  waitMs: number
+  waitMs: number,
+  questions: Questions = routerQuestions
 ): Promise<RouterAnswer> {
   const started = Date.now();
   const typesafe = typesafeTarget();
@@ -228,7 +234,13 @@ export async function askRouterQuestions(
     const probed = (attempt: Attempt) => {
       holdTypesafe(attempt, Date.now());
     };
-    request(typesafe, state, AbortSignal.timeout(10_000), typesafeProxy)
+    request(
+      typesafe,
+      state,
+      questions,
+      AbortSignal.timeout(10_000),
+      typesafeProxy
+    )
       .then(probed)
       .catch(() => undefined)
       .finally(() => {
@@ -304,9 +316,13 @@ export async function askRouterQuestions(
       if (routerAiStarted || routerAi === undefined || settled) return;
       routerAiStarted = true;
       routerAiPending = true;
-      void request(routerAi, state, controller.signal, undefined).then(
-        routerAiDone
-      );
+      void request(
+        routerAi,
+        state,
+        questions,
+        controller.signal,
+        undefined
+      ).then(routerAiDone);
     };
     timers.push(
       setTimeout(() => {
@@ -319,9 +335,13 @@ export async function askRouterQuestions(
     );
     if (typesafeFirst) {
       typesafePending = true;
-      void request(typesafe, state, controller.signal, typesafeProxy).then(
-        typesafeDone
-      );
+      void request(
+        typesafe,
+        state,
+        questions,
+        controller.signal,
+        typesafeProxy
+      ).then(typesafeDone);
       timers.push(setTimeout(startRouterAi, hedgeAfterMs));
     } else if (routerAi === undefined) {
       // TypeSafe is held, and there is nothing else to ask.

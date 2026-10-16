@@ -3,6 +3,7 @@ import { z } from "zod";
 import { crossChannelPilot } from "@agent/lib/conversation/pilot";
 import { memoryDigestPilot } from "@agent/lib/memory/digest/pilot";
 import { taskJobsDecided } from "@agent/lib/model/router/task";
+import { taskKitRoutedWorkspace } from "@agent/lib/sandbox/pilot";
 import { toolRouterListedWorkspace } from "@agent/lib/tool-router/pilot";
 import { schedulesEnabled } from "@agent/lib/schedules/enabled";
 import { resolveModeValue } from "@agent/lib/mode";
@@ -100,6 +101,7 @@ export const privacy = defineTool({
         decisionModel:
           (directModelActive() &&
             toolRouterListedWorkspace(scope.workspaceId)) ||
+          taskKitRoutedWorkspace(scope.workspaceId) ||
           taskJobs,
         ...(location && { location }),
         phone,

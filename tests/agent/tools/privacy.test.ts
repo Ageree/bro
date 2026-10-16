@@ -78,6 +78,7 @@ const optionalServices = [
   "SIGN_WORKSPACES",
   "SUPERMEMORY_API_KEY",
   "TASK_FILES_WORKSPACES",
+  "TASK_KIT_ROUTER_WORKSPACES",
   "TELEGRAM_BOT_TOKEN",
   "YOOKASSA_SECRET_KEY",
   "YOOKASSA_SHOP_ID",
@@ -224,6 +225,24 @@ describe("privacy", () => {
     vi.stubEnv("TOOL_ROUTER_WORKSPACES", "");
     expect(processors).toContain("модель Jev компании TypeSafe");
     expect(processors).toContain("без кодов, номеров документов");
+
+    // The kit router sends the task agent's job wherever its pilot reaches.
+    const kit = await withServices({
+      BROWSER_STATE_BUCKET: "test-bucket",
+      CLOUDRU_KEY_ID: "test-key-id",
+      CLOUDRU_KEY_SECRET: "test-key-secret",
+      CLOUDRU_S3_TENANT_ID: "test-tenant",
+      OPENROUTER_API_KEY: "openrouter-test-key",
+      SANDBOX_HOST_ID: "sbx-test",
+      SANDBOX_HOST_ORIGIN: "https://sandbox.example.test",
+      SANDBOX_SIGNING_KEY: "ab".repeat(32),
+      SANDBOX_WORKSPACES: "*",
+      TASK_FILES_WORKSPACES: "*",
+      TASK_KIT_ROUTER_WORKSPACES: scope.workspaceId,
+    });
+    expect((await overview(kit.tool)).processors.join("\n")).toContain(
+      "модель Jev компании TypeSafe"
+    );
   });
 
   // Geolocation: what is kept and for how long, what reaches OpenStreetMap,

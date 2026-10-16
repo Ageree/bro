@@ -24,8 +24,11 @@ export const routerGroups = [
 
 export type RouterGroup = (typeof routerGroups)[number];
 
-/** One `noul` question of System One: the probability of «yes». */
-interface RouterQuestion {
+/**
+ * One `noul` question of System One: the probability of «yes». The kit
+ * router asks its own (`agent/lib/kit-router/questions.ts`).
+ */
+export interface RouterQuestion {
   readonly type: "noul";
   readonly instructions: string;
   readonly criteria?: { readonly true: string; readonly false: string };
