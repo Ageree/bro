@@ -33,13 +33,13 @@ type CalendarTiming = Extract<ScheduleTiming, { kind: "calendar" }>;
 
 /**
  * How far apart two runs may be on the clock and still be one routine's
- * time. EN D7: a second morning summary was made over the one the person
- * had, and two summaries in two languages share no words, only the morning.
+ * time: a summary at 7:00 and one at 8:00 on weekdays are the same morning.
  */
 const nearMinutes = 60;
 
 const everyDay = [0, 1, 2, 3, 4, 5, 6];
 const workDays = [1, 2, 3, 4, 5];
+const weekMinutes = 7 * 1_440;
 
 function minutesOf(localTime: string) {
   return Number(localTime.slice(0, 2)) * 60 + Number(localTime.slice(3, 5));
@@ -57,6 +57,15 @@ function weekDaysOf(timing: CalendarTiming) {
     default:
       return undefined;
   }
+}
+
+/**
+ * When a rule of days runs, in minutes from Sunday 00:00: Monday 23:30 and
+ * Tuesday 00:10 are 40 minutes apart, Monday 00:10 and Monday 23:30 are not.
+ */
+function weekMinutesOf(timing: CalendarTiming) {
+  const at = minutesOf(timing.localTime);
+  return weekDaysOf(timing)?.map((day) => day * 1_440 + at);
 }
 
 /** The day of a month's or a year's rule, as one comparable key. */
@@ -81,32 +90,40 @@ function monthDayOf(timing: CalendarTiming) {
   }
 }
 
-/** Whether two calendar rules ever run on the same day. */
-function shareDays(left: CalendarTiming, right: CalendarTiming) {
-  const leftDays = weekDaysOf(left);
-  const rightDays = weekDaysOf(right);
-  if (leftDays && rightDays) {
-    return leftDays.some((day) => rightDays.includes(day));
+/** Whether two calendar rules run within an hour of each other. */
+function calendarNear(left: CalendarTiming, right: CalendarTiming) {
+  if (left.timezone !== right.timezone) return false;
+  const leftWeek = weekMinutesOf(left);
+  const rightWeek = weekMinutesOf(right);
+  if (leftWeek && rightWeek) {
+    return leftWeek.some((at) =>
+      rightWeek.some((other) => {
+        const apart = Math.abs(at - other);
+        return Math.min(apart, weekMinutes - apart) <= nearMinutes;
+      })
+    );
   }
   return (
-    leftDays === undefined &&
-    rightDays === undefined &&
-    monthDayOf(left) === monthDayOf(right)
+    leftWeek === undefined &&
+    rightWeek === undefined &&
+    monthDayOf(left) === monthDayOf(right) &&
+    Math.abs(minutesOf(left.localTime) - minutesOf(right.localTime)) <=
+      nearMinutes
   );
 }
 
 /**
- * Whether two rules run on a same day within an hour of each other on one
- * clock. A fixed interval has no time of day: only its words compare.
+ * Whether two rules run at one time: calendar rules within an hour of each
+ * other, fixed intervals of the same length.
  */
 function nearInTime(left: ScheduleTiming, right: ScheduleTiming) {
-  if (left.kind !== "calendar" || right.kind !== "calendar") return false;
-  if (left.timezone !== right.timezone) return false;
-  const apart = Math.abs(
-    minutesOf(left.localTime) - minutesOf(right.localTime)
-  );
+  if (left.kind === "calendar" && right.kind === "calendar") {
+    return calendarNear(left, right);
+  }
   return (
-    Math.min(apart, 1_440 - apart) <= nearMinutes && shareDays(left, right)
+    left.kind === "interval" &&
+    right.kind === "interval" &&
+    left.everyMinutes === right.everyMinutes
   );
 }
 
@@ -186,9 +203,11 @@ function nearInWords(left: string, right: string) {
 }
 
 /**
- * The person's active recurring schedules a new recurring one is like: on
- * a same day within an hour of it, or asking for mostly the same. A one-off
- * reminder is never one, and is never held up by one.
+ * The person's active recurring schedules a new recurring one repeats: at
+ * one time and asking for mostly the same. Time alone is no repeat — «в 8:00
+ * омепразол, в 8:30 эналаприл» are two reminders — and neither are words
+ * alone: a summary in the evening is not the morning one. A one-off reminder
+ * is never one, and is never held up by one.
  */
 export function similarSchedules<
   Job extends {
@@ -205,7 +224,7 @@ export function similarSchedules<
     (job) =>
       job.status === "active" &&
       job.timing.kind !== "once" &&
-      (nearInTime(fresh.timing, job.timing) ||
-        nearInWords(fresh.prompt, job.prompt))
+      nearInTime(fresh.timing, job.timing) &&
+      nearInWords(fresh.prompt, job.prompt)
   );
 }

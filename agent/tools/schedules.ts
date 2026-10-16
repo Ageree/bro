@@ -14,6 +14,7 @@ import {
   stepStartedEventSchema,
 } from "@agent/lib/turn-kind/step";
 import {
+  givenMissingInputs,
   scheduleConfirmation,
   scheduleDelivery,
   scheduleListSummary,
@@ -35,6 +36,7 @@ import { skillsLayout } from "@agent/lib/skills/pilot";
 import {
   localRunLabel,
   resolveScheduleTiming,
+  type ScheduleTiming,
   scheduleTimingInputSchema,
   shortScheduleTimingInputSchema,
 } from "@shared/schedules/timing";
@@ -181,18 +183,42 @@ type ScheduleToCreate = Awaited<ReturnType<typeof scheduleToCreate>>;
 const trialLeadMs = 60 * 60_000;
 
 /**
- * A trial run of a new routine that gathers something, before its first
- * regular run: never of a one-off, which is its own run, nor of one that
- * acts in the person's name. A trial that did not start is offered instead,
- * as outside the pilot: the schedule itself is made.
+ * Whether a run right now can stand for the routine: a rule of days or a
+ * fixed interval. A month's or a year's run is mostly a step on its date — a
+ * receipt by the 10th, readings by the 25th — with nothing to gather before.
+ */
+function runsOften(timing: ScheduleTiming) {
+  return (
+    timing.kind === "interval" ||
+    (timing.kind === "calendar" &&
+      (timing.frequency === "daily" ||
+        timing.frequency === "weekdays" ||
+        timing.frequency === "weekly"))
+  );
+}
+
+/**
+ * A trial run of a new routine whose run right now gives what each run
+ * gives, before its first regular run: never of a one-off, which is its own
+ * run, nor of one that acts in the person's name. Until an input it lacks
+ * comes, a trial would show a summary without it: it is offered for after.
+ * A trial that did not start is offered instead, as outside the pilot: the
+ * schedule itself is made.
  */
 async function startTrial(
   scope: ScheduleToCreate["owner"]["scope"],
   job: Awaited<ReturnType<typeof createScheduledAgentJob>>,
-  gathers: boolean
+  trialNow: boolean,
+  lacksInputs: boolean
 ) {
-  if (!gathers || job.timing.kind === "once" || job.delegation !== null)
+  if (
+    !trialNow ||
+    job.timing.kind === "once" ||
+    job.delegation !== null ||
+    !runsOften(job.timing)
+  )
     return "none";
+  if (lacksInputs) return "after_inputs";
   if (job.nextRunAt && job.nextRunAt.getTime() - Date.now() < trialLeadMs)
     return "none";
   try {
@@ -208,14 +234,14 @@ async function startTrial(
 }
 
 /**
- * Makes the schedule and words its confirmation. `gathers` comes only from
+ * Makes the schedule and words its confirmation. `trialNow` comes only from
  * the pilot of routines set up whole, which starts a trial run at once.
  */
 async function createAndConfirm(
   input: z.infer<typeof delegatingCreateScheduleInputSchema>,
   context: ToolContext,
   { delegation, owner, timeZone, timing }: ScheduleToCreate,
-  gathers?: boolean
+  trialNow?: boolean
 ) {
   const job = await createScheduledAgentJob(owner.scope, {
     ...owner.conversation,
@@ -225,15 +251,21 @@ async function createAndConfirm(
     replyAnchorMessageId: scheduleReplyAnchor(context),
     timing,
   });
+  const missingInputs = input.missingInputs ?? [];
   const trial =
-    gathers === undefined
+    trialNow === undefined
       ? undefined
-      : await startTrial(owner.scope, job, gathers);
+      : await startTrial(
+          owner.scope,
+          job,
+          trialNow,
+          givenMissingInputs(missingInputs).length > 0
+        );
   const delivery = await scheduleDelivery(job);
   const confirmation = scheduleConfirmation(
     job,
     delivery,
-    input.missingInputs ?? [],
+    missingInputs,
     trial
   );
   return {
@@ -263,19 +295,27 @@ async function runCreateSchedule(
  * summary was only offered, and a second summary was made over the first.
  */
 const routineFields = {
-  gathers: z
+  trialNow: z
     .boolean()
     .describe(
-      "true when each run gathers something for the person — a summary, a digest, a check of mail, the calendar, prices, the weather or the way somewhere: a recurring one then runs once right away as a trial. false when each run only reminds of something («напоминай пить воду»)."
+      "true when a run right now already gives the person what each run gives — a summary, a digest, a check of mail, the calendar, prices, the weather or the way somewhere: a recurring one then runs once right away as a trial. false when each run only reminds of something («напоминай пить воду»), and for a step that makes sense only on its date or once something has come («квитанция придёт к 10-му — проверь и подготовь оплату»)."
     ),
   // Weak models fill every optional field: an entry that is no id of a
-  // similar schedule keeps nothing, and must never fail the schedule.
+  // similar schedule keeps or replaces nothing, and must never fail the
+  // schedule.
   keepAlongside: z
     .array(z.string().max(100))
     .max(10)
     .optional()
     .describe(
       "Only after the person said to keep both: the ids of the similar schedules a refused call named, which stay beside the new one. Leave it out otherwise."
+    ),
+  replaces: z
+    .array(z.string().max(100))
+    .max(10)
+    .optional()
+    .describe(
+      "Only after the person said to replace it: the ids of the similar schedules a refused call named, deleted once the new one is made. Leave it out otherwise."
     ),
 };
 
@@ -289,9 +329,13 @@ const delegatingRoutineCreateScheduleInputSchema =
 const shortDelegatingRoutineCreateScheduleInputSchema =
   shortDelegatingCreateScheduleInputSchema.extend(routineFields);
 
+type ListedJob = Awaited<ReturnType<typeof listScheduledAgentJobs>>[number];
+
 /**
  * Why nothing was made: the person has an active schedule like this one,
- * and only they say whether the new one replaces it or comes beside it.
+ * and only they say whether the new one replaces it or comes beside it. A
+ * replaced one is deleted, never changed: a change would keep the action
+ * it does in the person's name (`delegation`) under the new task.
  */
 function similarScheduleRefusal(
   similar: readonly ReturnType<typeof scheduleSummary>[]
@@ -302,31 +346,90 @@ function similarScheduleRefusal(
     prompt,
     timing,
   }));
-  return `Nothing was created: the person already has an active schedule like this one: ${JSON.stringify(named)}. Ask them in one short message whether to replace it or to keep both, naming its time (nextRunLocal) and what it does, and wait for their answer. To replace it, change that schedule with schedules-update (prompt, timing) rather than making a second one. To keep both, call schedules-create again with keepAlongside ${JSON.stringify(named.map(({ id }) => id))}.`;
+  const ids = JSON.stringify(named.map(({ id }) => id));
+  return `Nothing was created: the person already has an active schedule like this one: ${JSON.stringify(named)}. Unless their message already said to add it beside that one («ещё одно», «и в 15:00 тоже»), ask them in one short message whether to replace it or keep both, naming its time (nextRunLocal) and what it does, and wait for their answer. Then call schedules-create again with the same input and replaces ${ids} — the old one is deleted once the new one is made — or keepAlongside ${ids} to keep both.`;
+}
+
+/**
+ * Whether a schedule came from this very turn of this chat: two reminders
+ * asked for in one message («в 8:00 омепразол, в 8:30 эналаприл») are no
+ * repeat of each other.
+ */
+function madeThisTurn(
+  job: ListedJob,
+  conversation: ScheduleToCreate["owner"]["conversation"],
+  turnStartedAt: number
+) {
+  return (
+    job.createdAt.getTime() >= turnStartedAt &&
+    job.conversationChannel === conversation.conversationChannel &&
+    job.conversationId === conversation.conversationId
+  );
+}
+
+/**
+ * Deletes the schedules the new one replaces, after it is made: a failed
+ * create leaves them running. Says what became of them.
+ */
+async function deleteReplaced(
+  scope: ScheduleToCreate["owner"]["scope"],
+  replaced: readonly ListedJob[]
+) {
+  const kept = await Promise.all(
+    replaced.map(async (job) => {
+      try {
+        const deleted = await updateScheduledAgentJob(scope, job.id, {
+          status: "deleted",
+        });
+        return deleted === undefined ? [job.id] : [];
+      } catch (error) {
+        console.warn("[schedules] a replaced schedule was not deleted", {
+          id: job.id,
+          name: error instanceof Error ? error.name : "unknown",
+        });
+        return [job.id];
+      }
+    })
+  );
+  const still = kept.flat();
+  return still.length === 0
+    ? "It replaced the similar schedule, now deleted: say so."
+    : `The similar schedule ${JSON.stringify(still)} could not be deleted and still runs: delete it with schedules-update status deleted.`;
 }
 
 async function runRoutineCreateSchedule(
   input: z.infer<typeof delegatingRoutineCreateScheduleInputSchema>,
-  context: ToolContext
+  context: ToolContext,
+  turnStartedAt: number
 ) {
   const made = await scheduleToCreate(input, context);
-  const kept = new Set(input.keepAlongside ?? []);
+  const replaces = new Set(input.replaces ?? []);
+  const chosen = new Set([...(input.keepAlongside ?? []), ...replaces]);
   // A one-off reminder is never held up by a routine.
   const similar =
     made.timing.kind === "once"
       ? []
       : similarSchedules(
           { prompt: input.prompt, timing: made.timing },
-          await listScheduledAgentJobs(made.owner.scope)
-        ).filter((job) => !kept.has(job.id));
-  if (similar.length > 0) {
+          (await listScheduledAgentJobs(made.owner.scope)).filter(
+            (job) => !madeThisTurn(job, made.owner.conversation, turnStartedAt)
+          )
+        );
+  const unanswered = similar.filter((job) => !chosen.has(job.id));
+  if (unanswered.length > 0) {
     throw new Error(
       similarScheduleRefusal(
-        similar.map((job) => scheduleSummary(job, made.timeZone))
+        unanswered.map((job) => scheduleSummary(job, made.timeZone))
       )
     );
   }
-  return createAndConfirm(input, context, made, input.gathers);
+  const created = await createAndConfirm(input, context, made, input.trialNow);
+  const replaced = similar.filter((job) => replaces.has(job.id));
+  if (replaced.length === 0) return created;
+  return {
+    ...created,
+    reply: `${created.reply} ${await deleteReplaced(made.owner.scope, replaced)}`,
+  };
 }
 
 const createScheduleDescription =
@@ -660,9 +763,11 @@ export default defineDynamic({
       // The skills pilot's turns read the short descriptions.
       const short = skillsLayout(context) === "core";
       const delegating = backgroundActionsOfCaller(context);
-      // The pilot of routines set up whole takes what each run does, and
-      // which similar schedules the person said to keep; outside it the
-      // tool is the same, byte for byte.
+      // The pilot of routines set up whole takes whether a run now stands
+      // for the routine, and what the person said of a similar schedule;
+      // outside it the tool is the same, byte for byte. Its schedules made
+      // after this moment are this turn's, never a repeat to ask about.
+      const turnStartedAt = Date.now();
       const create = routineSetupOfCaller(context)
         ? defineTool({
             approval: createScheduleApproval,
@@ -680,7 +785,8 @@ export default defineDynamic({
               : short
                 ? shortRoutineCreateScheduleInputSchema
                 : routineCreateScheduleInputSchema,
-            execute: runRoutineCreateSchedule,
+            execute: (input, toolContext) =>
+              runRoutineCreateSchedule(input, toolContext, turnStartedAt),
           })
         : delegating
           ? short

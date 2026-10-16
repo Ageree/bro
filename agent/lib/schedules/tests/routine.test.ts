@@ -11,6 +11,16 @@ function calendar(
   return { frequency, kind: "calendar", localTime, timezone: zone };
 }
 
+function weekly(weekday: number, localTime: string): ScheduleTiming {
+  return {
+    frequency: "weekly",
+    kind: "calendar",
+    localTime,
+    timezone: zone,
+    weekdays: [weekday],
+  };
+}
+
 function job(
   prompt: string,
   timing: ScheduleTiming,
@@ -24,14 +34,14 @@ const ruSummary = job(
   calendar("weekdays", "08:00")
 );
 
-describe("schedules like a new routine", () => {
+describe("schedules a new routine repeats", () => {
   // EN D7: the person's morning summary was made a second time.
-  it("finds a summary at a near time of the same days, in any language", () => {
+  it("finds the same summary asked for again near its time", () => {
     expect(
       similarSchedules(
         {
           prompt:
-            "Every weekday send my calendar for the day, emails I still owe a reply to, and the weather.",
+            "Каждый будний день присылай сводку: календарь на день, письма без ответа и погоду.",
           timing: calendar("weekdays", "07:00"),
         },
         [ruSummary]
@@ -39,7 +49,22 @@ describe("schedules like a new routine", () => {
     ).toEqual([ruSummary]);
   });
 
-  it("finds the same summary asked for at another time", () => {
+  it("takes neither the same time nor the same words alone for a repeat", () => {
+    // «В 8:00 омепразол, в 8:30 эналаприл»: two reminders.
+    const omeprazole = job(
+      "Напомнить выпить омепразол.",
+      calendar("daily", "08:00")
+    );
+    expect(
+      similarSchedules(
+        {
+          prompt: "Напомнить выпить эналаприл.",
+          timing: calendar("daily", "08:30"),
+        },
+        [omeprazole]
+      )
+    ).toEqual([]);
+    // The evening summary is not the morning one.
     expect(
       similarSchedules(
         {
@@ -49,43 +74,22 @@ describe("schedules like a new routine", () => {
         },
         [ruSummary]
       )
-    ).toEqual([ruSummary]);
+    ).toEqual([]);
   });
 
-  it("leaves other work at another time, and runs on other days, alone", () => {
-    const water = job("Напоминай пить воду.", calendar("daily", "11:00"));
-    const rent = job("Напомни оплатить квартиру.", {
-      dayOfMonth: 5,
-      frequency: "monthly",
-      kind: "calendar",
-      localTime: "08:00",
-      timezone: zone,
-    });
-    const saturday = job("Пришли список покупок на неделю.", {
-      frequency: "weekly",
-      kind: "calendar",
-      localTime: "08:30",
-      timezone: zone,
-      weekdays: [6],
-    });
+  it("measures the time across midnight between days, not within one", () => {
+    const late = job("Пришли курс доллара и евро.", weekly(1, "23:30"));
+    // Monday 23:30 and Tuesday 00:10 are 40 minutes apart.
     expect(
-      similarSchedules(
-        {
-          prompt: "Каждое утро присылай курс доллара и евро.",
-          timing: calendar("weekdays", "08:00"),
-        },
-        [water, rent, saturday]
-      )
-    ).toEqual([]);
-    // Words in common that name different work are not the same routine.
+      similarSchedules({ prompt: late.prompt, timing: weekly(2, "00:10") }, [
+        late,
+      ])
+    ).toEqual([late]);
+    // Monday 00:10 and Monday 23:30 are almost a day apart.
     expect(
-      similarSchedules(
-        {
-          prompt: "Напоминай пить таблетки.",
-          timing: calendar("daily", "15:00"),
-        },
-        [water]
-      )
+      similarSchedules({ prompt: late.prompt, timing: weekly(1, "00:10") }, [
+        late,
+      ])
     ).toEqual([]);
   });
 

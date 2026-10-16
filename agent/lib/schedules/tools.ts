@@ -159,7 +159,8 @@ const travelTask =
 /**
  * What the reply says of a trial run: one `schedules-create` already started
  * (the pilot of routines set up whole, `agent/lib/schedules/routine.ts`), one
- * to offer, or none for a schedule that only reminds or acts.
+ * to offer now or once the missing inputs come, or none for a schedule that
+ * only reminds or acts.
  */
 const trialLines = {
   none: [],
@@ -169,7 +170,17 @@ const trialLines = {
   started: [
     "A trial run starts within a minute, beside the regular ones; its report arrives in a few minutes in the same place. Say so in this reply without asking, and nothing more about it until it comes.",
   ],
+  after_inputs: [
+    "Once the person gives what is missing and you put it into prompt, offer a trial run: on their yes, call schedules-update with runNow true.",
+  ],
 } as const;
+
+/** What `missingInputs` names, without the empty entries weak models fill. */
+export function givenMissingInputs(missingInputs: readonly string[]) {
+  return missingInputs
+    .map((input) => input.trim())
+    .filter((input) => !/^(?:|\*|-|—|нет|none|n\/a)$/iu.test(input));
+}
 
 /**
  * What the confirmation of a new schedule tells the person besides its first
@@ -184,9 +195,7 @@ export function scheduleConfirmation(
   missingInputs: readonly string[],
   trial: keyof typeof trialLines = "offered"
 ) {
-  const missing = missingInputs
-    .map((input) => input.trim())
-    .filter((input) => !/^(?:|\*|-|—|нет|none|n\/a)$/iu.test(input));
+  const missing = givenMissingInputs(missingInputs);
   return [
     `In the reply name the first run (nextRunLocal) and where each report arrives: ${delivery.deliversTo}.`,
     ...(delivery.webOnly && telegramLinkConfigured()

@@ -1185,8 +1185,9 @@ function personTurn(): DynamicResolveContext {
 /** What any variant of `schedules-create` takes: each pilot adds fields. */
 type CreateInput = Parameters<typeof createSchedule.execute>[0] & {
   readonly delegate?: ScheduleDelegation;
-  readonly gathers?: boolean;
   readonly keepAlongside?: readonly string[];
+  readonly replaces?: readonly string[];
+  readonly trialNow?: boolean;
 };
 
 /** `schedules-create` as a test calls whichever variant a turn resolved. */
@@ -1403,9 +1404,23 @@ describe("routines set up whole (ROUTINE_SETUP_WORKSPACES)", () => {
     kind: "calendar" as const,
     localTime: "08:00",
   };
+  const zoned = { ...weekdays, timezone: "Asia/Yekaterinburg" };
 
   const createTool = async (pilot: string, background = "") =>
     resolvedCreate({ background, routine: pilot });
+
+  /** The summary the person set up in an earlier turn. */
+  function morningSummary(
+    delegation: ReturnType<typeof scheduledJob>["delegation"] = null
+  ) {
+    return {
+      ...scheduledJob(),
+      delegation,
+      id: "00000000-0000-4000-8000-000000000002",
+      prompt: summary,
+      timing: zoned,
+    };
+  }
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -1440,13 +1455,7 @@ describe("routines set up whole (ROUTINE_SETUP_WORKSPACES)", () => {
     expect(inputProperties(create.inputSchema)).toEqual(
       inputProperties(createSchedule.inputSchema)
     );
-    services.list.mockResolvedValue([
-      {
-        ...scheduledJob(),
-        prompt: summary,
-        timing: { ...weekdays, timezone: "Asia/Yekaterinburg" },
-      },
-    ]);
+    services.list.mockResolvedValue([morningSummary()]);
 
     const result = await create.execute(
       { missedRunPolicy: "run_latest", prompt: summary, timing: weekdays },
@@ -1462,15 +1471,15 @@ describe("routines set up whole (ROUTINE_SETUP_WORKSPACES)", () => {
   it("starts a trial of a new summary right away and says so", async () => {
     const create = await createTool("workspace-1");
     expect(inputProperties(create.inputSchema)).toEqual(
-      expect.arrayContaining(["gathers", "keepAlongside"])
+      expect.arrayContaining(["keepAlongside", "replaces", "trialNow"])
     );
 
     const result = await create.execute(
       {
-        gathers: true,
         missedRunPolicy: "run_latest",
         prompt: summary,
         timing: weekdays,
+        trialNow: true,
       },
       toolContext("schedules-create", "photon-imessage")
     );
@@ -1480,23 +1489,39 @@ describe("routines set up whole (ROUTINE_SETUP_WORKSPACES)", () => {
       { userId: "user-1", workspaceId: "workspace-1" },
       scheduledJob().id
     );
-    const reply = result.reply;
-    expect(reply).toContain("A trial run starts within a minute");
-    expect(reply).not.toContain("offer to send one right now");
+    expect(result.reply).toContain("A trial run starts within a minute");
+    expect(result.reply).not.toContain("offer to send one right now");
   });
 
-  it("runs no trial of a reminder or of a schedule that acts", async () => {
-    const reminder = await createTool("workspace-1");
-    const result = await reminder.execute(
+  it("runs no trial of a reminder, a step on its date, or a schedule that acts", async () => {
+    const create = await createTool("workspace-1");
+    const reminder = await create.execute(
       {
-        gathers: false,
         missedRunPolicy: "run_latest",
         prompt: "Напоминай пить воду.",
         timing: weekdays,
+        trialNow: false,
       },
       toolContext("schedules-create", "photon-imessage")
     );
-    expect(result.reply).not.toContain("trial");
+    expect(reminder.reply).not.toContain("trial");
+
+    // The receipt is not there before the 10th, however the model marked it.
+    const receipt = await create.execute(
+      {
+        missedRunPolicy: "run_latest",
+        prompt: "Квитанция придёт к 10-му: проверь её и подготовь оплату.",
+        timing: {
+          dayOfMonth: 10,
+          frequency: "monthly",
+          kind: "calendar",
+          localTime: "10:00",
+        },
+        trialNow: true,
+      },
+      toolContext("schedules-create", "photon-imessage")
+    );
+    expect(receipt.reply).not.toContain("trial");
 
     // A trial of a run that sends a letter would send it now.
     const acting = await createTool("workspace-1", "workspace-1");
@@ -1507,7 +1532,6 @@ describe("routines set up whole (ROUTINE_SETUP_WORKSPACES)", () => {
           kind: "email",
           to: ["buh@example.com"],
         },
-        gathers: true,
         missedRunPolicy: "run_latest",
         prompt: "Каждую пятницу отправляй бухгалтеру показания счётчиков.",
         timing: {
@@ -1516,10 +1540,11 @@ describe("routines set up whole (ROUTINE_SETUP_WORKSPACES)", () => {
           localTime: "10:00",
           weekdays: [5],
         },
+        trialNow: true,
       },
       toolContext("schedules-create", "photon-imessage")
     );
-    expect(services.create).toHaveBeenCalledTimes(2);
+    expect(services.create).toHaveBeenCalledTimes(3);
     expect(services.runNow).not.toHaveBeenCalled();
   });
 
@@ -1536,16 +1561,36 @@ describe("routines set up whole (ROUTINE_SETUP_WORKSPACES)", () => {
 
     const result = await create.execute(
       {
-        gathers: true,
         missedRunPolicy: "run_latest",
         prompt: summary,
         timing: weekdays,
+        trialNow: true,
       },
       toolContext("schedules-create", "photon-imessage")
     );
 
     expect(services.runNow).not.toHaveBeenCalled();
     expect(result.reply).not.toContain("trial");
+  });
+
+  it("offers the trial for after the missing inputs come", async () => {
+    const create = await createTool("workspace-1");
+
+    const result = await create.execute(
+      {
+        missedRunPolicy: "run_latest",
+        missingInputs: ["адрес работы"],
+        prompt: `${summary} И сколько ехать до работы на машине.`,
+        timing: weekdays,
+        trialNow: true,
+      },
+      toolContext("schedules-create", "photon-imessage")
+    );
+
+    expect(services.runNow).not.toHaveBeenCalled();
+    expect(result.reply).toContain(
+      "Once the person gives what is missing and you put it into prompt, offer a trial run"
+    );
   });
 
   it("makes the schedule and offers the trial when it does not start", async () => {
@@ -1555,10 +1600,10 @@ describe("routines set up whole (ROUTINE_SETUP_WORKSPACES)", () => {
 
     const result = await create.execute(
       {
-        gathers: true,
         missedRunPolicy: "run_latest",
         prompt: summary,
         timing: weekdays,
+        trialNow: true,
       },
       toolContext("schedules-create", "photon-imessage")
     );
@@ -1568,24 +1613,21 @@ describe("routines set up whole (ROUTINE_SETUP_WORKSPACES)", () => {
   });
 
   // EN D7: a second summary was made over the first.
-  it("asks before a schedule like an active one, and keeps both on the person's word", async () => {
+  const repeat = {
+    missedRunPolicy: "run_latest" as const,
+    prompt:
+      "Каждый будний день присылай сводку: календарь на день, письма без ответа и погоду.",
+    timing: { ...weekdays, localTime: "07:30" },
+    trialNow: true,
+  };
+
+  it("asks before a repeat of an active schedule, and keeps both on the person's word", async () => {
     const create = await createTool("workspace-1");
-    const existing = {
-      ...scheduledJob(),
-      prompt: summary,
-      timing: { ...weekdays, timezone: "Asia/Yekaterinburg" },
-    };
+    const existing = morningSummary();
     services.list.mockResolvedValue([existing]);
-    const input = {
-      gathers: true,
-      missedRunPolicy: "run_latest" as const,
-      prompt:
-        "Every weekday send my calendar for the day, emails I still owe a reply to, and the weather.",
-      timing: { ...weekdays, localTime: "07:00" },
-    };
 
     const refused = create.execute(
-      input,
+      repeat,
       toolContext("schedules-create", "photon-imessage")
     );
     await expect(refused).rejects.toThrow(
@@ -1593,20 +1635,77 @@ describe("routines set up whole (ROUTINE_SETUP_WORKSPACES)", () => {
     );
     await expect(refused).rejects.toThrow(existing.id);
     expect(services.create).not.toHaveBeenCalled();
-    expect(services.runNow).not.toHaveBeenCalled();
 
     // An entry that names no similar schedule keeps nothing.
     await expect(
       create.execute(
-        { ...input, keepAlongside: ["", "*"] },
+        { ...repeat, keepAlongside: ["", "*"] },
         toolContext("schedules-create", "photon-imessage")
       )
-    ).rejects.toThrow("replace it or to keep both");
+    ).rejects.toThrow("whether to replace it or keep both");
 
     await create.execute(
-      { ...input, keepAlongside: [existing.id] },
+      { ...repeat, keepAlongside: [existing.id] },
       toolContext("schedules-create", "photon-imessage")
     );
+    expect(services.create).toHaveBeenCalledOnce();
+    expect(services.update).not.toHaveBeenCalled();
+  });
+
+  // A changed schedule would keep the letter it sends in the person's name.
+  it("replaces a schedule by deleting it after the new one is made", async () => {
+    const create = await createTool("workspace-1");
+    const existing = morningSummary({
+      about: "показания счётчиков",
+      kind: "email",
+      to: ["buh@example.com"],
+    });
+    services.list.mockResolvedValue([existing]);
+    services.update.mockResolvedValue({ ...existing, status: "deleted" });
+
+    const result = await create.execute(
+      { ...repeat, replaces: [existing.id] },
+      toolContext("schedules-create", "photon-imessage")
+    );
+
+    expect(services.create.mock.calls[0]?.[1]).toMatchObject({
+      prompt: repeat.prompt,
+    });
+    expect(
+      services.create.mock.invocationCallOrder[0] ?? Infinity
+    ).toBeLessThan(services.update.mock.invocationCallOrder[0] ?? 0);
+    expect(services.update).toHaveBeenCalledExactlyOnceWith(
+      { userId: "user-1", workspaceId: "workspace-1" },
+      existing.id,
+      { status: "deleted" }
+    );
+    // The new summary gets its trial as any other.
+    expect(services.runNow).toHaveBeenCalledOnce();
+    expect(result.reply).toContain("now deleted");
+  });
+
+  it("never asks about a schedule made in this same turn", async () => {
+    // «Напоминай пить таблетки в 8:00 и в 8:30»: the first is made already.
+    const create = await createTool("workspace-1");
+    services.list.mockResolvedValue([
+      {
+        ...scheduledJob(),
+        createdAt: new Date(),
+        prompt: "Напоминай пить таблетки.",
+        timing: zoned,
+      },
+    ]);
+
+    await create.execute(
+      {
+        missedRunPolicy: "run_latest",
+        prompt: "Напоминай пить таблетки.",
+        timing: { ...weekdays, localTime: "08:30" },
+        trialNow: false,
+      },
+      toolContext("schedules-create", "photon-imessage")
+    );
+
     expect(services.create).toHaveBeenCalledOnce();
   });
 });
