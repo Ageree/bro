@@ -284,13 +284,38 @@ def features(path):
     return counts
 
 
-def without_cached_values(source, target):
-    """Copies an .xlsx dropping the cached values of formula cells."""
+# Russian Excel shows date codes in Russian, but the file keeps them in English: «ДД.ММ.ГГГГ» written into a
+# number format is no date code at all, and the cell reads as a bare number (16.10: every date of a statement).
+LOCAL_CODES = str.maketrans("ДдМмГгЧчСс", "DdMmYyHhSs")
+LOCAL_DATE = re.compile(r"ДД|дд|ММ|ГГ|гг|чч")
+
+
+def english_code(code):
+    """A number format with Russian date and time codes in English ones; text in quotes stays."""
+    parts = re.split(r'("[^"]*")', code)
+    return "".join(part if part.startswith('"') else part.translate(LOCAL_CODES) for part in parts)
+
+
+def without_cached_values(source, target, fixed=None):
+    """Copies an .xlsx dropping the cached values of formula cells; Russian date codes of number formats go into
+    English ones, each named in `fixed`."""
     from lxml import etree
 
     with zipfile.ZipFile(source) as archive, zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as out:
         for info in archive.infolist():
             data = archive.read(info.filename)
+            if info.filename == "xl/styles.xml":
+                root = etree.fromstring(data, etree.XMLParser(huge_tree=True, resolve_entities=False))
+                changed = False
+                for fmt in root.iter("{%s}numFmt" % SHEET_NS):
+                    code = fmt.get("formatCode") or ""
+                    if LOCAL_DATE.search(re.sub(r'"[^"]*"', "", code)):
+                        fmt.set("formatCode", english_code(code))
+                        changed = True
+                        if fixed is not None:
+                            fixed.append("%s -> %s" % (code, fmt.get("formatCode")))
+                if changed:
+                    data = etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
             if re.match(r"xl/worksheets/sheet\d+\.xml$", info.filename) and b"<f" in data:
                 root = etree.fromstring(data, etree.XMLParser(huge_tree=True, resolve_entities=False))
                 for cell in root.iter("{%s}c" % SHEET_NS):
@@ -332,7 +357,8 @@ def recalc(argv):
     out_path(args.output, args.file)
     with tempfile.TemporaryDirectory(prefix="brokit-recalc-") as work:
         stripped = os.path.join(work, "in.xlsx")
-        without_cached_values(args.file, stripped)
+        fixed = []
+        without_cached_values(args.file, stripped, fixed)
         converted = soffice.convert([stripped], "xlsx:Calc MS Excel 2007 XML", os.path.join(work, "out"))[0]
         shutil.copyfile(converted, args.output)
     errors = formula_errors(args.output)
@@ -347,6 +373,9 @@ def recalc(argv):
             output=args.output,
         )
     result = {"output": args.output, "errors": errors[:MAX_LISTED], "error_count": len(errors), "lost": lost}
+    if fixed:
+        result["fixed_formats"] = fixed[:MAX_LISTED]
+        result["formats_hint"] = "number formats take English codes: 'DD.MM.YYYY', 'DD.MM.YYYY hh:mm'"
     result.update(text_typed(args.output))
     return result
 

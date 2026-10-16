@@ -42,7 +42,7 @@ import look from "@agent/subagents/task/tools/look";
  * router's pilot reads them: a change of a block's words changes it too.
  */
 const wholeKit =
-  "560556244acbc61690c17a0d5459787fad5a4dae788b614c2fc7e26a78bedccc";
+  "e99205875b346b32e2194454a7f0af62a8dec7333c0e22603da1dd137c535fd6";
 
 /** The task agent's turn whose message is Bro's `job`. */
 function turnOf(job: string) {

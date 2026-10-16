@@ -446,7 +446,8 @@ cases.append({
             cells=[{"row_regex": "(?i)^продукт", "expected": B["by_my_category_net"]["Продукты"]},
                    {"row_regex": "(?i)такси|транспорт", "expected": B["by_my_category_net"]["Такси и транспорт"]},
                    {"row_regex": "(?i)кафе|доставк", "expected": B["by_my_category_net"]["Кафе и доставка еды"]},
-                   {"row_regex": "(?i)квартир|жкх", "expected": B["by_my_category_net"]["Квартира и ЖКХ"]},
+                   # issues: 16.10 the rent paid to a person went to the person's own «Переводы людям»: a fair reading too.
+                   {"row_regex": "(?i)квартир|жкх", "expected": B["by_my_category_net"]["Квартира и ЖКХ"], "alt_expected": -6842.17},
                    {"row_regex": "(?i)маркетплейс", "expected": B["marketplaces_net_after_refund"], "alt_expected": B["marketplaces_net_after_refund"] - 1299.0},
                    {"row_regex": "(?i)связь|подписк", "expected": B["by_my_category_net"]["Связь и подписки"]},
                    # issues: 16.10 the income row counted an incoming transfer from a person too (233 500): a fair reading.
