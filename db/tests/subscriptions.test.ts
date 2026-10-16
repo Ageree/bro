@@ -682,6 +682,32 @@ describe("event subscriptions", { timeout: 30_000 }, () => {
       })
     ).toBe(0);
     expect(await db.query.subscriptions.findMany()).toHaveLength(2);
+    // A run that carries the letters marks the person's live watch as told,
+    // and only theirs.
+    const told = {
+      now,
+      numbers: ["10100012345678", "RA123456785RU"],
+      scope: alice,
+    };
+    expect(
+      await subscriptions.noteParcelLetters({
+        ...told,
+        scope: { userId: "bob", workspaceId: "workspace:bob" },
+      })
+    ).toBe(0);
+    expect(await subscriptions.noteParcelLetters(told)).toBe(1);
+    expect(
+      await db.query.subscriptions.findFirst({
+        where: eq(schema.subscriptions.dedupeKey, "10100012345678"),
+      })
+    ).toMatchObject({
+      state: { letterPending: true, seen: true, status: "in_transit" },
+    });
+    expect(
+      await db.query.subscriptions.findFirst({
+        where: eq(schema.subscriptions.dedupeKey, "RA123456785RU"),
+      })
+    ).toMatchObject({ state: { letterPending: false } });
   });
 
   it("refuses a watch checked more often than hourly or kept past 90 days", async () => {

@@ -9,6 +9,7 @@ import type {
   claimDueSubscriptions,
   settleSubscriptionCheck,
 } from "@db/services/subscriptions";
+import type { readProactiveMessages } from "@db/services/user-profile";
 
 const services = vi.hoisted(() => ({
   claim: vi.fn<typeof claimDueSubscriptions>(),
@@ -17,6 +18,9 @@ const services = vi.hoisted(() => ({
   page: vi.fn<typeof readPricePage>(),
   parcel: vi.fn<typeof readPochtaParcel>(),
   pilot: vi.fn<typeof subscriptionsPilot>(() => Promise.resolve(true)),
+  proactiveMessages: vi.fn<typeof readProactiveMessages>(() =>
+    Promise.resolve(true)
+  ),
   settle: vi.fn<typeof settleSubscriptionCheck>(),
 }));
 vi.mock("@agent/lib/schedules/enabled", () => ({
@@ -37,6 +41,9 @@ vi.mock("@db/services/location", () => ({
 vi.mock("@db/services/subscriptions", () => ({
   claimDueSubscriptions: services.claim,
   settleSubscriptionCheck: services.settle,
+}));
+vi.mock("@db/services/user-profile", () => ({
+  readProactiveMessages: services.proactiveMessages,
 }));
 
 import subscriptionsSchedule from "@agent/schedules/subscriptions";
@@ -138,44 +145,47 @@ function placeReminder(
 }
 
 describe("parcel watches", () => {
+  const created = new Date("2026-10-02T10:00:00.000Z");
+  const reading = {
+    expectedOn: "2026-10-05",
+    kind: "parcel" as const,
+    lastEvent: "Прибыло в сортировочный центр",
+    lastEventAt: "2026-10-02T09:00:00.000Z",
+    place: "140983, Москва",
+    status: "in_transit" as const,
+    storageEnding: false,
+    storageUntil: null,
+    title: null,
+  };
+  function parcelWatch(origin: "mail" | "person") {
+    return watch("parcel-1", "https://unused.example", {
+      checkEverySeconds: 3 * 60 * 60,
+      condition: { kind: "changes" },
+      dedupeKey: "10100012345678",
+      source: {
+        carrier: "pochta",
+        number: "10100012345678",
+        origin,
+        title: null,
+      },
+      state: {
+        expectedOn: reading.expectedOn,
+        lastEvent: reading.lastEvent,
+        lastEventAt: reading.lastEventAt,
+        lastSeenAt: created.toISOString(),
+        letterPending: false,
+        place: reading.place,
+        seen: true,
+        status: "in_transit",
+        storageUntil: null,
+        storageWarned: null,
+      },
+      template: "parcel",
+    });
+  }
+
   it("read their carrier, not a page, and stay quiet when nothing changed", async () => {
-    const created = new Date("2026-10-02T10:00:00.000Z");
-    const reading = {
-      expectedOn: "2026-10-05",
-      kind: "parcel" as const,
-      lastEvent: "Прибыло в сортировочный центр",
-      lastEventAt: "2026-10-02T09:00:00.000Z",
-      place: "140983, Москва",
-      status: "in_transit" as const,
-      storageEnding: false,
-      storageUntil: null,
-      title: null,
-    };
-    services.claim.mockResolvedValue([
-      watch("parcel-1", "https://unused.example", {
-        checkEverySeconds: 3 * 60 * 60,
-        condition: { kind: "changes" },
-        dedupeKey: "10100012345678",
-        source: {
-          carrier: "pochta",
-          number: "10100012345678",
-          origin: "person",
-          title: null,
-        },
-        state: {
-          expectedOn: reading.expectedOn,
-          lastEvent: reading.lastEvent,
-          lastEventAt: reading.lastEventAt,
-          lastSeenAt: created.toISOString(),
-          place: reading.place,
-          seen: true,
-          status: "in_transit",
-          storageUntil: null,
-          storageWarned: null,
-        },
-        template: "parcel",
-      }),
-    ]);
+    services.claim.mockResolvedValue([parcelWatch("person")]);
     services.parcel.mockResolvedValue(reading);
     services.settle.mockResolvedValue("quiet");
     await runSchedule();
@@ -185,6 +195,24 @@ describe("parcel watches", () => {
       expect.objectContaining({ id: "parcel-1" }),
       expect.objectContaining({ kind: "quiet" })
     );
+  });
+
+  it("hold a letter's watch, unread, while the person has Bro's own messages off", async () => {
+    services.proactiveMessages.mockResolvedValueOnce(false);
+    services.claim.mockResolvedValue([parcelWatch("mail")]);
+    services.settle.mockResolvedValue("held");
+    await runSchedule();
+    expect(services.parcel).not.toHaveBeenCalled();
+    expect(services.settle).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "parcel-1" }),
+      expect.objectContaining({ kind: "held" })
+    );
+    // The person's own number is theirs to hear of.
+    services.claim.mockResolvedValue([parcelWatch("person")]);
+    services.parcel.mockResolvedValue(reading);
+    services.settle.mockResolvedValue("quiet");
+    await runSchedule();
+    expect(services.parcel).toHaveBeenCalledOnce();
   });
 });
 

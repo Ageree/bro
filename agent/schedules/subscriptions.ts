@@ -15,6 +15,7 @@ import {
   priceWatchOf,
 } from "@agent/lib/subscriptions/watches";
 import { locationPilot } from "@db/services/location";
+import { readProactiveMessages } from "@db/services/user-profile";
 import {
   type ClaimedSubscription,
   type SubscriptionCheck,
@@ -115,10 +116,23 @@ async function checkInTurn(
 }
 
 /**
+ * A held watch: nothing is read and nothing is sent, and one whose term ran
+ * out ends quietly. Once no longer held, it goes on from where it was.
+ */
+function hold(subscription: ClaimedSubscription, now: Date): SubscriptionCheck {
+  return subscription.expiresAt.getTime() <= now.getTime()
+    ? { kind: "lapsed" }
+    : {
+        kind: "held",
+        nextCheckAt: new Date(
+          now.getTime() + subscription.checkEverySeconds * 1_000
+        ),
+      };
+}
+
+/**
  * A watch outside the pilot (SUBSCRIPTIONS_WORKSPACES taken back, or a
- * lookup that failed) is held: nothing is read and nothing is sent, and one
- * whose term ran out ends quietly. Back in the pilot, it goes on from where
- * it was. Undefined for a watch of the pilot.
+ * lookup that failed) is held. Undefined for a watch of the pilot.
  */
 async function heldCheck(
   subscription: ClaimedSubscription,
@@ -128,15 +142,7 @@ async function heldCheck(
     userId: subscription.createdByUserId,
     workspaceId: subscription.workspaceId,
   });
-  if (inPilot) return undefined;
-  return subscription.expiresAt.getTime() <= now.getTime()
-    ? { kind: "lapsed" }
-    : {
-        kind: "held",
-        nextCheckAt: new Date(
-          now.getTime() + subscription.checkEverySeconds * 1_000
-        ),
-      };
+  return inPilot ? undefined : hold(subscription, now);
 }
 
 /** A price watch's check: the page read by code, judged by code. */
@@ -164,9 +170,19 @@ async function checkPrice(subscription: ClaimedSubscription) {
  */
 async function checkParcel(subscription: ClaimedSubscription) {
   const now = new Date();
-  const held = await heldCheck(subscription, now);
-  if (held) return { check: held, outcome: await settle(subscription, held) };
   const watch = parcelWatchOf(subscription);
+  // Bro started a letter's watch on its own, as the proactive check: while
+  // the person has Bro's own messages off, it is held, not read.
+  const held =
+    (await heldCheck(subscription, now)) ??
+    (watch?.source.origin === "mail" &&
+    !(await readProactiveMessages({
+      userId: subscription.createdByUserId,
+      workspaceId: subscription.workspaceId,
+    }))
+      ? hold(subscription, now)
+      : undefined);
+  if (held) return { check: held, outcome: await settle(subscription, held) };
   const check: SubscriptionCheck = watch
     ? judgeParcelCheck(
         watch,

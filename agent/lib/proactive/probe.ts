@@ -440,7 +440,7 @@ const maxSearchedLetters = 10;
 
 /**
  * The letters a Gmail search finds among `among` (the new mail a check has
- * not handed over yet), with their sender, subject and snippet: the start of
+ * not handed over yet), with their id, sender, subject and snippet: the start of
  * the text Gmail shows in a list, never the body. One list request, and a
  * read of each letter it keeps.
  */
@@ -462,12 +462,14 @@ export async function readFoundLetters(
   const described = await readHeaders(google, ids, ["From", "Subject"], {
     snippet: true,
   });
-  return described.flatMap((metadata) => {
-    if (!metadata) return [];
+  return described.flatMap((metadata, index) => {
+    const id = ids[index];
+    if (!metadata || !id) return [];
     const header = headerReader(metadata);
     return [
       {
         from: header("from"),
+        id,
         snippet: metadata.snippet ?? "",
         subject: header("subject"),
       },

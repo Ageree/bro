@@ -338,22 +338,69 @@ describe("judging a parcel check", () => {
     );
     expect(back.kind).toBe("hit");
     expect(summaryOf(back)).toContain("returned to the sender");
+    // A return already told is not told again.
+    if (back.kind !== "hit" || !back.state) return;
+    const told = { ...watch, state: parcelStateSchema.parse(back.state) };
+    expect(
+      judgeParcelCheck(
+        told,
+        read(
+          answer({
+            trackingHistoryItemList: [
+              operation(arrived.date, 3, 1, "Возврат"),
+              accepted,
+            ],
+          })
+        ),
+        now
+      ).kind
+    ).toBe("done");
   });
 
-  it("takes a letter's first reading as its start, not as news", () => {
-    const watch = watchOf(read(answer({ trackingHistoryItemList: [] })), {
+  it("takes what a letter told as known: a letter's watch's first reading, or the next one after another letter", () => {
+    const letter = watchOf(read(answer({ trackingHistoryItemList: [] })), {
       source: { carrier: "pochta", number, origin: "mail", title: null },
     });
-    const waiting = read(
-      answer({ trackingHistoryItemList: [arrived, sorted, accepted] })
+    // «Срок хранения истекает»: the storage end is known, not news later.
+    const ending = read(
+      answer({
+        endStorageDate: "2026-10-16",
+        trackingHistoryItemList: [arrived, sorted, accepted],
+      })
     );
-    expect(judgeParcelCheck(watch, waiting, now)).toMatchObject({
+    const first = judgeParcelCheck(letter, ending, now);
+    expect(first).toMatchObject({
       kind: "quiet",
-      state: { seen: true, status: "arrived" },
+      state: { seen: true, status: "arrived", storageWarned: "2026-10-16" },
     });
-    // The person's own number that turns up already arrived is news.
-    const asked = watchOf(read(answer({ trackingHistoryItemList: [] })));
-    expect(judgeParcelCheck(asked, waiting, now).kind).toBe("news");
+    if (first.kind !== "quiet") return;
+    const later = { ...letter, state: parcelStateSchema.parse(first.state) };
+    expect(judgeParcelCheck(later, ending, now).kind).toBe("quiet");
+    // A letter of its return: the watch ends without saying it again.
+    const back = read(
+      answer({
+        trackingHistoryItemList: [
+          operation(arrived.date, 3, 1, "Возврат"),
+          accepted,
+        ],
+      })
+    );
+    expect(judgeParcelCheck(letter, back, now)).toMatchObject({
+      kind: "done",
+      state: { status: "returned" },
+    });
+    // The person's own number that turns up already arrived is news…
+    const asked = watchOf(read(inTransit()));
+    expect(judgeParcelCheck(asked, ending, now).kind).toBe("news");
+    // …unless Russian Post's letter of it just went to them.
+    const lettered = {
+      ...asked,
+      state: { ...asked.state, letterPending: true },
+    };
+    expect(judgeParcelCheck(lettered, ending, now)).toMatchObject({
+      kind: "quiet",
+      state: { letterPending: false, status: "arrived" },
+    });
   });
 
   it("backs off on a failed reading, and ends at its term", () => {
@@ -386,6 +433,13 @@ describe("tracking numbers in words and letters", () => {
         "трек 1010 0012 3456 78, ещё ra123456785ru и карта 4276 1234 5678 9012"
       )
     ).toEqual([number, "RA123456785RU"]);
+    // A whole number followed by digits is still one; a card's tail is none.
+    expect(parcelNumbersIn(`следи за ${number} 10100012345679`)).toEqual([
+      number,
+      "10100012345679",
+    ]);
+    expect(parcelNumbersIn(`трек ${number} 2 шт`)).toEqual([number]);
+    expect(parcelNumbersIn("4276 1234 5678 9012 34")).toEqual([]);
     expect(parcelNumbersIn("заказ 123456789012345 от 15.10")).toEqual([]);
   });
 
@@ -394,20 +448,23 @@ describe("tracking numbers in words and letters", () => {
       carrierLetterNumbers([
         {
           from: "Почта России <noreply@pochta.ru>",
+          id: "m1",
           snippet: `Отправление ${number} прибыло в отделение`,
           subject: "Посылка ждёт вас",
         },
         {
           from: "Магазин <shop@example.ru>",
+          id: "m2",
           snippet: "Передали в Почту России: RA123456785RU",
           subject: "Заказ отправлен",
         },
         {
           from: "Почта России <news@pochta.ru.example.com>",
+          id: "m3",
           snippet: "Трек 10100012345679",
           subject: "Акция",
         },
       ])
-    ).toEqual([number]);
+    ).toEqual(new Map([["m1", [number]]]));
   });
 });

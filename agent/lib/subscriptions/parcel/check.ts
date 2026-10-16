@@ -80,6 +80,7 @@ function nextState(
     lastEvent: reading.lastEvent,
     lastEventAt: reading.lastEventAt,
     lastSeenAt: now.toISOString(),
+    letterPending: false,
     place: reading.place,
     seen: state.seen || reading.status !== "unknown",
     status: reading.status,
@@ -107,6 +108,21 @@ function storageEnding(
 }
 
 /**
+ * The state of a reading the person already knows the whole of: its storage
+ * ending, if it is, counts as told.
+ */
+function knownState(
+  state: ParcelState,
+  reading: ParcelReading,
+  now: Date
+): ParcelState {
+  const next = nextState(state, reading, now);
+  return storageEnding(reading, next, now)
+    ? { ...next, storageWarned: next.storageUntil ?? moscowToday(now) }
+    : next;
+}
+
+/**
  * A watch's state from the reading it starts with: what the person hears
  * when it is set up is no news later, its storage ending included.
  */
@@ -114,10 +130,7 @@ export function startingParcelState(
   reading: ParcelReading,
   now: Date
 ): ParcelState {
-  const state = nextState(unreadParcelState(now), reading, now);
-  return storageEnding(reading, state, now)
-    ? { ...state, storageWarned: state.storageUntil ?? moscowToday(now) }
-    : state;
+  return knownState(unreadParcelState(now), reading, now);
 }
 
 /**
@@ -125,10 +138,12 @@ export function startingParcelState(
  * expected date, arriving where it is collected, its storage there ending
  * within two days (once per storage end: an extension warns again), and its
  * return or loss, which end the watch. A parcel handed over ends it without a
- * word: the person has it. The first reading of a watch from a carrier's
- * letter is its baseline, never news: the letter itself went to the person.
- * Nothing but the carrier's own words, its dates and the number reaches the
- * outcome the report turn reads.
+ * word: the person has it. A reading after Russian Post's own letter of the
+ * parcel went to the person — a letter's watch's first one, or one after
+ * another letter of a watched number — is a baseline, never news: the
+ * proactive run passed the letter on, and what the reading finds, a return
+ * or a storage ending too, is what it said. Nothing but the carrier's own
+ * words, its dates and the number reaches the outcome the report turn reads.
  */
 export function judgeParcelCheck(
   watch: Pick<
@@ -180,9 +195,14 @@ export function judgeParcelCheck(
     state: next,
   };
   if (reading.status === "delivered") return { kind: "done", state: next };
-  // A letter's number: the person has heard the letter; this is the start.
-  if (!state.seen && source.origin === "mail") return quiet;
-  if (reading.status === "returned" || reading.status === "lost") {
+  const ended = reading.status === "returned" || reading.status === "lost";
+  if (state.letterPending || (!state.seen && source.origin === "mail")) {
+    const known = knownState(state, reading, now);
+    return ended ? { kind: "done", state: known } : { ...quiet, state: known };
+  }
+  if (ended) {
+    // Told once: a status already reported ends the watch quietly.
+    if (state.status === reading.status) return { kind: "done", state: next };
     return {
       kind: "hit",
       outcome: {

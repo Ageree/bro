@@ -1,9 +1,13 @@
 /**
- * Russian Post numbers in text: 14 digits (a domestic item; a space or a
- * dash may split them, as people copy them), or an international S10 one
- * («RA123456789RU»). A longer run of digits — a card, an account — is none.
+ * Russian Post numbers in text: 14 digits, or an international S10 one
+ * («RA123456789RU»). People copy the 14 digits split by spaces or dashes
+ * («1010 0012 3456 78»), so a run of digit groups counts when the whole run
+ * holds 14 digits: a card's 16 digits and a trailing «34» are no number.
+ * A whole 14 digits counts on its own, whatever follows it («80080123456789
+ * 2 шт»).
  */
-const domesticNumber = /(?<![\p{L}\d])\d(?:[ -]?\d){13}(?![ -]?\d)/gu;
+const wholeNumber = /(?<![\p{L}\d])\d{14}(?![\p{L}\d])/gu;
+const groupedRun = /(?<![\p{L}\d])(?<!\d[ -])\d+(?:[ -]\d+)+(?![ -]?\d)/gu;
 const internationalNumber =
   /(?<![\p{L}\d])[A-Za-z]{2}[ -]?\d{9}[ -]?[A-Za-z]{2}(?![\p{L}\d])/gu;
 
@@ -15,7 +19,10 @@ export function normalizedParcelNumber(text: string) {
 /** The Russian Post numbers in a text, each once, in the order met. */
 export function parcelNumbersIn(text: string) {
   const found = [
-    ...text.matchAll(domesticNumber),
+    ...text.matchAll(wholeNumber),
+    ...[...text.matchAll(groupedRun)].filter(
+      (match) => normalizedParcelNumber(match[0]).length === 14
+    ),
     ...text.matchAll(internationalNumber),
   ]
     .toSorted((left, right) => left.index - right.index)

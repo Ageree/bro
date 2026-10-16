@@ -55,6 +55,7 @@ import {
 import {
   listFlightWatches,
   listLiveFlightWatches,
+  noteParcelLetters,
   recordFlightWatch,
   startMailParcelWatches,
   syncFlightWatches,
@@ -300,10 +301,13 @@ function dedupeKeys(signals: readonly ProactiveSignal[]) {
 }
 
 /**
- * A check's parcels in the subscriptions pilot: a Russian Post number in a
+ * A check's parcels in the subscriptions pilot. A Russian Post number in a
  * letter from the carrier's own domains, among the new mail, starts a watch
- * that code checks from then on (`startMailParcelWatches`). The letter goes
- * to the run as any other. One Gmail search for such letters, and a read of
+ * that code checks from then on (`startMailParcelWatches`); the letter goes
+ * to the run as any other. Once a run carries such a letter, the watches of
+ * its numbers take what they read next as known (`record`,
+ * `noteParcelLetters`): the run passes the letter's news on, and the watch
+ * does not say it again. One Gmail search for such letters, and a read of
  * those it finds; a failure is logged and leaves the check alone.
  */
 async function pilotParcels(
@@ -312,37 +316,66 @@ async function pilotParcels(
   mailAfter: Date,
   now: Date
 ) {
+  const scope = {
+    userId: watch.createdByUserId,
+    workspaceId: watch.workspaceId,
+  };
+  const failed = (step: string, error: unknown) => {
+    console.warn("[proactive] parcel watches", {
+      name: error instanceof Error ? error.name : "error",
+      step,
+      workspaceId: watch.workspaceId,
+    });
+  };
   const mail = new Set(
     unseen.flatMap((signal) =>
       signal.source === "gmail" ? [signal.itemId] : []
     )
   );
-  if (mail.size === 0) return {};
-  const scope = {
-    userId: watch.createdByUserId,
-    workspaceId: watch.workspaceId,
-  };
-  try {
-    const letters = await readFoundLetters(
-      scope,
-      `${gmailProbeQuery(mailAfter)} ${carrierMailQuery}`,
-      mail
-    );
-    const started = await startMailParcelWatches({
-      numbers: carrierLetterNumbers(letters),
-      now,
-      proactiveJobId: watch.jobId,
-      scope,
-    });
-    return started > 0 ? { parcels: started } : {};
-  } catch (error) {
-    console.warn("[proactive] parcel watches", {
-      name: error instanceof Error ? error.name : "error",
-      workspaceId: watch.workspaceId,
-    });
-    return {};
+  let byLetter = new Map<string, string[]>();
+  let logged = {};
+  if (mail.size > 0) {
+    try {
+      byLetter = carrierLetterNumbers(
+        await readFoundLetters(
+          scope,
+          `${gmailProbeQuery(mailAfter)} ${carrierMailQuery}`,
+          mail
+        )
+      );
+      const started = await startMailParcelWatches({
+        numbers: [...byLetter.values()].flat(),
+        now,
+        proactiveJobId: watch.jobId,
+        scope,
+      });
+      if (started > 0) logged = { parcels: started };
+    } catch (error) {
+      failed("start", error);
+    }
   }
+  return {
+    logged,
+    /** Marks the watches of the letters a queued run carries. */
+    async record(sent: {
+      readonly carried: readonly ProactiveSignal[];
+      readonly queued: boolean;
+    }) {
+      if (!sent.queued) return;
+      const numbers = sent.carried.flatMap(
+        (signal) => byLetter.get(signal.itemId) ?? []
+      );
+      try {
+        await noteParcelLetters({ numbers, now, scope });
+      } catch (error) {
+        failed("note", error);
+      }
+    },
+  };
 }
+
+/** A check outside the pilot: no parcel watches. */
+const noParcels = { logged: {}, record: async () => undefined };
 
 /** A check outside the pilot: the probe reminds of flights itself. */
 const noFlights = {
@@ -405,7 +438,7 @@ async function checkByDay(
   }
   const parcels = pilot
     ? await pilotParcels(watch, unseen, mailAfter, now)
-    : {};
+    : noParcels;
   // After a pause (a reconnect, the end of quiet hours, turning proactive
   // messages back on) the backlog becomes one catch-up run; the watermark
   // moves past the rest instead of queuing batch after batch of old mail.
@@ -425,12 +458,16 @@ async function checkByDay(
     queued: queued.status === "queued",
     unseen,
   });
+  await parcels.record({
+    carried: signals,
+    queued: queued.status === "queued",
+  });
   return {
     outcome: queued.status,
     signalCount: unseen.length,
     ...(droppedMail > 0 && { droppedMail }),
     ...flights.logged,
-    ...parcels,
+    ...parcels.logged,
   };
 }
 
@@ -470,6 +507,12 @@ async function checkAtNight(
   { agency, evening, pilot, timeZone }: CheckMode,
   quietUntil: Date
 ) {
+  const mailAfter = new Date(
+    Math.max(
+      mailSearchStart(watch.mailCheckedAt, now).getTime(),
+      now.getTime() - (pilot ? pilotNightMailWindowMs : nightMailWindowMs)
+    )
+  );
   const probe = await probeGoogleSignals(
     { userId: watch.createdByUserId, workspaceId: watch.workspaceId },
     {
@@ -477,12 +520,7 @@ async function checkAtNight(
       // In the evening also an event within hours or mail Gmail marks
       // important starts a run; the rest waits for the morning.
       ...(evening && { evening: true }),
-      mailAfter: new Date(
-        Math.max(
-          mailSearchStart(watch.mailCheckedAt, now).getTime(),
-          now.getTime() - (pilot ? pilotNightMailWindowMs : nightMailWindowMs)
-        )
-      ),
+      mailAfter,
       nightOnly: true,
       now,
       timeZone,
@@ -502,6 +540,11 @@ async function checkAtNight(
   ]);
   const signals = selectRunSignals(unseen);
   if (signals.length > 0) await flights.prepare(signals);
+  // A carrier's letter handed over tonight is seen by no morning check: its
+  // watch starts now.
+  const parcels = pilot
+    ? await pilotParcels(watch, unseen, mailAfter, now)
+    : noParcels;
   const queued =
     signals.length > 0
       ? await queueProactiveRun({
@@ -518,6 +561,10 @@ async function checkAtNight(
     queued: queued?.status === "queued",
     unseen,
   });
+  await parcels.record({
+    carried: signals,
+    queued: queued?.status === "queued",
+  });
   // The agent's inbox waits for the morning, but a pilot that starts now
   // starts its watermark now, so the mail of the night is not left out.
   if (agency && watch.agentMailCheckedAt === null) {
@@ -530,6 +577,7 @@ async function checkAtNight(
     outcome: `night_${queued?.status ?? "quiet"}`,
     signalCount: unseen.length,
     ...flights.logged,
+    ...parcels.logged,
   };
 }
 

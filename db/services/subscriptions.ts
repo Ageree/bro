@@ -312,6 +312,39 @@ export async function startMailParcelWatches(input: {
 }
 
 /**
+ * Marks the person's live parcel watches of these numbers as told: a
+ * proactive run carries Russian Post's own letter of each to the person, so
+ * the next reading is a baseline, not a second message of the same news
+ * (`judgeParcelCheck`). A check in flight meanwhile writes its own state over
+ * the mark; that costs one message the letter already gave. Returns how many
+ * were marked.
+ */
+export async function noteParcelLetters(input: {
+  readonly numbers: readonly string[];
+  readonly now: Date;
+  readonly scope: AccessScope;
+}) {
+  if (input.numbers.length === 0) return 0;
+  const marked = await db
+    .update(subscriptions)
+    .set({
+      state: sql`${subscriptions.state} || '{"letterPending":true}'::jsonb`,
+      updatedAt: input.now,
+    })
+    .where(
+      and(
+        eq(subscriptions.workspaceId, input.scope.workspaceId),
+        eq(subscriptions.createdByUserId, input.scope.userId),
+        eq(subscriptions.template, "parcel"),
+        inArray(subscriptions.dedupeKey, [...input.numbers]),
+        inArray(subscriptions.status, [...liveStatuses])
+      )
+    )
+    .returning({ id: subscriptions.id });
+  return marked.length;
+}
+
+/**
  * Leases the watches due for a check. The lease is the next check time
  * itself, so a crashed tick retries after `leaseForMs`; each claim carries it
  * as `leaseUntil`, which the check's own result must still find

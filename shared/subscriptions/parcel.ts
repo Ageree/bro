@@ -65,6 +65,10 @@ export const parcelStateSchema = z.strictObject({
   storageWarned: z.iso.date().nullable(),
   // Whether any reading knew the number.
   seen: z.boolean(),
+  // Russian Post's own letter of it went to the person (the proactive run
+  // passes it on) since the last reading: what that reading finds is known
+  // to them, not news.
+  letterPending: z.boolean(),
   lastSeenAt: z.iso.datetime({ offset: true }),
 });
 
@@ -83,6 +87,7 @@ export function unreadParcelState(now: Date): ParcelState {
     lastEvent: null,
     lastEventAt: null,
     lastSeenAt: now.toISOString(),
+    letterPending: false,
     place: null,
     seen: false,
     status: "unknown",
