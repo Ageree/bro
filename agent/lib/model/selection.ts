@@ -24,7 +24,10 @@ import { directModelSelection, type StepToolChoice } from "./direct";
  * old history (`historyTrimPilot`), nor `compaction`, the pilot of compacting
  * a long conversation (`compactionPilot`), nor `reasoningOff`, the pilot of
  * the quicker answer step (`fastReplyPilot`), nor `routerGroups`, the pilot
- * of the tool router (`toolRouterListed`).
+ * of the tool router (`toolRouterListed`), nor `stagedFiles`, the files pilot
+ * (`taskFilesEnabled`, which needs the direct model). `toolImages` is the
+ * task agent's alone: a Gateway id leaves its tool pictures where eve put
+ * them.
  */
 export function modelSelection(
   modelId: string,
@@ -45,11 +48,15 @@ export function modelSelection(
     readonly silent?: boolean;
     readonly skillBlocks?: boolean;
     readonly stableContext?: boolean;
+    readonly stagedFiles?: boolean;
     readonly step?: Parameters<typeof directModelSelection>[1]["step"];
     readonly toolChoice?: StepToolChoice;
     readonly toolGroups?: Parameters<
       typeof directModelSelection
     >[1]["toolGroups"];
+    readonly toolImages?: Parameters<
+      typeof directModelSelection
+    >[1]["toolImages"];
     readonly withheldTools?: readonly string[];
   } = {}
 ) {
@@ -65,9 +72,11 @@ export function modelSelection(
         silent: options.silent,
         skillBlocks: options.skillBlocks,
         stableContext: options.stableContext,
+        stagedFiles: options.stagedFiles,
         step: options.step,
         toolChoice: options.toolChoice ?? "auto",
         toolGroups: options.toolGroups,
+        toolImages: options.toolImages,
         withheldTools: options.withheldTools,
       })
     : modelId;

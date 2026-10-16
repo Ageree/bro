@@ -43,11 +43,18 @@ vi.mock("@agent/lib/sandbox/inbox", async (importOriginal) => ({
 
 import taskFilesHook from "@agent/hooks/task-files";
 import { inboxKey } from "@agent/lib/sandbox/inbox";
+import { zipWith } from "@tests/helpers/zip-archive";
 
 const workspaceId = "personal:0123456789abcdef0123456789abcdef";
 
 function staged(name: string, content: string) {
   const bytes = new TextEncoder().encode(content);
+  const hash = createHash("sha256").update(bytes).digest("hex").slice(0, 16);
+  return { bytes, path: `/workspace/attachments/${hash}/${name}` };
+}
+
+/** A file staged under the hash of `bytes`. */
+function stagedBytes(name: string, bytes: Uint8Array) {
   const hash = createHash("sha256").update(bytes).digest("hex").slice(0, 16);
   return { bytes, path: `/workspace/attachments/${hash}/${name}` };
 }
@@ -188,6 +195,7 @@ async function requested(
 beforeEach(() => {
   for (const reset of stateControls.reset) reset();
   vi.clearAllMocks();
+  putInbox.mockImplementation(() => Promise.resolve());
   pilot.taskFilesGuarded.mockReturnValue(true);
   pilot.taskFilesOfCaller.mockReturnValue(true);
   vi.spyOn(console, "info").mockImplementation(() => undefined);
@@ -217,9 +225,11 @@ describe("the person's files for the task agent", () => {
     ]);
     expect(console.info).toHaveBeenCalledWith("[task-files] mirrored", {
       failed: 0,
+      missing: 0,
       mirrored: 2,
       named: 2,
       recorded: 1,
+      refused: 0,
     });
   });
 
@@ -343,9 +353,11 @@ describe("the person's files for the task agent", () => {
     expect(putInbox).toHaveBeenCalledTimes(1);
     expect(console.info).toHaveBeenCalledWith("[task-files] mirrored", {
       failed: 0,
+      missing: 0,
       mirrored: 1,
       named: 1,
       recorded: 0,
+      refused: 0,
     });
   });
 
@@ -483,6 +495,67 @@ describe("the person's files for the task agent", () => {
     await requested([taskCall(`${table.path}\n${deck.path}`)], ctx);
 
     expect(putInbox).not.toHaveBeenCalled();
+    expect(console.info).toHaveBeenCalledWith(
+      "[task-files] mirrored",
+      expect.objectContaining({ missing: 1, mirrored: 0 })
+    );
+  });
+
+  it("copies a file of 15 MB, the person's cap being 20 MB", async () => {
+    const scan = staged("scan.pdf", "%PDF".padEnd(15 * 1024 * 1024, " "));
+    const ctx = context({ sandbox: sandboxOf([scan]) });
+    await personTurn(ctx);
+    await requested([taskCall(scan.path)], ctx);
+
+    expect(
+      putInbox.mock.calls.map(([key, bytes]) => [key, bytes.byteLength])
+    ).toEqual([
+      [inboxKey(workspaceId, "session-1", scan.path), scan.bytes.byteLength],
+    ]);
+  });
+
+  it("refuses a .zip whose directory claims too much, and copies a sound one", async () => {
+    const bomb = stagedBytes(
+      "_.zip",
+      zipWith({
+        entries: [{ content: "0", declaredSize: 300 * 1024 * 1024, name: "z" }],
+      })
+    );
+    const receipts = stagedBytes(
+      "receipts.zip",
+      zipWith({ entries: [{ content: "чек", name: "1.jpg" }] })
+    );
+    const ctx = context({ sandbox: sandboxOf([bomb, receipts]) });
+    await personTurn(ctx);
+    await requested([taskCall(`${bomb.path}\n${receipts.path}`)], ctx);
+
+    expect(putInbox.mock.calls.map(([key]) => key)).toEqual([
+      inboxKey(workspaceId, "session-1", receipts.path),
+    ]);
+    expect(console.info).toHaveBeenCalledWith(
+      "[task-files] mirrored",
+      expect.objectContaining({ mirrored: 1, refused: 1 })
+    );
+  });
+
+  it("copies three files at a time", async () => {
+    const files = Array.from({ length: 7 }, (_, index) =>
+      staged(`f${String(index)}.csv`, `file ${String(index)}`)
+    );
+    let copying = 0;
+    let most = 0;
+    putInbox.mockImplementation(async () => {
+      copying += 1;
+      most = Math.max(most, copying);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      copying -= 1;
+    });
+    const ctx = context({ sandbox: sandboxOf(files) });
+    await personTurn(ctx);
+    await requested([taskCall(files.map((file) => file.path).join("\n"))], ctx);
+
+    expect(putInbox).toHaveBeenCalledTimes(7);
+    expect(most).toBe(3);
   });
 
   it("never fails the turn: no sandbox, or Object Storage down", async () => {
@@ -500,14 +573,16 @@ describe("the person's files for the task agent", () => {
     expect(putInbox).toHaveBeenCalledTimes(2);
     expect(console.info).toHaveBeenCalledWith("[task-files] mirrored", {
       failed: 1,
+      missing: 0,
       mirrored: 1,
       named: 2,
       recorded: 1,
+      refused: 0,
     });
   });
 
-  it("copies at most ten files a step, and a replay to the same keys", async () => {
-    const files = Array.from({ length: 12 }, (_, index) =>
+  it("copies at most twenty files a step, and a replay to the same keys", async () => {
+    const files = Array.from({ length: 22 }, (_, index) =>
       staged(`f${String(index)}.csv`, `file ${String(index)}`)
     );
     const ctx = context({ sandbox: sandboxOf(files) });
@@ -516,28 +591,28 @@ describe("the person's files for the task agent", () => {
     await requested([call], ctx);
     await requested([call], ctx);
 
-    expect(putInbox).toHaveBeenCalledTimes(20);
+    expect(putInbox).toHaveBeenCalledTimes(40);
     const keys = putInbox.mock.calls.map(([key]) => key);
-    expect(keys.slice(10)).toEqual(keys.slice(0, 10));
-    expect(new Set(keys).size).toBe(10);
+    expect(keys.slice(20)).toEqual(keys.slice(0, 20));
+    expect(new Set(keys).size).toBe(20);
   });
 
-  it("counts ten files for all of a step's calls, each its own event", async () => {
-    const files = Array.from({ length: 21 }, (_, index) =>
+  it("counts twenty files for all of a step's calls, each its own event", async () => {
+    const files = Array.from({ length: 41 }, (_, index) =>
       staged(`f${String(index)}.csv`, `file ${String(index)}`)
     );
     const ctx = context({ sandbox: sandboxOf(files) });
     await personTurn(ctx);
     const paths = files.map((file) => file.path);
     // eve emits one `actions.requested` a streamed call.
-    await requested([taskCall(paths.slice(0, 6).join("\n"))], ctx);
-    await requested([taskCall(paths.slice(6, 16).join("\n"))], ctx);
+    await requested([taskCall(paths.slice(0, 12).join("\n"))], ctx);
+    await requested([taskCall(paths.slice(12, 32).join("\n"))], ctx);
 
-    expect(putInbox).toHaveBeenCalledTimes(10);
+    expect(putInbox).toHaveBeenCalledTimes(20);
 
     // The next step has a budget of its own.
-    await requested([taskCall(paths[20] ?? "")], ctx, "turn_3", 2);
-    expect(putInbox).toHaveBeenCalledTimes(11);
+    await requested([taskCall(paths[40] ?? "")], ctx, "turn_3", 2);
+    expect(putInbox).toHaveBeenCalledTimes(21);
   });
 
   it("ends a step's copying at one deadline for all its calls", async () => {
@@ -546,7 +621,7 @@ describe("the person's files for the task agent", () => {
       const ctx = context();
       await personTurn(ctx);
       await requested([taskCall(table.path)], ctx);
-      vi.setSystemTime(Date.now() + 21_000);
+      vi.setSystemTime(Date.now() + 46_000);
       await requested([taskCall(deck.path)], ctx);
 
       expect(putInbox).toHaveBeenCalledTimes(1);
@@ -569,8 +644,8 @@ describe("the person's files for the task agent", () => {
     await requested([taskCall(table.path)], ctx);
 
     expect(putInbox).not.toHaveBeenCalled();
-    // Ten megabytes and the one over it, and the stream let go of.
-    expect(pulled).toBeLessThanOrEqual(12);
+    // Twenty megabytes and the one over it, and the stream let go of.
+    expect(pulled).toBeLessThanOrEqual(22);
   });
 
   it("stores a file again when a later turn of the person's names it", async () => {

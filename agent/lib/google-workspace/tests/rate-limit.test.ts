@@ -16,6 +16,7 @@ import {
   isGoogleRateLimit,
 } from "@agent/lib/google-workspace/client";
 import {
+  deleteGmailDrafts,
   gmailEmptySearchNote,
   searchGmail,
 } from "@agent/lib/google-workspace/gmail";
@@ -129,6 +130,40 @@ describe("withGoogleAuth under rate limits", () => {
     );
     expect(googleRateLimitMessage).toContain("не отключение");
     expect(googleRateLimitMessage).toContain("connect_google не нужен");
+  });
+
+  it("keeps a draft deleted under its message's id when a later deletion is retried", async () => {
+    const drafts = [
+      { id: "r-1", message: { id: "m-1" } },
+      { id: "r-2", message: { id: "m-2" } },
+    ];
+    let throttled = false;
+    composio.proxy.mockImplementation(({ method, url }) => {
+      if (method === "GET") return { data: { drafts } };
+      const id = url.pathname.split("/").at(-1);
+      if (id === "r-2" && !throttled) {
+        throttled = true;
+        return { data: {}, status: 429 };
+      }
+      drafts.splice(
+        drafts.findIndex((draft) => draft.id === id),
+        1
+      );
+      return { data: "", status: 204 };
+    });
+
+    const deleting = deleteGmailDrafts(composioToolContext("ca_google"), [
+      "m-1",
+      "r-2",
+      "r-1",
+    ]);
+    await vi.runAllTimersAsync();
+
+    await expect(deleting).resolves.toEqual({
+      deleted: ["m-1", "r-2", "r-1"],
+      failed: [],
+      notFound: [],
+    });
   });
 
   it("does not retry any other refusal", async () => {

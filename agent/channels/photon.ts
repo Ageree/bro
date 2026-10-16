@@ -27,10 +27,11 @@ import { iMessageShare, ingestShared } from "@agent/lib/location/ingest";
 import { locationPilot } from "@db/services/location";
 import {
   prepareAttachmentDelivery,
+  taskFilesAttachmentLimits,
   type OutboundFile,
 } from "@agent/lib/outbound-media/attachments";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
-import { taskFilesEnabled } from "@agent/lib/sandbox/pilot";
+import { taskFilesEnabled, taskFilesOfCaller } from "@agent/lib/sandbox/pilot";
 import { ensureVerifiedPhoneUser } from "@db/services/auth/phone-user";
 import {
   sendMessageToolResultSchema,
@@ -372,7 +373,11 @@ async function attachmentDelivery(
   session: SessionContext,
   attachments: readonly MessageAttachment[]
 ) {
-  const prepared = await prepareAttachmentDelivery(attachments);
+  // The files pilot sends files up to 20 MiB, 50 MiB a message.
+  const prepared = await prepareAttachmentDelivery(
+    attachments,
+    taskFilesOfCaller(session) ? taskFilesAttachmentLimits : undefined
+  );
   if (prepared.failures.length > 0) {
     console.warn("[photon] attachment delivery failed", {
       reasons: prepared.failures.map((failure) => failure.reason),

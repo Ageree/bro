@@ -224,6 +224,36 @@ describe("the core instructions of the skills pilot", () => {
     ).not.toMatch(/^- files — /mu);
   });
 
+  it("ask before signing where the workspace signs, and leave the rest to the skill", async () => {
+    const files = {
+      ...fullDeployment,
+      ...taskAgentDeployment,
+      TASK_FILES_WORKSPACES: "workspace-1",
+    };
+    // The kit that stamps runs in Bro's own code sandbox.
+    const signing = await corePrompt("interactive", {
+      ...files,
+      AGENT_SANDBOX: "bro-cloudru",
+      SIGN_WORKSPACES: "workspace-1",
+    });
+    const { withSigningConsent } = await import("@agent/lib/skills/signing");
+    const { instructionText } = await import("@agent/lib/skills/catalog");
+    expect(signing).toBe(
+      withSigningConsent(await corePrompt("interactive", files))
+    );
+    expect(signing).not.toBe(await corePrompt("interactive", files));
+    expect(signing).not.toContain(instructionText("sign", "full").trim());
+    // The owner's workspace: signing with every pilot that grows the core.
+    const owner = await corePrompt("interactive", {
+      ...files,
+      AGENT_SANDBOX: "bro-cloudru",
+      BACKGROUND_ACTIONS_WORKSPACES: "workspace-1",
+      ERRAND_AUTONOMY_WORKSPACES: "workspace-1",
+      SIGN_WORKSPACES: "workspace-1",
+    });
+    expect(tokens(owner)).toBeLessThanOrEqual(10_000);
+  });
+
   it("are a third of the full instructions", async () => {
     stubDeployment(fullDeployment);
     const full = await systemPrompt(turnKinds.interactive);

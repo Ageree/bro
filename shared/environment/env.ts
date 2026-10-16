@@ -1067,6 +1067,15 @@ export const env = createEnv({
         "TASK_FILES_WORKSPACES takes workspace ids or *, not emails"
       )
       .optional(),
+    // Signing PDFs with the person's own signature (W3): workspace ids or
+    // `*`, only with TASK_FILES and AGENT_SANDBOX=bro-cloudru (`signEnabled`
+    // in `agent/lib/signatures/pilot.ts`): the kit signs in Bro's sandbox.
+    SIGN_WORKSPACES: workspaceListSchema
+      .refine(
+        (entries) => entries.every((entry) => !entry.includes("@")),
+        "SIGN_WORKSPACES takes workspace ids or *, not emails"
+      )
+      .optional(),
     // The pilot of compacting a long conversation (docs/roadmap.md, item 28):
     // workspace ids or owners' emails, or `*` for every workspace, whose
     // turns let eve summarize the older history once a step's whole input

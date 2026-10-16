@@ -1,5 +1,5 @@
 {
-  "id": "989f1332-31bb-451b-9211-c94b3ad1fd99",
+  "id": "b47a48f7-6883-4dfe-b290-2db80d3e0c3c",
   "prevId": "6b4dd615-8881-4104-b9c0-2b8b86ae7d96",
   "version": "7",
   "dialect": "postgresql",
@@ -6925,25 +6925,207 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.direct_purchase_consents": {
-      "name": "direct_purchase_consents",
+    "public.document_signings": {
+      "name": "document_signings",
       "schema": "",
       "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
         "workspace_id": {
           "name": "workspace_id",
           "type": "text",
           "primaryKey": false,
           "notNull": true
         },
-        "consent_key": {
-          "name": "consent_key",
+        "user_id": {
+          "name": "user_id",
           "type": "text",
           "primaryKey": false,
           "notNull": true
         },
-        "ref": {
-          "name": "ref",
+        "root_session_id": {
+          "name": "root_session_id",
           "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'prepared'"
+        },
+        "fingerprint": {
+          "name": "fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_kind": {
+          "name": "source_kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_ref": {
+          "name": "source_ref",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_share_id": {
+          "name": "source_share_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "source_name": {
+          "name": "source_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_sha256": {
+          "name": "source_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_bytes": {
+          "name": "source_bytes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "plan": {
+          "name": "plan",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "signature_source": {
+          "name": "signature_source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "signature_id": {
+          "name": "signature_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "signature_kind": {
+          "name": "signature_kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "signature_photo_path": {
+          "name": "signature_photo_path",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "signature_png_sha256": {
+          "name": "signature_png_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "date_text": {
+          "name": "date_text",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "language": {
+          "name": "language",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "question": {
+          "name": "question",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "prepare_call_id": {
+          "name": "prepare_call_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "asked_at": {
+          "name": "asked_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "asked_text": {
+          "name": "asked_text",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "asked_verbatim": {
+          "name": "asked_verbatim",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "asked_turn": {
+          "name": "asked_turn",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "shown_at": {
+          "name": "shown_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "confirm_call_id": {
+          "name": "confirm_call_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "consent_text": {
+          "name": "consent_text",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "output_url": {
+          "name": "output_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "output_sha256": {
+          "name": "output_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "output_bytes": {
+          "name": "output_bytes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp (3) with time zone",
           "primaryKey": false,
           "notNull": true
         },
@@ -6953,13 +7135,54 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "signed_at": {
+          "name": "signed_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": false
         }
       },
-      "indexes": {},
+      "indexes": {
+        "document_signings_session_idx": {
+          "name": "document_signings_session_idx",
+          "columns": [
+            {
+              "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "root_session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
-        "direct_purchase_consents_workspace_id_fkey": {
-          "name": "direct_purchase_consents_workspace_id_fkey",
-          "tableFrom": "direct_purchase_consents",
+        "document_signings_workspace_id_fkey": {
+          "name": "document_signings_workspace_id_fkey",
+          "tableFrom": "document_signings",
           "tableTo": "workspaces",
           "columnsFrom": ["workspace_id"],
           "columnsTo": ["id"],
@@ -6969,14 +7192,125 @@
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
-        "direct_purchase_consents_key_uidx": {
-          "name": "direct_purchase_consents_key_uidx",
+        "document_signings_fingerprint_uidx": {
+          "name": "document_signings_fingerprint_uidx",
           "nullsNotDistinct": false,
-          "columns": ["workspace_id", "consent_key"]
+          "columns": ["workspace_id", "root_session_id", "fingerprint"]
         }
       },
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "document_signings_status_check": {
+          "name": "document_signings_status_check",
+          "value": "\"document_signings\".\"status\" IN ('prepared', 'signing', 'signed', 'cancelled')"
+        },
+        "document_signings_source_check": {
+          "name": "document_signings_source_check",
+          "value": "\"document_signings\".\"source_kind\" IN ('attachment', 'shared') AND (\"document_signings\".\"source_kind\" = 'shared') = (\"document_signings\".\"source_share_id\" IS NOT NULL)"
+        },
+        "document_signings_signature_check": {
+          "name": "document_signings_signature_check",
+          "value": "\"document_signings\".\"signature_source\" IN ('saved', 'photo') AND \"document_signings\".\"signature_kind\" IN ('image', 'typed') AND (\"document_signings\".\"signature_source\" = 'photo') = (\"document_signings\".\"signature_photo_path\" IS NOT NULL AND \"document_signings\".\"signature_png_sha256\" IS NOT NULL) AND (\"document_signings\".\"signature_source\" <> 'photo' OR \"document_signings\".\"signature_kind\" = 'image')"
+        },
+        "document_signings_language_check": {
+          "name": "document_signings_language_check",
+          "value": "\"document_signings\".\"language\" IN ('ru', 'en')"
+        },
+        "document_signings_asked_check": {
+          "name": "document_signings_asked_check",
+          "value": "(\"document_signings\".\"asked_at\" IS NULL) = (\"document_signings\".\"asked_turn\" IS NULL)"
+        },
+        "document_signings_signed_check": {
+          "name": "document_signings_signed_check",
+          "value": "(\"document_signings\".\"status\" = 'signed') = (\"document_signings\".\"output_url\" IS NOT NULL AND \"document_signings\".\"signed_at\" IS NOT NULL)"
+        },
+        "document_signings_claim_check": {
+          "name": "document_signings_claim_check",
+          "value": "\"document_signings\".\"status\" NOT IN ('signing', 'signed') OR \"document_signings\".\"confirm_call_id\" IS NOT NULL"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.person_signatures": {
+      "name": "person_signatures",
+      "schema": "",
+      "columns": {
+        "workspace_id": {
+          "name": "workspace_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "encrypted_value": {
+          "name": "encrypted_value",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "font": {
+          "name": "font",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "person_signatures_workspace_id_fkey": {
+          "name": "person_signatures_workspace_id_fkey",
+          "tableFrom": "person_signatures",
+          "tableTo": "workspaces",
+          "columnsFrom": ["workspace_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "person_signatures_kind_check": {
+          "name": "person_signatures_kind_check",
+          "value": "\"person_signatures\".\"kind\" IN ('image', 'typed')"
+        },
+        "person_signatures_font_check": {
+          "name": "person_signatures_font_check",
+          "value": "(\"person_signatures\".\"kind\" = 'typed') = (\"person_signatures\".\"font\" IS NOT NULL)"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.spend_entries": {

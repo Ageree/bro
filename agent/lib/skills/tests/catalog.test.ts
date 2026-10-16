@@ -108,6 +108,26 @@ describe("the instruction catalog", () => {
     );
   });
 
+  it("reads the signing rules only as a skill after the files', and only where the workspace signs", async () => {
+    const { availableSkills, instructionText, interactiveSources, skillBody } =
+      await import("@agent/lib/skills/catalog");
+    expect(instructionText("sign", "core").trim()).toBe("");
+    // The pointer from the files is the body's alone.
+    expect(instructionText("sign", "full")).not.toContain("load_skill");
+    const withFiles = { ...setup, taskFiles: true };
+    const signing = { ...withFiles, sign: true };
+    expect(interactiveSources(withFiles)).not.toContain("sign");
+    expect(interactiveSources({ ...setup, sign: true })).not.toContain("sign");
+    expect(interactiveSources(signing).slice(-2)).toEqual([
+      "task-files",
+      "sign",
+    ]);
+    expect(availableSkills(signing)).toContain("sign");
+    expect(skillBody("sign", signing)).toBe(
+      instructionText("sign", "full").trim()
+    );
+  });
+
   it.each([
     [
       "an unknown skill",

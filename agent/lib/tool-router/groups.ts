@@ -18,6 +18,9 @@ import { type RouterGroup, routerGroups } from "./questions";
  * - The stop tools: «не пиши ночью», «забудь всё», «отмени» must never meet
  *   «не могу». Each has its own approval, and the set is small and always
  *   the same, which costs the cache nothing.
+ * - The signing tools (their own pilot, `SIGN_WORKSPACES`), as in the skills
+ *   pilot's core: the person's «да» to Bro's signing question must reach
+ *   `sign_document` whatever groups the router chose for that turn.
  */
 const alwaysTools = [
   "send_message",
@@ -42,6 +45,8 @@ const alwaysTools = [
   "privacy",
   "browser_task",
   "calendar-list-events",
+  "sign_document",
+  "signature",
 ] as const;
 
 /** The stop tools of the core (above). */
@@ -98,6 +103,7 @@ const groupTools = {
     "gmail-send",
     "gmail-draft",
     "gmail-update",
+    "gmail-delete-draft",
     "mail-read",
     "mail-search",
     "mail-draft",
@@ -235,6 +241,8 @@ export const skillRouterGroups = {
   money: ["money"],
   recommendations: ["places", "events"],
   schedules: ["schedules"],
+  // The signing tools are core; the places are marked by the task agent.
+  sign: ["files"],
 } as const satisfies Readonly<Record<SkillName, readonly RouterGroup[]>>;
 
 /**

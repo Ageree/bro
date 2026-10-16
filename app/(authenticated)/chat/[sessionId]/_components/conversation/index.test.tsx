@@ -2,7 +2,10 @@ import type { MessageStreamEvent } from "eve/client";
 import type { EveMessage } from "eve/react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { backgroundTurnMarker } from "@shared/chat/background-turn";
+import {
+  backgroundNoticeMessage,
+  backgroundTurnMarker,
+} from "@shared/chat/background-turn";
 import { ChatConversation } from ".";
 import type { ChatAgent } from "../chat-agent";
 
@@ -83,6 +86,42 @@ describe("chat conversation", () => {
 
     expect(markup).toContain("Рейс UA 1532 завтра в 07:40.");
     expect(markup).not.toContain("background check");
+    expect(markup).not.toContain(backgroundTurnMarker);
+  });
+
+  it("shows a notice code wrote in Bro's name as Bro's message", () => {
+    const notice =
+      "Поручение «ozon.ru» закончено, но итог не дошёл. Спросите меня «что там с ozon.ru», и я расскажу.";
+    const agent = {
+      data: {
+        messages: [
+          message("turn-1:user", backgroundNoticeMessage(notice)),
+          {
+            id: "turn-1:assistant",
+            metadata: { status: "complete", turnId: "turn-1" },
+            parts: [
+              { state: "done", text: "<eve-empty-delivery/>", type: "text" },
+            ],
+            role: "assistant",
+          },
+        ],
+      },
+      error: undefined,
+      events: [],
+      respond: async () => undefined,
+      status: "ready",
+    } satisfies Pick<
+      ChatAgent,
+      "data" | "error" | "events" | "respond" | "status"
+    >;
+
+    const markup = renderToStaticMarkup(
+      <ChatConversation agent={agent} traceView="imessage" />
+    );
+
+    expect(markup).toContain(notice);
+    expect(markup).toContain('flex-col gap-2 is-assistant"');
+    expect(markup).not.toContain("is-user ml-auto");
     expect(markup).not.toContain(backgroundTurnMarker);
   });
 

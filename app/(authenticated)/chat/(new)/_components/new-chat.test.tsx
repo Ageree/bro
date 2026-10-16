@@ -1,3 +1,4 @@
+import { ClientError } from "eve/client";
 import type { useEveAgent } from "eve/react";
 import type { ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -70,6 +71,12 @@ vi.mock("@web/components/ai-elements/prompt-input", () => ({
   PromptInputTools: () => null,
 }));
 
+vi.mock("../../_components/composer-files", () => ({
+  ComposerAttachButton: () => null,
+  ComposerAttachments: () => null,
+  ComposerNotice: () => null,
+}));
+
 import { NewChat } from "./new-chat";
 
 describe("new chat", () => {
@@ -82,7 +89,7 @@ describe("new chat", () => {
   });
 
   it("navigates the first prompt into its session route once", async () => {
-    const emptyMarkup = renderToStaticMarkup(<NewChat />);
+    const emptyMarkup = renderToStaticMarkup(<NewChat filesPilot={false} />);
     expect(emptyMarkup).toContain("<form");
 
     await mocks.promptSubmit?.({ files: [], text: "Inspect my workspace" });
@@ -106,5 +113,36 @@ describe("new chat", () => {
     });
     expect(mocks.saveChat).toHaveBeenCalledTimes(1);
     expect(mocks.routerReplace).toHaveBeenCalledTimes(1);
+  });
+
+  // eve refused the create POST: no session exists, so nothing arrived and
+  // the composer gets the message back.
+  it("keeps a message eve refused before a session existed", async () => {
+    mocks.agent.send.mockImplementation(async () => {
+      mocks.options?.onError?.(new ClientError(413, "{}"));
+    });
+    renderToStaticMarkup(<NewChat filesPilot />);
+
+    await expect(
+      mocks.promptSubmit?.({ files: [], text: "Вот скан" })
+    ).rejects.toBeInstanceOf(ClientError);
+    expect(mocks.saveChat).not.toHaveBeenCalled();
+  });
+
+  // Once the session exists eve took the message: a failure while following
+  // its turn must not hand it back for a second send.
+  it("lets go of a message eve took even when its turn failed", async () => {
+    mocks.agent.send.mockImplementation(async () => {
+      mocks.options?.onSessionChange?.({
+        sessionId: "session/two",
+        streamIndex: 0,
+      });
+      mocks.options?.onError?.(new ClientError(500, "{}"));
+    });
+    renderToStaticMarkup(<NewChat filesPilot />);
+
+    await expect(
+      mocks.promptSubmit?.({ files: [], text: "Вот скан" })
+    ).resolves.toBeUndefined();
   });
 });

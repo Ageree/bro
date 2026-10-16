@@ -48,6 +48,7 @@ import { locationPilot } from "@db/services/location";
 import { pdfByteCap } from "@agent/lib/inbound-media/media-type";
 import {
   prepareAttachmentDelivery,
+  taskFilesAttachmentLimits,
   type OutboundFile,
 } from "@agent/lib/outbound-media/attachments";
 import { startedByPerson } from "@agent/lib/mode";
@@ -59,6 +60,7 @@ import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import {
   conversationHoldsFiles,
   taskFilesEnabled,
+  taskFilesOfCaller,
 } from "@agent/lib/sandbox/pilot";
 import { resolveTelegramReplyTarget } from "@agent/lib/reply-targets";
 import {
@@ -104,6 +106,11 @@ const telegramUploads = {
 >;
 /** Photos and videos ride in one album only between these counts. */
 const albumSizeRange = { maximum: 10, minimum: 2 } as const;
+/**
+ * The largest photo `sendPhoto` takes. A larger one, which only the files
+ * pilot downloads (`taskFilesAttachmentLimits`), goes as a document.
+ */
+const telegramPhotoBytes = 10 * 1024 * 1024;
 const startLinkPattern =
   /^\/start(?:@[A-Za-z0-9_]+)?\s+link_(?<token>[\w-]+)$/u;
 const bugCommandPattern = /^\/bug(?:@[A-Za-z0-9_]+)?(?:\s|$)/u;
@@ -566,13 +573,17 @@ function currentTelegramMessageId(auth: SessionAuth) {
 /**
  * Downloads what `send_message` attached so it can be uploaded as real media.
  * An attachment that could not be fetched keeps the old behaviour and travels
- * as a link, and the reason is logged without the URL.
+ * as a link, and the reason is logged without the URL. The files pilot sends
+ * files up to 20 MiB, 50 MiB a message (`taskFilesAttachmentLimits`).
  */
 async function attachmentDelivery(
   session: SessionContext,
   attachments: readonly MessageAttachment[]
 ) {
-  const prepared = await prepareAttachmentDelivery(attachments);
+  const prepared = await prepareAttachmentDelivery(
+    attachments,
+    taskFilesOfCaller(session) ? taskFilesAttachmentLimits : undefined
+  );
   if (prepared.failures.length > 0) {
     console.warn("[telegram] attachment delivery failed", {
       reasons: prepared.failures.map((failure) => failure.reason),
@@ -799,9 +810,16 @@ async function uploadFiles(
 /* oxlint-disable eslint/no-await-in-loop -- Telegram renders uploads in call order. */
 async function uploadMedia(
   context: TelegramEventContext,
-  files: readonly OutboundFile[]
+  uploads: readonly OutboundFile[]
 ) {
   const undelivered: string[] = [];
+  // `sendPhoto` answers a photo past its limit with 413, which is no
+  // rejection worth a retry as a document (`sendFile`), so it goes as one.
+  const files = uploads.map((file) =>
+    file.kind === "photo" && file.data.byteLength > telegramPhotoBytes
+      ? { ...file, kind: "document" as const }
+      : file
+  );
   const separate = files.filter((file) => !isAlbumFile(file));
   const individual: OutboundFile[] = [];
   for (const album of albums(files.filter((file) => isAlbumFile(file)))) {

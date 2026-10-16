@@ -7,9 +7,10 @@ const pilot = vi.hoisted(() => ({
 vi.mock("@agent/lib/sandbox/pilot", () => pilot);
 
 import filesInstructions from "@agent/subagents/task/instructions/files";
+import kitInstructions from "@agent/subagents/task/instructions/kit";
 
-async function resolveContent() {
-  const resolve = filesInstructions.events["turn.started"];
+async function resolveContent(instructions = filesInstructions) {
+  const resolve = instructions.events["turn.started"];
   if (!resolve) throw new Error("The files' lines resolve per turn.");
   // SAFETY: the resolver hands the context to `taskFilesOfCaller` alone.
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- A partial context stands in for eve's.
@@ -39,5 +40,24 @@ describe("the task agent's lines about the person's files", () => {
     );
     expect(always).not.toContain("/workspace/attachments");
     expect(always).not.toContain("файлы человека");
+  });
+});
+
+describe("the task agent's lines about its file kit", () => {
+  it("forbid signing for the person where the kit is there", async () => {
+    expect(await resolveContent(kitInstructions)).toContain(
+      "Сам подпись не ставь"
+    );
+  });
+
+  it("stay out of every call elsewhere, the static instructions included", async () => {
+    pilot.taskFilesOfCaller.mockReturnValue(false);
+
+    expect(await resolveContent(kitInstructions)).toBeUndefined();
+    const always = await readFile(
+      "agent/subagents/task/instructions.md",
+      "utf8"
+    );
+    expect(always).not.toContain("brokit");
   });
 });

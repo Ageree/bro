@@ -9,7 +9,7 @@ import {
   browserFilesEnabled,
   browserFileStepPaths,
 } from "@agent/lib/browser-use/files";
-import { documentByteCap } from "@agent/lib/inbound-media/media-type";
+import { inspectZip } from "@agent/lib/inbound-media/zip";
 import {
   attachmentsPerMessage,
   inboxKey,
@@ -59,8 +59,14 @@ const taskInputSchema = z.object({
   agentId: z.string().nullish(),
   message: z.string(),
 });
-/** All files of one step's calls are copied within this, one after another. */
-const stepBudgetMs = 20_000;
+/**
+ * All files of one step's calls are copied within this, a few at a time:
+ * twenty files of up to 20 MiB each take a while, and the step ends only
+ * once its hooks do.
+ */
+const stepBudgetMs = 45_000;
+/** How many files are read and stored at once, which bounds the memory. */
+const copiesAtOnce = 3;
 /** Recording the person's `task` calls of one event. */
 const callsBudgetMs = 10_000;
 
@@ -145,7 +151,7 @@ function namedPaths(calls: ReturnType<typeof taskCalls>) {
 
 /**
  * Of the paths an event names, the ones its step may still copy: the first
- * ten distinct paths of all the step's calls, a replay of one of them
+ * twenty distinct paths of all the step's calls, a replay of one of them
  * included, and the step's one deadline for all of them.
  */
 function stepShare(stepIndex: number, named: readonly string[]) {
@@ -264,7 +270,7 @@ export default defineHook({
         }
         const share = stepShare(event.data.stepIndex, paths);
         if (share.paths.length === 0) return;
-        const { failed, mirrored } = await mirror({
+        const { failed, missing, mirrored, refused } = await mirror({
           deadlineAt: share.deadlineAt,
           paths: share.paths,
           sandbox: await ctx.getSandbox(),
@@ -273,9 +279,11 @@ export default defineHook({
         });
         console.info("[task-files] mirrored", {
           failed,
+          missing,
           mirrored,
           named: paths.length,
           recorded,
+          refused,
         });
       } catch (error) {
         console.warn("[task-files] files not mirrored", {
@@ -302,8 +310,11 @@ async function recordPersonSends(input: {
 }
 
 /**
- * Copies each file that is what its path names: how many went, and how many
- * failed on the way rather than being absent or another file.
+ * Copies each file that is what its path names, a few at a time within the
+ * step's one deadline: how many went, how many were not in the sandbox, how
+ * many were refused (a `.zip` whose directory does not read as an archive
+ * the task agent may open, `inspectZip`) and how many failed on the way.
+ * A path whose bytes are another file, or past the cap, is none of these.
  */
 async function mirror(input: {
   readonly deadlineAt: number;
@@ -315,44 +326,40 @@ async function mirror(input: {
   const deadline = AbortSignal.timeout(
     Math.max(0, input.deadlineAt - Date.now())
   );
-  let failed = 0;
-  let mirrored = 0;
-  const limit: [] | [number] = browserFilesEnabled(input.workspaceId)
-    ? [documentByteCap]
-    : [];
-  for (const path of input.paths) {
-    if (deadline.aborted || Date.now() >= input.deadlineAt) break;
+  const counts = { failed: 0, missing: 0, mirrored: 0, refused: 0 };
+  const copyOne = async (path: string) => {
     try {
       // A file at the path may have grown far past any the person sent: it
       // is read only up to the cap.
-      // oxlint-disable-next-line eslint/no-await-in-loop -- One file at a time, within the step's budget.
-      const bytes = await readSandboxFileWithin(
-        input.sandbox,
-        path,
-        deadline,
-        ...limit
-      );
-      if (
-        bytes === null ||
-        bytes === "oversize" ||
-        !pathMatchesBytes(path, bytes)
-      ) {
-        continue;
+      const bytes = await readSandboxFileWithin(input.sandbox, path, deadline);
+      if (bytes === null) {
+        counts.missing += 1;
+        return;
+      }
+      if (bytes === "oversize" || !pathMatchesBytes(path, bytes)) return;
+      if (/\.zip$/iu.test(path) && inspectZip(bytes).kind !== "zip") {
+        counts.refused += 1;
+        return;
       }
       // Stored again even when an earlier turn stored it: the object's date
       // is what tells the task agent this turn named it (`inboxFreshMs`).
-      // oxlint-disable-next-line eslint/no-await-in-loop -- As above.
       await putInbox(
         inboxKey(input.workspaceId, input.sessionId, path),
         bytes,
-        deadline,
-        ...limit
+        deadline
       );
-      mirrored += 1;
+      counts.mirrored += 1;
     } catch {
       // The next file may still go; the task agent reports this one.
-      failed += 1;
+      counts.failed += 1;
     }
+  };
+  for (let start = 0; start < input.paths.length; start += copiesAtOnce) {
+    if (deadline.aborted || Date.now() >= input.deadlineAt) break;
+    // oxlint-disable-next-line eslint/no-await-in-loop -- one shared deadline, 3 at a time
+    await Promise.all(
+      input.paths.slice(start, start + copiesAtOnce).map(copyOne)
+    );
   }
-  return { failed, mirrored };
+  return counts;
 }

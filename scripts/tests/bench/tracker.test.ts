@@ -256,6 +256,143 @@ describe("TurnTracker and background errands", () => {
   });
 });
 
+describe("TurnTracker and background tasks", () => {
+  const taskCall = (callId: string): MessageStreamEvent => ({
+    data: {
+      actions: [{ callId, input: {}, kind: "tool-call", toolName: "task" }],
+      sequence: 0,
+      stepIndex: 0,
+      turnId: "turn_0",
+    },
+    meta,
+    type: "actions.requested",
+  });
+  /** eve's receipt: the child goes on in the background. */
+  const receipt = (callId: string, taskId: string): MessageStreamEvent => ({
+    data: {
+      backgroundTask: { status: "working", taskId },
+      callId,
+      output: `Task ${taskId} started.`,
+      subagentName: "task",
+    },
+    meta,
+    type: "subagent.completed",
+  });
+  const taskResult = (
+    callId: string,
+    status: "completed" | "failed"
+  ): MessageStreamEvent => ({
+    data: {
+      result: {
+        callId,
+        kind: "tool-result",
+        output: { taskId: "ignored" },
+        toolName: "task",
+      },
+      sequence: 0,
+      status,
+      stepIndex: 0,
+      turnId: "turn_0",
+    },
+    meta,
+    type: "action.result",
+  });
+  /** A task started in the background: call, receipt, answer. */
+  const started = (callId: string, taskId: string) => [
+    taskCall(callId),
+    receipt(callId, taskId),
+    taskResult(callId, "completed"),
+  ];
+  const wake = (message: string): MessageStreamEvent => ({
+    data: {
+      kind: "execution.background_task",
+      message,
+      sequence: 0,
+      turnId: "turn_1",
+    },
+    meta,
+    type: "message.received",
+  });
+
+  it("waits for a task's wake, across a saved record", () => {
+    const tracker = new TurnTracker();
+    observeAll(tracker, turn("turn_0", started("call_1", "task_a")));
+    expect(tracker.awaitingBackground()).toBe(true);
+
+    const resumed = new TurnTracker(
+      [],
+      [],
+      undefined,
+      [],
+      [...tracker.backgroundTasks()]
+    );
+    resumed.observe(
+      wake("Background task task_a (task) is completed.\n\nResult:\nготово")
+    );
+    expect(resumed.awaitingBackground()).toBe(false);
+  });
+
+  it("keeps waiting for a task a wake does not end", () => {
+    const tracker = new TurnTracker();
+    observeAll(
+      tracker,
+      turn("turn_0", [
+        ...started("call_1", "task_a"),
+        ...started("call_2", "task_b"),
+      ])
+    );
+    tracker.observe(
+      wake("Background task task_a (task) update: читаю страницу 3 из 7")
+    );
+    tracker.observe(wake("Background task task_b (task) failed.\n\nError:\nx"));
+
+    expect(tracker.backgroundTasks()).toEqual(["task_a"]);
+    expect(tracker.awaitingBackground()).toBe(true);
+  });
+
+  it("has nothing to wait for after a task call that failed", () => {
+    const tracker = new TurnTracker();
+    observeAll(
+      tracker,
+      turn("turn_0", [taskCall("call_1"), taskResult("call_1", "failed")])
+    );
+
+    expect(tracker.awaitingBackground()).toBe(false);
+  });
+
+  it("stops waiting on a wake of unknown shape and says so", () => {
+    const tracker = new TurnTracker();
+    observeAll(tracker, turn("turn_0", started("call_1", "task_a")));
+    tracker.observe(wake("Задача готова, вот итог."));
+
+    expect(tracker.awaitingBackground()).toBe(false);
+    expect(tracker.unknownWake).toBe(true);
+  });
+
+  it("reads a wake eve merged into the tester's message", () => {
+    // eve coalesces a wake with a message that came at the same time into
+    // one input and drops the wake's kind.
+    const received = (message: string): MessageStreamEvent => ({
+      data: { message, sequence: 1, turnId: "turn_1" },
+      meta,
+      type: "message.received",
+    });
+    const tracker = new TurnTracker();
+    observeAll(tracker, turn("turn_0", started("call_1", "task_a")));
+
+    tracker.observe(received("ну что там?"));
+    expect(tracker.awaitingBackground()).toBe(true);
+
+    tracker.observe(
+      received(
+        "ну что там?\n\nBackground task task_a (task) is completed.\n\nResult:\nготово"
+      )
+    );
+    expect(tracker.awaitingBackground()).toBe(false);
+    expect(tracker.unknownWake).toBe(false);
+  });
+});
+
 describe("TurnTracker.blocked", () => {
   it("stops at an authorization only a person can pass", () => {
     const tracker = new TurnTracker();

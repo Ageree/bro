@@ -26,6 +26,7 @@ import {
   readOlderSessionHistory,
   type SessionHistoryPage,
 } from "../_lib/session-history";
+import { MessageNotSent } from "../../_lib/attachments";
 import type { ChatAgent } from "./chat-agent";
 
 const client = new Client({ host: "" });
@@ -150,27 +151,41 @@ export function useSessionAgent(sessionId: string): ChatAgent {
       const activeOperation = operationRef.current;
       if (activeOperation && options?.turnPolicy === "steer") {
         const current = historyRef.current;
-        if (!current) throw new Error("The conversation is still loading.");
+        if (!current) throw new MessageNotSent("The conversation is loading.");
         const session = client.sessions.attach(sessionId, {
           streamIndex: current.endIndex,
         });
+        // A refused POST throws eve's `ClientError` here: nothing arrived.
         await session.send(message, options);
-        await activeOperation;
+        try {
+          await activeOperation;
+        } catch (cause) {
+          throw delivered(cause);
+        }
         await resume();
         return;
+      }
+      // `runOperation` would hand back the running operation, and the message
+      // would silently go nowhere.
+      if (activeOperation) {
+        throw new MessageNotSent(
+          "The conversation is busy: send with turnPolicy steer."
+        );
       }
 
       await runOperation(async () => {
         const current = historyRef.current;
-        if (!current) throw new Error("The conversation is still loading.");
+        if (!current) throw new MessageNotSent("The conversation is loading.");
         setError(undefined);
         setStatus("submitted");
         const session = client.sessions.attach(sessionId, {
           streamIndex: current.endIndex,
         });
         let nextIndex = current.endIndex;
+        let accepted = false;
         try {
           const response = await session.send(message, options);
+          accepted = true;
           for await (const event of response) {
             nextIndex += 1;
             appendSessionEvent(historyRef, setHistory, event, nextIndex);
@@ -180,7 +195,7 @@ export function useSessionAgent(sessionId: string): ChatAgent {
         } catch (cause) {
           setError(toError(cause));
           setStatus("error");
-          throw cause;
+          throw accepted ? delivered(cause) : cause;
         }
       });
     },
@@ -293,6 +308,17 @@ function appendSessionEvent(
     }
     historyRef.current = next;
     return next;
+  });
+}
+
+/**
+ * eve took the message and only following its turn failed: the stream throws
+ * `ClientError` too, so the composer must not read it as a refused POST and
+ * send the message again.
+ */
+function delivered(cause: unknown) {
+  return new Error("The message was delivered; following its turn failed.", {
+    cause,
   });
 }
 

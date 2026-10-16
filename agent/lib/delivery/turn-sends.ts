@@ -1,7 +1,10 @@
 import type { ModelMessage, ToolResultPart } from "ai";
 import { z } from "zod";
 import { sendMessageOutputSchema } from "@shared/chat/message-delivery";
-import { isBackgroundTurnText } from "@shared/chat/background-turn";
+import {
+  backgroundNoticeText,
+  isBackgroundTurnText,
+} from "@shared/chat/background-turn";
 import {
   claimsResultsInHand,
   promisesUntakenStep,
@@ -661,7 +664,10 @@ const taggedMessageSchema = z.object({ kind: z.string() });
 /**
  * eve tags user-role messages with a kind. Context, memory, retry, and
  * compaction messages are injected inside a running turn; anything else, a
- * person's message or a background wakeup, starts a new one.
+ * person's message or a background wakeup, starts a new one — except a web
+ * chat's notice (`isBackgroundNotice`), whose turn calls no model: what came
+ * before it still opens the turn, so the task agent's report eve coalesced
+ * with it keeps that turn's guards.
  */
 export function startsTurn(message: ModelMessage) {
   if (message.role !== "user") return false;
@@ -670,7 +676,16 @@ export function startsTurn(message: ModelMessage) {
     kind.startsWith("context.") ||
     kind.startsWith("memory.") ||
     kind === "execution.retry" ||
-    kind === "execution.continuation"
+    kind === "execution.continuation" ||
+    isBackgroundNotice(message)
+  );
+}
+
+/** A notice code wrote to a web chat in Bro's name (`backgroundNoticeMessage`). */
+export function isBackgroundNotice(message: ModelMessage) {
+  return (
+    message.role === "user" &&
+    backgroundNoticeText(openingText(message)) !== undefined
   );
 }
 
@@ -695,11 +710,26 @@ export function opensAsBackgroundTask(text: string) {
  */
 export function turnOpenedByBackgroundTask(messages: readonly ModelMessage[]) {
   const opening = messages.findLast(startsTurn);
+  return opening !== undefined && deliversBackgroundTask(opening);
+}
+
+/** Whether a message is eve's delivery of finished background work. */
+export function deliversBackgroundTask(message: ModelMessage) {
   return (
-    opening !== undefined &&
-    taggedMessageSchema.safeParse(opening).data?.kind ===
-      "execution.background_task" &&
-    opensAsBackgroundTask(openingText(opening))
+    taggedMessageSchema.safeParse(message).data?.kind ===
+      "execution.background_task" && opensAsBackgroundTask(openingText(message))
+  );
+}
+
+/**
+ * The user-role messages since Bro's last step: those of a turn about to take
+ * its first — eve coalesces the deliveries queued behind a running turn into
+ * one — and those an earlier turn left unanswered when it failed before a
+ * step, which eve keeps in its history.
+ */
+export function messagesSinceLastStep(messages: readonly ModelMessage[]) {
+  return messages.slice(
+    messages.findLastIndex((message) => message.role !== "user") + 1
   );
 }
 
