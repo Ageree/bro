@@ -1,8 +1,12 @@
+import { inflateRawSync } from "node:zlib";
+
 /**
  * A ZIP archive the person sends, judged by its central directory alone: no
- * entry is unpacked here (the task agent's kit does that, and caps the real
- * sizes). The declared sizes can lie, so they only bound what a bomb may
- * claim; an archive whose directory does not read as one is broken.
+ * entry of theirs is unpacked here (the task agent's kit does that, and caps
+ * the real sizes). The declared sizes can lie, so they only bound what a
+ * bomb may claim; an archive whose directory does not read as one is broken.
+ * The few entries Bro reads itself, like the slides of a deck the task agent
+ * shares, `unpackZipEntries` unpacks within a cap of their real size.
  */
 
 const localFileHeader = 0x04034b50;
@@ -18,6 +22,10 @@ const zip64Marker = 0xffffffff;
 const endRecordBytes = 22;
 const maximumCommentBytes = 0xffff;
 const centralHeaderBytes = 46;
+const localHeaderBytes = 30;
+/** The compression methods an entry is unpacked from: stored and deflated. */
+const storedMethod = 0;
+const deflatedMethod = 8;
 
 /** More entries than the task agent should walk through. */
 const maximumEntries = 1000;
@@ -134,5 +142,101 @@ export function inspectZip(bytes: Uint8Array) {
   } catch {
     // A field that points past the end: `DataView` throws a RangeError.
     return { kind: "broken" } as const;
+  }
+}
+
+/**
+ * An entry's bytes, from the central directory record at `at`: stored or
+ * deflated, and within `left` bytes unpacked whatever the record claims.
+ * Undefined for an encrypted entry, another method or sizes the ZIP64 way
+ * (no file Bro reads this way comes near 4 GiB).
+ */
+function unpackEntry(
+  bytes: Uint8Array,
+  view: DataView,
+  at: number,
+  left: number
+) {
+  const packedSize = view.getUint32(at + 20, true);
+  const size = view.getUint32(at + 24, true);
+  const local = view.getUint32(at + 42, true);
+  if (
+    (view.getUint16(at + 8, true) & 1) === 1 ||
+    [packedSize, size, local].includes(zip64Marker) ||
+    size > left ||
+    view.getUint32(local, true) !== localFileHeader
+  ) {
+    return undefined;
+  }
+  // The local header's name and extra field may differ from the directory's.
+  const start =
+    local +
+    localHeaderBytes +
+    view.getUint16(local + 26, true) +
+    view.getUint16(local + 28, true);
+  if (start + packedSize > bytes.byteLength) return undefined;
+  const packed = bytes.subarray(start, start + packedSize);
+  const method = view.getUint16(at + 10, true);
+  if (method === storedMethod) {
+    return packedSize === size ? Buffer.from(packed) : undefined;
+  }
+  if (method !== deflatedMethod) return undefined;
+  // Past `maxOutputLength` the inflate throws: a bomb stops at the cap.
+  const unpacked = inflateRawSync(packed, {
+    maxOutputLength: Math.max(1, left),
+  });
+  return unpacked.byteLength > left ? undefined : unpacked;
+}
+
+/**
+ * The entries of an archive whose names `wanted` takes, unpacked, by name:
+ * each stored or deflated, all of them within `maximumBytes` unpacked.
+ * Undefined for bytes that do not read as an archive, and for one whose
+ * wanted entry cannot be unpacked or runs past the cap.
+ */
+export function unpackZipEntries(
+  bytes: Uint8Array,
+  wanted: (name: string) => boolean,
+  maximumBytes: number
+): ReadonlyMap<string, Buffer> | undefined {
+  if (bytes.byteLength < endRecordBytes) return undefined;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  try {
+    const end = endRecordAt(view);
+    if (end === undefined) return undefined;
+    const directory = directoryOf(view, end);
+    if (
+      directory === undefined ||
+      directory.offset + directory.size > bytes.byteLength
+    ) {
+      return undefined;
+    }
+    const entries = new Map<string, Buffer>();
+    let left = maximumBytes;
+    let at = directory.offset;
+    for (let entry = 0; entry < directory.entries; entry += 1) {
+      if (view.getUint32(at, true) !== centralDirectoryHeader) return undefined;
+      const nameLength = view.getUint16(at + 28, true);
+      const nameAt = at + centralHeaderBytes;
+      const name = new TextDecoder().decode(
+        bytes.subarray(nameAt, nameAt + nameLength)
+      );
+      if (wanted(name)) {
+        const unpacked = unpackEntry(bytes, view, at, left);
+        if (unpacked === undefined) return undefined;
+        left -= unpacked.byteLength;
+        entries.set(name, unpacked);
+      }
+      at +=
+        centralHeaderBytes +
+        nameLength +
+        view.getUint16(at + 30, true) +
+        view.getUint16(at + 32, true);
+    }
+    return entries;
+  } catch {
+    // A field that points past the end (`DataView` throws a RangeError), or
+    // deflated bytes that do not inflate or inflate past the cap.
+    return undefined;
   }
 }

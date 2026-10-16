@@ -205,6 +205,25 @@ class SheetTest(unittest.TestCase):
         self.assertEqual([(c["sheet"], c["column"]) for c in result["text_dates"]], [("Операции", "A")])
         self.assertEqual([(c["sheet"], c["column"]) for c in result["text_numbers"]], [("Операции", "B"), ("Итоги", "B")])
 
+    @unittest.skipUnless(has("soffice"), "LibreOffice is not installed")
+    def test_recalc_turns_russian_date_codes_into_excels(self):
+        # Live 16.10: number_format «ДД.ММ.ГГГГ» left every date of a statement a bare number.
+        import datetime
+
+        book = openpyxl.Workbook()
+        sheet = book.active
+        sheet["A1"] = datetime.datetime(2026, 9, 1, 8, 0)
+        sheet["A1"].number_format = "ДД.ММ.ГГГГ чч:мм"
+        sheet["B1"] = 45000
+        sheet["B1"].number_format = '#,##0.00" ДД"'
+        book.save(self.path("russian-codes.xlsx"))
+        code, result = kit("xlsx", "recalc", self.path("russian-codes.xlsx"), "-o", self.path("russian-out.xlsx"))
+        self.assertEqual(code, 0, result)
+        self.assertEqual(result["fixed_formats"], ["ДД.ММ.ГГГГ чч:мм -> DD.MM.YYYY hh:mm"])
+        cells = openpyxl.load_workbook(self.path("russian-out.xlsx"))["Sheet"]
+        self.assertIsInstance(cells["A1"].value, datetime.datetime)
+        self.assertIn('" ДД"', cells["B1"].number_format)
+
 
 if __name__ == "__main__":
     unittest.main()

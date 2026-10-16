@@ -446,7 +446,8 @@ cases.append({
             cells=[{"row_regex": "(?i)^продукт", "expected": B["by_my_category_net"]["Продукты"]},
                    {"row_regex": "(?i)такси|транспорт", "expected": B["by_my_category_net"]["Такси и транспорт"]},
                    {"row_regex": "(?i)кафе|доставк", "expected": B["by_my_category_net"]["Кафе и доставка еды"]},
-                   {"row_regex": "(?i)квартир|жкх", "expected": B["by_my_category_net"]["Квартира и ЖКХ"]},
+                   # issues: 16.10 the rent paid to a person went to the person's own «Переводы людям»: a fair reading too.
+                   {"row_regex": "(?i)квартир|жкх", "expected": B["by_my_category_net"]["Квартира и ЖКХ"], "alt_expected": -6842.17},
                    {"row_regex": "(?i)маркетплейс", "expected": B["marketplaces_net_after_refund"], "alt_expected": B["marketplaces_net_after_refund"] - 1299.0},
                    {"row_regex": "(?i)связь|подписк", "expected": B["by_my_category_net"]["Связь и подписки"]},
                    # issues: 16.10 the income row counted an incoming transfer from a person too (233 500): a fair reading.
@@ -1120,7 +1121,10 @@ _NOT_ABLE = "(?<!\\w)не\\s+(?:могу|смогу|можем|получи\\w*|
 SIGNATURE_UNVERIFIED = ("(?i)(?:" + _NOT_ABLE + ")[^.!?\\n]{0,60}провер"
                         "|(?<!\\w)не\\s+провер"
                         "|провер(?:ить|ка|ку|ки)[^.!?\\n]{0,40}(?:" + _NOT_ABLE + ")"
-                        "|провер(?:ить|ьте|ять)[\\s\\S]{0,80}(?:можно|на сайте|через|госуслуг|росреестр|криптопро|cryptopro)")
+                        "|провер(?:ить|ьте|ять)[\\s\\S]{0,80}(?:можно|на сайте|через|госуслуг|росреестр|криптопро|cryptopro)"
+                        # issues: 16.10 «подтвердить её подлинность я не могу. Настоящую проверку … делает сервис Росреестра».
+                        "|(?:подтверд|подлинн)\\w*[^.!?\\n]{0,40}(?:" + _NOT_ABLE + ")"
+                        "|провер\\w*[^.!?\\n]{0,60}(?:делает|делают|проводит)[^.!?\\n]{0,20}сервис")
 # The signature, or «она» after it, called genuine («Подпись: настоящая», «… — она подлинная»). Not a question left open
 # («настоящая или нет», «если подпись верна»), and not the adverb «она действительно …».
 SIGNATURE_CLAIMED = ("(?i)(?<!если\\s)(?<!\\w)(?:подпись|она)(?:\\s+|\\s*[—–:-]\\s*)"

@@ -86,6 +86,12 @@ class QrTest(unittest.TestCase):
         self.assertEqual(result["payload"], gost_payload(FIELDS))
         self.assertTrue(any(w.startswith("account_checksum") for w in result["warnings"]))
 
+    def test_initials_in_the_payees_name_are_flagged(self):
+        from brokit.qr import gost_warnings
+
+        self.assertTrue(any(w.startswith("name_initials") for w in gost_warnings(dict(FIELDS, Name="ИП Образцова Е. С."))))
+        self.assertFalse(any(w.startswith("name_initials") for w in gost_warnings(FIELDS)))
+
     def test_account_that_does_not_match_the_bic_is_flagged(self):
         code, result = kit("qr", "--gost", self.fields, "-o", self.path("pay.png"))
         self.assertEqual(code, 0, result)

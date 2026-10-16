@@ -62,6 +62,7 @@ COMMANDS = {
     ("zip", "unpack"): ("brokit.zipx", "unpack", "zip unpack ARCHIVE -o DIR"),
     ("zip", "pack"): ("brokit.zipx", "pack", "zip pack DIR -o OUT.zip"),
     ("files", "survey"): ("brokit.survey", "main", "files survey DIR"),
+    ("check", ""): ("brokit.check", "main", "check FILE  (what an .xlsx, .pdf or .pptx still needs before share_file)"),
     ("ru", "decline"): ("brokit.ru.decline", "main", 'ru decline "Фамилия Имя [Отчество]" --case gen|dat|acc|ins|pre [--gender auto|m|f] [--order fio|if] [--file NAMES.txt]'),
     ("ru", "amount"): ("brokit.ru.amount", "main", "ru amount N [--kop K] [--currency rub|none]"),
     ("ru", "vacation"): ("brokit.ru.vacation", "main", "ru vacation --start DD.MM.YYYY (--days N | --end DD.MM.YYYY) [--extra D,D]  (annual paid leave)"),

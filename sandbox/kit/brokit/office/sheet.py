@@ -14,7 +14,8 @@ Formula errors are listed; `lost` names what the LibreOffice re-save dropped.
 Both list the columns that hold dates or sums as text (`text_dates`,
 `text_numbers`): such a workbook looks right but sorts, filters and sums by
 date wrongly. Bare digit strings (ИНН, account and phone numbers) are not
-listed: they must stay text.
+listed: they must stay text. `brokit check` (brokit/check.py) reads them too,
+and the formulas no spreadsheet computed (`formula_values`).
 
 sniff: encoding (BOM, UTF-8, else charset detection with cp1251 preferred for
 Russian), separator, decimal comma, thousands separator, quoting, header, row
@@ -39,6 +40,8 @@ SAMPLE_BYTES = 4 * 1024 * 1024
 FIELD_LIMIT = 16 * 1024 * 1024
 LONG_RECORD_LINES = 50
 SHEET_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+PACKAGE_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
 _TIME = r"(?:[ T](?:[01]?\d|2[0-3]):[0-5]\d(?::[0-5]\d)?)?"
 TEXT_DATE = re.compile(
     # A two-digit year only with a padded day and month: «1.1.10» is an outline number, not a date.
@@ -284,13 +287,42 @@ def features(path):
     return counts
 
 
-def without_cached_values(source, target):
-    """Copies an .xlsx dropping the cached values of formula cells."""
+# Russian Excel shows date codes in Russian, but the file keeps them in English: «ДД.ММ.ГГГГ» written into a
+# number format is no date code at all, and the cell reads as a bare number (16.10: every date of a statement).
+LOCAL_CODES = str.maketrans("ДдМмГгЧчСс", "DdMmYyHhSs")
+LOCAL_DATE = re.compile(r"ДД|дд|ММ|ГГ|гг|чч")
+
+
+def local_date_formats(root):
+    """The numFmt elements of a styles.xml root whose codes hold Russian date or time codes (quoted text aside)."""
+    formats = root.iter("{%s}numFmt" % SHEET_NS)
+    return [fmt for fmt in formats if LOCAL_DATE.search(re.sub(r'"[^"]*"', "", fmt.get("formatCode") or ""))]
+
+
+def english_code(code):
+    """A number format with Russian date and time codes in English ones; text in quotes stays."""
+    parts = re.split(r'("[^"]*")', code)
+    return "".join(part if part.startswith('"') else part.translate(LOCAL_CODES) for part in parts)
+
+
+def without_cached_values(source, target, fixed=None):
+    """Copies an .xlsx dropping the cached values of formula cells; Russian date codes of number formats go into
+    English ones, each named in `fixed`."""
     from lxml import etree
 
     with zipfile.ZipFile(source) as archive, zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as out:
         for info in archive.infolist():
             data = archive.read(info.filename)
+            if info.filename == "xl/styles.xml":
+                root = etree.fromstring(data, etree.XMLParser(huge_tree=True, resolve_entities=False))
+                local = local_date_formats(root)
+                for fmt in local:
+                    code = fmt.get("formatCode") or ""
+                    fmt.set("formatCode", english_code(code))
+                    if fixed is not None:
+                        fixed.append("%s -> %s" % (code, fmt.get("formatCode")))
+                if local:
+                    data = etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
             if re.match(r"xl/worksheets/sheet\d+\.xml$", info.filename) and b"<f" in data:
                 root = etree.fromstring(data, etree.XMLParser(huge_tree=True, resolve_entities=False))
                 for cell in root.iter("{%s}c" % SHEET_NS):
@@ -320,6 +352,78 @@ def formula_errors(path):
     return errors
 
 
+def sheet_parts(archive):
+    """[(sheet name, worksheet part)] of an .xlsx archive, in the workbook's order."""
+    import posixpath
+
+    from lxml import etree
+
+    options = etree.XMLParser(huge_tree=True, resolve_entities=False)
+    try:
+        book = etree.fromstring(archive.read("xl/workbook.xml"), options)
+        relationships = etree.fromstring(archive.read("xl/_rels/workbook.xml.rels"), options)
+    except KeyError:
+        return []
+    targets = {rel.get("Id"): rel.get("Target") or "" for rel in relationships.iter("{%s}Relationship" % PACKAGE_REL_NS)}
+    parts = []
+    for sheet in book.iter("{%s}sheet" % SHEET_NS):
+        target = targets.get(sheet.get("{%s}id" % REL_NS), "")
+        part = target.lstrip("/") if target.startswith("/") else posixpath.normpath(posixpath.join("xl", target))
+        parts.append((sheet.get("name") or "?", part))
+    return parts
+
+
+def formula_values(path):
+    """What the formula cells of an .xlsx hold, in one streaming pass over its sheets.
+
+    {"uncomputed": count, "uncomputed_cells": the first as "Sheet!A1", "error_count": count,
+    "errors": [{sheet, cell, value}]}. `uncomputed` counts formulas whose value no spreadsheet
+    computed: openpyxl writes a formula with an empty value, xlsxwriter with 0 under the
+    workbook's `fullCalcOnLoad` (Excel computes them on opening, a phone's preview shows empty
+    cells or zeros). LibreOffice and Excel store every result, an empty text one as t="str", an
+    error as t="e".
+    """
+    from lxml import etree
+
+    need_file(path)
+    count, first, errors, error_count = 0, [], [], 0
+    with zipfile.ZipFile(path) as archive:
+        names = set(archive.namelist())
+        book = archive.read("xl/workbook.xml") if "xl/workbook.xml" in names else b""
+        placeholders = re.search(rb"<(?:\w+:)?calcPr\b[^>]*\bfullCalcOnLoad=\"(?:1|true)\"", book) is not None
+        for name, part in sheet_parts(archive):
+            if part not in names:
+                continue
+            with archive.open(part) as stream:
+                for _, element in etree.iterparse(
+                    stream,
+                    events=("end",),
+                    tag=("{%s}c" % SHEET_NS, "{%s}row" % SHEET_NS),
+                    huge_tree=True,
+                    resolve_entities=False,
+                ):
+                    if element.tag == "{%s}row" % SHEET_NS:
+                        # Done rows go, so a sheet of a million cells streams in flat memory.
+                        element.clear()
+                        while element.getprevious() is not None:
+                            del element.getparent()[0]
+                        continue
+                    if element.find("{%s}f" % SHEET_NS) is None:
+                        continue
+                    value = element.findtext("{%s}v" % SHEET_NS) or ""
+                    kind = element.get("t")
+                    cell = element.get("r") or "?"
+                    if kind == "e" and value:
+                        error_count += 1
+                        if len(errors) < MAX_LISTED:
+                            errors.append({"sheet": name, "cell": cell, "value": value})
+                    elif (value == "" and kind not in ("str", "inlineStr")) or (placeholders and value == "0"):
+                        count += 1
+                        if len(first) < 5:
+                            first.append("%s!%s" % (name, cell))
+    return {"uncomputed": count, "uncomputed_cells": first, "error_count": error_count, "errors": errors}
+
+
 def recalc(argv):
     from brokit.office import soffice
 
@@ -332,7 +436,8 @@ def recalc(argv):
     out_path(args.output, args.file)
     with tempfile.TemporaryDirectory(prefix="brokit-recalc-") as work:
         stripped = os.path.join(work, "in.xlsx")
-        without_cached_values(args.file, stripped)
+        fixed = []
+        without_cached_values(args.file, stripped, fixed)
         converted = soffice.convert([stripped], "xlsx:Calc MS Excel 2007 XML", os.path.join(work, "out"))[0]
         shutil.copyfile(converted, args.output)
     errors = formula_errors(args.output)
@@ -347,6 +452,9 @@ def recalc(argv):
             output=args.output,
         )
     result = {"output": args.output, "errors": errors[:MAX_LISTED], "error_count": len(errors), "lost": lost}
+    if fixed:
+        result["fixed_formats"] = fixed[:MAX_LISTED]
+        result["formats_hint"] = "number formats take English codes: 'DD.MM.YYYY', 'DD.MM.YYYY hh:mm'"
     result.update(text_typed(args.output))
     return result
 

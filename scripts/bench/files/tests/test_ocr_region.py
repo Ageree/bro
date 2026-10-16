@@ -54,5 +54,32 @@ class OcrRegionTest(unittest.TestCase):
         self.assertEqual(self.check("МБОУ Гимназия № 7")[0], "fail")
 
 
+class WatermarkTest(unittest.TestCase):
+    def test_a_line_only_the_page_mode_reads_counts(self):
+        # Live 16.10: a bold line «Копия для договора аренды, …» under the scan read CER 0.68 in sparse-text mode
+        # (psm 11) and 0.00 in page mode (psm 3); a tiled one at −25° fell between the turns tried.
+        from unittest import mock
+
+        from PIL import Image
+
+        from checks import pdf
+
+        root = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, True)
+        out = io.BytesIO()
+        Image.new("RGB", (400, 300), "white").save(out, "PNG")
+        case_dir = make_run(root / "out", "f-test", files=[(0, out.getvalue(), "kopiya.png")])
+        ctx = context(CASE, case_dir, root / "fixtures")
+        seen = []
+
+        def page_mode_only(_ctx, image, *, psm=7, **_options):
+            seen.append(psm)
+            return "Копия для договора аренды, 2026" if psm == 3 else "©®%"
+
+        with mock.patch.object(pdf, "ocr", page_mode_only):
+            outcome = pdf.watermark_present(ctx, {"text": "Копия для договора аренды"}, ctx.received[0])
+        self.assertEqual(outcome[0], "pass", outcome)
+        self.assertIn(3, seen)
+
 if __name__ == "__main__":
     unittest.main()

@@ -73,6 +73,28 @@ function writeKitState(next: KitState) {
   }
 }
 
+/**
+ * The blocks a job plainly names, whatever the decision model answers: a
+ * file of the block's kind or its own words. Live 16.10, Jev gave a
+ * travel expense report of eight receipt photos 0.06 for `money` and 0.04
+ * for `scans`, and the task agent went without the rules of receipts and
+ * photos. The floor only adds: a block it brings in costs some text, a
+ * block it misses costs the job.
+ */
+const plainBlocks = {
+  data: /\.(?:ics|vcf|xml|json|sig|p7s)(?![\p{L}\d])|календар|контакт|телефон|кодировк|выгрузк/iu,
+  forms: /бланк|анкет|заявлени|согласи[ея]|доверенност|заполни|подпис|параф/iu,
+  money:
+    /(?<!\p{L})(?:чек|сч[её]т|выписк|авансов|возмещени|вычет|смет|оплат|выручк|сумм)|₽|(?<!\p{L})руб/iu,
+  office:
+    /\.(?:docx?|xlsx?|csv|pptx?|odt|ods)(?![\p{L}\d])|excel|эксел|word|ворд|таблиц|презентац|слайд/iu,
+  scans: /\.(?:jpe?g|png|heic|webp|tiff?|zip)(?![\p{L}\d])|фото|скан|снимк/iu,
+} as const satisfies Readonly<Record<KitBlock, RegExp>>;
+
+function namedBlocks(text: string) {
+  return kitBlocks.filter((block) => plainBlocks[block].test(text));
+}
+
 /** The blocks in their order, each once. */
 function orderedBlocks(blocks: Iterable<KitBlock>) {
   const set = new Set(blocks);
@@ -208,12 +230,13 @@ export async function hearKitJob(context: {
       turn
     );
     const before = state.blocks ?? [];
+    const named = namedBlocks(unheard.join("\n\n"));
     const blocks =
       decision.blocks !== undefined
-        ? orderedBlocks([...before, ...decision.blocks])
+        ? orderedBlocks([...before, ...decision.blocks, ...named])
         : turn === "first"
           ? [...kitBlocks]
-          : before;
+          : orderedBlocks([...before, ...named]);
     writeKitState({ blocks, heard });
     console.info("[kit-router] blocks", {
       added: blocks.filter((block) => !before.includes(block)),
@@ -221,6 +244,7 @@ export async function hearKitJob(context: {
       failure: decision.failure,
       model: decision.model,
       ms: decision.ms,
+      named,
       p: decision.p,
       turn,
     });

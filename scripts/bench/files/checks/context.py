@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+import os
 import pathlib
 import re
 import shutil
@@ -299,8 +300,11 @@ class Context:
 
     def run_tool(self, name: str, args: list, *, timeout: int = TOOL_TIMEOUT, ok_codes=(0,)) -> bytes:
         exe = self.tool(name)
+        # tesseract's OpenMP threads spin against each other on a loaded machine: 16.10 an OCR of 1800 px ran past
+        # 120 s beside a recalc, and took 0.7 s alone. One thread reads the same text.
+        env = {**os.environ, "OMP_THREAD_LIMIT": "1"} if name == "tesseract" else None
         try:
-            res = subprocess.run([exe, *args], capture_output=True, timeout=timeout)
+            res = subprocess.run([exe, *args], capture_output=True, timeout=timeout, env=env)
         except subprocess.TimeoutExpired as e:
             raise CheckError(f"{name}: не уложился в {timeout} с") from e
         if res.returncode not in ok_codes:
