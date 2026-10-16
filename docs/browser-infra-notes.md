@@ -276,4 +276,4 @@
   `BROWSER_STATE_BUCKET`, `BROWSER_STATE_KEY`, `CLOUDRU_S3_TENANT_ID`,
   `BROWSER_HOST_BUNDLE`, `BROWSER_SANDBOX_ROOTFS`, `BROWSER_HOST_RUNTIME=runc`,
   там же `BROWSER_VM_WORKER`; пилот — `BROWSER_POOL_WORKSPACES` (id
-  воркспейса или email владельца).
+  воркспейса или email владельца; в проде теперь `BROWSER_BACKEND=pool` у всех).
