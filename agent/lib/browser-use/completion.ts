@@ -226,7 +226,12 @@ export async function settleBrowserRun(
     booking: bookingState(row, parsed),
     checked: row.recoveryAttempt > 0,
     confirmed: row.submission !== null,
-    directRequest: row.submission?.directRequest?.request,
+    // Only its first stop at payment: a run that stopped again after the
+    // request paid goes to the person, as any second stop does.
+    directRequest:
+      row.submission?.paymentCapRub === undefined
+        ? row.submission?.directRequest?.request
+        : undefined,
     hasCharges: parsed.charges.length > 0,
     hasItems: parsed.items.length > 0,
     hasLinks,

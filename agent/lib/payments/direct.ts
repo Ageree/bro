@@ -5,9 +5,13 @@ import { directModelSelection } from "@agent/lib/model/direct";
 import type { StepIdentity } from "@agent/lib/turn-kind/step";
 import { listCurrentRules } from "@db/services/memory/records";
 import { getWorkspaceModelId } from "@db/services/settings";
+import { listSpendEntries, readSpendLimit } from "@db/services/spending";
+import { readWorkspaceTimeZone } from "@db/services/user-profile";
+import { localMonthKey } from "@shared/calendar/local-period";
 import { env } from "@shared/environment";
 import type { AccessScope } from "@shared/identity/access-scope";
 import { directModelActive } from "@shared/model/provider";
+import { decideAutoPayment, type SpendTarget } from "@shared/spending/limit";
 
 /**
  * The person's own request is their consent to pay (owner 15.10, pilot
@@ -77,6 +81,8 @@ export interface PurchaseRequest {
   readonly budgetRub?: number | undefined;
   /** What the one purchase it pays spends. */
   readonly key: string;
+  /** The message that opened the turn, which later ones may withdraw. */
+  readonly opener?: string | undefined;
   /** Their own words. */
   readonly request: string;
 }
@@ -111,26 +117,42 @@ const purchaseVerbPattern =
 
 /** «не покупай», «не надо заказывать» — the verb under a negation. */
 const negatedPattern =
-  /(?<!\p{L})(?:не|don't|do\s+not|never)\s+(?:\p{L}+\s+)?(?:куп|закаж|заказ|оплат|оплач|плат|заплат|заброн|оформ|вызов|пополн|перевед|возьм|бер|buy|order|pay|book)/iu;
+  /(?<!\p{L})(?:не|don't|do\s+not|never)\s+(?:\p{L}+\s+)?(?:покуп|куп|закаж|заказ|оплат|оплач|плат|заплат|заброн|брон|оформ|вызов|вызыв|пополн|перевед|перевод|возьм|бер|buy|order|pay|book)/iu;
 
 /** «только найди», «спроси меня», «покажи перед оплатой»: ask first. */
 const askFirstPattern =
-  /(?<!\p{L})(?:только\s+(?:найди|посмотри|сравни|проверь|подбери)|спроси\s+(?:меня|перед|сначала)|сначала\s+(?:спроси|покажи|согласуй)|покажи\s+(?:перед|сначала|до)|без\s+оплаты|ask\s+(?:me|first)|just\s+(?:find|look|check))/iu;
+  /(?<!\p{L})(?:только\s+(?:найди|посмотри|сравни|проверь|подбери)|спроси\s+(?:меня|перед|сначала)|сначала\s+(?:спроси|покажи|согласуй|скажи)|покажи\s+(?:перед|сначала|до|цену)|без\s+оплаты|ask\s+(?:me|first)|just\s+(?:find|look|check))/iu;
+
+/** «нет», «стоп», «отмена», «не надо», «передумал»: the request is withdrawn. */
+const withdrawnPattern =
+  /(?<!\p{L})(?:нет|стоп|отмен\p{L}*|не\s+надо|не\s+нужно|передумал\p{L}*|подожди|погоди|no|stop|cancel|wait)(?!\p{L})/iu;
 
 /**
- * The budget as the person wrote it, as money: «до 3000», «не дороже 3 000
- * ₽», «за 3 тыс», «3к руб». A bare number — an account, an article, an
- * invoice — is no budget: «оплати счёт 123456» names none. The smallest of
- * several: «до 3000, лучше за 2000» holds to 2 000.
+ * Whether a later message of the person's withdraws a request to buy: a no,
+ * a stop, a negated purchase, or «сначала покажи». Bro then asks again.
+ */
+export function withdrawsPurchase(text: string) {
+  return (
+    withdrawnPattern.test(text) ||
+    negatedPattern.test(text) ||
+    askFirstPattern.test(text)
+  );
+}
+
+/**
+ * The limit the person set the purchase, as they wrote it: «до 3000», «не
+ * дороже 3 000 ₽», «дешевле 2 тыс», «за 700 рублей». A number without such a
+ * word — an account, an article, «на счету 50 000 ₽» — is no limit. The
+ * smallest of several: «до 3000, лучше за 2000» holds to 2 000. It only ever
+ * lowers the ceiling (`requestCovers`).
  */
 export function writtenBudgetRub(request: string) {
   const plain = request.replaceAll(/(?<=\d)[\s  ](?=\d{3}(?!\d))/gu, "");
   let budget: number | undefined;
   for (const match of plain.matchAll(
-    /(?<lead>(?<!\p{L})(?:до|за|не\s+дороже|не\s+больше|бюджет\p{L}*|максимум|в\s+пределах|up\s+to|under|max)[\s:]*)?(?<number>\d+(?:[.,]\d+)?)\s*(?<thousands>тыс\p{L}*|т\.?(?!\p{L})|к(?!\p{L})|k(?!\p{L}))?\s*(?<currency>₽|руб\p{L}*|р\.|р(?!\p{L})|rub)?/giu
+    /(?<lead>(?<!\p{L})(?:до|за|не\s+дороже|не\s+больше|не\s+более|не\s+выше|дешевле|меньше|бюджет\p{L}*|максимум|в\s+пределах|up\s+to|under|max)[\s:]*)(?<number>\d+(?:[.,]\d+)?)\s*(?<thousands>тыс\p{L}*|т\.?(?!\p{L})|к(?!\p{L})|k(?!\p{L}))?\s*(?<currency>₽|руб\p{L}*|р\.|р(?!\p{L})|rub)?/giu
   )) {
-    const { currency, lead, number, thousands } = match.groups ?? {};
-    if (lead === undefined && currency === undefined) continue;
+    const { number, thousands } = match.groups ?? {};
     // «штраф за 18810177250101234567» is a number, not a price.
     if ((number ?? "").replace(/[.,]\d*$/u, "").length > 7) continue;
     const amount = Number(number?.replace(",", "."));
@@ -171,11 +193,11 @@ export function purchaseRequestOf(
     return undefined;
   return {
     budgetRub: writtenBudgetRub(request),
-    // The message that opened the turn: one sent into it a moment later
-    // steers the same request, not a new one.
+    // One turn of the person's pays one purchase, whatever they steer into it.
     key: createHash("sha256")
-      .update(JSON.stringify(["direct", step.sessionId, step.turnId, said[0]]))
+      .update(JSON.stringify(["direct", step.sessionId, step.turnId]))
       .digest("hex"),
+    opener: said[0],
     request,
   };
 }
@@ -253,9 +275,16 @@ export async function requestCovers(
       Record<string, z.infer<ReturnType<typeof z.json>>>
     >;
     readonly totalMinor?: number | undefined;
+    /** Where the money goes, for the person's own spend limit. */
+    readonly target: SpendTarget;
   }
 ): Promise<DirectPurchase | undefined> {
   if (!directPurchasePilot(scope)) return undefined;
+  const { totalMinor } = purchase;
+  // The person's own spend limit wins where it is stricter: a shop or a kind
+  // of purchase they excluded, or a month with no room left for it.
+  const limit = await spendLimitRefusal(scope, purchase.target, totalMinor);
+  if (limit !== undefined) return limit;
   let verdict: z.infer<typeof verdictSchema>;
   try {
     verdict = await judge(scope, request.request, purchase.terms);
@@ -267,7 +296,7 @@ export async function requestCovers(
     return {
       kind: "ask",
       reason: "rule",
-      reply: `A saved rule of the person's (#${String(verdict.ruleIndex)}) wants them asked before paying: ask your one question with the exact total and wait for their plain yes.`,
+      reply: `A saved rule of the person's (#${String(verdict.ruleIndex)}) wants them asked before paying. ${askLine}`,
     };
   }
   if (!verdict.matches) {
@@ -276,31 +305,69 @@ export async function requestCovers(
       differs,
       kind: "ask",
       reason: "mismatch",
-      reply: `What was found differs from what the person asked for${differs === undefined ? "" : ` (${differs})`}: ask one short question about exactly that difference, with the total, instead of «Оплачиваю?», and pay only after their plain yes.`,
+      reply: `What was found differs from what the person asked for${differs === undefined ? "" : ` (${differs})`}. In that one message say plainly what differs. ${askLine}`,
     };
   }
-  const named = request.budgetRub;
-  const capRub = named ?? directPurchaseCeilingRub();
-  if (purchase.totalMinor !== undefined && purchase.totalMinor > capRub * 100) {
-    return named === undefined
-      ? {
-          kind: "ask",
-          capRub,
-          reason: "over_ceiling",
-          reply: `The total ${rub(purchase.totalMinor / 100)} is above ${rub(capRub)}, the most a request pays without a question: ask one short question naming this exact total and wait for their plain yes.`,
-        }
-      : {
-          kind: "ask",
-          capRub,
-          reason: "over_budget",
-          reply: `The total ${rub(purchase.totalMinor / 100)} is above the person's budget of ${rub(capRub)}: ask one short question naming this exact total and wait for their plain yes.`,
-        };
+  const ceiling = directPurchaseCeilingRub();
+  // A limit the person wrote only ever lowers the ceiling.
+  const named =
+    request.budgetRub !== undefined && request.budgetRub < ceiling
+      ? request.budgetRub
+      : undefined;
+  const capRub = named ?? ceiling;
+  if (totalMinor !== undefined && totalMinor > capRub * 100) {
+    return {
+      kind: "ask",
+      capRub,
+      reason: named === undefined ? "over_ceiling" : "over_budget",
+      reply: `The total ${rub(totalMinor / 100)} is above ${named === undefined ? `${rub(capRub)}, the most a request pays without a question` : `the person's limit of ${rub(capRub)}`}. ${askLine}`,
+    };
   }
   return {
     kind: "granted",
     capRub,
     key: request.key,
     request: request.request,
+  };
+}
+
+/**
+ * The one question, worded so the person's «да» to it pays
+ * (`paymentQuestionPattern` in `said.ts` wants it to end so).
+ */
+const askLine =
+  "Write the person one short message with what exactly you are buying and the exact total with every fee, ending with «Оплачиваю?», and pay only after their plain yes.";
+
+async function spendLimitRefusal(
+  scope: AccessScope,
+  target: SpendTarget,
+  totalMinor: number | undefined
+): Promise<DirectPurchase | undefined> {
+  const policy = await readSpendLimit(scope);
+  if (policy === undefined) return undefined;
+  const month = localMonthKey(new Date(), await readWorkspaceTimeZone(scope));
+  const decision = decideAutoPayment(
+    policy,
+    {
+      ...target,
+      amount: (totalMinor ?? 0) / 100,
+      currency: "RUB",
+      fee: 0,
+      recurring: false,
+    },
+    await listSpendEntries(scope, month)
+  );
+  // Without a rule for it the limit says nothing; with one it holds.
+  if (
+    decision.allowed ||
+    decision.reason === "no_rule" ||
+    decision.reason === "no_limit"
+  )
+    return undefined;
+  return {
+    kind: "ask",
+    reason: "rule",
+    reply: `The person's own spend limit does not let this be paid without asking (${decision.reason === "excluded" ? "they excluded this shop or kind of purchase" : "it is above what is left of their limit this month"}). ${askLine}`,
   };
 }
 

@@ -146,6 +146,7 @@ export type ConfirmedSubmission = Omit<BrowserSubmission, "kind"> &
     readonly directRequest?: {
       readonly budgetRub?: number | undefined;
       readonly key: string;
+      readonly opener?: string | undefined;
       readonly request: string;
     };
     readonly paymentCapRub?: number;

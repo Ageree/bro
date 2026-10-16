@@ -161,22 +161,36 @@ const paymentTerms = (
 });
 
 /**
- * Whether the person's own request this turn pays this payment without a
- * question (DIRECT_PURCHASE_WORKSPACES): never one paid on its page.
+ * Whether every account, phone or other number the payment goes to is in
+ * the person's own words: a top-up of a phone they never typed is a
+ * transfer to someone they never named.
  */
+function namesAccounts(turn: DirectTurn, payment: Payment) {
+  const words = (turn.said ?? []).join("\n").replaceAll(/\D/gu, "");
+  return payment.shown.every(({ value }) =>
+    [...value.matchAll(/\d[\d\s()+-]{4,}\d/gu)].every(([run]) => {
+      const digits = run.replaceAll(/\D/gu, "");
+      return digits.length < 6 || words.includes(digits.slice(-10));
+    })
+  );
+}
+
 /**
  * Whether the person's own request this turn pays this payment without a
  * question (DIRECT_PURCHASE_WORKSPACES): in its first version only a service
- * paid from the balance — a transfer cannot be taken back, and a card is
- * not the wallet the person thinks of.
+ * paid from the balance, to accounts the person named — a transfer cannot
+ * be taken back, and a card is not the wallet the person thinks of.
  */
 const directFor = async (
   scope: AccessScope,
   payment: Payment,
   turn: DirectTurn
 ) =>
-  payment.kind === "service" && payment.cardId === null
+  payment.kind === "service" &&
+  payment.cardId === null &&
+  namesAccounts(turn, payment)
     ? directPurchase(scope, turn, {
+        target: { category: "other", merchant: "yoomoney.ru" },
         terms: paymentTerms(payment),
         totalMinor: payment.amountMinor,
       })

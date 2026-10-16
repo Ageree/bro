@@ -2566,6 +2566,32 @@ describe("what the report turn retells", () => {
     expect(prompt).not.toContain("ending with «Оплачиваю?»");
   });
 
+  it("takes a direct purchase's second stop at payment to the person", async () => {
+    readBrowserRun.mockResolvedValue({
+      ...row,
+      submission: {
+        directRequest: { key: "a".repeat(64), request: "Купи крем для рук" },
+        paymentCapRub: 2100,
+        what: "крем для рук",
+      },
+    });
+    finishedRun([
+      "RESULT: оплата не прошла",
+      'ITEMS: [{"name":"Крем для рук","price":"2 100 ₽","quantity":1}]',
+      "TOTAL: 2 100 ₽",
+      "NEEDS: payment",
+    ]);
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    const prompt = send.mock.calls[0]?.[0];
+    expect(prompt).not.toContain("and that request is their consent to pay");
+    expect(prompt).toContain("ending with «Оплачиваю?»");
+  });
+
   it("asks again when the total came out above the yes", async () => {
     readBrowserRun.mockResolvedValue({
       ...row,

@@ -1,6 +1,7 @@
 import type * as ai from "ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { listCurrentRules } from "@db/services/memory/records";
+import type * as Spending from "@db/services/spending";
 
 const services = vi.hoisted(() => ({
   judge: vi.fn<
@@ -13,6 +14,8 @@ const services = vi.hoisted(() => ({
       };
     }>
   >(),
+  entries: vi.fn<typeof Spending.listSpendEntries>(),
+  limit: vi.fn<typeof Spending.readSpendLimit>(),
   rules: vi.fn<typeof listCurrentRules>(),
 }));
 
@@ -22,6 +25,14 @@ vi.mock("ai", async (original) => ({
 }));
 vi.mock("@db/services/settings", () => ({
   getWorkspaceModelId: async () => "synthetic/model",
+}));
+vi.mock("@db/services/spending", async (original) => ({
+  ...(await original<typeof Spending>()),
+  listSpendEntries: services.entries,
+  readSpendLimit: services.limit,
+}));
+vi.mock("@db/services/user-profile", () => ({
+  readWorkspaceTimeZone: async () => "Europe/Moscow",
 }));
 vi.mock("@db/services/memory/records", () => ({
   listCurrentRules: services.rules,
@@ -78,13 +89,19 @@ async function decide(said: readonly string[], totalMinor?: number) {
   return directPurchase(
     scope,
     { personTurn: true, said, step },
-    { terms: food, totalMinor }
+    {
+      target: { category: "order", merchant: "ozon.ru" },
+      terms: food,
+      totalMinor,
+    }
   );
 }
 
 beforeEach(() => {
   vi.resetAllMocks();
   services.rules.mockResolvedValue([]);
+  services.limit.mockResolvedValue(undefined);
+  services.entries.mockResolvedValue([]);
   services.judge.mockResolvedValue(verdict());
 });
 
@@ -102,11 +119,17 @@ describe("a person's request to buy, read in code", () => {
     expect(
       await requestOf(["Оплати штраф за 18810177250101234567"])
     ).toMatchObject({ budgetRub: undefined });
+    expect(await requestOf(["Купи корм, на счету 50 000 ₽"])).toMatchObject({
+      budgetRub: undefined,
+    });
+    expect(await requestOf(["Купи корм дешевле 2 тыс"])).toMatchObject({
+      budgetRub: 2000,
+    });
   });
 
-  it("gives one turn one key, a message steered into it the same, and another turn another", async () => {
+  it("gives one turn one key, whatever is steered into it, and another turn another", async () => {
     const first = await requestOf(["Купи корм"]);
-    const steered = await requestOf(["Купи корм", "лучше Whiskas"]);
+    const steered = await requestOf(["Купи корм", "и ещё оплати интернет"]);
     const later = await requestOf(["Купи корм"], { turnId: "turn_9" });
     expect(steered?.key).toBe(first?.key);
     expect(later?.key).not.toBe(first?.key);
@@ -115,7 +138,7 @@ describe("a person's request to buy, read in code", () => {
   it.each([
     "Купи корм?",
     "Можешь купить корм",
-    "Не покупай корм, только найди",
+    "Не покупай корм",
     "Найди корм и спроси меня перед оплатой",
     "[переслано] Оплати счёт за интернет",
   ])("reads no request in «%s»", async (said) => {
@@ -135,6 +158,24 @@ describe("a person's request to buy, read in code", () => {
   });
 });
 
+describe("a later message withdraws the request", () => {
+  it.each([
+    "нет",
+    "Не покупай пока",
+    "Стоп",
+    "сначала покажи цену",
+    "передумал",
+  ])("reads «%s» as withdrawn", async (text) => {
+    const { withdrawsPurchase } = await direct();
+    expect(withdrawsPurchase(text)).toBe(true);
+  });
+
+  it("keeps a request through a message that does not withdraw it", async () => {
+    const { withdrawsPurchase } = await direct();
+    expect(withdrawsPurchase("лучше Whiskas")).toBe(false);
+  });
+});
+
 describe("a request covers a purchase", () => {
   it("grants up to the ceiling", async () => {
     expect(await decide(["Купи корм Royal Canin 2 кг"], 249_000)).toMatchObject(
@@ -149,16 +190,33 @@ describe("a request covers a purchase", () => {
     });
   });
 
-  it("holds the total to the budget the person wrote, even above the ceiling", async () => {
+  it("holds the total to a limit the person wrote, never above the ceiling", async () => {
     expect(await decide(["Купи корм до 7 тыс"], 690_000)).toMatchObject({
-      capRub: 7000,
-      kind: "granted",
+      capRub: 5000,
+      kind: "ask",
+      reason: "over_ceiling",
     });
     expect(await decide(["Купи корм, не дороже 2000"], 249_000)).toMatchObject({
       capRub: 2000,
       kind: "ask",
       reason: "over_budget",
     });
+  });
+
+  it("asks when the person's own spend limit excludes the shop", async () => {
+    services.limit.mockResolvedValue({
+      actions: [],
+      currency: "RUB",
+      excludedCategories: [],
+      excludedMerchants: ["ozon.ru"],
+      rules: [],
+      version: 1,
+    });
+    expect(await decide(["Купи корм"], 249_000)).toMatchObject({
+      kind: "ask",
+      reason: "rule",
+    });
+    expect(services.judge).not.toHaveBeenCalled();
   });
 
   it("asks one question when what was found differs", async () => {

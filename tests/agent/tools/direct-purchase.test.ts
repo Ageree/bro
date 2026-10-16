@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { YandexPurchase } from "@db/schema/yandex-purchases";
 import type { yoomoneyPayments } from "@db/schema/yoomoney";
 import type { listCurrentRules } from "@db/services/memory/records";
+import type * as Spending from "@db/services/spending";
 import type * as purchases from "@db/services/yandex-purchases";
 import type * as Card from "@db/services/yoomoney/card";
 import type * as connection from "@db/services/yoomoney/connection";
@@ -43,6 +44,8 @@ const services = vi.hoisted(() => {
     purchaseClaim: vi.fn<typeof purchases.claimYandexPurchase>(),
     purchaseRead: vi.fn<typeof purchases.readYandexPurchase>(),
     purchaseSettle: vi.fn<typeof purchases.settleYandexPurchase>(),
+    entries: vi.fn<typeof Spending.listSpendEntries>(),
+    limit: vi.fn<typeof Spending.readSpendLimit>(),
     rules: vi.fn<typeof listCurrentRules>(),
     run: vi.fn<typeof runYandexOperation>(),
     walletClaim: vi.fn<typeof stored.claimYoomoneyPayment>(),
@@ -58,6 +61,14 @@ vi.mock("ai", async (original) => ({
 }));
 vi.mock("@db/services/settings", () => ({
   getWorkspaceModelId: async () => "synthetic/model",
+}));
+vi.mock("@db/services/spending", async (original) => ({
+  ...(await original<typeof Spending>()),
+  listSpendEntries: services.entries,
+  readSpendLimit: services.limit,
+}));
+vi.mock("@db/services/user-profile", () => ({
+  readWorkspaceTimeZone: async () => "Europe/Moscow",
 }));
 vi.mock("@db/services/memory/records", () => ({
   listCurrentRules: services.rules,
@@ -286,6 +297,8 @@ async function confirmOrder(messages: ModelMessage[]) {
 beforeEach(() => {
   vi.resetAllMocks();
   services.rules.mockResolvedValue([]);
+  services.limit.mockResolvedValue(undefined);
+  services.entries.mockResolvedValue([]);
   services.judge.mockResolvedValue(verdict());
   services.connection.mockResolvedValue({
     state: "connected",
@@ -375,6 +388,13 @@ describe("the wallet pays on the person's own request", () => {
       await confirmPayment(asked("Оплати МегаФон 9261234567 на 100 рублей"))
     ).toMatchObject({ kind: "confirmation_required" });
     expect(services.judge).not.toHaveBeenCalled();
+  });
+
+  it("asks about a top-up of a number the request did not name", async () => {
+    expect(
+      await confirmPayment(asked("Пополни мне телефон на 100 рублей"))
+    ).toMatchObject({ kind: "confirmation_required" });
+    expect(services.process).not.toHaveBeenCalled();
   });
 
   it("pays nothing on a forwarded message", async () => {

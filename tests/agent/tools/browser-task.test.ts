@@ -10563,9 +10563,43 @@ function directReportContext() {
   };
 }
 
+/** The tool as a step of this errand's report turn. */
+async function directReportTool() {
+  const context = directReportContext();
+  const { default: dynamic } = await import("@agent/tools/browser_task");
+  const resolve = dynamic.events["step.started"];
+  if (!resolve) throw new Error("browser_task resolves per step.");
+  const tools = await resolve({ data: { stepIndex: 0, turnId: "turn_3" } }, {
+    channel: { kind: "channel:photon", metadata: {} },
+    messages: [
+      { content: directOpener, role: "user" },
+      {
+        content: `${backgroundTurnMarker}\nBrowser run ${runId} finished.`,
+        role: "user",
+      },
+    ],
+    model: null,
+    session: { auth: context.session.auth, id: context.session.id },
+  } satisfies DynamicResolveContext);
+  const tool = tools && !("execute" in tools) ? tools.browser_task : undefined;
+  if (!tool || !("execute" in tool)) {
+    throw new Error("browser_task must resolve for a conversation.");
+  }
+  return tool;
+}
+
+/** A run's footer that stopped at the payment step with this total. */
+function directStaged(totalRub: number) {
+  return `RESULT: корм в корзине\nITEMS: [{"name":"Корм Royal Canin 2 кг","price":"${String(totalRub)} ₽","quantity":1}]\nTOTAL: ${String(totalRub)} ₽\nNEEDS: payment`;
+}
+
+const directOpener = "Купи корм Royal Canin для кошек 2 кг на озоне";
+
+/** The report's turn: no words of the person's, their earlier ones in sight. */
 const reportTurn = {
   answers: [],
   paymentAsked: null,
+  personTexts: [directOpener],
   said: null,
   step: { sessionId, stepIndex: 0, turnId: "turn_3" },
 };
@@ -10578,9 +10612,10 @@ describe("browser_task pays on the person's own request in the direct-purchase p
     what: "корм Royal Canin для кошек, 2 кг",
     where: "Ozon (ozon.ru)",
   };
-  const said = "Купи корм Royal Canin для кошек 2 кг на озоне";
+  const said = directOpener;
   const recorded: NonNullable<ConfirmedSubmission["directRequest"]> = {
     key: "a".repeat(64),
+    opener: said,
     request: said,
   };
   const stage = {
@@ -10606,7 +10641,7 @@ describe("browser_task pays on the person's own request in the direct-purchase p
   /** The errand's run stopped at the payment step with this total. */
   function stagedErrand(chargeRub = 2490, request = recorded) {
     readBrowserRunForScope.mockResolvedValue(
-      browserRunRow(new Date(), stagedPayment({ ...food, chargeRub }), {
+      browserRunRow(new Date(), directStaged(chargeRub), {
         ...food,
         directRequest: request,
       })
@@ -10628,7 +10663,9 @@ describe("browser_task pays on the person's own request in the direct-purchase p
     });
     expect(row?.submission?.paymentCapRub).toBeUndefined();
     const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
-    expect(task).toContain(`«${said}». Find what they asked for`);
+    expect(task).toContain(
+      `«${said}». When it costs nothing, you may fill it in and press its final button. When it costs money, take it up to the payment step`
+    );
   });
 
   it("pays nothing on the person's turn before an order is staged", async () => {
@@ -10649,8 +10686,8 @@ describe("browser_task pays on the person's own request in the direct-purchase p
       await browserTaskApproval(pay, directReportContext(), reportTurn)
     ).toBe("not-applicable");
 
-    const { browserTask } = await import("@agent/tools/browser_task");
-    await browserTask.execute(pay, directReportContext());
+    const tool = await directReportTool();
+    await tool.execute(pay, directReportContext());
     expect(claimDirectPurchase).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ consentKey: recorded.key })
@@ -10668,10 +10705,10 @@ describe("browser_task pays on the person's own request in the direct-purchase p
     await directPilot();
     stagedErrand();
     claimDirectPurchase.mockResolvedValue(false);
-    const { browserTask } = await import("@agent/tools/browser_task");
-    await expect(
-      browserTask.execute(pay, directReportContext())
-    ).rejects.toThrow("one request pays one");
+    const tool = await directReportTool();
+    await expect(tool.execute(pay, directReportContext())).rejects.toThrow(
+      "one request pays one"
+    );
     expect(createBrowserUseRun).not.toHaveBeenCalled();
   });
 
@@ -10700,7 +10737,30 @@ describe("browser_task pays on the person's own request in the direct-purchase p
     stagedErrand(2490, { ...recorded, budgetRub: 2000 });
     expect(
       await browserTaskApproval(pay, directReportContext(), reportTurn)
-    ).toMatchObject(denied("budget of 2"));
+    ).toMatchObject(denied("limit of 2"));
+  });
+
+  it("pays nothing once the person withdrew the request", async () => {
+    const { browserTaskApproval } = await directPilot();
+    stagedErrand();
+    expect(
+      await browserTaskApproval(pay, directReportContext(), {
+        ...reportTurn,
+        personTexts: [directOpener, "стоп, не покупай пока"],
+      })
+    ).toMatchObject(denied("ending with «Оплачиваю?»"));
+  });
+
+  it("pays only the Total the run reported, not the model's own figure", async () => {
+    const { browserTaskApproval } = await directPilot();
+    stagedErrand(2490);
+    expect(
+      await browserTaskApproval(
+        { ...pay, submission: { ...food, chargeRub: 1990 } },
+        directReportContext(),
+        reportTurn
+      )
+    ).toMatchObject(denied("exactly the Total the run reported, 2490"));
   });
 
   it("asks when a saved rule wants the person asked", async () => {
@@ -10714,7 +10774,7 @@ describe("browser_task pays on the person's own request in the direct-purchase p
   it("pays nothing on a report's turn of an errand the person did not ask to buy", async () => {
     const { browserTaskApproval } = await directPilot();
     readBrowserRunForScope.mockResolvedValue(
-      browserRunRow(new Date(), stagedPayment(staged), food)
+      browserRunRow(new Date(), directStaged(2490), food)
     );
     expect(
       await browserTaskApproval(pay, directReportContext(), reportTurn)

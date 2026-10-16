@@ -17,6 +17,7 @@ import {
   forwardedMessage,
   purchaseRequestOf,
   requestCovers,
+  withdrawsPurchase,
 } from "@agent/lib/payments/direct";
 import { directModelSelection } from "@agent/lib/model/direct";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
@@ -134,6 +135,8 @@ import { env } from "@shared/environment";
 import {
   browserRunNeeds,
   type BrowserRunNeed,
+  parseBrowserOutcome,
+  priceRubFromTotal,
 } from "@agent/lib/browser-use/outcome";
 import { browserRunNeedGuidance } from "@agent/lib/browser-use/guidance";
 import { reportedBrowserRunId } from "@agent/lib/browser-use/report-caller";
@@ -145,6 +148,7 @@ import {
   paymentAnswer,
   personWordsThisTurn,
   quotedFromPerson,
+  personMessages,
   recentPersonMessages,
 } from "@agent/lib/browser-use/said";
 import {
@@ -774,7 +778,7 @@ function commitmentLine(
       asked === undefined
         ? undefined
         : cap === undefined
-          ? `The person asked for this purchase in their own words — «${asked}». Find what they asked for and take it up to the payment step, then stop there before paying, with NEEDS: payment, the ITEMS and the TOTAL with every fee: the order and its total are checked against their request before anything is paid. You may fill in everything up to that step, with the known details below:`
+          ? `The person asked for this in their own words — «${asked}». When it costs nothing, you may fill it in and press its final button. When it costs money, take it up to the payment step and stop there before paying, with NEEDS: payment, the ITEMS and the TOTAL with every fee: the order and its total are checked against their request before anything is paid. The known details are below:`
           : `The person asked for this purchase in their own words — «${asked}» — and the order staged with this total was checked against that request, so they are not asked again. You may fill it in, pay and press its final button, with the known details below:`;
     const header = {
       agency:
@@ -2514,6 +2518,8 @@ type PersonTurn = ReturnType<typeof personWordsThisTurn> & {
   readonly siteWords?: readonly string[];
   /** The step it was read at, for a request that pays (`directPurchase`). */
   readonly step?: StepIdentity;
+  /** The person's recent messages, which may withdraw a recorded request. */
+  readonly personTexts?: readonly string[];
 };
 
 /**
@@ -2919,6 +2925,7 @@ function turnWords(context: ModeContext, turn: PersonTurn) {
   return {
     direct,
     paymentAsked: personTurn ? turn.paymentAsked : null,
+    personTexts: turn.personTexts,
     personTurn,
     siteWords: turn.siteWords,
     typed: [...opened, ...answers.filter((answer) => !picked.has(answer))],
@@ -3531,7 +3538,15 @@ function errandRequest(
       ? undefined
       : purchaseRequestOf(scope, said.direct);
   }
-  return delegated ? errand?.submission?.directRequest : undefined;
+  const recorded = delegated ? errand?.submission?.directRequest : undefined;
+  if (recorded?.opener === undefined) return undefined;
+  // The person may have changed their mind since: «не покупай», «нет»,
+  // «сначала покажи цену». Without their opener in sight nothing is paid.
+  const texts = said.personTexts ?? [];
+  const at = texts.lastIndexOf(recorded.opener);
+  if (at === -1 || texts.slice(at + 1).some(withdrawsPurchase))
+    return undefined;
+  return recorded;
 }
 
 /** Whether the call pays: binds the card or names a total. */
@@ -3551,23 +3566,42 @@ async function directPaymentFor(
   scope: AccessScope,
   errand: ErrandRow | undefined,
   request: ReturnType<typeof errandRequest>
-): Promise<DirectPurchase | { readonly kind: "stage" } | undefined> {
+): Promise<
+  | DirectPurchase
+  | { readonly kind: "stage" }
+  | { readonly kind: "total"; readonly totalRub: number }
+  | undefined
+> {
   const { submission } = input;
   if (request === undefined || submission === undefined || !payingCall(input))
     return undefined;
   const chargeRub = submission.chargeRub ?? 0;
+  const staged = parseBrowserOutcome(errand?.outcome);
+  const totalRub =
+    staged.total === undefined ? undefined : priceRubFromTotal(staged.total);
   if (
     !errand?.completedAt ||
     // An order Bro's own worker staged is never the person's to pay here.
     errand.startedByPerson === false ||
     reportsPlacedOrder(errand.outcome) ||
-    chargeRub <= 0 ||
+    // The run stopped at the payment step with the order and its total.
+    staged.needs !== "payment" ||
+    staged.items.length === 0 ||
+    totalRub === undefined ||
+    totalRub <= 0 ||
     mentionsRecurringCharge(input.task, submission.what, submission.amount)
   )
     return { kind: "stage" };
+  // The total the run reported is what is checked and paid, never the
+  // model's own figure.
+  if (wholeRubles(chargeRub) !== totalRub) return { kind: "total", totalRub };
   return requestCovers(scope, request, {
+    target: {
+      category: submission.kind,
+      merchant: normalizeMerchant(errand.site ?? input.site),
+    },
     terms: { staged: errand.outcome, submission },
-    totalMinor: wholeRubles(chargeRub) * 100,
+    totalMinor: totalRub * 100,
   });
 }
 
@@ -3599,6 +3633,8 @@ async function directQuestion(
     errandRequest(scope, said, errand, consent.by === "delegated")
   );
   if (direct?.kind === "stage") return directStageRefusal;
+  if (direct?.kind === "total")
+    return `Nothing was paid: chargeRub must be exactly the Total the run reported, ${String(direct.totalRub)} ₽. Make the same call with chargeRub ${String(direct.totalRub)}.`;
   return direct?.kind === "ask"
     ? `Nothing was paid. ${direct.reply}`
     : undefined;
@@ -3859,6 +3895,7 @@ export async function browserTaskApproval(
   const said = words ?? {
     direct: undefined,
     paymentAsked: null,
+    personTexts: undefined,
     personTurn: startedByPerson(context),
     siteWords: undefined,
     typed: [],
@@ -5826,7 +5863,11 @@ export default defineDynamic({
       // In the direct-purchase pilot the step names the request that pays.
       const turn: PersonTurn =
         scope !== undefined && directPurchasePilot(scope)
-          ? { ...autonomous, step }
+          ? {
+              ...autonomous,
+              personTexts: personMessages(context.messages).slice(-50),
+              step,
+            }
           : autonomous;
       const tool = defineTool({
         approval: async (ctx) => {

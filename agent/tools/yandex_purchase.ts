@@ -243,14 +243,22 @@ function confirmationQuestion(
 /** The order as a judge reads it beside the person's request. */
 const orderTerms = (
   service: keyof typeof serviceTitle,
-  quote: z.output<typeof purchaseQuoteSchema>
+  quote: z.output<typeof purchaseQuoteSchema>,
+  place: string | undefined
 ) => ({
   order: {
     service: serviceTitle[service],
+    restaurant: place ?? null,
     delivery: quote.delivery,
     items: quote.items,
     totalRub: quote.amountMinor / 100,
   },
+});
+
+/** Where an order's money goes, for the person's own spend limit. */
+const orderTarget = (service: keyof typeof serviceTitle) => ({
+  category: "order",
+  merchant: service === "eda" ? "eda.yandex.ru" : "lavka.yandex.ru",
 });
 
 /**
@@ -264,10 +272,12 @@ async function directRideLimit(
   scope: AccessScope,
   turn: DirectTurn,
   args: z.output<typeof goBookOperation.args>,
-  paymentAsked: string | null
+  paymentAsked: string | null,
+  answeredYes: boolean
 ) {
   const ceiling = directPurchaseCeilingRub();
   const direct = await directPurchase(scope, turn, {
+    target: { category: "taxi", merchant: "go.yandex.ru" },
     terms: {
       ride: {
         service: "Yandex Go taxi, econom, now",
@@ -284,8 +294,14 @@ async function directRideLimit(
     namesTotal(paymentAsked, Math.round(args.maxPriceRub * 100))
       ? args.maxPriceRub
       : 0;
+  // Above the ceiling only at the price Bro's question named and the
+  // person's yes, or their request, answered.
   const cap =
-    direct?.kind === "granted" ? Math.max(direct.capRub, asked) : ceiling;
+    direct?.kind === "granted"
+      ? Math.max(direct.capRub, asked)
+      : answeredYes
+        ? Math.max(ceiling, asked)
+        : ceiling;
   return {
     kind: "limit" as const,
     maxPriceRub: Math.min(args.maxPriceRub ?? cap, cap),
@@ -422,18 +438,13 @@ export default defineDynamic({
                 input.action === "book"
                   ? goBookOperation.args.parse(input)
                   : undefined;
-              // A yes to Bro's question about the price keeps the limit the
-              // call names: that price is what they said yes to.
-              if (
-                args !== undefined &&
-                directPurchasePilot(scope) &&
-                paymentAnswer(words.said) !== "yes"
-              ) {
+              if (args !== undefined && directPurchasePilot(scope)) {
                 const limit = await directRideLimit(
                   scope,
                   turn,
                   args,
-                  words.paymentAsked
+                  words.paymentAsked,
+                  paymentAnswer(words.said) === "yes"
                 );
                 if (limit.kind === "ask") {
                   return {
@@ -562,7 +573,12 @@ export default defineDynamic({
               const direct =
                 result.kind === "quoted"
                   ? await directPurchase(scope, turn, {
-                      terms: orderTerms(input.service, result.quote),
+                      target: orderTarget(input.service),
+                      terms: orderTerms(
+                        input.service,
+                        result.quote,
+                        input.service === "eda" ? input.place : undefined
+                      ),
                       totalMinor: result.quote.amountMinor,
                     })
                   : undefined;
@@ -632,7 +648,12 @@ export default defineDynamic({
               !quote.success
                 ? undefined
                 : await directPurchase(scope, turn, {
-                    terms: orderTerms(purchase.service, quote.data),
+                    target: orderTarget(purchase.service),
+                    terms: orderTerms(
+                      purchase.service,
+                      quote.data,
+                      edaTarget(purchase.providerSnapshot)?.place
+                    ),
                     totalMinor: quote.data.amountMinor,
                   });
             if (!yes && direct?.kind !== "granted") {
