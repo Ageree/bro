@@ -4,7 +4,10 @@ import {
   startingParcelState,
 } from "@agent/lib/subscriptions/parcel/check";
 import { carrierLetterNumbers } from "@agent/lib/subscriptions/parcel/mail";
-import { parcelNumbersIn } from "@agent/lib/subscriptions/parcel/number";
+import {
+  certainParcelNumbersIn,
+  parcelNumbersIn,
+} from "@agent/lib/subscriptions/parcel/number";
 import {
   type ParcelRead,
   pochtaReading,
@@ -440,9 +443,36 @@ describe("tracking numbers in words and letters", () => {
     ]);
     expect(parcelNumbersIn(`трек ${number} 2 шт`)).toEqual([number]);
     expect(parcelNumbersIn("трек 1010 0012 3456 78 2 шт")).toEqual([number]);
+    // A short number before the groups does not hide the real one.
+    for (const text of [
+      "заказ №12 8008 0123 4567 89",
+      "отправил 16.10 8008 0123 4567 89",
+      "в 12:30 8008 0123 4567 89",
+    ]) {
+      expect(parcelNumbersIn(text)).toContain("80080123456789");
+    }
     expect(parcelNumbersIn("размеры 42 44 46 48 50 52 54 56")).toEqual([]);
-    expect(parcelNumbersIn("4276 1234 5678 9012 34")).toEqual([]);
     expect(parcelNumbersIn("заказ 123456789012345 от 15.10")).toEqual([]);
+  });
+
+  it("starts nothing on its own from digits that may be more than one number", () => {
+    expect(certainParcelNumbersIn("трек 1010 0012 3456 78 2 шт")).toEqual([
+      number,
+    ]);
+    expect(
+      certainParcelNumbersIn(`Отправление ${number}, а ещё RA123456785RU`)
+    ).toEqual([number, "RA123456785RU"]);
+    // Two stretches of 14 digits, or one that a card's tail ends with.
+    for (const text of [
+      "заказ №12 8008 0123 4567 89",
+      "в 12:30 8008 0123 4567 89",
+      "карта 4276 1234 5678 9012 34",
+    ]) {
+      expect(certainParcelNumbersIn(text)).toEqual([]);
+    }
+    expect(parcelNumbersIn("карта 4276 1234 5678 9012 34")).toEqual([
+      "12345678901234",
+    ]);
   });
 
   it("takes numbers only from the carrier's own letters", () => {
@@ -465,6 +495,12 @@ describe("tracking numbers in words and letters", () => {
           id: "m3",
           snippet: "Трек 10100012345679",
           subject: "Акция",
+        },
+        {
+          from: "Почта России <noreply@pochta.ru>",
+          id: "m4",
+          snippet: "Заказ №12 8008 0123 4567 89 передан в доставку",
+          subject: "Отправление в пути",
         },
       ])
     ).toEqual(new Map([["m1", [number]]]));

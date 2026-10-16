@@ -1,4 +1,4 @@
-import { parcelNumbersIn } from "./number";
+import { certainParcelNumbersIn } from "./number";
 
 /**
  * The carrier's own domains: a letter from one of them is Russian Post's
@@ -30,7 +30,8 @@ function fromCarrier(from: string) {
  * The Russian Post numbers a check's new mail carries in letters of the
  * carrier's own, by message id, from each letter's subject and the start of
  * its text (Gmail's snippet): never the body, which the check does not read.
- * At most five numbers in all.
+ * Only numbers beyond doubt: a run that may hold more than one starts no
+ * watch. At most five numbers in all.
  */
 export function carrierLetterNumbers(
   letters: readonly {
@@ -45,7 +46,7 @@ export function carrierLetterNumbers(
   for (const letter of letters) {
     if (!fromCarrier(letter.from)) continue;
     const numbers: string[] = [];
-    for (const number of parcelNumbersIn(
+    for (const number of certainParcelNumbersIn(
       `${letter.subject}\n${letter.snippet}`
     )) {
       if (!all.has(number) && all.size >= maximumLetterNumbers) continue;

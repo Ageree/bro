@@ -143,6 +143,15 @@ describe("parcel-watch", () => {
     });
   });
 
+  it("finds the number the person sent behind another one", async () => {
+    const result = await watch(
+      { number: "8008 0123 4567 89" },
+      "Посылка по заказу №12 8008 0123 4567 89, последи"
+    );
+    expect(result).toMatchObject({ watching: true });
+    expect(services.read).toHaveBeenCalledWith("80080123456789");
+  });
+
   it("refuses a number that is not the person's, or not Russian Post's", async () => {
     await expect(
       watch({ number: "10100099999999" }, `Следи за посылкой ${number}`)
