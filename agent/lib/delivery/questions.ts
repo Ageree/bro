@@ -16,6 +16,7 @@ import {
 export const actionsHeldForAnswer = [
   "calendar-delete-event",
   "calendar-update-event",
+  "gmail-delete-draft",
   "profile__forget_all",
   "profile__remove_memory",
   "schedules-update",

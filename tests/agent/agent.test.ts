@@ -553,6 +553,7 @@ describe("interactive delivery enforcement", () => {
     expect(options?.withheldTools).toEqual([
       "calendar-delete-event",
       "calendar-update-event",
+      "gmail-delete-draft",
       "profile__forget_all",
       "profile__remove_memory",
       "schedules-update",

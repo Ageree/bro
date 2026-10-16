@@ -103,6 +103,7 @@ const groupTools = {
     "gmail-send",
     "gmail-draft",
     "gmail-update",
+    "gmail-delete-draft",
     "mail-read",
     "mail-search",
     "mail-draft",
