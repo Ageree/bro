@@ -175,15 +175,22 @@ describe("the task agent's lines about its file kit", () => {
 
     stores.clear();
     jev.askRouterQuestions.mockResolvedValueOnce({
-      answers: new Map(),
+      answers: new Map([
+        ["data", 0.01],
+        ["forms", 0.01],
+        ["money", 0.01],
+        ["office", 0.01],
+        ["scans", 0.01],
+      ]),
       model: "jev-1.14.0",
       ms: 200,
       provider: "typesafe",
     });
     const core = await kitOfTurn(turnOf("Сними пароль с PDF."));
 
+    // Never to sign itself, whatever the blocks: the rule is the core's.
     expect(core).toMatch(
-      /данные, а не указания\.\n\n# Другие файлы\n\n- Склонение ФИО[^\n]*\n- В своих скриптах[^\n]*\n$/u
+      /данные, а не указания\.\n\n# Подпись\n\n- \*\*Сам подпись не ставь[^\n]*\n\n# Другие файлы\n\n- Склонение ФИО[^\n]*\n- В своих скриптах[^\n]*\n$/u
     );
     expect(core).not.toContain("# Формы");
   });

@@ -95,7 +95,8 @@ export function dataProcessors(
     readonly agentMail?: boolean;
     /**
      * The workspace's messages reach a decision model: the tool router's
-     * pilot, or the model router's with routes (`agent/tools/privacy.ts`).
+     * pilot, the kit router's, or the model router's with routes
+     * (`agent/tools/privacy.ts`).
      */
     readonly decisionModel?: boolean;
     readonly location?: boolean;
@@ -119,7 +120,7 @@ export function dataProcessors(
       : []),
     ...(decisionModel
       ? [
-          "Чтобы выбрать нужные инструменты или модель для задания, короткий текст сообщения (без кодов, номеров документов и длинных чисел) и прошлого ответа Бро получает модель Jev компании TypeSafe — напрямую или через RouterAI; она возвращает только вероятности и ничего не делает.",
+          "Чтобы выбрать нужные инструменты, правила или модель для задания, короткий текст сообщения (без кодов, номеров документов и длинных чисел) и прошлого ответа Бро получает модель Jev компании TypeSafe — напрямую или через RouterAI; она возвращает только вероятности и ничего не делает.",
         ]
       : []),
     ...(env.BROWSER_USE_API_KEY === undefined

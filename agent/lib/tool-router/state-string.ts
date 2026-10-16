@@ -51,8 +51,9 @@ function withoutLocationLines(text: string) {
  * What a third party may read of a text: the first `limit` characters
  * with credentials, codes, card and document numbers cut out
  * (`withoutSecrets`), and every run of four digits or more as «[число]».
+ * The kit router cleans Bro's job for the task agent the same way.
  */
-function cleaned(text: string, limit: number) {
+export function cleaned(text: string, limit: number) {
   return withoutSecrets(text, limit).replaceAll(digitRun, "[число]");
 }
 

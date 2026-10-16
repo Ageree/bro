@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
-import type { ModelMessage } from "ai";
+import type { ModelMessage, UserModelMessage } from "ai";
 import { defineState } from "eve/context";
 import { z } from "zod";
 import { taskKitRouted } from "@agent/lib/sandbox/pilot";
+import { cleaned } from "@agent/lib/tool-router/state-string";
 import {
   askRouterQuestions,
   type RouterAnswer,
@@ -21,7 +22,12 @@ import {
  */
 const decisionWaitMs = 3000;
 
-/** Enough of a job to tell its blocks; the decision model bills its input. */
+/**
+ * Enough of a job to tell its blocks; the decision model bills its input.
+ * The text goes as the tool router's: cleaned of codes, documents' numbers
+ * and every run of four digits or more (`cleaned`): a passport, a СНИЛС or
+ * a phone in Bro's job never reaches a third party for a choice of lines.
+ */
 const maxStateCharacters = 4000;
 
 /** Where eve's message to a subagent puts Bro's own text. */
@@ -74,28 +80,52 @@ function orderedBlocks(blocks: Iterable<KitBlock>) {
 }
 
 /**
- * The text of the turn's message: the latest user message, without the
- * preamble eve wraps Bro's text in (`formatSubagentPrompt`).
+ * The text of a user message, without the preamble eve wraps Bro's text in
+ * (`formatSubagentPrompt`).
  */
-function turnMessage(messages: readonly ModelMessage[]) {
-  const last = messages.findLast((message) => message.role === "user");
-  if (last === undefined) return undefined;
-  const text = Array.isArray(last.content)
-    ? last.content
+function messageText(message: UserModelMessage) {
+  const text = Array.isArray(message.content)
+    ? message.content
         .flatMap((part) => (part.type === "text" ? [part.text] : []))
         .join("\n")
-    : last.content;
+    : message.content;
   const at = text.indexOf(callerMessageHeading);
-  const job = (
+  return (
     at === -1 ? text : text.slice(at + callerMessageHeading.length)
   ).trim();
-  return job.length === 0 ? undefined : job;
+}
+
+function digestOf(text: string) {
+  return createHash("sha256").update(text).digest("hex");
+}
+
+/**
+ * Bro's messages the router has not heard yet, oldest first: every user
+ * message after the one `heard` names, so a message Bro sent the busy task
+ * agent in an earlier turn (eve steers it into that turn) is heard with the
+ * turn's own; only the latest when `heard` is none of them.
+ */
+function unheardMessages(
+  messages: readonly ModelMessage[],
+  heard: string | null
+) {
+  const texts = messages.flatMap((message) =>
+    message.role === "user" ? [messageText(message)] : []
+  );
+  const at =
+    heard === null
+      ? -1
+      : texts.findLastIndex((text) => digestOf(text) === heard);
+  return (at === -1 ? texts.slice(-1) : texts.slice(at + 1)).filter(
+    (text) => text.length > 0
+  );
 }
 
 /**
  * The blocks an answer brings in: each whose probability reaches the
  * threshold of the answer's own model for the job (`first`) or a later
- * message (`more`). A model without thresholds is a failure.
+ * message (`more`). A model without thresholds is a failure, and so is an
+ * answer without a probability for some block: no answer is no «no».
  */
 function kitDecision(answer: RouterAnswer, turn: "first" | "more") {
   if ("failure" in answer) {
@@ -107,6 +137,13 @@ function kitDecision(answer: RouterAnswer, turn: "first" | "more") {
   if (thresholds === undefined) {
     return {
       failure: "uncalibrated",
+      model: answer.model,
+      ms: answer.ms,
+    } as const;
+  }
+  if (kitBlocks.some((block) => !answer.answers.has(block))) {
+    return {
+      failure: "unreadable",
       model: answer.model,
       ms: answer.ms,
     } as const;
@@ -130,9 +167,10 @@ function kitDecision(answer: RouterAnswer, turn: "first" | "more") {
  * (TASK_KIT_ROUTER_WORKSPACES) and keeps the session's blocks: the job that
  * opens the session is asked of the decision model once, and the blocks it
  * does not rule out make the set; a later message is asked alone and may
- * only add to it. A failure on the job, a timeout, no provider or a model
- * without thresholds gives every block; on a later message it keeps the
- * set. A session that already ran turns with every line before the pilot
+ * only add to it, heard with any message of Bro's to the busy task agent
+ * since the last one heard. A failure on the job, a timeout, no provider, a
+ * model without thresholds or an answer missing a block gives every block;
+ * on a later message it keeps the set. A session that already ran turns with every line before the pilot
  * reached it keeps every block.
  *
  * It runs from the `look` tool's `turn.started` resolver, which eve calls
@@ -146,10 +184,11 @@ export async function hearKitJob(context: {
 }) {
   try {
     if (!taskKitRouted(context)) return;
-    const message = turnMessage(context.messages);
-    if (message === undefined) return;
-    const heard = createHash("sha256").update(message).digest("hex");
     const state = readKitState();
+    const unheard = unheardMessages(context.messages, state.heard);
+    const latest = unheard.at(-1);
+    if (latest === undefined) return;
+    const heard = digestOf(latest);
     if (state.heard === heard) return;
     const opened = context.messages.some((entry) => entry.role === "assistant");
     if (
@@ -162,7 +201,7 @@ export async function hearKitJob(context: {
     const turn = state.blocks === null ? "first" : "more";
     const decision = kitDecision(
       await askRouterQuestions(
-        message.slice(0, maxStateCharacters),
+        cleaned(unheard.join("\n\n"), maxStateCharacters),
         decisionWaitMs,
         kitQuestions
       ),

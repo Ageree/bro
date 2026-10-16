@@ -107,9 +107,15 @@ export function taskKitRouted(context: {
   readonly session: Pick<SessionContext["session"], "auth">;
 }) {
   const workspaceId = callerWorkspaceId(context);
-  if (workspaceId === undefined || !taskFilesEnabled(workspaceId)) {
-    return false;
-  }
+  return workspaceId !== undefined && taskKitRoutedWorkspace(workspaceId);
+}
+
+/**
+ * Whether the task agent's jobs of this workspace go to the decision model
+ * for its kit lines ({@link taskKitRouted}): what the privacy facts name.
+ */
+export function taskKitRoutedWorkspace(workspaceId: string) {
+  if (!taskFilesEnabled(workspaceId)) return false;
   const list = env.TASK_KIT_ROUTER_WORKSPACES ?? [];
   return list.includes("*") || list.includes(workspaceId);
 }

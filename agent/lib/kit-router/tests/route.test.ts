@@ -69,13 +69,19 @@ function turnOf(messages: readonly ModelMessage[]) {
   };
 }
 
-/** Jev's answer through RouterAI with these probabilities. */
+/**
+ * Jev's answer through RouterAI with these probabilities, and 0.01 for
+ * every other block.
+ */
 function answer(
   probabilities: Readonly<Record<string, number>>,
   model = "typesafe/jev-1.13-20260917"
 ): RouterAnswer {
   return {
-    answers: new Map(Object.entries(probabilities)),
+    answers: new Map([
+      ...kitBlocks.map((block) => [block, 0.01] as const),
+      ...Object.entries(probabilities),
+    ]),
     model,
     ms: 870,
     provider: "routerai",
@@ -117,11 +123,17 @@ describe("the kit router", () => {
     );
   });
 
-  it("gives every block when Jev fails on the job or answers from a model without thresholds", async () => {
+  it("gives every block when Jev fails on the job, answers from a model without thresholds or leaves a block unanswered", async () => {
     for (const failed of [
       { failure: "timeout", ms: 3000 } as const,
       { failure: "no-provider", ms: 0 } as const,
       answer({ office: 0.99 }, "typesafe/jev-2.0"),
+      {
+        answers: new Map([["office", 0.99]]),
+        model: "typesafe/jev-1.13-20260917",
+        ms: 870,
+        provider: "routerai",
+      } as const,
     ]) {
       stores.clear();
       jev.askRouterQuestions.mockResolvedValueOnce(failed);
@@ -159,6 +171,42 @@ describe("the kit router", () => {
       expect.any(Number),
       kitQuestions
     );
+  });
+
+  it("sends Jev no number of the job: a passport, a СНИЛС or a phone", async () => {
+    jev.askRouterQuestions.mockResolvedValue(answer({ forms: 0.99 }));
+
+    await hearKitJob(
+      turnOf([
+        fromBro(
+          "Заполни анкету: паспорт 4510 123456, СНИЛС 123-456-789 01, телефон +7 916 123-45-67, ИНН 770123456789."
+        ),
+      ])
+    );
+
+    const [state] = jev.askRouterQuestions.mock.lastCall ?? [];
+    expect(state).toContain("Заполни анкету");
+    expect(state).not.toMatch(/\d{3}/u);
+  });
+
+  it("hears a message Bro sent the busy task agent with the next turn's own", async () => {
+    jev.askRouterQuestions.mockResolvedValueOnce(answer({ office: 0.97 }));
+    await hearKitJob(turnOf([fromBro(job)]));
+    const steered = fromBro(
+      "И сделай QR для оплаты по реквизитам из карточки."
+    );
+
+    jev.askRouterQuestions.mockResolvedValueOnce(answer({ money: 0.97 }));
+    await hearKitJob(
+      turnOf([fromBro(job), steered, reply, fromBro("Пришли ссылку.")])
+    );
+
+    expect(jev.askRouterQuestions).toHaveBeenLastCalledWith(
+      "И сделай QR для оплаты по реквизитам из карточки.\n\nПришли ссылку.",
+      expect.any(Number),
+      kitQuestions
+    );
+    expect(kitBlocksOfSession()).toEqual(["money", "office"]);
   });
 
   it("does not ask again about a message it heard: a replayed or resumed turn", async () => {

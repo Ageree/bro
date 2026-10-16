@@ -650,6 +650,16 @@ describe("signing at the person's own request", () => {
         reported(`${words} Только сначала покажи.`, [photoPath])
       )
     ).toMatchObject({ status: "prepared" });
+    // Without `ask`, only the words hold the signing back.
+    for (const first of [
+      `${words} Подпиши, но перед подписью покажи мне.`,
+      `${words} Подпиши, только дай я сначала гляну.`,
+    ]) {
+      expect(
+        // oxlint-disable-next-line eslint/no-await-in-loop -- Each request prepares on its own.
+        await prepareInReport(reported(first, [photoPath]))
+      ).toMatchObject({ status: "prepared" });
+    }
     expect(stampRuns()).toHaveLength(1);
   });
 
