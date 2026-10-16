@@ -20,6 +20,8 @@ describe("the model of a turn that calls none", () => {
     expect(await result.toolCalls).toEqual([]);
     expect(await result.finishReason).toBe("stop");
     expect((await result.finalStep).providerMetadata?.gateway?.cost).toBe(0);
+    // eve keeps a known input size as the history's: none is given.
+    expect((await result.finalStep).usage.inputTokens).toBeUndefined();
   });
 
   it("answers a step asked without streaming the same way", async () => {

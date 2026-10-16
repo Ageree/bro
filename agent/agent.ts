@@ -29,10 +29,7 @@ import {
   turnSendFailed,
   turnTookNoStep,
 } from "@agent/lib/delivery/pending";
-import {
-  browserNoticeCaller,
-  reportedBrowserRunId,
-} from "@agent/lib/browser-use/report-caller";
+import { reportedBrowserRunId } from "@agent/lib/browser-use/report-caller";
 import {
   browserFilesEnabled,
   personBrowserFiles,
@@ -74,7 +71,7 @@ import { skillSetup, skillsLayout, skillsPilot } from "@agent/lib/skills/pilot";
 import { offeredSkills, turnOfferedSkills } from "@agent/lib/skills/tools";
 import { readWorkspaceTimeZone } from "@db/services/user-profile";
 import { taskAgentPilot } from "@agent/lib/sandbox/pilot";
-import { turnKind } from "@agent/lib/turn-kind/kind";
+import { browserNoticeTurn, turnKind } from "@agent/lib/turn-kind/kind";
 import {
   stepIdentity,
   stepStartedEventSchema,
@@ -115,9 +112,7 @@ export default defineAgent({
         // A web chat's notice of a report that never got through is code's
         // text, which the chat shows as Bro's message: the turn ends without
         // a model call (`agent/lib/browser-use/abandoned-notice.ts`).
-        if (browserNoticeCaller(ctx.session.auth.current)) {
-          return emptyTurnSelection;
-        }
+        if (browserNoticeTurn(ctx)) return emptyTurnSelection;
         const scheduledRun = scheduledRunIdentity(ctx.session.auth);
         if (
           scheduledRun &&

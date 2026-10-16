@@ -192,6 +192,42 @@ describe("root agent model resolution", () => {
     expect(model).toBe(emptyTurnSelection);
     expect(services.getModel).not.toHaveBeenCalled();
   });
+
+  it("hands the model a turn that keeps the notice's caller but not its message", async () => {
+    // eve opens the task agent's report in a turn that keeps the previous
+    // caller, here the notice's; queued deliveries share one turn.
+    const notice = humanMessage(
+      backgroundNoticeMessage("Поручение закончено.")
+    );
+    const taskReport = Object.assign(
+      {
+        content:
+          "Background task task_1 (task) is completed.\n\nResult:\nГотово",
+        role: "user" as const,
+      },
+      { kind: "execution.background_task" }
+    );
+    const quietEnd = {
+      content: "<eve-empty-delivery/>",
+      role: "assistant" as const,
+    };
+    // The task agent's report is held to its tools on the direct model only.
+    services.directModelActive.mockReturnValue(true);
+    services.modelSelection.mockReturnValue("deepseek/deepseek-v4.1-flash");
+
+    for (const messages of [
+      [notice, quietEnd, taskReport],
+      [humanMessage("Найди билеты"), notice],
+    ]) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Each turn is resolved on its own.
+      const model = await agent.model.events["step.started"]?.(
+        {},
+        interactiveContext(messages, "browser-notice", reportAttributes)
+      );
+      expect(model).not.toBe(emptyTurnSelection);
+    }
+    expect(services.getModel).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("session limits", () => {

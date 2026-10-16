@@ -4,9 +4,17 @@ import { emptyDeliveryMarker } from "@agent/lib/delivery/empty";
 type LanguageModelV4 = Extract<LanguageModel, { specificationVersion: "v4" }>;
 
 const stop = { raw: "stop", unified: "stop" } as const;
+// Unknown, not zero: eve keeps a step's input tokens as the history's last
+// known size (`lastKnownInputTokens`), and a zero would make the person's
+// next step read its history as almost empty and skip compaction.
 const usage = {
-  inputTokens: { cacheRead: 0, cacheWrite: 0, noCache: 0, total: 0 },
-  outputTokens: { reasoning: 0, text: 0, total: 0 },
+  inputTokens: {
+    cacheRead: undefined,
+    cacheWrite: undefined,
+    noCache: undefined,
+    total: undefined,
+  },
+  outputTokens: { reasoning: undefined, text: undefined, total: undefined },
 };
 // Where eve reads a step's price (`stepCostMiddleware` in `direct.ts`): the
 // step is free, not unpriced.

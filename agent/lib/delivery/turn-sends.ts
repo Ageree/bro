@@ -703,6 +703,21 @@ export function turnOpenedByBackgroundTask(messages: readonly ModelMessage[]) {
   );
 }
 
+/**
+ * The texts of the messages that opened the current turn. eve coalesces the
+ * deliveries queued behind a running turn into one turn, so it may open with
+ * several, in a row before its first step.
+ */
+export function turnOpeningTexts(messages: readonly ModelMessage[]) {
+  const texts: string[] = [];
+  for (let index = messages.findLastIndex(startsTurn); index >= 0; index--) {
+    const message = messages[index];
+    if (message?.role !== "user") break;
+    if (startsTurn(message)) texts.unshift(openingText(message));
+  }
+  return texts;
+}
+
 export function currentTurnMessages(messages: readonly ModelMessage[]) {
   const start = messages.findLastIndex(startsTurn);
   return start === -1 ? messages : messages.slice(start + 1);

@@ -1,10 +1,17 @@
 import type { DynamicResolveContext } from "eve";
 import type { ModelMessage } from "ai";
 import { turnCompaction } from "@agent/lib/compaction/mid-turn";
-import { reportedBrowserRunId } from "@agent/lib/browser-use/report-caller";
+import {
+  browserNoticeAuthenticator,
+  reportedBrowserRunId,
+} from "@agent/lib/browser-use/report-caller";
 import { phoneReportCaller } from "@agent/lib/phone/report-caller";
-import { turnOpenedByBackgroundTask } from "@agent/lib/delivery/turn-sends";
+import {
+  turnOpenedByBackgroundTask,
+  turnOpeningTexts,
+} from "@agent/lib/delivery/turn-sends";
 import { resolveModeValue } from "@agent/lib/mode";
+import { backgroundNoticeText } from "@shared/chat/background-turn";
 import type { StepIdentity } from "./step";
 
 /**
@@ -52,6 +59,27 @@ export function turnKind(
     return callerTurnKind(context);
   }
   return backgroundTask === false ? callerTurnKind(context) : "background-task";
+}
+
+/**
+ * Whether the turn is a web chat's notice and nothing else
+ * (`browserNoticeAuthenticator`). The caller alone does not tell: eve keeps
+ * the last caller for a delivery that brings none (the task agent's report,
+ * `turn-step.js`), and coalesces queued deliveries into one turn. Every
+ * message that opened the turn must be the notice, or the turn goes to the
+ * model as any other.
+ */
+export function browserNoticeTurn(context: Parameters<typeof turnKind>[0]) {
+  if (
+    context.session.auth.current?.authenticator !== browserNoticeAuthenticator
+  ) {
+    return false;
+  }
+  const openings = turnOpeningTexts(context.messages);
+  return (
+    openings.length > 0 &&
+    openings.every((text) => backgroundNoticeText(text) !== undefined)
+  );
 }
 
 function callerTurnKind(context: Parameters<typeof turnKind>[0]): TurnKind {
