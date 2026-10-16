@@ -29,6 +29,7 @@ def field_pdf(text: str) -> bytes:
     return out.getvalue()
 
 
+@unittest.skipUnless(shutil.which("tesseract") and shutil.which("pdftoppm"), "needs tesseract and poppler")
 class OcrRegionTest(unittest.TestCase):
     def setUp(self):
         self.root = pathlib.Path(tempfile.mkdtemp())
