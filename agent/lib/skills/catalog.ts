@@ -63,8 +63,11 @@ import { autonomyEdits } from "./autonomy";
  * The rules for the person's files (`task-files.md`) are one skill instead:
  * the setup has them in every turn of a session or in none. So are the rules
  * for signing documents (`sign.md`), read only with the files' and with no
- * line in the core's index: the core has no room, and the consent rule
- * itself stands in the core (`signing.ts`).
+ * line in the core's index: the core has no room. The consent itself is
+ * code's, not the prompt's: `sign_document` (a core tool, so compaction
+ * folding the block keeps it) signs at once only on the person's own request
+ * (`signRequest` in `agent/lib/signatures/consent.ts`), and otherwise only
+ * on their plain «да» to its question.
  *
  * Only the files below take markers: they are the interactive turn's.
  * The workers' roles (`role/scheduled-worker.md` and the rest) and

@@ -9,7 +9,9 @@ from crown to chin 34 mm (32-36), 4 mm above the crown, eyes level. Steps:
    background, the rest is the person.
 2. Eyes: `--eyes x1,y1,x2,y2` (read with look --grid), else the two dark round
    blobs inside the face (a warning: verify with look).
-3. Roll: the photo turns about the eye midpoint until the eyes are level.
+3. Roll: the photo turns about the eye midpoint until the eyes are level;
+   `roll_deg` is the eye line measured again on the result (None, with a
+   warning, when the eyes are not found there).
 4. Crown = top of the silhouette above the eyes; chin = `--chin y` or
    eyes + CHIN_RATIO x (eyes - crown).
 5. Crop and scale so that the head is HEAD_MM, then the background is
@@ -327,12 +329,14 @@ def make_photo(image, eyes, chin, size_mm, head_mm, top_mm, whiten):
             dtype=np.float32,
         ) / 255
         face_px = face_width_px(photo, person_out, eyes_out - 0.1 * head_px * k, (chin_y - top) * k)
-    residual = 0.0
-    if auto:
-        again = find_eyes(photo, None)
-        if again:
-            (ax, ay), (bx, by) = again
-            residual = math.degrees(math.atan2(by - ay, bx - ax))
+    # Measured on the result whoever placed the eyes: a mistyped --eyes leaves the head tilted.
+    residual = None
+    again = find_eyes(photo, None)
+    if again:
+        (ax, ay), (bx, by) = again
+        residual = round(math.degrees(math.atan2(by - ay, bx - ax)), 2)
+    else:
+        warnings.append("eye line not re-measured: check it with look")
     head_out_mm = head_px * k / MM
     eyes_from_bottom = (out_h - eyes_out) / MM
     if not 23 <= eyes_from_bottom <= 31:
@@ -341,7 +345,7 @@ def make_photo(image, eyes, chin, size_mm, head_mm, top_mm, whiten):
         "image": photo,
         "size_mm": [width_mm, height_mm],
         "size_px": [out_w, out_h],
-        "roll_deg": round(residual, 2),
+        "roll_deg": residual,
         "roll_fixed_deg": round(-roll, 2),
         "head_mm": round(head_out_mm, 2),
         "eyes_from_bottom_mm": round(eyes_from_bottom, 2),

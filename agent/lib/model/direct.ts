@@ -36,6 +36,7 @@ import {
   taggedStepNote,
 } from "@agent/lib/step-context/note";
 import { env } from "@shared/environment";
+import { dsmlToolCallsMiddleware } from "./dsml";
 import { modelEndpoint } from "./endpoint";
 import type { Prompt, PromptMessage, ToolOutput } from "./prompt";
 import { routerAiModelFetch } from "./routerai/fetch";
@@ -1090,12 +1091,13 @@ const toolCallStreamParts: ReadonlySet<string> = new Set([
 
 /**
  * A step told to call no tool (`toolChoice: none`) that calls one anyway:
- * DeepSeek did, with `task_cancel`, in the step that was to end a turn. eve
- * ended the turn without running the call, the history kept a call without
- * a result, and every later turn of the session failed on it
- * (`AI_MissingToolResultsError`). Here such a call never leaves the model:
- * the step keeps its text, and one with none left becomes the empty
- * delivery of `quietEndMiddleware`, which sits outside this one.
+ * DeepSeek did, in the step that was to end a turn. The turn ends, so the
+ * call must not run: here it never leaves the model, the step keeps its
+ * text, and one with none left becomes the empty delivery of
+ * `quietEndMiddleware`, which sits outside this one. That call (12.10) was
+ * `task_cancel`, which eve never ran in any step: a call left without a
+ * result broke the session, whatever the step's `toolChoice`
+ * (`tests/agent/tools/executable.test.ts`).
  */
 function noToolCallsMiddleware(): LanguageModelMiddleware {
   return {
@@ -1578,6 +1580,12 @@ export function directModelSelection(
     ...(options.toolImages ? [toolImagesMiddleware(options.toolImages)] : []),
     outputCapMiddleware(maxOutputTokens(endpoint)),
     ...(routerAi ? [uniqueToolCallIdsMiddleware()] : []),
+    // DeepSeek's tool calls a host left in the text (`dsml.ts`), inside the
+    // ones above so they see them as calls; a step told to call none has
+    // the next one instead.
+    ...(toolChoice !== "none" && modelId.startsWith("deepseek/")
+      ? [dsmlToolCallsMiddleware()]
+      : []),
     // Innermost: what it drops is never seen by the middleware above.
     ...(toolChoice === "none" ? [noToolCallsMiddleware()] : []),
   ];

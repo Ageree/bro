@@ -609,6 +609,91 @@ describe("the person's own sends to task agents", () => {
   });
 });
 
+describe("the person's own words beside a send", () => {
+  const start = {
+    callId: "call-1",
+    kind: "start",
+    message: "Замаскируй номера карт",
+    turnId: "turn_3",
+  } as const;
+
+  it("are stored apart from the send's record, a start's from a continuation's", async () => {
+    const bodies: string[] = [];
+    const calls: URL[] = [];
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      calls.push(new URL(url));
+      bodies.push(await new Response(init.body).text());
+      return new Response(null, { status: 200 });
+    });
+    const { putPersonRequest, putPersonSend } = await loadInbox();
+    const words = "Замаскируй номера карт, кроме последних 4 цифр";
+
+    await putPersonSend("w", "s", start);
+    await putPersonRequest("w", "s", start, words);
+    await putPersonRequest(
+      "w",
+      "s",
+      { agentId: "call-1", kind: "continue", message: start.message },
+      words
+    );
+    const [send, started, continued] = calls.map((url) => url.pathname);
+    expect(started).not.toBe(send);
+    expect(started).toMatch(
+      /^\/bro-state-test\/sandbox\/inbox\/[\da-f]{16}\/[\da-f]{16}\/requests\/calls\/[\da-f]{32}$/u
+    );
+    expect(continued).toMatch(/\/requests\/agents\/[\da-f]{32}$/u);
+    expect(bodies.slice(1)).toEqual([words, words]);
+  });
+
+  it("are cut at 8 KB between characters", async () => {
+    const bodies: Uint8Array[] = [];
+    vi.stubGlobal("fetch", async (_url: string, init: RequestInit) => {
+      bodies.push(new Uint8Array(await new Response(init.body).arrayBuffer()));
+      return new Response(null, { status: 200 });
+    });
+    const { putPersonRequest, requestByteCap } = await loadInbox();
+
+    // Two bytes a letter, and an odd byte first: no cut falls on a boundary.
+    await putPersonRequest("w", "s", start, `x${"ж".repeat(5000)}`);
+    const [body] = bodies;
+    expect(body?.byteLength).toBeLessThanOrEqual(requestByteCap);
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(body);
+    expect(text).toMatch(/^xж+\n\[…\]$/u);
+  });
+
+  it("are taken while fresh, never an object older than five minutes or past the cap", async () => {
+    stubStorage(
+      new Response("Только за сентябрь", {
+        headers: { "last-modified": storedAgo(1) },
+        status: 200,
+      }),
+      new Response("Только за сентябрь", {
+        headers: { "last-modified": storedAgo(6) },
+        status: 200,
+      }),
+      noSuchKey(),
+      new Response(null, {
+        headers: {
+          "content-length": String(8 * 1024 + 1),
+          "last-modified": storedAgo(0),
+        },
+        status: 200,
+      })
+    );
+    const { getPersonRequest } = await loadInbox();
+
+    expect(await getPersonRequest("w", "s", start)).toEqual({
+      kind: "words",
+      words: "Только за сентябрь",
+    });
+    expect(await getPersonRequest("w", "s", start)).toEqual({ kind: "stale" });
+    expect(await getPersonRequest("w", "s", start)).toEqual({
+      kind: "missing",
+    });
+    await expect(getPersonRequest("w", "s", start)).rejects.toThrow(/inbox/u);
+  });
+});
+
 describe("a sandbox kept off the web without the person's files", () => {
   it("marks the sandbox alone, never its conversation", async () => {
     const calls = stubStorage(new Response(null, { status: 200 }));

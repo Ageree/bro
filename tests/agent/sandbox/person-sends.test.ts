@@ -1,5 +1,13 @@
 import type { HookContext } from "eve/hooks";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 
 /**
  * Both ends of the person's sends against one Object Storage: Bro's hook
@@ -111,6 +119,13 @@ async function load() {
   return { bro: bro.default, child: child.default, inbox, offline };
 }
 
+// The hooks' first transform takes seconds (4 s alone, more beside other
+// suites), which the first case's 5 s would pay; each case still loads
+// them afresh after `vi.resetModules`.
+beforeAll(async () => {
+  await load().catch(() => undefined);
+}, 60_000);
+
 type Hooks = Awaited<ReturnType<typeof load>>;
 
 function broContext() {
@@ -217,13 +232,33 @@ function taskAgent(
     rootSessionId: "session-1",
     sessionId: "session-1",
   };
+  /** The text files the hook leaves in the task agent's sandbox. */
+  const files = new Map<string, string>();
+  const sandbox = {
+    id: sandboxId,
+    removePath({ path }: { readonly path: string }) {
+      files.delete(path);
+      return Promise.resolve();
+    },
+    writeTextFile({
+      content,
+      path,
+    }: {
+      readonly content: string;
+      readonly path: string;
+    }) {
+      files.set(path, content);
+      return Promise.resolve();
+    },
+  };
   const ctx = {
     agent: { name: "task" },
     channel: {},
     async getSandbox() {
-      // SAFETY: a message without file paths needs the sandbox's id alone.
+      // SAFETY: a message without file paths needs the sandbox's id and its
+      // text files alone.
       // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- A partial sandbox stands in for eve's.
-      return await Promise.resolve({ id: sandboxId } as never);
+      return await Promise.resolve(sandbox as never);
     },
     getSkill() {
       throw new Error("Skill access is outside these cases.");
@@ -251,6 +286,7 @@ function taskAgent(
   const ownState = () =>
     [...session.values].filter(([key]) => key.startsWith(`${sandboxId}\0`));
   return {
+    files,
     /** eve's `agentId` of this task agent (`mintStartOperation`). */
     async agentId() {
       const eve =
@@ -595,5 +631,54 @@ describe("the person's sends as the task agent reads them", () => {
     );
 
     expect(offWeb("sb-c")).toBe(true);
+  });
+});
+
+describe("the person's own words as the task agent reads them", () => {
+  const request = "/workspace/attachments/REQUEST.txt";
+
+  it("bring the person's words to a helper off the web, never a report's", async () => {
+    const hooks = await load();
+    // The helper holds the person's files: its sandbox is off the web, and
+    // only there do the person's verbatim words go.
+    await hooks.inbox.markSandboxHoldsPersonFiles({
+      parentSessionId: "session-1",
+      sandboxId: "sb-b",
+      workspaceId,
+    });
+    const turn3 = { id: "turn_3", sequence: 3 };
+    // Bro's turn opens with «Сделай отчёт и проверь цены» and retells it.
+    await broTurn(hooks, turn3, "person", [
+      [{ callId: "call_b", message: "Сделай отчёт" }],
+    ]);
+    const helper = taskAgent(hooks, "sb-b", { callId: "call_b", turn: turn3 });
+    await helper.receive(firstMessage("Сделай отчёт"));
+    expect(helper.files.get(request)).toBe("Сделай отчёт и проверь цены\n");
+
+    // The helper's report has Bro continue it: the report's text is not the
+    // person's, and the words of the task before do not govern this.
+    const agentId = await helper.agentId();
+    await broTurn(hooks, { id: "turn_4", sequence: 4 }, "report", [
+      [{ agentId, callId: "call_0", message: "Проверь итог ещё раз" }],
+    ]);
+    await helper.receive("Проверь итог ещё раз");
+
+    expect(helper.files.has(request)).toBe(false);
+  });
+
+  it("bring nothing once the files pilot is cleared", async () => {
+    const hooks = await load();
+    flag.on = false;
+    const turn3 = { id: "turn_3", sequence: 3 };
+    await broTurn(hooks, turn3, "person", [
+      [{ callId: "call_b", message: "Сделай отчёт" }],
+    ]);
+    const helper = taskAgent(hooks, "sb-b", { callId: "call_b", turn: turn3 });
+    await helper.receive(firstMessage("Сделай отчёт"));
+
+    expect(helper.files.size).toBe(0);
+    expect([...objects.keys()].some((key) => key.includes("/requests/"))).toBe(
+      false
+    );
   });
 });

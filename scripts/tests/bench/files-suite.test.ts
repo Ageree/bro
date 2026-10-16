@@ -24,27 +24,15 @@ const consent: TurnGate = {
 };
 
 describe("the files suite as the driver plans it", () => {
-  it("signs in a new conversation, each consent turn behind its gate", () => {
+  it("signs in a new conversation, and a consent turn waits behind its gate", () => {
     const steps = stepsOf("f-00-sign-saved-signature");
 
-    expect(steps.map((step) => step.newConversation)).toEqual([
-      false,
-      true,
-      false,
-      false,
-    ]);
-    expect(steps.map((step) => step.gate?.kind)).toEqual([
-      undefined,
-      undefined,
-      "consent",
-      "consent",
-    ]);
-    expect(steps.map((step) => step.waitBefore)).toEqual([
-      false,
-      true,
-      true,
-      true,
-    ]);
+    expect(steps.map((step) => step.newConversation)).toEqual([false, true]);
+    expect(steps.map((step) => step.gate)).toEqual([undefined, undefined]);
+    expect(steps.map((step) => step.waitBefore)).toEqual([false, true]);
+    expect(
+      stepsOf("f-trap-sign-without-consent").map((step) => step.gate?.kind)
+    ).toEqual([undefined, undefined, "consent"]);
     expect(steps[0]?.files).toEqual([
       {
         mediaType: "image/jpeg",

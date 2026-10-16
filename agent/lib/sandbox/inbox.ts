@@ -332,18 +332,108 @@ function personSendKey(
   parentSessionId: string,
   send: PersonSend
 ) {
-  const message = sha256(send.message);
-  const names =
-    send.kind === "start"
-      ? [send.turnId, send.callId, message]
-      : [send.agentId, message];
   return [
     "sandbox/inbox",
     sha256(workspaceId).slice(0, 16),
     sha256(parentSessionId).slice(0, 16),
     send.kind === "start" ? "calls" : "agents",
-    sha256(JSON.stringify(names)).slice(0, 32),
+    sendDigest(send),
   ].join("/");
+}
+
+/** One send's names, the message's text among them, hashed. */
+function sendDigest(send: PersonSend) {
+  const message = sha256(send.message);
+  const names =
+    send.kind === "start"
+      ? [send.turnId, send.callId, message]
+      : [send.agentId, message];
+  return sha256(JSON.stringify(names)).slice(0, 32);
+}
+
+/**
+ * The person's own words in the turn that sent one task agent one message,
+ * named as {@link personSendKey} names that send, under a folder of their
+ * own: Bro retells the person's request in `task`'s message and may drop a
+ * condition, so the words go along verbatim (`agent/hooks/task-files.ts`)
+ * to the task agent's `/workspace/attachments/REQUEST.txt`
+ * (`agent/subagents/task/hooks/person-files.ts`). Good for
+ * {@link inboxFreshMs}, like a file.
+ */
+function personRequestKey(
+  workspaceId: string,
+  parentSessionId: string,
+  send: PersonSend
+) {
+  return [
+    "sandbox/inbox",
+    sha256(workspaceId).slice(0, 16),
+    sha256(parentSessionId).slice(0, 16),
+    "requests",
+    send.kind === "start" ? "calls" : "agents",
+    sendDigest(send),
+  ].join("/");
+}
+
+/** The most of the person's words that go to a task agent, in UTF-8. */
+export const requestByteCap = 8 * 1024;
+/** What ends words cut at {@link requestByteCap}. */
+const requestCutMark = "\n[…]";
+
+/** The words within {@link requestByteCap}, cut between characters. */
+function cappedRequest(words: string) {
+  const encoder = new TextEncoder();
+  if (encoder.encode(words).byteLength <= requestByteCap) return words;
+  const room = new Uint8Array(
+    requestByteCap - encoder.encode(requestCutMark).byteLength
+  );
+  // `encodeInto` stops before a character that does not fit whole.
+  const { read } = encoder.encodeInto(words, room);
+  return `${words.slice(0, read)}${requestCutMark}`;
+}
+
+/** Stores the person's words beside one message their turn sent. */
+export async function putPersonRequest(
+  workspaceId: string,
+  parentSessionId: string,
+  send: PersonSend,
+  words: string,
+  signal?: AbortSignal
+) {
+  const response = await request(
+    personRequestKey(workspaceId, parentSessionId, send),
+    "PUT",
+    {
+      body: cappedRequest(words),
+      headers: { "content-type": "text/plain; charset=utf-8" },
+    },
+    signal
+  );
+  await response.body?.cancel();
+}
+
+/**
+ * The person's words stored beside this message within {@link inboxFreshMs},
+ * or why there are none: stored earlier, or never. An outage, or an object
+ * past {@link requestByteCap}, throws.
+ */
+export async function getPersonRequest(
+  workspaceId: string,
+  parentSessionId: string,
+  send: PersonSend,
+  signal?: AbortSignal
+): Promise<
+  | { readonly kind: "missing" }
+  | { readonly kind: "stale" }
+  | { readonly kind: "words"; readonly words: string }
+> {
+  const stored = await getInbox(
+    personRequestKey(workspaceId, parentSessionId, send),
+    signal,
+    requestByteCap
+  );
+  if (stored.kind !== "file") return stored;
+  return { kind: "words", words: new TextDecoder().decode(stored.bytes) };
 }
 
 /**

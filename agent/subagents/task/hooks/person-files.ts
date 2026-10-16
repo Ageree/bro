@@ -6,6 +6,7 @@ import {
   attachmentsPerMessage,
   conversationHoldsPersonFiles,
   getInbox,
+  getPersonRequest,
   inboxKey,
   markSandboxHoldsPersonFiles,
   markSandboxOffWeb,
@@ -25,6 +26,17 @@ import { taskAgentTool } from "@agent/lib/turn-kind/sets";
 
 /** What the task agent reads when a file Bro named is not there. */
 const notReceivedPath = "/workspace/attachments/NOT_RECEIVED.txt";
+/** The person's own words of the turn that sent this message, verbatim. */
+const requestPath = "/workspace/attachments/REQUEST.txt";
+/** Fetching the person's words and putting them in place. */
+const requestBudgetMs = 10_000;
+/**
+ * The pauses before the words of a message Bro steered in are asked for
+ * again: Bro's hook stores them as the call streams in, while eve hands
+ * the message over, and a steered message from a turn that was not the
+ * person's, which brings none, waits them all out.
+ */
+const steeredRequestRetryMs = [250, 500, 1000] as const;
 /** All files of one message are fetched within this, a few at a time. */
 const messageBudgetMs = 120_000;
 /** How many files are fetched and written at once, which bounds the memory. */
@@ -147,6 +159,23 @@ function sendOf(
 }
 
 /**
+ * The send whose words this message comes with: {@link sendOf}'s, and for a
+ * steered message the continuation Bro's `task` call names. The words only
+ * tell the task agent what the person said, so a steered message may bring
+ * them, though it never keeps the web.
+ */
+function requestSendOf(
+  arrival: ReturnType<typeof arrivalOf>,
+  parent: SessionParent,
+  message: string
+): PersonSend | undefined {
+  if (arrival === "steered") {
+    return { agentId: ownAgentId(parent), kind: "continue", message };
+  }
+  return sendOf(arrival, parent, message);
+}
+
+/**
  * The person's files in the task agent's sandbox (docs/roadmap.md, item
  * 30): each staged path in Bro's message is fetched from the
  * conversation's inbox, where Bro's hook put it (`agent/hooks/task-files.ts`),
@@ -165,7 +194,9 @@ function sendOf(
  * the files pilot on or not (`taskFilesGuarded`): a conversation marked
  * while TASK_FILES_WORKSPACES named its workspace keeps the files' content
  * in Bro's history after the flag is cleared. Only the files themselves,
- * and NOT_RECEIVED.txt, follow the flag.
+ * NOT_RECEIVED.txt and REQUEST.txt, the person's own words of the turn that
+ * sent the message, for a sandbox off the web alone (`deliverRequest`),
+ * follow the flag.
  *
  * `message.received` is part of the turn's preamble: eve emits it inside
  * the step's context scope, where the sandbox provider is bound and opens
@@ -209,56 +240,38 @@ export default defineHook({
           if (relay !== "online") console.info("[task-files] relay", { relay });
           return;
         }
-        const named = namedAttachmentPaths(message);
-        const mentioned = message
-          .replaceAll(notReceivedPath, "")
-          .includes(attachmentsRoot);
-        if (named.length === 0 && !mentioned) {
-          if (relay !== "online") console.info("[task-files] relay", { relay });
-          return;
-        }
-        const open = await sandbox();
-        const marked = relay === "offline" || relay === "taken-offline";
-        const missing = await receive({
-          offline: once(async (signal?: AbortSignal) => {
-            if (marked) return;
-            await markSandboxHoldsPersonFiles(
-              { ...conversation, sandboxId: open.id },
-              signal
-            );
-            // Off the web now, whatever this message's checks left owed.
-            settle();
-          }),
-          paths: named.slice(0, attachmentsPerMessage),
-          sandbox: open,
-          sessionId: parent.sessionId,
-          steered,
-          workspaceId,
-        });
-        if (named.length === 0) {
-          // A path Bro miswrote: the old list must not stand for this one.
-          missing.push({
-            path: `${attachmentsRoot}…`,
-            reason: "путь в сообщении Бро не похож на переданный файл",
+        // The words are read while the files come, and go in only once the
+        // files settled whether the sandbox is off the web. A helper on the
+        // web that no file can take off it is not asked for them at all.
+        const offWebAlready = relay === "offline" || relay === "taken-offline";
+        const words =
+          offWebAlready || namedAttachmentPaths(message).length > 0
+            ? personWords({
+                ...conversation,
+                arrival,
+                send: requestSendOf(arrival, parent, message),
+              }).catch(() => undefined)
+            : Promise.resolve(undefined);
+        let filesTookOffWeb = false;
+        try {
+          filesTookOffWeb = await receiveFiles({
+            ...conversation,
+            message,
+            relay,
+            sandbox,
+            steered,
           });
+        } finally {
+          const request = await deliverRequest({
+            arrival,
+            offWeb: offWebAlready || filesTookOffWeb,
+            sandbox,
+            words: await words,
+          }).catch(() => "failed" as const);
+          if (request !== "none") {
+            console.info("[task-files] request", { request });
+          }
         }
-        for (const path of named.slice(attachmentsPerMessage)) {
-          missing.push({
-            path,
-            reason: `больше ${String(attachmentsPerMessage)} файлов в одном сообщении`,
-          });
-        }
-        await (missing.length === 0
-          ? open.removePath({ force: true, path: notReceivedPath })
-          : open.writeTextFile({
-              content: notReceivedText(missing),
-              path: notReceivedPath,
-            }));
-        console.info("[task-files] received", {
-          missing: missing.length,
-          named: named.length,
-          relay,
-        });
       } catch (error) {
         console.warn("[task-files] files not received", {
           error: error instanceof Error ? error.name : "unknown",
@@ -362,9 +375,155 @@ async function keepOffWebUnlessSent(input: {
   }
 }
 
+/**
+ * The files Bro's message names, put in place, and the list of the ones that
+ * did not arrive; a message that names none and mentions no attachment
+ * leaves everything as it was. Whether a file of this message took the
+ * sandbox off the web: its mark went in.
+ */
+async function receiveFiles(input: {
+  readonly message: string;
+  readonly parentSessionId: string;
+  readonly relay: Awaited<ReturnType<typeof keepOffWebUnlessSent>>;
+  readonly sandbox: () => Promise<Sandbox>;
+  readonly steered: boolean;
+  readonly workspaceId: string;
+}) {
+  const { message, parentSessionId, relay, sandbox, steered, workspaceId } =
+    input;
+  const conversation = { parentSessionId, workspaceId };
+  const named = namedAttachmentPaths(message);
+  const mentioned = message
+    .replaceAll(notReceivedPath, "")
+    .replaceAll(requestPath, "")
+    .includes(attachmentsRoot);
+  if (named.length === 0 && !mentioned) {
+    if (relay !== "online") console.info("[task-files] relay", { relay });
+    return false;
+  }
+  const open = await sandbox();
+  const marked = relay === "offline" || relay === "taken-offline";
+  let markedNow = false;
+  const missing = await receive({
+    offline: once(async (signal?: AbortSignal) => {
+      if (marked) return;
+      await markSandboxHoldsPersonFiles(
+        { ...conversation, sandboxId: open.id },
+        signal
+      );
+      markedNow = true;
+      // Off the web now, whatever this message's checks left owed.
+      settle();
+    }),
+    paths: named.slice(0, attachmentsPerMessage),
+    sandbox: open,
+    sessionId: parentSessionId,
+    steered,
+    workspaceId,
+  });
+  if (named.length === 0) {
+    // A path Bro miswrote: the old list must not stand for this one.
+    missing.push({
+      path: `${attachmentsRoot}…`,
+      reason: "путь в сообщении Бро не похож на переданный файл",
+    });
+  }
+  for (const path of named.slice(attachmentsPerMessage)) {
+    missing.push({
+      path,
+      reason: `больше ${String(attachmentsPerMessage)} файлов в одном сообщении`,
+    });
+  }
+  await (missing.length === 0
+    ? open.removePath({ force: true, path: notReceivedPath })
+    : open.writeTextFile({
+        content: notReceivedText(missing),
+        path: notReceivedPath,
+      }));
+  console.info("[task-files] received", {
+    missing: missing.length,
+    named: named.length,
+    relay,
+  });
+  return markedNow;
+}
+
 /** Lifts the refusal an earlier message left: this one settled the web. */
 function settle() {
   if (offlineRefusal() !== "none") recordOfflineRefusal("none");
+}
+
+/**
+ * The person's own words of the turn that sent this message, as Bro's hook
+ * stored them beside the `task` call (`putPersonRequest`): Bro's message
+ * retells them and may drop a condition. Only words stored within the last
+ * minutes are taken, so a turn that was not the person's, sending the same
+ * text later, brings none. A steered message's are asked for again for a
+ * second or two: Bro's hook may still be storing them. Undefined when there
+ * are none or they cannot be read.
+ */
+async function personWords(input: {
+  readonly arrival: ReturnType<typeof arrivalOf>;
+  readonly parentSessionId: string;
+  readonly send: PersonSend | undefined;
+  readonly workspaceId: string;
+}) {
+  const { arrival, send } = input;
+  if (send === undefined) return undefined;
+  const signal = AbortSignal.timeout(requestBudgetMs);
+  const pauses = arrival === "steered" ? steeredRequestRetryMs : [];
+  for (const pauseMs of [0, ...pauses]) {
+    // oxlint-disable-next-line eslint/no-await-in-loop -- Each round waits for Bro's hook.
+    if (pauseMs > 0 && !(await pause(pauseMs, signal))) break;
+    // oxlint-disable-next-line eslint/no-await-in-loop -- As above.
+    const stored = await getPersonRequest(
+      input.workspaceId,
+      input.parentSessionId,
+      send,
+      signal
+    ).catch(() => undefined);
+    if (stored?.kind === "words") return stored.words;
+  }
+  return undefined;
+}
+
+/**
+ * Puts the person's words in REQUEST.txt, only in a sandbox off the web:
+ * this message's files took it off, or the conversation's checks did. The
+ * words are the person's verbatim, what they named and asked included, and
+ * a helper on the web, which a page's instruction can lead to send them out
+ * in a URL, works from Bro's retelling alone. Its sandbox is not even
+ * opened, which may cost a snapshot's restore or a wait for room on the
+ * host: it holds no REQUEST.txt, since a sandbox once off the web stays so.
+ * Each message's words replace the last. A continuation without any (a
+ * report's turn sent it) takes the old ones away: they asked for the task
+ * before, not for this. A steered message joins the task the words already
+ * there asked for, so it only replaces them. A failure is the caller's to
+ * log, and costs the files nothing.
+ */
+async function deliverRequest(input: {
+  readonly arrival: ReturnType<typeof arrivalOf>;
+  readonly offWeb: boolean;
+  readonly sandbox: () => Promise<Sandbox>;
+  readonly words: string | undefined;
+}) {
+  const { arrival, offWeb, words } = input;
+  if (!offWeb) {
+    return words === undefined ? ("none" as const) : ("withheld" as const);
+  }
+  if (words !== undefined) {
+    const open = await input.sandbox();
+    await open.writeTextFile({
+      content: words.endsWith("\n") ? words : `${words}\n`,
+      path: requestPath,
+    });
+    return "written" as const;
+  }
+  // A new task agent's sandbox has no words yet; a steered message keeps them.
+  if (arrival !== "continued") return "none" as const;
+  const open = await input.sandbox();
+  await open.removePath({ force: true, path: requestPath });
+  return "removed" as const;
 }
 
 /**

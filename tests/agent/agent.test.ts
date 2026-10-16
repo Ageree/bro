@@ -945,7 +945,6 @@ describe("interactive delivery enforcement", () => {
       "react_to_message",
       "send_message",
       "task",
-      "task_cancel",
     ]);
 
     // In the signing pilot the report may offer to sign the file it brings.
@@ -960,7 +959,6 @@ describe("interactive delivery enforcement", () => {
       "react_to_message",
       "send_message",
       "task",
-      "task_cancel",
     ]);
   });
 

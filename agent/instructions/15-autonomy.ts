@@ -3,10 +3,8 @@ import { z } from "zod";
 import { resolveModeValue } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { backgroundActionsOfCaller } from "@agent/lib/schedules/delegation/pilot";
-import { signOfCaller } from "@agent/lib/signatures/pilot";
 import { instructionText } from "@agent/lib/skills/catalog";
 import { autonomyPilot, skillsLayout } from "@agent/lib/skills/pilot";
-import { withSigningConsent } from "@agent/lib/skills/signing";
 import { listSpendEntries, readSpendLimit } from "@db/services/spending";
 import { readWorkspaceTimeZone } from "@db/services/user-profile";
 import { localMonthKey } from "@shared/calendar/local-period";
@@ -141,20 +139,9 @@ export default defineDynamic({
       const followThroughRules = resolveModeValue(context, {
         interactive: instructionText("follow-through", layout, false, acting),
       });
-      const autonomy = instructionText(
-        "autonomy",
-        layout,
-        autonomyPilot(context),
-        acting
-      );
-      // Signing is asked like paying in every interactive turn, as in
-      // `10-execution-safety.ts`.
-      const signing =
-        resolveModeValue(context, { interactive: signOfCaller(context) }) ===
-        true;
       return defineInstructions({
         content: [
-          signing ? withSigningConsent(autonomy) : autonomy,
+          instructionText("autonomy", layout, autonomyPilot(context), acting),
           followThroughRules,
           limit,
         ]

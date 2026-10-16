@@ -9,9 +9,11 @@ import { ensureScope } from "@db/services/scope";
  * What a signing puts where: the document's page count and its places, each
  * a form field by name with its role, the pages its widgets are on, the
  * label printed beside it and whether the task agent marked it
- * (`agent/lib/signatures/places.ts`).
+ * (`agent/lib/signatures/places.ts`); `dateGiven` when its date is the day
+ * the person named, which stays on any later day (`sign_document`).
  */
 const signingPlanSchema = z.object({
+  dateGiven: z.boolean().optional(),
   pages: z.number().int().min(1).max(500),
   places: z
     .array(

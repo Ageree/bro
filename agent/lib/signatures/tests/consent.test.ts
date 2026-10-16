@@ -4,8 +4,13 @@ import { describe, expect, it, vi } from "vitest";
 // Share links are signed with the sandbox key, read when the modules load.
 vi.stubEnv("SANDBOX_SIGNING_KEY", "33".repeat(32));
 const { signAnswer } = await import("@agent/lib/browser-use/said");
-const { deliveredShareIds, deliveryVerdicts, signaturePhotoCandidates } =
-  await import("@agent/lib/signatures/consent");
+const {
+  asksToSign,
+  deliveredShareIds,
+  deliveryVerdicts,
+  signRequest,
+  signaturePhotoCandidates,
+} = await import("@agent/lib/signatures/consent");
 const { sandboxFileLinkSignature } = await import("@agent/lib/sandbox/keys");
 
 const shareId = "a1".repeat(12);
@@ -110,6 +115,192 @@ describe("the person's answer to the signing question", () => {
   it("is no for a refusal, and for signing it themselves", () => {
     expect(signAnswer(["не подписывай"])).toBe("no");
     expect(signAnswer(["нет, подпишу сам ручкой"])).toBe("no");
+  });
+});
+
+describe("the person's own request to sign", () => {
+  it.each([
+    ["Заполни анкету и подпиши", true],
+    ["распишись за меня", true],
+    ["можешь подписать за меня?", true],
+    ["не забудь подписать", true],
+    ["поставь мою подпись и дату", true],
+    ["моей сохранённой подписью, пожалуйста", true],
+    ["Подпись моя на фотке, если нужна", true],
+    ["fill it in and sign it", true],
+    ["put my signature on page 2", true],
+    ["не подписывай", false],
+    ["пришли без подписи", false],
+    ["Заполни анкету, подпишу сам", false],
+    ["сама распишусь ручкой", false],
+    ["подпись тут не нужна", false],
+    ["поставь подпись мужа", false],
+    ["подпишись на рассылку", false],
+    ["Вот бланк\n[файл: Подпишите и верните.pdf (application/pdf)]", false],
+    ["моя подпись уже стоит на первой странице", false],
+    ["I'll sign it myself", false],
+    ["sign up on the site", false],
+    ["Заполни анкету", false],
+    // Someone else's words, quoted.
+    [
+      "Вот что пишет хозяин: «Подпишите договор и верните». Что думаешь?",
+      false,
+    ],
+    ['He wrote: "Sign it and send it back". Thoughts?', false],
+    ["> Подпишите и верните\nчто скажешь?", false],
+    // They want to see it first.
+    ["Сначала пришли посмотреть, потом подпиши", false],
+    ["подпиши, но сначала покажи мне", false],
+    ["Скинь, я гляну, потом подпишешь", false],
+    ["Заполни анкету, потом подпиши", true],
+    // Whether Bro can, and a request about the document at hand.
+    ["Можешь подписать такие документы?", false],
+    ["Можешь подписать его?", true],
+    // A signature to keep, and one to sign with.
+    ["Вот моя подпись, сохрани, пригодится", false],
+    ["Сохрани мою подпись на фото", false],
+    ["Вот моя подпись, сохрани её и подпиши анкету", true],
+    // For someone else.
+    ["Подпиши за маму, она разрешила", false],
+    ["поставь подпись директора", false],
+    ["Sign the lease for my wife", false],
+    ["Sign it with John's signature", false],
+    ["распишись за него", false],
+    ["Подпиши от имени мужа", false],
+    ["Подпиши вместо мужа", false],
+    ["Подпиши договор от лица директора", false],
+    ["Подпиши договор за него", false],
+    ["Sign it as my husband", false],
+    ["Please sign the lease as my landlord requested", true],
+    ["Sign it on his behalf", false],
+    ["Here's my signature, sign it", true],
+    ["Подпиши договор, деньги за него я перевёл", true],
+    // A parent signs their child's papers with their own signature.
+    ["Подпиши согласие за сына", true],
+    ["Подпиши заявление за дочь, я её мама", true],
+    ["Fill in the consent form for my son and sign it", true],
+  ])("«%s» asks to sign: %s", (text, asks) => {
+    expect(asksToSign(text)).toBe(asks);
+  });
+
+  it("takes «Сможешь подписать?» for a request only with the document in the same messages", () => {
+    expect(asksToSign("Сможешь подписать?")).toBe(false);
+    expect(asksToSign("Сможешь подписать?", true)).toBe(true);
+    expect(asksToSign("Сможешь подписать такие документы?", true)).toBe(false);
+  });
+
+  it("is read from their newest messages only, never from a report", () => {
+    const reply: ModelMessage = { content: "Готово.", role: "assistant" };
+    const report = Object.assign(
+      {
+        content: "Background task task_1 (task) is completed.\n\nПодпиши её.",
+        role: "user" as const,
+      },
+      { kind: "execution.background_task" }
+    );
+    expect(
+      signRequest([person("Заполни анкету"), person("и подпиши")])
+    ).toMatchObject({ kind: "asks", words: "и подпиши" });
+    expect(signRequest([person("подпиши"), reply, person("спасибо")])).toBe(
+      null
+    );
+    expect(signRequest([person("Заполни анкету"), report])).toBe(null);
+  });
+
+  it("is no request when their newest message asks a question of its own about text sent before it", () => {
+    expect(
+      signRequest([
+        person("Подпишите, пожалуйста, договор и пришлите обратно до пятницы."),
+        person("Что думаешь по договору? Всё норм?"),
+      ])
+    ).toBe(null);
+    expect(
+      signRequest([
+        person("Вот договор", [
+          staged(
+            "/workspace/attachments/fedcba9876543210/dogovor.pdf",
+            "application/pdf"
+          ),
+        ]),
+        person("Можешь подписать его?"),
+      ])
+    ).toMatchObject({ kind: "asks" });
+    expect(
+      signRequest([
+        person(
+          "Добрый день! Подпишите, пожалуйста, договор и пришлите обратно до пятницы.\nЧто думаешь по договору? Всё норм?"
+        ),
+      ])
+    ).toBe(null);
+    expect(signRequest([person("Заполни и подпиши, ок?")])).toMatchObject({
+      kind: "asks",
+    });
+  });
+
+  it("does not sign at once a document whose report came into the person's turn before they saw it", () => {
+    const gaveTask = (taskId: string): ModelMessage[] => [
+      {
+        content: [
+          {
+            input: { message: "Заполни заявление" },
+            toolCallId: `call-${taskId}`,
+            toolName: "task",
+            type: "tool-call",
+          },
+        ],
+        role: "assistant",
+      },
+      {
+        content: [
+          {
+            output: {
+              type: "json",
+              value: { agentId: `ag_${taskId}`, status: "working", taskId },
+            },
+            toolCallId: `call-${taskId}`,
+            toolName: "task",
+            type: "tool-result",
+          },
+        ],
+        role: "tool",
+      },
+    ];
+    const reportOf = (taskId: string) =>
+      Object.assign(
+        {
+          content: `Background task ${taskId} (task) is completed.\n\nГотово.`,
+          role: "user" as const,
+        },
+        { kind: "execution.background_task" }
+      ) satisfies ModelMessage;
+    const reply = sent({ attachments: [] });
+    const before = [
+      person("Заполни заявление"),
+      ...gaveTask("task_a"),
+      ...reply,
+      reportOf("task_a"),
+    ];
+    expect(signRequest([...before, person("И анкету заполни и подпиши")])).toBe(
+      null
+    );
+    expect(
+      signRequest([...before, ...reply, person("Подпиши его")])
+    ).toMatchObject({ kind: "asks" });
+  });
+
+  it("tells a request for someone else apart, to refuse it", () => {
+    expect(signRequest([person("Подпиши за мужа")])).toEqual({
+      kind: "someone_else",
+    });
+  });
+
+  it("keys each request apart, the same words in a later message too", () => {
+    const reply: ModelMessage = { content: "Готово.", role: "assistant" };
+    const first = signRequest([person("подпиши")]);
+    const again = signRequest([person("подпиши"), reply, person("подпиши")]);
+    expect(first).toMatchObject({ kind: "asks" });
+    expect(again).toMatchObject({ kind: "asks" });
+    expect(first).not.toEqual(again);
   });
 });
 

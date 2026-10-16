@@ -6,7 +6,7 @@ regenerating the patch below against the new dist.
 
 ## Remaining patches
 
-`eve@0.62.0.patch` carries seven independent hunks:
+`eve@0.62.0.patch` carries eight independent hunks:
 
 - The declaration bridge redirects Eve's incomplete bundled Chat SDK
   declaration exports to the explicitly installed `chat` package. Eve's runtime
@@ -87,6 +87,21 @@ regenerating the patch below against the new dist.
   into each memory tool's persisted metadata either.
   `tests/agent/memory-tools-attachments.test.ts` covers it. Drop the hunk once
   eve keeps non-JSON history out of that closure on its own.
+- A tool call that never got a result leaves the prompt. The AI SDK refuses a
+  history in which a call has no `tool-result` before the next user message or
+  at the end (`AI_MissingToolResultsError` in `convertToLanguageModelPrompt`),
+  and it does so before any model middleware runs, so one such call recorded
+  in a session failed every later turn of it (16.10: `task_cancel`, which eve
+  never ran, see `docs/dev-notes.md`). `harness/messages.js`
+  `normalizeModelMessages`, which eve applies to each step's projected history
+  on its way to the model, also drops the calls the AI SDK would refuse, by the
+  AI SDK's own rule (answered by a later `tool-result`, approved or declined on
+  a card, or run by the provider are kept), their approval requests, the
+  results a later turn may still bring for them, and an assistant message the
+  drop leaves with nothing but reasoning. Untouched messages stay the
+  same objects; the session history keeps the call. Only the prompt that
+  would have failed changes. `tests/agent/unanswered-tool-call.test.ts`
+  covers it. Drop the hunk once eve never records a call without its result.
 
 To change the patch, run `pnpm patch eve@0.62.0`, edit the files in the
 reported directory, and `pnpm patch-commit <dir>` so every hunk and the
@@ -97,16 +112,22 @@ declare `message` themselves, the schedule handle once
 `ScheduleHandlerArgs` declares `attachSession`, the approval hunks once
 `tests/agent/approval-memory-recall.test.ts` and the approval eval in
 `evals/agent/integrations.eval.ts` pass without them, the rebind hunk once
-`tests/agent/dynamic-tool-rebind.test.ts` passes without it, and the memory
-tools hunk once `tests/agent/memory-tools-attachments.test.ts` does.
+`tests/agent/dynamic-tool-rebind.test.ts` passes without it, the memory
+tools hunk once `tests/agent/memory-tools-attachments.test.ts` does, and the
+unanswered call hunk once `tests/agent/unanswered-tool-call.test.ts` does.
 
 Photon's iMessage adapter posts into a conversation without a reply anchor, so
 no provider reply option is patched in any more.
 
 The old Eve patches for `ask_question` and `task_cancel` exports are no longer
-needed: both now have public entry points. Callback authorization is composed
+needed: both now have public entry points. A re-exported `task_cancel` does not
+work in 0.62, though: eve gives the `task-control` dispatch only to a
+framework-owned module, and a re-export under `agent/tools/` is
+application-owned (`createRegisteredHarnessToolDefinition` in
+`execution/node-step.js`), so its calls never ran. Bro has no `task_cancel`
+(`tests/agent/tools/executable.test.ts`). Callback authorization is composed
 in `agent/channels/eve.ts` using public `defineChannel` and `routeAuth` APIs.
 
-Apart from the memory recall placement, the replayed tool error and the
-dynamic tool rebind above, no task-loop or prompt-placement patch is applied
-locally.
+Apart from the memory recall placement, the replayed tool error, the dynamic
+tool rebind and the unanswered tool call above, no task-loop or
+prompt-placement patch is applied locally.

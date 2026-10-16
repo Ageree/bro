@@ -146,8 +146,9 @@ def _truth(printed) -> dict:
         "expected_values": {
             "fio": "Образцов Илья Викторович",
             "otdel": "отдел продаж",
-            "date": "{today:%d.%m.%Y}",
-            "signature": "the saved sample podpis_vladelec, only after a plain yes",
+            # The person asks for yesterday's date (owner 16.10: a request to sign is the consent, no question).
+            "date": "{yesterday:%d.%m.%Y}",
+            "signature": "the saved sample podpis_vladelec, at once on the request to sign",
         },
     }
 

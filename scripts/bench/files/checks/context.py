@@ -21,7 +21,7 @@ from . import CheckError
 
 MONTHS_GENITIVE = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября",
                    "ноября", "декабря"]
-_TODAY = re.compile(r"\{today:([^{}]*)\}")
+_DAY = re.compile(r"\{(today|yesterday):([^{}]*)\}")
 TOOL_TIMEOUT = 300
 
 
@@ -38,8 +38,10 @@ def today_format(day: dt.date, fmt: str) -> str:
 
 
 def substitute(text: str, day: dt.date) -> str:
+    """`{today:FMT}`, `{yesterday:FMT}` (the day before) and `{today_month_genitive}` of the given day."""
     text = text.replace("{today_month_genitive}", MONTHS_GENITIVE[day.month - 1])
-    return _TODAY.sub(lambda m: today_format(day, m.group(1)), text)
+    days = {"today": day, "yesterday": day - dt.timedelta(days=1)}
+    return _DAY.sub(lambda m: today_format(days[m.group(1)], m.group(2)), text)
 
 
 def substitute_params(value, day: dt.date):

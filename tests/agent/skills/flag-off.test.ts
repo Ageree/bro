@@ -35,16 +35,6 @@ async function promptsOf(environment: Record<string, string>) {
   );
 }
 
-/**
- * The turns that read signing as asked like paying: every interactive one,
- * so a session's system prefix stays the same from turn to turn.
- */
-const signingKinds: readonly string[] = [
-  "browser-result",
-  "interactive",
-  "telegram",
-];
-
 beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-10-02T09:41:00Z"));
@@ -65,9 +55,9 @@ const deployments = {
     environment: {},
     hashes: {
       "browser-result":
-        "6ac81fffd742075468bf4460a3cd7b7eb8898442db0f6d30abaeec421018b2de",
+        "6d88b2b762b2df61f8f4155ed13108bdecddd929adaac262be4545ca4f7a8dd1",
       interactive:
-        "6ac81fffd742075468bf4460a3cd7b7eb8898442db0f6d30abaeec421018b2de",
+        "6d88b2b762b2df61f8f4155ed13108bdecddd929adaac262be4545ca4f7a8dd1",
       "proactive-worker":
         "7df7cbe827c0f11e610b60414743753fe679f220f5ee6dd92690616c38571d10",
       "scheduled-report":
@@ -75,16 +65,16 @@ const deployments = {
       "scheduled-worker":
         "4d2af5e41a2254d3d8a439f9084d7befac2776145ca60bf3fb1f4831fdea7e2a",
       telegram:
-        "6ac81fffd742075468bf4460a3cd7b7eb8898442db0f6d30abaeec421018b2de",
+        "6d88b2b762b2df61f8f4155ed13108bdecddd929adaac262be4545ca4f7a8dd1",
     },
   },
   full: {
     environment: fullDeployment,
     hashes: {
       "browser-result":
-        "ad04c01f4d5bb0406fbb52d45b9bd35b0e4bdfcc6e096a0710661dbb790a202b",
+        "5698e48ca427932c386bf8e2916e5fd236a28d3c232e599740b945e849548552",
       interactive:
-        "ad04c01f4d5bb0406fbb52d45b9bd35b0e4bdfcc6e096a0710661dbb790a202b",
+        "5698e48ca427932c386bf8e2916e5fd236a28d3c232e599740b945e849548552",
       "proactive-worker":
         "7df7cbe827c0f11e610b60414743753fe679f220f5ee6dd92690616c38571d10",
       "scheduled-report":
@@ -92,7 +82,7 @@ const deployments = {
       "scheduled-worker":
         "b7c516ecd20c98fe2b9260fdd63ac0b3c67455298db3f75ce19f78351a81728c",
       telegram:
-        "ad04c01f4d5bb0406fbb52d45b9bd35b0e4bdfcc6e096a0710661dbb790a202b",
+        "5698e48ca427932c386bf8e2916e5fd236a28d3c232e599740b945e849548552",
     },
   },
 };
@@ -189,7 +179,7 @@ describe("instructions outside the skills pilot", () => {
     }
   });
 
-  it("add the rules for signing and its question only where the workspace signs", async () => {
+  it("add the rules for signing only where the workspace signs", async () => {
     // Bro's own code sandbox runs the kit that stamps.
     const agent = {
       ...fullDeployment,
@@ -207,26 +197,16 @@ describe("instructions outside the skills pilot", () => {
     ).toEqual(before);
     const after = await promptsOf({ ...files, SIGN_WORKSPACES: "workspace-1" });
     const { instructionText } = await import("@agent/lib/skills/catalog");
-    const { withSigningConsent } = await import("@agent/lib/skills/signing");
     const sign = instructionText("sign", "full");
-    // The block in a person's turns, the question before signing in every
-    // turn that can sign, and nothing else.
-    expect(
-      Object.keys(turnKinds).filter((_kind, index) =>
-        after[index]?.includes(sign)
-      )
-    ).toEqual(["interactive", "telegram"]);
+    // The block in a person's turns, and nothing else: whether to ask is
+    // the tool's (`sign_document`).
     expect(
       Object.keys(turnKinds).filter(
         (_kind, index) => after[index] !== before[index]
       )
-    ).toEqual(signingKinds);
+    ).toEqual(["interactive", "telegram"]);
     expect(after.map((prompt) => prompt.replace(`\n\n${sign}`, ""))).toEqual(
-      before.map((prompt, index) =>
-        signingKinds.includes(Object.keys(turnKinds)[index] ?? "")
-          ? withSigningConsent(prompt)
-          : prompt
-      )
+      before
     );
   });
 

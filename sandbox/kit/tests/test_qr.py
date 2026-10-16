@@ -7,7 +7,7 @@ import subprocess
 import tempfile
 import unittest
 
-from brokit.qr import gost_payload
+from brokit.qr import gost_payload, qr_matrix
 from brokit.util import KitError
 from tests.cli_run import has, kit
 
@@ -48,6 +48,31 @@ class QrTest(unittest.TestCase):
         for broken in ({"Purpose": "оплата | аванс"}, {"BIC": "04452522"}, {"Name": ""}):
             with self.assertRaises(KitError):
                 gost_payload(dict(FIELDS, **broken))
+
+    def test_business_account_needs_the_payee_inn(self):
+        # Bank apps refuse a payment to an organisation's or ИП's account
+        # (405-407, 40802, 40821) without the payee's INN.
+        without_inn = {key: value for key, value in FIELDS.items() if key != "PayeeINN"}
+        with self.assertRaises(KitError) as caught:
+            gost_payload(without_inn)
+        self.assertEqual(caught.exception.code, "bad_fields")
+        self.assertIn("PayeeINN", caught.exception.error)
+        # A person's own account (40817) is paid without it.
+        self.assertTrue(gost_payload(dict(without_inn, PersonalAcc="40817810938000000001")).startswith("ST00012|"))
+
+    def test_ready_gost_text_is_checked_like_fields(self):
+        def text(fields):
+            return "|".join(["ST00012"] + ["%s=%s" % item for item in fields.items()])
+
+        without_inn = {key: value for key, value in FIELDS.items() if key != "PayeeINN"}
+        code, result = kit("qr", "--text", text(without_inn), "-o", self.path("ready.png"))
+        self.assertEqual((code, result.get("code")), (2, "bad_fields"))
+        with self.assertRaises(KitError):
+            qr_matrix(text(without_inn))
+        code, result = kit("qr", "--text", text(FIELDS), "-o", self.path("ready.png"))
+        self.assertEqual(code, 0, result)
+        self.assertEqual(result["payload"], gost_payload(FIELDS))
+        self.assertTrue(any(w.startswith("account_checksum") for w in result["warnings"]))
 
     def test_account_that_does_not_match_the_bic_is_flagged(self):
         code, result = kit("qr", "--gost", self.fields, "-o", self.path("pay.png"))

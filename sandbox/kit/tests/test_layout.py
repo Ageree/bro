@@ -31,6 +31,39 @@ def vector_form(path):
     return path
 
 
+def small_cells_form(path):
+    """Roubles in a box and kopecks in 2 cells, a date in ДД and ММ cells, a 3-cell code, a wide table row."""
+    from reportlab.pdfgen import canvas
+
+    fonts()
+    c = canvas.Canvas(path, pagesize=A4)
+    c.setFont("TestSans", 11)
+    c.drawString(60, 800, "Платёжное поручение на оплату услуг")
+    c.setLineWidth(0.8)
+    c.drawString(60, 760, "Сумма")
+    c.rect(110, 756, 90, 18)
+    c.drawString(204, 760, "руб.")
+    for i in range(2):
+        c.rect(KOPECKS_X + i * 14, 756, 14, 18)
+    c.drawString(264, 760, "коп.")
+    c.drawString(60, 700, "Дата")
+    for start in (110, 146):
+        for i in range(2):
+            c.rect(start + i * 14, 696, 14, 18)
+    c.drawString(140, 700, ".")
+    c.drawString(60, 640, "Код")
+    for i in range(3):
+        c.rect(110 + i * 14, 636, 14, 18)
+    for i in range(3):
+        c.rect(60 + i * 150, 560, 150, 22)
+    c.showPage()
+    c.save()
+    return path
+
+
+KOPECKS_X = 232
+
+
 def near(a, b, tolerance):
     return all(abs(x - y) <= tolerance for x, y in zip(a, b))
 
@@ -72,6 +105,18 @@ class Layout(unittest.TestCase):
         self.assertEqual(comb["cells"], 8)
         self.assertEqual(comb["label"], "ИНН")
         self.assertEqual(len(page["blanks"]), 5, page["blanks"])
+
+    def test_two_to_four_character_cells_are_combs(self):
+        page = self.blanks(small_cells_form(os.path.join(self.directory, "cells.pdf")))
+        combs = sorted((b["box"][1], b["box"][0], b["cells"]) for b in page["blanks"] if b["kind"] == "comb")
+        self.assertEqual([cells for _, _, cells in combs], [2, 2, 2, 3], combs)
+        # Kopecks, ДД, ММ, the code: top to bottom, left to right.
+        self.assertTrue(near([x for _, x, _ in combs], [KOPECKS_X, 110, 146, 110], 1.5), combs)
+        # The roubles box and the table row of wide cells stay boxes.
+        boxes = sorted(b["box"] for b in page["blanks"] if b["kind"] == "box")
+        self.assertEqual(len(boxes), 2, page["blanks"])
+        self.assertTrue(near(boxes[0], [60, A4[1] - 582, 510, A4[1] - 560], 1.5), boxes)
+        self.assertTrue(near(boxes[1], [110, A4[1] - 774, 200, A4[1] - 756], 1.5), boxes)
 
     def test_skewed_scan_one_blank_per_rule(self):
         page = self.blanks(self.scan)

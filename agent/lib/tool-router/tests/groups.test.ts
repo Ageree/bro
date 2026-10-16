@@ -106,7 +106,6 @@ describe("the tool router's groups", () => {
       "workstreams__forget_all",
       "schedules-update",
       "phone-disable",
-      "task_cancel",
       "contact-delete",
     ]) {
       expect([name, routerCoreTool(name)]).toEqual([name, true]);

@@ -6,7 +6,11 @@
    outside them must be clearly darker than the page (a table, not the same
    paper in a shadow: a page filling the frame would otherwise be cropped),
    else the photo is only deskewed and a warning asks for `--corners` read with
-   `look --grid`.
+   `look --grid`. A sheet covers its corner quad whole; when the component
+   leaves a wedge of background in it (a palm or a light table stuck to the
+   sheet), what is far more saturated than the paper and comes in from the
+   frame edge is dropped and the corners found again; if that does not give a
+   clean quad either, the first corners stay with a warning to check them.
 2. Perspective: a homography from an 8x8 linear system into
    Image.transform(PERSPECTIVE); `--paper a4` gives the page 1:sqrt(2), `auto`
    snaps to A4 when the measured ratio is within A4_SNAP of it.
@@ -17,12 +21,21 @@
    The turn is reported; the model checks the result with look.
 
 Several photos make one PDF in the given order at 300 dpi.
+
+5. `--max-mb N` (N million bytes, the stricter reading of a portal's «до N МБ»):
+   while the file is bigger, it is written again at 200, then 150 dpi, then
+   with JPEG quality 60 instead of 80; black and white pages are lossless, so
+   only their dpi goes down. The result always gives `bytes` and the final
+   `dpi` and `quality`; a file that does not fit even then is removed and
+   refused (too_big).
 """
+
+import os
 
 import math
 
 from brokit import producer
-from brokit.img.raster import label_components, load_photo, otsu
+from brokit.img.raster import border_connected, label_components, load_photo, otsu
 from brokit.util import KitError, need_file, out_path, parser
 
 DETECT_SIDE = 1000
@@ -30,11 +43,27 @@ MIN_PAGE_SHARE = 0.25
 # Gray levels between the page and what lies outside its corners: a table is
 # 100+ darker, the shaded half of a page that fills the frame about 15.
 MIN_EDGE_CONTRAST = 40
+# Share of its corner quadrilateral a page (holes filled) covers. A sheet
+# covers it whole; a hand or a wooden edge stuck to the sheet drags a corner
+# out and leaves a wedge of background inside (a receipt on a palm: 0.89).
+MIN_QUAD_FILL = 0.97
+# Saturation above the paper's own that is skin or wood, not paper: paper is
+# near neutral even under warm light (a receipt on a palm: paper 0.13, skin
+# 0.44), and the floor keeps a tinted sheet's own shades on it.
+PAPER_SATURATION_MARGIN = 0.15
+MIN_SKIN_SATURATION = 0.3
 A4 = math.sqrt(2)
 A4_SNAP = 0.06
 A4_WIDTH_300DPI = 2480
 DPI = 300
 MAX_SIDE = 4200
+PDF_QUALITY = 80
+JPEG_QUALITY = 88
+# What --max-mb gives up, in order: pixels (text stays readable at 150 dpi),
+# then JPEG quality.
+SHRINK_DPI = (200, 150)
+SHRINK_QUALITY = 60
+MEGABYTE = 1000 * 1000
 
 
 def main(argv):
@@ -45,7 +74,10 @@ def main(argv):
     p.add_argument("--mode", default="color", choices=("color", "gray", "bw"))
     p.add_argument("--paper", default="auto", choices=("auto", "a4"))
     p.add_argument("--no-turn", action="store_true", help="never turn the page by its text")
+    p.add_argument("--max-mb", type=float, help="the most the file may weigh, in millions of bytes")
     args = p.parse_args(argv)
+    if args.max_mb is not None and not args.max_mb > 0:
+        raise KitError("bad_args", "--max-mb must be above 0")
     for photo in args.photos:
         need_file(photo)
     out_path(args.output, *args.photos)
@@ -67,22 +99,62 @@ def main(argv):
         warnings.extend("%s: %s" % (photo, w) for w in info.pop("warnings"))
     if pdf:
         images = same_a4_size(images, pages)
-        first, rest = images[0], images[1:]
-        # Pillow stores colour and gray pages as JPEG (quality applies) and black
-        # and white ones losslessly, where a quality setting is an error.
-        options = {} if args.mode == "bw" else {"quality": 80}
-        first.save(
-            args.output,
+    # Pillow stores colour and gray PDF pages as JPEG (quality applies) and
+    # black and white ones losslessly, where a quality setting is an error.
+    lossy = not args.output.lower().endswith(".png") and not (pdf and args.mode == "bw")
+    quality = (PDF_QUALITY if pdf else JPEG_QUALITY) if lossy else None
+    native = [page["dpi"] for page in pages]
+    steps = [(dpi, quality) for dpi in [native[0]] + [d for d in SHRINK_DPI if d < native[0]]]
+    if lossy:
+        steps.append((steps[-1][0], SHRINK_QUALITY))
+    for dpi, quality in steps:
+        size = save(images, pages, native, args.output, pdf, dpi, quality)
+        if args.max_mb is None or size <= args.max_mb * MEGABYTE:
+            break
+    else:
+        os.remove(args.output)
+        raise KitError(
+            "too_big",
+            "%.2f MB even at %d dpi%s: more than --max-mb %g"
+            % (size / MEGABYTE, dpi, ", JPEG quality %d" % quality if quality else "", args.max_mb),
+            "split the photos into several files (one per document or a few pages each); text pages also fit as --mode gray or bw",
+        )
+    return {"output": args.output, "pages": pages, "bytes": size, "dpi": dpi, "quality": quality, "warnings": warnings}
+
+
+def save(images, pages, native, output, pdf, dpi, quality):
+    """Writes the pages at `dpi` (the first page's; `native` are their own dpi) and returns the file's size in bytes."""
+    scale = min(1.0, dpi / native[0])
+    if scale < 1:
+        images = [shrunk(image, scale) for image in images]
+    for image, page, own in zip(images, pages, native):
+        page["size_px"] = [image.width, image.height]
+        page["dpi"] = round(own * scale)
+    options = {} if quality is None else {"quality": quality}
+    if pdf:
+        images[0].save(
+            output,
             "PDF",
             save_all=True,
-            append_images=rest,
-            resolution=pages[0]["dpi"],
+            append_images=images[1:],
+            resolution=dpi,
             producer=producer(),
             **options,
         )
     else:
-        images[0].save(args.output, dpi=(pages[0]["dpi"], pages[0]["dpi"]), quality=88)
-    return {"output": args.output, "pages": pages, "warnings": warnings}
+        images[0].save(output, dpi=(dpi, dpi), **options)
+    return os.path.getsize(output)
+
+
+def shrunk(image, scale):
+    """The image scaled down; black and white through gray, so thin strokes stay whole."""
+    from PIL import Image
+
+    size = (max(1, round(image.width * scale)), max(1, round(image.height * scale)))
+    if image.mode == "1":
+        gray = image.convert("L").resize(size, Image.LANCZOS)
+        return gray.point(lambda value: 255 if value >= 128 else 0).convert("1")
+    return image.resize(size, Image.LANCZOS)
 
 
 def same_a4_size(images, pages):
@@ -116,15 +188,42 @@ def parse_corners(text):
 
 
 def find_corners(image):
-    """(TL, TR, BR, BL) of the page in photo pixels, or None."""
+    """(TL, TR, BR, BL) of the page in photo pixels or None, and False when that outline is doubtful."""
     import numpy as np
-    from PIL import Image, ImageDraw, ImageFilter
+    from PIL import ImageFilter
 
     scale = min(1.0, DETECT_SIDE / max(image.size))
-    small = image.convert("L").resize((max(1, round(image.width * scale)), max(1, round(image.height * scale))))
-    small = small.filter(ImageFilter.GaussianBlur(3))
+    size = (max(1, round(image.width * scale)), max(1, round(image.height * scale)))
+    small = image.convert("L").resize(size).filter(ImageFilter.GaussianBlur(3))
     gray = np.asarray(small, dtype=np.float32)
     bright = gray > otsu(gray)
+    found = page_quad(bright, gray)
+    if found is None:
+        return None, True
+    points, fill, page = found
+    if fill >= MIN_QUAD_FILL:
+        return corners_in_photo(points, scale), True
+    # Something as bright as paper sticks to the sheet. A hand or a light table
+    # is far more colourful than the brightest part of the page: drop it and
+    # look again. Only what comes in from the frame edge goes, so a coloured
+    # header printed on the sheet is not cut off with it.
+    color = image.convert("RGB").resize(size).filter(ImageFilter.GaussianBlur(3))
+    saturation = np.asarray(color.convert("HSV"), dtype=np.float32)[..., 1] / 255
+    paper = float(np.median(saturation[page & (gray >= np.percentile(gray[page], 90))]))
+    colourful = bright & (saturation >= max(MIN_SKIN_SATURATION, paper + PAPER_SATURATION_MARGIN))
+    retry = page_quad(bright & ~border_connected(colourful, step=2), gray)
+    # The page without the hand is the better outline, but a thumb over the
+    # corner itself still hides it: the corners come with a request to check.
+    if retry is not None and retry[1] > fill:
+        return corners_in_photo(retry[0], scale), False
+    return corners_in_photo(points, scale), False
+
+
+def page_quad(bright, gray):
+    """(extreme points, filled share of their quad, page mask) of the largest bright component, or None."""
+    import numpy as np
+    from PIL import Image, ImageDraw
+
     labels, count = label_components(bright, 1 << 30)
     if not count:
         return None
@@ -141,15 +240,20 @@ def find_corners(image):
         (xs[np.argmax(total)], ys[np.argmax(total)]),
         (xs[np.argmin(diff)], ys[np.argmin(diff)]),
     ]
-    corners = [((x + 0.5) / scale, (y + 0.5) / scale) for x, y in points]
-    if not convex(corners) or quad_area(corners) < MIN_PAGE_SHARE * image.width * image.height:
+    h, w = page.shape
+    if not convex(points) or quad_area(points) < MIN_PAGE_SHARE * w * h:
         return None
-    quad = Image.new("L", small.size, 0)
+    quad = Image.new("L", (w, h), 0)
     ImageDraw.Draw(quad).polygon([(float(x) + 0.5, float(y) + 0.5) for x, y in points], fill=255)
     inside = np.asarray(quad) > 0
     if (~inside).mean() > 0.02 and gray[inside].mean() - gray[~inside].mean() < MIN_EDGE_CONTRAST:
         return None
-    return corners
+    solid = ~border_connected(~page, step=2)
+    return points, float((solid & inside).sum() / max(1, inside.sum())), page
+
+
+def corners_in_photo(points, scale):
+    return [((x + 0.5) / scale, (y + 0.5) / scale) for x, y in points]
 
 
 def convex(points):
@@ -313,7 +417,12 @@ def scan_page(path, corners, mode, paper, turn):
     warnings = []
     auto = corners is None
     if auto:
-        corners = find_corners(image)
+        corners, clean_outline = find_corners(image)
+        if corners is not None and not clean_outline:
+            warnings.append(
+                "the page outline is not a clean quadrilateral (a hand or an object on its edge?): "
+                "check the result with look; if an edge is off, pass --corners read with look --grid"
+            )
     else:
         corners = [(x * scale, y * scale) for x, y in corners]
         # A corner far off the photo would only stretch the page into a huge,

@@ -10,6 +10,7 @@ import unpackScript from "../../../sandbox/kit/boot/unpack.py?raw";
 // sandbox/kit/brokit and compares.
 import brokitAes from "../../../sandbox/kit/brokit/aes.py?raw";
 import brokitCli from "../../../sandbox/kit/brokit/cli.py?raw";
+import brokitIcs from "../../../sandbox/kit/brokit/ics.py?raw";
 import brokitInit from "../../../sandbox/kit/brokit/__init__.py?raw";
 import brokitLabels from "../../../sandbox/kit/brokit/labels.py?raw";
 import brokitLook from "../../../sandbox/kit/brokit/look.py?raw";
@@ -18,6 +19,7 @@ import brokitQr from "../../../sandbox/kit/brokit/qr.py?raw";
 import brokitRender from "../../../sandbox/kit/brokit/render.py?raw";
 import brokitSurvey from "../../../sandbox/kit/brokit/survey.py?raw";
 import brokitUtil from "../../../sandbox/kit/brokit/util.py?raw";
+import brokitVcf from "../../../sandbox/kit/brokit/vcf.py?raw";
 import brokitZipx from "../../../sandbox/kit/brokit/zipx.py?raw";
 import imgBasic from "../../../sandbox/kit/brokit/img/basic.py?raw";
 import imgIdphoto from "../../../sandbox/kit/brokit/img/idphoto.py?raw";
@@ -43,6 +45,7 @@ import pdfWrite from "../../../sandbox/kit/brokit/pdf/write.py?raw";
 import ruAmount from "../../../sandbox/kit/brokit/ru/amount.py?raw";
 import ruDecline from "../../../sandbox/kit/brokit/ru/decline.py?raw";
 import ruInit from "../../../sandbox/kit/brokit/ru/__init__.py?raw";
+import ruPhone from "../../../sandbox/kit/brokit/ru/phone.py?raw";
 import ruRules from "../../../sandbox/kit/brokit/ru/rules.py?raw";
 import ruVacation from "../../../sandbox/kit/brokit/ru/vacation.py?raw";
 
@@ -68,6 +71,7 @@ const kitFiles: readonly (readonly [string, string])[] = [
   ["brokit/__main__.py", brokitMain],
   ["brokit/aes.py", brokitAes],
   ["brokit/cli.py", brokitCli],
+  ["brokit/ics.py", brokitIcs],
   ["brokit/img/__init__.py", imgInit],
   ["brokit/img/basic.py", imgBasic],
   ["brokit/img/idphoto.py", imgIdphoto],
@@ -96,10 +100,12 @@ const kitFiles: readonly (readonly [string, string])[] = [
   ["brokit/ru/__init__.py", ruInit],
   ["brokit/ru/amount.py", ruAmount],
   ["brokit/ru/decline.py", ruDecline],
+  ["brokit/ru/phone.py", ruPhone],
   ["brokit/ru/rules.py", ruRules],
   ["brokit/ru/vacation.py", ruVacation],
   ["brokit/survey.py", brokitSurvey],
   ["brokit/util.py", brokitUtil],
+  ["brokit/vcf.py", brokitVcf],
   ["brokit/zipx.py", brokitZipx],
 ];
 

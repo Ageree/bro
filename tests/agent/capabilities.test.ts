@@ -184,7 +184,6 @@ describe("authored mode capability matrix", () => {
         "calendar-list-events",
         "gmail-read-thread",
         "gmail-search",
-        "task_cancel",
         "web_search",
       ],
     ],
@@ -207,7 +206,6 @@ describe("authored mode capability matrix", () => {
         "gmail-send",
         "list_orders",
         "route_time",
-        "task_cancel",
         "web_search",
       ],
     ],
@@ -245,8 +243,8 @@ describe("authored mode capability matrix", () => {
       vi.stubEnv("BROWSER_USE_API_KEY", undefined);
       vi.stubEnv("AGENCY_WORKSPACES", "");
 
-      // ask_question and task_cancel are eve-native tools that cannot be gated
-      // per mode; neither reaches outside the session. The gateway web_search is
+      // ask_question is an eve-native tool that cannot be gated per mode; it
+      // does not reach outside the session. The gateway web_search is
       // provider-managed; with OpenRouter the search is ours and gated (below).
       expect(names.flat().toSorted()).toEqual(expected.toSorted());
     }

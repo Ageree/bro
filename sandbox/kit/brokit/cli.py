@@ -46,7 +46,7 @@ COMMANDS = {
     ("pdf", "sign-places"): ("brokit.pdf.sign", "places", "pdf sign-places FILE [--mark-token HEX]"),
     ("pdf", "stamp-sign"): ("brokit.pdf.sign", "stamp", "pdf stamp-sign FILE PLAN.json -o OUT"),
     ("img", "signature"): ("brokit.img.signature", "main", "img signature PHOTO -o PNG [--preview PNG] [--height 240]"),
-    ("img", "scan"): ("brokit.img.scan", "main", "img scan PHOTO… -o OUT.pdf|png [--corners x,y,x,y,x,y,x,y] [--mode color|gray|bw] [--paper a4|auto]"),
+    ("img", "scan"): ("brokit.img.scan", "main", "img scan PHOTO… -o OUT.pdf|png [--corners x,y,x,y,x,y,x,y] [--mode color|gray|bw] [--paper a4|auto] [--max-mb N]"),
     ("img", "idphoto"): ("brokit.img.idphoto", "main", "img idphoto PHOTO [--eyes x1,y1,x2,y2] [--chin y] [--size 35x45] [--sheet 10x15] -o OUT"),
     ("img", "convert"): ("brokit.img.basic", "convert", "img convert IN -o OUT"),
     ("img", "resize"): ("brokit.img.basic", "resize", "img resize IN -o OUT (--max PX | --width W | --height H)"),
@@ -65,7 +65,10 @@ COMMANDS = {
     ("ru", "decline"): ("brokit.ru.decline", "main", 'ru decline "Фамилия Имя [Отчество]" --case gen|dat|acc|ins|pre [--gender auto|m|f] [--order fio|if] [--file NAMES.txt]'),
     ("ru", "amount"): ("brokit.ru.amount", "main", "ru amount N [--kop K] [--currency rub|none]"),
     ("ru", "vacation"): ("brokit.ru.vacation", "main", "ru vacation --start DD.MM.YYYY (--days N | --end DD.MM.YYYY) [--extra D,D]  (annual paid leave)"),
-    ("qr", ""): ("brokit.qr", "main", "qr (--gost FIELDS.json | --text T) -o OUT.png|pdf [--size-mm 30]"),
+    ("ru", "phone"): ("brokit.ru.phone", "main", "ru phone NUMBER… [--file F] [--country 7]  (+7… and a dialable tel, extension after a comma)"),
+    ("ics", "write"): ("brokit.ics", "write", "ics write SPEC.json -o OUT.ics  (events, rrule, exdates, alarms)"),
+    ("vcf", "write"): ("brokit.vcf", "write", "vcf write SPEC.json -o OUT.vcf  (vCard 3.0 contacts: name, org, phones, emails)"),
+    ("qr", ""): ("brokit.qr", "main", "qr (--gost FIELDS.json | --text T) -o OUT.png|pdf [--size-mm 30]  (a ready ST00012 text is checked as --gost)"),
 }
 
 GROUPS = sorted({group for group, _ in COMMANDS})

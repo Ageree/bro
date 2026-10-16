@@ -18,10 +18,13 @@ import {
   putInbox,
   markSandboxHoldsPersonFiles,
   type PersonSend,
+  putPersonRequest,
   putPersonSend,
   readSandboxFileWithin,
+  requestByteCap,
 } from "@agent/lib/sandbox/inbox";
 import { taskFilesGuarded, taskFilesOfCaller } from "@agent/lib/sandbox/pilot";
+import { isBackgroundTurnText } from "@shared/chat/background-turn";
 
 /**
  * Who opened the current turn, as its messages tell: a task-report turn
@@ -34,7 +37,10 @@ import { taskFilesGuarded, taskFilesOfCaller } from "@agent/lib/sandbox/pilot";
  * numbers turns again from `turn_0` in a successor run, so the record names
  * the turn's sequence too. eve emits `actions.requested` once per streamed
  * call (`harness/emission.js`), so the record also keeps the step's budget:
- * the files its calls took and when its copying has to end.
+ * the files its calls took and when its copying has to end. And it keeps
+ * the person's own words of the turn, which go to the task agent beside
+ * the files (`putPersonRequest`); a record stored by an earlier release has
+ * none.
  */
 const turnRecord = defineState<{
   readonly background: boolean;
@@ -46,12 +52,14 @@ const turnRecord = defineState<{
     readonly paths: readonly string[];
   } | null;
   readonly turnId: string | null;
+  readonly words?: readonly string[];
 }>("bro.task-files-turn", () => ({
   background: false,
   person: false,
   sequence: null,
   step: null,
   turnId: null,
+  words: [],
 }));
 
 /** The parts of `task`'s input that name the files and the task agent. */
@@ -76,7 +84,43 @@ type TurnCoordinates = Pick<
 >;
 
 function openRecord({ sequence, turnId }: TurnCoordinates) {
-  return { background: false, person: false, sequence, step: null, turnId };
+  return {
+    background: false,
+    person: false,
+    sequence,
+    step: null,
+    turnId,
+    words: [],
+  };
+}
+
+/**
+ * What the person wrote in one message: never eve's delivery of background
+ * work, nor a turn Bro opened for itself (`backgroundTurnMarker`), nor a
+ * blank one. The text is eve's summary of the message, a file in it shown
+ * as `[file: name (type)]`.
+ */
+function personWords(data: HookEvent<"message.received">["data"]) {
+  const { kind, message } = data;
+  if (
+    kind !== undefined ||
+    opensAsBackgroundTask(message) ||
+    isBackgroundTurnText(message) ||
+    message.trim() === ""
+  ) {
+    return [];
+  }
+  return [message];
+}
+
+/**
+ * The turn's words with one message's more, as long as they hold less than
+ * the cap: past it, `putPersonRequest` cuts them anyway, and the record is
+ * eve's durable state.
+ */
+function withWords(earlier: readonly string[], more: readonly string[]) {
+  const held = earlier.reduce((sum, words) => sum + words.length, 0);
+  return held >= requestByteCap ? earlier : [...earlier, ...more];
 }
 
 /** The person's own message under their own caller, no report's. */
@@ -181,8 +225,9 @@ function stepShare(stepIndex: number, named: readonly string[]) {
  * agent's own hook picks them up. eve drains the step's hooks before the
  * step ends and starts a new task's body only after it, so the file is
  * there before the task agent looks; a message steered into a busy task
- * agent can come first, and its hook asks again for a while. Nothing fails
- * the turn: a file not copied
+ * agent can come first, and its hook asks again for a while. The person's
+ * own words of the turn go beside each call, files or not
+ * (`recordPersonRequests`). Nothing fails the turn: a file not copied
  * is one the task agent reports missing. The logs carry counts only.
  */
 export default defineHook({
@@ -207,7 +252,12 @@ export default defineHook({
               ? current
               : openRecord(event.data);
           if (background) return { ...record, background: true };
-          return personCaller(ctx) ? { ...record, person: true } : record;
+          if (!personCaller(ctx)) return record;
+          return {
+            ...record,
+            person: true,
+            words: withWords(record.words ?? [], personWords(event.data)),
+          };
         });
       } catch (error) {
         console.warn("[task-files] message not recorded", { cause: error });
@@ -247,25 +297,38 @@ export default defineHook({
             AbortSignal.timeout(callsBudgetMs)
           );
         }
+        const sends = calls.flatMap(({ send }) =>
+          send === undefined ? [] : [send]
+        );
+        const filesPilot = taskFilesOfCaller(ctx);
         // The task agent each call starts or continues stays on the web
         // only when the person's turn made the call (`keepOffWebUnlessSent`),
         // which a conversation marked before the files pilot was cleared
-        // still asks: recorded wherever Object Storage is.
-        const recorded = browserContinuation
-          ? 0
-          : await recordPersonSends({
-              sends: calls.flatMap(({ send }) =>
-                send === undefined ? [] : [send]
-              ),
-              sessionId: ctx.session.id,
-              workspaceId,
-            });
-        if (!taskFilesOfCaller(ctx)) return;
+        // still asks: recorded wherever Object Storage is. The person's
+        // words go beside each call where their files would.
+        const [recorded, requests] = browserContinuation
+          ? [0, 0]
+          : await Promise.all([
+              recordPersonSends({
+                sends,
+                sessionId: ctx.session.id,
+                workspaceId,
+              }),
+              filesPilot
+                ? recordPersonRequests({
+                    sends,
+                    sessionId: ctx.session.id,
+                    words: (turnRecord.get().words ?? []).join("\n\n"),
+                    workspaceId,
+                  })
+                : 0,
+            ]);
+        if (!filesPilot) return;
         const paths = namedPaths(calls).filter(
           (path) => !browserContinuation || browserPaths.includes(path)
         );
         if (paths.length === 0) {
-          console.info("[task-files] calls", { recorded });
+          console.info("[task-files] calls", { recorded, requests });
           return;
         }
         const share = stepShare(event.data.stepIndex, paths);
@@ -284,6 +347,7 @@ export default defineHook({
           named: paths.length,
           recorded,
           refused,
+          requests,
         });
       } catch (error) {
         console.warn("[task-files] files not mirrored", {
@@ -304,6 +368,34 @@ async function recordPersonSends(input: {
   const results = await Promise.allSettled(
     input.sends.map(async (send) => {
       await putPersonSend(input.workspaceId, input.sessionId, send, signal);
+    })
+  );
+  return results.filter((result) => result.status === "fulfilled").length;
+}
+
+/**
+ * Stores the person's words of this turn beside each call's message: how
+ * many went. Bro retells the person in `task`'s message and may drop a
+ * condition («кроме последних 4 цифр»), so the task agent reads the words
+ * themselves too. None when the person wrote nothing, as with a file alone.
+ */
+async function recordPersonRequests(input: {
+  readonly sends: readonly PersonSend[];
+  readonly sessionId: string;
+  readonly words: string;
+  readonly workspaceId: string;
+}) {
+  if (input.words.trim() === "") return 0;
+  const signal = AbortSignal.timeout(callsBudgetMs);
+  const results = await Promise.allSettled(
+    input.sends.map(async (send) => {
+      await putPersonRequest(
+        input.workspaceId,
+        input.sessionId,
+        send,
+        input.words,
+        signal
+      );
     })
   );
   return results.filter((result) => result.status === "fulfilled").length;

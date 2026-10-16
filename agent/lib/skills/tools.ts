@@ -138,7 +138,6 @@ const toolGroupEntries = {
   spend_limit: "money",
   standing_permission: "money",
   task: "core",
-  task_cancel: "core",
   timepad_events: "core",
   "watch-create": "schedules",
   web_fetch: "core",
