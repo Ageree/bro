@@ -103,6 +103,15 @@ class VcfTest(unittest.TestCase):
         self.assertEqual(components(second["N"][0][1])[:3], ["Чайковский", "Пётр", "Ильич"])
         self.assertEqual(second["TEL"], [(["TYPE=PREF"], "+74951112233")])
 
+    def test_a_birthday_without_a_year_is_written_without_one(self):
+        # Live 16.10: «ДР мамы 12 мая» was refused, and the card went without it.
+        for given in ("12.05", "--05-12", "--0512"):
+            code, result, raw = self.write({"contacts": [{"name": "Мама", "birthday": given}]})
+            self.assertEqual(code, 0, result)
+            self.assertEqual(parse(raw)[0]["BDAY"], [([], "--05-12")], given)
+        code, result, _ = self.write({"contacts": [{"name": "Мама", "birthday": "31.02"}]})
+        self.assertEqual((code, result["code"]), (2, "bad_spec"))
+
     def test_company_card_and_warnings(self):
         spec = {
             "contacts": [

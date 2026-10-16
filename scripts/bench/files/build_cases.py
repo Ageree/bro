@@ -341,8 +341,10 @@ cases.append({
         chk("pdf_image_near_text", "Акт: подпись рядом со словом «Наниматель» (ближайшим) на странице акта", page_text_regex="(?i)акт приёма|акт приема", anchor="Наниматель", max_distance_pt=160),
         chk("pdf_text_contains", "Акт: показания счётчиков вписаны", page_text_regex="(?i)акт при", all_of=["00123", "00087", "04521", "01873"]),
         # issues: plain correlation passes an upside-down photo and fails a cropped one; score = max(full-frame correlation,
-        # best document-template NCC over scales and shifts), required ≥ 0.6 at 0° and 0.1 above every other rotation.
-        chk("pdf_page_images", "Две последние страницы — фото паспорта, повёрнуты правильно (max(корр. с кадром, лучшая NCC шаблона документа) ≥ 0.6 при 0° и на 0.1 выше, чем при 90/180/270°)", last_pages=2, min_corr=0.6, min_margin=0.1, templates=["pasport_razvorot", "pasport_propiska"]),
+        # best document-template NCC over scales and shifts), required ≥ 0.4 at 0° and 0.15 above every other rotation.
+        # 16.10 an upright photo scored 0.59 at 0° and 0.28 turned: the margin over the turns tells the orientation, 0.6
+        # failed a fair compression.
+        chk("pdf_page_images", "Две последние страницы — фото паспорта, повёрнуты правильно (max(корр. с кадром, лучшая NCC шаблона документа) ≥ 0.4 при 0° и на 0.15 выше, чем при 90/180/270°)", last_pages=2, min_corr=0.4, min_margin=0.15, templates=["pasport_razvorot", "pasport_propiska"]),
         chk("raster_region", "Паспорт читаем после сжатия: на последних 2 стр. изображение ≥ 1100 px по длинной стороне", last_pages=2, min_long_side_px=1100),
         # issues: a short caption («Паспорт, стр. 2–3») on a photo page is fine.
         chk("page_order", "Порядок: договор → акт → паспорт", sequence_regex=["ДОГОВОР НАЙМА", "(?i)акт при", "__image_page__", "__image_page__"], image_page_max_chars=40),
@@ -447,14 +449,16 @@ cases.append({
                    {"row_regex": "(?i)квартир|жкх", "expected": B["by_my_category_net"]["Квартира и ЖКХ"]},
                    {"row_regex": "(?i)маркетплейс", "expected": B["marketplaces_net_after_refund"], "alt_expected": B["marketplaces_net_after_refund"] - 1299.0},
                    {"row_regex": "(?i)связь|подписк", "expected": B["by_my_category_net"]["Связь и подписки"]},
-                   {"row_regex": "(?i)доход", "expected": B["by_my_category_net"]["Доходы"]}]),
+                   # issues: 16.10 the income row counted an incoming transfer from a person too (233 500): a fair reading.
+                   {"row_regex": "(?i)доход", "expected": B["by_my_category_net"]["Доходы"], "alt_expected": 233500.0}]),
         chk("xlsx_find_value", "Итог расходов без переводов на вклад (варианты: с/без исходящих переводов людям 3 700, с/без неттинга возврата WB 1 299)",
             value=SPEND, alt_values=[round(SPEND - 1299.0, 2), round(SPEND + 3700.0, 2), round(SPEND + 3700.0 - 1299.0, 2)], tol=0.01, recalc=True, abs_compare=True,
             forbid_values=[round(SPEND + 50000.0, 2), round(SPEND + 53700.0, 2)],
             # issues: SPEND + 53 700 is also the statement's «Всего списаний», which a reconciliation row cites (16.10: «Всего
             # списаний по выписке (со стр. 1 PDF)»). Only a label naming the statement or the reconciliation is skipped: the
             # answer's own wrong «Итого списаний» stays forbidden.
-            forbid_skip_row_regex="(?i)по выписке|сверк|остат"),
+            # 16.10 also «Всего списаний (все расходы по счёту)» and «Контроль: …» rows of the reconciliation.
+            forbid_skip_row_regex="(?i)по выписке|сверк|остат|всего списаний|контроль"),
         chk("xlsx_find_value", "Остаток на конец из сверки = из выписки", value=B["closing"], tol=0.01, recalc=True),
         chk("xlsx_cell_formula", "Итоги по категориям — формулы", sheet_regex="(?i)катег|итог|свод", min_formula_cells=8, formula_regex="(?i)SUMIF|SUMPRODUCT|СУММЕСЛИ"),
         chk("xlsx_chart", "Есть диаграмма", min_charts=1),
@@ -500,7 +504,8 @@ cases.append({
         # issues: a rotated-only page (no perspective unwarp) correlates 0.1–0.7, but 0° still wins; compare at 128 px.
         chk("pdf_pages_upright", "Каждая страница — чек в правильной ориентации: лучший из шаблонов чеков при 0°, на 0.08 выше остальных поворотов и ≥ 0.2", min_corr=0.2, min_margin=0.08, long_side_px=128),
         chk("pdf_page_order", "Страницы по дате-времени: 1,2,3,4,6,7", expected_receipts=[1, 2, 3, 4, 6, 7]),
-        chk("reply_regex", "Сказал про дубль", pattern="(?i)дубл|повтор|одинаков"),
+        # issues: 16.10 «один и тот же чек … совпали ФН, ФД» said it too.
+        chk("reply_regex", "Сказал про дубль", pattern="(?i)дубл|повтор|одинаков|один и тот же|совпа[лд]"),
         chk("reply_regex", "Сказал про чек вне дат командировки", pattern="(?i)20\\.10|20 октября|вне.*командир|не из командир"),
     ],
     "judge_criteria": [
@@ -863,7 +868,8 @@ cases.append({
             groups=[{"files": ["IMG_2391.jpg", "IMG_2392.jpg", "чек_ozon.pdf", "старое.zip/IMG_0001.jpg"], "folder_regex": "(?i)чек|расход|покупк"},
                     {"files": ["passport.jpg", "snils.jpg"], "folder_regex": "(?i)личн|документ|паспорт"},
                     {"files": [f"DSC_000{i}.JPG" for i in range(1, 9)], "folder_regex": "(?i)фото|photo|отпуск"},
-                    {"files": ["scan0001.pdf", "scan0002.pdf", "Документ (3).docx", "старое.zip/договор.doc"], "folder_regex": "(?i)договор"}]),
+                    # issues: 16.10 the contracts went to «Документы» together: a fair folder for them.
+                    {"files": ["scan0001.pdf", "scan0002.pdf", "Документ (3).docx", "старое.zip/договор.doc"], "folder_regex": "(?i)договор|документ"}]),
         chk("zip_names_have_dates", "Новые имена содержат дату из содержимого (YYYY-MM-DD или DD.MM.YYYY)",
             files={n: d for n, _, _, d in zip_files if d and len(d) == 10 and not n.startswith("polis")}),
         # issues: the old names must be decoded (Cyrillic); rows are counted by distinct old path.

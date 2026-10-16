@@ -37,9 +37,12 @@ import filesInstructions from "@agent/subagents/task/instructions/files";
 import kitInstructions from "@agent/subagents/task/instructions/kit";
 import look from "@agent/subagents/task/tools/look";
 
-/** The sha256 of the kit's lines before the kit router split them. */
+/**
+ * The sha256 of the whole kit's lines, as a task agent outside the kit
+ * router's pilot reads them: a change of a block's words changes it too.
+ */
 const wholeKit =
-  "705b1ef8e76282535c58ee1fded2bea7c8807bf88bae6fbb821c33dbfee4479b";
+  "08966cd48117163aefe9e2c0e211ca502b57d1a3f30e922368d9fcb5f849f964";
 
 /** The task agent's turn whose message is Bro's `job`. */
 function turnOf(job: string) {
