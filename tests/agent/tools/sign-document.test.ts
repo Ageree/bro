@@ -622,6 +622,16 @@ describe("confirming a signing", () => {
     expect(z.object({ reply: z.string() }).parse(no.result).reply).toMatch(
       /do not offer again/u
     );
+    // The report turn cancels a question naming another party's place: the
+    // helper's new file, not this one prepared again.
+    const report = await call(
+      [person("Заполни анкету и подпиши"), taskReport],
+      cancelInput,
+      { opened: "background-message" }
+    );
+    expect(z.object({ reply: z.string() }).parse(report.result).reply).toMatch(
+      /Do not prepare this file again unchanged/u
+    );
   });
 
   it("asks to send the file with the question when it did not reach the person first", async () => {

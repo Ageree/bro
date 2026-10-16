@@ -160,16 +160,21 @@ const failedReply =
   "Nothing was signed. Try confirm once more; if it fails again, tell the person and send the unsigned file.";
 
 /**
- * What to do after a cancel: after their no, nothing more; otherwise the
- * question is gone, so a «да, но …» that still wants it signed needs a new
- * prepare and its question in this turn — the model cancelled on «да, но
- * поставь вчерашнюю дату» and asked in its own words, and the person's
- * «да» then found nothing to confirm (16.10).
+ * What to do after a cancel. In the person's turn: after their no, nothing
+ * more; after a «да, но …» the question is gone, so a new prepare and its
+ * question now — the model cancelled on «да, но поставь вчерашнюю дату» and
+ * asked in its own words, and the person's «да» then found nothing to
+ * confirm (16.10). Elsewhere (the report turn cancels a question naming
+ * another party's place, sign.md) the fix is the helper's new file: the
+ * same file prepared again would reopen the same question.
  */
 function cancelledReply(facts: TurnFacts) {
-  return facts.turn === "person" && signAnswer(facts.said) === "no"
+  if (facts.turn !== "person") {
+    return "Nothing will be signed under that question. Do not prepare this file again unchanged: have the same task (same agentId) fix the places, and prepare its new file when it reports.";
+  }
+  return signAnswer(facts.said) === "no"
     ? "Confirm briefly that nothing was signed and do not offer again."
-    : "Nothing will be signed under that question. If the person still wants it signed (their message was not a no, e.g. «да, но …»), prepare again in this turn — after fixing the file or places if those were the problem — and end your message with the new `question` verbatim; a change you will not make (a date other than today) — say so in one line before it.";
+    : "Nothing will be signed under that question. If the person still wants it signed (e.g. «да, но …») and the file and places are right, prepare again now and end your message with the new `question` verbatim; a change you will not make (a date other than today) — say so in one line before it. If the file or places must change, have the same task (same agentId) fix them and prepare its new file when it reports.";
 }
 
 function documentTitle(name: string) {
