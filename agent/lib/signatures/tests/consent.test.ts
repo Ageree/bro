@@ -238,12 +238,12 @@ describe("the person's own request to sign", () => {
   });
 
   it("does not sign at once a document whose report came into the person's turn before they saw it", () => {
-    const gaveTask = (taskId: string): ModelMessage[] => [
+    const gave: ModelMessage[] = [
       {
         content: [
           {
             input: { message: "Заполни заявление" },
-            toolCallId: `call-${taskId}`,
+            toolCallId: "call-task_a",
             toolName: "task",
             type: "tool-call",
           },
@@ -255,9 +255,9 @@ describe("the person's own request to sign", () => {
           {
             output: {
               type: "json",
-              value: { agentId: `ag_${taskId}`, status: "working", taskId },
+              value: { agentId: "ag_a", status: "working", taskId: "task_a" },
             },
-            toolCallId: `call-${taskId}`,
+            toolCallId: "call-task_a",
             toolName: "task",
             type: "tool-result",
           },
@@ -265,21 +265,15 @@ describe("the person's own request to sign", () => {
         role: "tool",
       },
     ];
-    const reportOf = (taskId: string) =>
-      Object.assign(
-        {
-          content: `Background task ${taskId} (task) is completed.\n\nГотово.`,
-          role: "user" as const,
-        },
-        { kind: "execution.background_task" }
-      ) satisfies ModelMessage;
+    const report = Object.assign(
+      {
+        content: "Background task task_a (task) is completed.\n\nГотово.",
+        role: "user" as const,
+      },
+      { kind: "execution.background_task" }
+    ) satisfies ModelMessage;
     const reply = sent({ attachments: [] });
-    const before = [
-      person("Заполни заявление"),
-      ...gaveTask("task_a"),
-      ...reply,
-      reportOf("task_a"),
-    ];
+    const before = [person("Заполни заявление"), ...gave, ...reply, report];
     expect(signRequest([...before, person("И анкету заполни и подпиши")])).toBe(
       null
     );
