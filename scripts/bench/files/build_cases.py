@@ -451,7 +451,9 @@ cases.append({
                    {"row_regex": "(?i)маркетплейс", "expected": B["marketplaces_net_after_refund"], "alt_expected": B["marketplaces_net_after_refund"] - 1299.0},
                    {"row_regex": "(?i)связь|подписк", "expected": B["by_my_category_net"]["Связь и подписки"]},
                    # issues: 16.10 the income row counted an incoming transfer from a person too (233 500): a fair reading.
-                   {"row_regex": "(?i)доход", "expected": B["by_my_category_net"]["Доходы"], "alt_expected": 233500.0}]),
+                   # The WB refund not netted against marketplaces (allowed above and in the total) lands in income: + 1 299.
+                   {"row_regex": "(?i)доход", "expected": B["by_my_category_net"]["Доходы"],
+                    "alt_expected": [233500.0, B["by_my_category_net"]["Доходы"] + 1299.0, 233500.0 + 1299.0]}]),
         chk("xlsx_find_value", "Итог расходов без переводов на вклад (варианты: с/без исходящих переводов людям 3 700, с/без неттинга возврата WB 1 299)",
             value=SPEND, alt_values=[round(SPEND - 1299.0, 2), round(SPEND + 3700.0, 2), round(SPEND + 3700.0 - 1299.0, 2)], tol=0.01, recalc=True, abs_compare=True,
             forbid_values=[round(SPEND + 50000.0, 2), round(SPEND + 53700.0, 2)],

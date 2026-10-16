@@ -271,7 +271,8 @@ def xlsx_matrix_lookup(ctx, params, item):
         return failed(f"нет строки «{params['row_regex']}» со всеми значениями варианта")
     missing = []
     for spec in params["cells"]:
-        targets = [spec["expected"]] + ([spec["alt_expected"]] if "alt_expected" in spec else [])
+        alts = spec.get("alt_expected", [])
+        targets = [spec["expected"]] + (alts if isinstance(alts, list) else [alts])
         if not any(_lookup(sheets, spec, t, tol, absolute) for t in targets):
             missing.append(f"{spec['row_regex']}×{spec.get('col_regex', '*')}={spec['expected']}")
     if missing:
