@@ -1,10 +1,12 @@
 import type { Session } from "eve/channels";
 import type { ScheduleToFn } from "eve/schedules";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import type * as browserUseClient from "@agent/lib/browser-use/client";
 import { formatRub } from "@shared/spending/limit";
 import type * as browserUseHost from "@agent/lib/browser-use/host";
 import type * as browserUseSignUp from "@agent/lib/browser-use/sign-up";
+import type * as scheduleEventZone from "@agent/lib/schedules/event-zone";
 
 const runId = "11111111-1111-4111-8111-111111111111";
 
@@ -297,6 +299,15 @@ const keepBrowserVmForPersonStep = vi.hoisted(() =>
   vi.fn<(runId: string) => Promise<void>>(() => Promise.resolve())
 );
 vi.mock("@agent/lib/browser-vm/idle", () => ({ keepBrowserVmForPersonStep }));
+// The pilot of event zones, per workspace; the report's words are the real
+// ones.
+const eventZonePilot = vi.hoisted(() =>
+  vi.fn<(workspaceId: string | undefined) => boolean>(() => false)
+);
+vi.mock("@agent/lib/schedules/event-zone", async (importOriginal) => ({
+  ...(await importOriginal<typeof scheduleEventZone>()),
+  eventZonePilot,
+}));
 
 // The first import transforms the channels the report is sent through, which
 // under a full parallel run can outlast one test's five seconds by itself.
@@ -2066,6 +2077,46 @@ describe("settling a browser run", () => {
     expect(prompt).not.toContain("the details the run reported");
     expect(prompt).toContain(
       "If the user did not ask for that step, mention when it opens once and schedule nothing."
+    );
+  });
+
+  // The pilot's schedules-create takes the departure itself; a report that
+  // only said «for the moment it opens» had the day subtracted twice.
+  it("asks in the pilot of event zones for check-in by the departure, still as a later step", async () => {
+    // The report is composed for its record and again for its send.
+    eventZonePilot.mockImplementation(
+      (workspaceId) => workspaceId === "workspace:user-1"
+    );
+    readBrowserUseRun.mockResolvedValue({
+      error: null,
+      id: runId,
+      result: [
+        "RESULT: рейс SU1124 найден, 12 400 ₽ с багажом",
+        "NEEDS: decision",
+        "NEXT: онлайн-регистрация откроется за 24 часа до вылета, 03.10 в 09:30",
+      ].join("\n"),
+      sessionId: "session-1",
+      status: "completed",
+      task: "Найди билеты в Сочи",
+    });
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { stepsAskedBy } = await import("@agent/lib/delivery/browser-report");
+    const { send, to } = delivery();
+
+    try {
+      await settleBrowserRun({ to }, runId);
+    } finally {
+      eventZonePilot.mockReturnValue(false);
+    }
+
+    const prompt = z.string().parse(send.mock.calls[0]?.[0]);
+    // The lead is the airline's, read from Next: code does not know it.
+    expect(prompt).toContain(
+      "minutesBefore the airline's lead, the departure minus the moment check-in opens"
+    );
+    expect(stepsAskedBy(prompt).map(({ tool }) => tool)).toContain(
+      "schedules-create"
     );
   });
 

@@ -110,6 +110,7 @@ describe("the tools that follow skills", () => {
       "standing_permission",
     ]);
     expect(gatedTools(["schedules"])).toEqual([
+      "parcel-watch",
       "schedules-create",
       "schedules-update",
       "watch-create",

@@ -439,7 +439,11 @@ function toolSkills(toolName: string): readonly SkillName[] {
   if (/^(?:notion|slack)-|^(?:apps|connect_app)$/u.test(toolName)) {
     return ["apps"];
   }
-  if (toolName.startsWith("schedules-") || toolName === "watch-create") {
+  if (
+    toolName.startsWith("schedules-") ||
+    toolName === "watch-create" ||
+    toolName === "parcel-watch"
+  ) {
     return ["schedules"];
   }
   // A job of the task agent's is followed by its edits («добавь слайд»).

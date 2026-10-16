@@ -17,6 +17,11 @@ import type {
   FlightState,
 } from "@shared/subscriptions/flight";
 import type {
+  ParcelCondition,
+  ParcelSource,
+  ParcelState,
+} from "@shared/subscriptions/parcel";
+import type {
   PlaceCondition,
   PlaceSource,
   PlaceState,
@@ -50,19 +55,23 @@ export const subscriptions = pgTable(
     // `price`: the person asked (`watch-create`); `flight`: Bro watches each
     // flight in the calendar by itself, through the proactive job; `place`:
     // a reminder on arriving at or leaving a place (`place_reminder`), which
-    // shared points decide, not the tick.
+    // shared points decide, not the tick; `parcel`: a parcel's status at its
+    // carrier, by a number the person gave or the carrier's letter carried.
     template: text("template", {
-      enum: ["price", "flight", "place"],
+      enum: ["price", "flight", "place", "parcel"],
     }).notNull(),
     // One live watch per thing: a price watch's key is its normalized URL,
-    // a flight's its event and start, a place's its crossing and point.
+    // a flight's its event and start, a place's its crossing and point, a
+    // parcel's its number.
     dedupeKey: text("dedupe_key").notNull(),
     // Typed per template; read through its schema (`agent/lib/subscriptions/`).
     source: jsonb("source")
-      .$type<FlightSource | PlaceSource | PriceSource>()
+      .$type<FlightSource | ParcelSource | PlaceSource | PriceSource>()
       .notNull(),
     condition: jsonb("condition")
-      .$type<FlightCondition | PlaceCondition | PriceCondition>()
+      .$type<
+        FlightCondition | ParcelCondition | PlaceCondition | PriceCondition
+      >()
       .notNull(),
     // `notify`: code writes the hit, and only the report turn uses the model;
     // `worker`: a hit starts a run of the proactive worker.
@@ -76,7 +85,7 @@ export const subscriptions = pgTable(
       .default("day_only"),
     // What the checks remember: the first and the latest reading.
     state: jsonb("state")
-      .$type<FlightState | PlaceState | PriceState>()
+      .$type<FlightState | ParcelState | PlaceState | PriceState>()
       .notNull(),
     status: text("status", {
       enum: ["active", "paused", "fired", "expired", "failed", "cancelled"],
@@ -135,7 +144,7 @@ export const subscriptions = pgTable(
     }).onDelete("cascade"),
     check(
       "subscriptions_template_check",
-      sql`${table.template} IN ('price', 'flight', 'place')`
+      sql`${table.template} IN ('price', 'flight', 'place', 'parcel')`
     ),
     check(
       "subscriptions_action_check",
@@ -154,7 +163,8 @@ export const subscriptions = pgTable(
       sql`jsonb_typeof(${table.source}) = 'object' AND jsonb_typeof(${table.condition}) = 'object' AND jsonb_typeof(${table.state}) = 'object'`
     ),
     check("subscriptions_dedupe_key_check", sql`${table.dedupeKey} <> ''`),
-    // A price is read at most hourly: each reading is a request to a shop.
+    // A price or a parcel is read at most hourly: each reading is a request
+    // to a shop or a carrier.
     check(
       "subscriptions_check_every_check",
       sql`${table.checkEverySeconds} >= 3600`

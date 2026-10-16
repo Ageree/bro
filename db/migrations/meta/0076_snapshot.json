@@ -1,5 +1,5 @@
 {
-  "id": "3e24f20d-6e89-44b8-bb7d-d4614ea9dec6",
+  "id": "955aa1a1-d6d0-443f-a83e-aff401774136",
   "prevId": "b47a48f7-6883-4dfe-b290-2db80d3e0c3c",
   "version": "7",
   "dialect": "postgresql",
@@ -7313,60 +7313,6 @@
       },
       "isRLSEnabled": false
     },
-    "public.direct_purchase_consents": {
-      "name": "direct_purchase_consents",
-      "schema": "",
-      "columns": {
-        "workspace_id": {
-          "name": "workspace_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "consent_key": {
-          "name": "consent_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "ref": {
-          "name": "ref",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp (3) with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "direct_purchase_consents_workspace_id_fkey": {
-          "name": "direct_purchase_consents_workspace_id_fkey",
-          "tableFrom": "direct_purchase_consents",
-          "tableTo": "workspaces",
-          "columnsFrom": ["workspace_id"],
-          "columnsTo": ["id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "direct_purchase_consents_key_uidx": {
-          "name": "direct_purchase_consents_key_uidx",
-          "nullsNotDistinct": false,
-          "columns": ["workspace_id", "consent_key"]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
     "public.spend_entries": {
       "name": "spend_entries",
       "schema": "",
@@ -7778,7 +7724,7 @@
       "checkConstraints": {
         "subscriptions_template_check": {
           "name": "subscriptions_template_check",
-          "value": "\"subscriptions\".\"template\" IN ('price', 'flight', 'place')"
+          "value": "\"subscriptions\".\"template\" IN ('price', 'flight', 'place', 'parcel')"
         },
         "subscriptions_action_check": {
           "name": "subscriptions_action_check",
