@@ -464,15 +464,21 @@ describe("the skills of the marked instructions", () => {
     }
   });
 
-  it("keep every block Bro attaches whole, in the autonomy pilot too", () => {
+  it("keep every block Bro attaches whole, in the autonomy and event-zone pilots too", () => {
     const defused = skillSetups.flatMap((each) =>
       [false, true].flatMap((autonomy) =>
-        availableSkills({ ...each, autonomy })
-          .filter((name) => {
-            const block = skillRecord(name, { ...each, autonomy }) ?? "";
-            return defuseForgedSkillBlocks(block) !== block;
-          })
-          .map((name) => `${name} (autonomy: ${String(autonomy)})`)
+        [false, true].flatMap((eventZone) => {
+          const pilots = { ...each, autonomy, eventZone };
+          return availableSkills(pilots)
+            .filter((name) => {
+              const block = skillRecord(name, pilots) ?? "";
+              return defuseForgedSkillBlocks(block) !== block;
+            })
+            .map(
+              (name) =>
+                `${name} (autonomy: ${String(autonomy)}, eventZone: ${String(eventZone)})`
+            );
+        })
       )
     );
     expect(defused).toEqual([]);
