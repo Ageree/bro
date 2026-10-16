@@ -115,7 +115,7 @@ class VcfTest(unittest.TestCase):
     def test_company_card_and_warnings(self):
         spec = {
             "contacts": [
-                {"org": "Ветклиника «Айболит»", "phones": ["+74950000002", "8 (495) 000-00-03"]},
+                {"org": "Ветклиника «Айболит»", "phones": ["+74950000002", "00-12-34"]},
                 {"name": "Иван Петров", "phones": [{"tel": "+74950000002"}, {"tel": "+74950000002"}], "nick": "Ваня"},
             ]
         }
@@ -127,11 +127,21 @@ class VcfTest(unittest.TestCase):
         self.assertEqual(clinic["X-ABShowAs"], [([], "COMPANY")])
         self.assertEqual(len(ivan["TEL"]), 1)
         warnings = " | ".join(result["warnings"])
-        self.assertIn("8 (495) 000-00-03 does not start with +", warnings)
+        self.assertIn("00-12-34 does not start with +", warnings)
         self.assertIn("+74950000002 is given twice, written once", warnings)
         self.assertIn("+74950000002 is also on contact 1", warnings)
         self.assertIn("«Петров» looks like the family name", warnings)
         self.assertIn("unknown keys ignored: nick", warnings)
+
+    def test_numbers_are_brought_to_the_form_a_phone_dials(self):
+        # Live 16.10: «8-495-000-00-01 доб. 123» went into the card as it stood.
+        spec = {"contacts": [{"name": "Офис", "phones": ["8-495-000-00-01 доб. 123", "8 916 123-45-67", "+7 (495) 000-00-04"]}]}
+        code, result, raw = self.write(spec)
+        self.assertEqual(code, 0, result)
+        tels = parse(raw)[0]["TEL"]
+        self.assertEqual([value for _, value in tels], ["+74950000001,123", "+79161234567", "+74950000004"])
+        self.assertEqual(tels[1][0], ["TYPE=CELL"])
+        self.assertFalse(any("does not start with +" in w for w in result["warnings"]), result["warnings"])
 
     def test_bad_specs_are_refused(self):
         refused = [
