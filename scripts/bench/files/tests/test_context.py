@@ -73,6 +73,25 @@ class ContextTest(unittest.TestCase):
         else:
             self.assertEqual(outcome.status, "error")
 
+    def test_a_workbook_without_formulas_is_not_recalculated(self):
+        from unittest import mock
+
+        import openpyxl
+
+        ctx = self.context()
+        self.addCleanup(ctx.cleanup)
+        plain, formulas = self.root / "plain.xlsx", self.root / "formulas.xlsx"
+        for path, cell in ((plain, 12500), (formulas, "=SUM(1,2)")):
+            wb = openpyxl.Workbook()
+            wb.active["A1"] = cell
+            wb.save(path)
+        recalculated = self.root / "recalculated.xlsx"
+        with mock.patch.object(Context, "_soffice", return_value=recalculated) as soffice:
+            self.assertEqual(ctx.recalculated(plain), plain)
+            soffice.assert_not_called()
+            self.assertEqual(ctx.recalculated(formulas), recalculated)
+            soffice.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

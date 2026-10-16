@@ -240,10 +240,16 @@ def _matches(v, pattern) -> bool:
     return v is not None and re.search(pattern, _cell_text(v)) is not None
 
 
-def _lines_through(rows, r, c) -> list:
-    row = rows[r] if r < len(rows) else []
-    column = [_at(rows, i, c) for i in range(len(rows))]
-    return [row, column]
+def _lines_through(rows, r, c, seen: set) -> list:
+    """The row and the column through a cell, each only once per `seen`: a label repeated down a column of 120 000
+    source rows read that column once per row, and the check outlived its budget (f-csv, 16.10)."""
+    lines = []
+    if ("row", r) not in seen:
+        lines.append(rows[r] if r < len(rows) else [])
+    if ("column", c) not in seen:
+        lines.append([_at(rows, i, c) for i in range(len(rows))])
+    seen.update({("row", r), ("column", c)})
+    return lines
 
 
 @check("xlsx_matrix_lookup", "xlsx")
@@ -254,10 +260,11 @@ def xlsx_matrix_lookup(ctx, params, item):
     if params.get("variants"):
         for variant, wanted in params["variants"].items():
             for name, rows in sheets:
+                seen = set()
                 for r, c, v in _cells(rows):
                     if not _matches(v, params["row_regex"]):
                         continue
-                    for line in _lines_through(rows, r, c):
+                    for line in _lines_through(rows, r, c, seen):
                         numbers = [_number(x) for x in line]
                         if all(any(_close(n, w, tol, absolute) for n in numbers) for w in wanted.values()):
                             return passed(f"{name}: вариант {variant}")
@@ -278,8 +285,10 @@ def _lookup(sheets, spec, target, tol, absolute) -> bool:
         if not row_hits:
             continue
         if not spec.get("col_regex"):
+            seen = set()
             for r, c in row_hits:
-                if any(_close(_number(x), target, tol, absolute) for line in _lines_through(rows, r, c) for x in line):
+                if any(_close(_number(x), target, tol, absolute) for line in _lines_through(rows, r, c, seen)
+                       for x in line):
                     return True
             continue
         col_hits = [(r, c) for r, c, v in _cells(rows) if _matches(v, spec["col_regex"])]
@@ -302,9 +311,10 @@ def xlsx_lookup_values(ctx, params, item):
         for label, want in variant.items():
             hit = False
             for _, rows in sheets:
+                seen = set()
                 for r, c, v in _cells(rows):
                     if isinstance(v, str) and _norm(label) in _norm(v):
-                        if any(_close(_number(x), want, tol) for line in _lines_through(rows, r, c) for x in line):
+                        if any(_close(_number(x), want, tol) for line in _lines_through(rows, r, c, seen) for x in line):
                             hit = True
                             break
                 if hit:
@@ -468,27 +478,33 @@ def xlsx_contains(ctx, params, item):
 
 @check("xlsx_top_list", "xlsx")
 def xlsx_top_list(ctx, params, item):
+    """A column listing the top in order. Columns are ranked by how many of the names they hold, each counted once,
+    then the shorter first: a sheet of the source rows names every product thousands of times and must not outrank
+    the top itself (f-csv, 16.10). The first column that holds the top passes."""
     want = [_norm(x) for x in params["expected"]]
-    best = None
+    candidates = []
     for name, rows in grids(ctx, item.path):
         width = max((len(r) for r in rows), default=0)
         for c in range(width):
             column = [_norm(_at(rows, r, c)) for r in range(len(rows))]
             column = [x for x in column if x]
-            hits = sum(1 for x in column if x in want)
-            if best is None or hits > best[0]:
-                best = (hits, name, column)
-    if best is None or best[0] < len(want) // 2:
+            distinct = len(set(column) & set(want))
+            if distinct >= max(1, len(want) // 2):
+                candidates.append((-distinct, len(column), name, column))
+    if not candidates:
         return failed("нет колонки со списком товаров")
-    _, name, column = best
-    start = next(i for i, x in enumerate(column) if x in want)
-    got = [x for x in column[start:] if x in want or not x.replace(" ", "").isdigit()][: len(want)]
     k = int(params.get("ordered_prefix", len(want)))
-    if got[:k] != want[:k]:
-        return failed(f"{name}: первые {k}: {got[:3]}…, нужно {want[:3]}…")
-    if set(got) != set(want):
-        return failed(f"{name}: состав топа не совпал ({len(set(got) & set(want))} из {len(want)})")
-    return passed(f"{name}: порядок и состав совпали")
+    first_failure = None
+    for _, _, name, column in sorted(candidates, key=lambda x: x[:2]):
+        start = next(i for i, x in enumerate(column) if x in want)
+        got = [x for x in column[start:] if x in want or not x.replace(" ", "").isdigit()][: len(want)]
+        if got[:k] != want[:k]:
+            first_failure = first_failure or f"{name}: первые {k}: {got[:3]}…, нужно {want[:3]}…"
+        elif set(got) != set(want):
+            first_failure = first_failure or f"{name}: состав топа не совпал ({len(set(got) & set(want))} из {len(want)})"
+        else:
+            return passed(f"{name}: порядок и состав совпали")
+    return failed(first_failure)
 
 
 @check("xlsx_text_ok", "xlsx")

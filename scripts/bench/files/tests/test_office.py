@@ -104,6 +104,24 @@ class ForbiddenTotalTest(OfficeTest):
                 self.assertIn("R3C2", outcome.detail)
 
 
+class TopListTest(OfficeTest):
+    """f-csv: the summary keeps the source rows beside the top; their column names every product many times."""
+
+    ITEM = {"kind": "xlsx_top_list", "params": {"expected": ["Сыр", "Кофе", "Чай", "Мёд"], "ordered_prefix": 2}}
+
+    def test_the_top_is_found_beside_the_source_rows(self):
+        source = ["Мёд", "Чай", "Кофе", "Сыр"] * 50
+        top = ["Сыр", "Кофе", "Чай", "Мёд"]
+        rows = [(name, None, top[i] if i < len(top) else None) for i, name in enumerate(source)]
+        outcome = self.run_check(self.ITEM, xlsx_bytes(rows), "svodka.xlsx")
+        self.assertEqual(outcome.status, "pass", outcome.detail)
+
+    def test_a_top_out_of_order_fails(self):
+        rows = [(name,) for name in ["Кофе", "Сыр", "Чай", "Мёд"]]
+        outcome = self.run_check(self.ITEM, xlsx_bytes(rows), "svodka.xlsx")
+        self.assertEqual(outcome.status, "fail")
+
+
 class RenderNoOverflowTest(OfficeTest):
     ITEM = {"kind": "render_no_overflow", "params": {"max_words": 90, "max_word_overlap": 0.2}}
 
