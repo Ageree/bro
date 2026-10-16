@@ -24,6 +24,7 @@ export const unperformedClaims = [
   "browser",
   "calendar",
   "declined",
+  "draft",
   "undone",
 ] as const;
 
@@ -732,16 +733,19 @@ const memoryAsked =
  */
 /**
  * Words that may stand between a verb and the draft it took away, so the
- * draft is the verb's object: «удалил оба старых черновика», «deleted the
- * two drafts». A preposition («убрал из черновика абзац») or another object
- * («убрал пафос, вот черновик») between them is an edit of a text.
+ * draft is the verb's object: «удалил оба старых черновика», «удалил все 3
+ * черновика», «deleted the two drafts». A preposition («убрал из черновика
+ * абзац») or another object («убрал пафос, вот черновик») between them is an
+ * edit of a text.
  */
-const draftCounts = new Set([
+const draftObjectWords = new Set([
   "оба",
   "обе",
   "два",
   "две",
   "три",
+  "четыре",
+  "пять",
   "все",
   "эти",
   "этот",
@@ -749,6 +753,17 @@ const draftCounts = new Set([
   "те",
   "тот",
   "ту",
+  "его",
+  "ее",
+  "их",
+  "мои",
+  "моих",
+  "свои",
+  "своих",
+  "твои",
+  "твоих",
+  "ваши",
+  "ваших",
   "старый",
   "старые",
   "старых",
@@ -761,9 +776,6 @@ const draftCounts = new Set([
   "пустой",
   "пустые",
   "пустых",
-  "свои",
-  "твои",
-  "ваши",
   "both",
   "the",
   "two",
@@ -773,15 +785,26 @@ const draftCounts = new Set([
   "those",
   "old",
   "empty",
+  "my",
   "your",
+  "his",
+  "her",
+  "their",
 ]);
+
+function draftObjectWord(word: string) {
+  return draftObjectWords.has(word) || /^\d+$/u.test(word);
+}
 
 const actClaims: readonly {
   readonly act: Act;
   readonly asked?: RegExp;
   readonly noun?: RegExp;
-  /** The only words that may stand between the verb and its noun. */
-  readonly object?: ReadonlySet<string>;
+  /**
+   * The only words that may stand between the verb and its noun, which
+   * must then be the verb's object, not another word's («draft's»).
+   */
+  readonly object?: (word: string) => boolean;
   readonly verbs: readonly string[];
 }[] = [
   {
@@ -842,13 +865,12 @@ const actClaims: readonly {
     act: "draft",
     asked: /удали|убери|убрать|сотри|стереть|выкин|почисти|delete|remove/u,
     noun: /черновик|draft/u,
-    object: draftCounts,
+    object: draftObjectWord,
     verbs: [
       "удалил",
       "убрал",
       "стер",
       "выкинул",
-      "почистил",
       "deleted",
       "removed",
       "erased",
@@ -949,7 +971,7 @@ function saysAct(
   clause: string,
   verbs: readonly string[],
   noun: RegExp | undefined,
-  object?: ReadonlySet<string>
+  object?: (word: string) => boolean
 ) {
   const words = wordsOf(clause);
   const start = words.findIndex((word) => !leadWords.has(word));
@@ -968,7 +990,8 @@ function saysAct(
           at - end <= 3 &&
           noun.test(word) &&
           (object === undefined ||
-            words.slice(end + 1, at).every((between) => object.has(between)))
+            (words[at + 1] !== "s" &&
+              words.slice(end + 1, at).every((between) => object(between))))
       )
     );
   });
@@ -1014,7 +1037,9 @@ function actClaim(text: string, actions: ReturnType<typeof turnActions>) {
       !actions.background &&
       !outcome.earlierCall
     ) {
-      return "undone";
+      // A deleted draft cannot come back: its own notice never asks for
+      // the deletion, since an edit of a draft's text reads the same.
+      return act === "draft" ? "draft" : "undone";
     }
   }
   return undefined;
