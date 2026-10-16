@@ -56,6 +56,7 @@ import {
 } from "./outcome";
 import {
   approvedPaymentInstruction,
+  directPaymentInstruction,
   bookingInstruction,
   browserRunNeedGuidance,
   calendarInstruction,
@@ -229,6 +230,12 @@ export async function settleBrowserRun(
     booking: bookingState(row, parsed),
     checked: row.recoveryAttempt > 0,
     confirmed: row.submission !== null,
+    // Only its first stop at payment: a run that stopped again after the
+    // request paid goes to the person, as any second stop does.
+    directRequest:
+      row.submission?.paymentCapRub === undefined
+        ? row.submission?.directRequest?.request
+        : undefined,
     hasCharges: parsed.charges.length > 0,
     hasItems: parsed.items.length > 0,
     hasLinks,
@@ -720,6 +727,8 @@ function deliveryInstruction(
     /** The errand was already checked read-only by itself, to no avail. */
     readonly checked: boolean;
     readonly confirmed: boolean;
+    /** The person's own request to buy, when the errand pays on it. */
+    readonly directRequest: string | undefined;
     readonly hasCharges: boolean;
     readonly hasItems: boolean;
     readonly hasLinks: boolean;
@@ -763,7 +772,11 @@ function deliveryInstruction(
   const unreadBasket = needs === "payment" && !hasItems;
   const paidFor =
     needs === "payment" && !unreadBasket ? facts.approvedRub : undefined;
+  // A purchase the person asked for themselves pays on its report.
+  const directPay =
+    needs === "payment" && !unreadBasket ? facts.directRequest : undefined;
   const stillBuying =
+    directPay === undefined &&
     facts.confirmed &&
     !unreadBasket &&
     paidFor === undefined &&
@@ -772,9 +785,11 @@ function deliveryInstruction(
     "This is a background result, not a user message.",
     unreadBasket
       ? unreadBasketInstruction
-      : paidFor === undefined
-        ? browserRunNeedGuidance(needs)
-        : approvedPaymentInstruction(paidFor),
+      : directPay !== undefined
+        ? directPaymentInstruction(directPay)
+        : paidFor === undefined
+          ? browserRunNeedGuidance(needs)
+          : approvedPaymentInstruction(paidFor),
     facts.stuck,
     facts.interrupted === undefined
       ? undefined
@@ -843,6 +858,9 @@ function imagesBlock(images: readonly BrowserRunImage[]) {
  * within it: then a stop on the payment step is not a question for them.
  */
 function approvedPaymentRub(row: BrowserRunRow, total: string | undefined) {
+  // A run paying on the person's request stops at payment only when what it
+  // found differs from it: that is the person's question, not a go-ahead.
+  if (row.submission?.directRequest !== undefined) return undefined;
   const cap = row.submission?.paymentCapRub;
   const totalRub = total === undefined ? undefined : priceRubFromTotal(total);
   return cap !== undefined && totalRub !== undefined && totalRub <= cap
@@ -857,6 +875,8 @@ function browserRunReport(
     readonly booking?: "booked" | "reported";
     readonly checked?: boolean;
     readonly confirmed?: boolean;
+    /** The person's own request to buy, when the errand pays on it. */
+    readonly directRequest?: string | undefined;
     readonly hasCharges?: boolean;
     readonly hasItems?: boolean;
     readonly hasLinks?: boolean;
@@ -923,6 +943,7 @@ function browserRunReport(
       booking: options.booking,
       checked: options.checked === true,
       confirmed: options.confirmed === true,
+      directRequest: options.directRequest,
       eventZone: eventZonePilot(row.workspaceId),
       hasCharges: options.hasCharges === true,
       hasItems: options.hasItems === true,

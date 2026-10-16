@@ -137,6 +137,18 @@ export type ConfirmedSubmission = Omit<BrowserSubmission, "kind"> &
      * for, or the errand's own site for a permission by kind alone.
      */
     readonly boundHost?: string;
+    /**
+     * The person's own request to buy (DIRECT_PURCHASE_WORKSPACES,
+     * `agent/lib/payments/direct.ts`), recorded on their own turn: the run
+     * stages the order, and the report's turn pays it with no question once
+     * code checked the staged order and its total against it.
+     */
+    readonly directRequest?: {
+      readonly budgetRub?: number | undefined;
+      readonly key: string;
+      readonly opener?: string | undefined;
+      readonly request: string;
+    };
     readonly paymentCapRub?: number;
   };
 

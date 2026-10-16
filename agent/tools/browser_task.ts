@@ -10,11 +10,21 @@ import { journaledAgencyCall } from "@agent/lib/agency/journal";
 import { delegatingRun } from "@agent/lib/schedules/delegation/pilot";
 import { runDelegation } from "@agent/lib/schedules/delegation/run";
 import { outboundRuleApproval } from "@agent/lib/memory/rule-approval";
+import {
+  type DirectPurchase,
+  type DirectTurn,
+  directPurchasePilot,
+  forwardedMessage,
+  purchaseRequestOf,
+  requestCovers,
+  withdrawsPurchase,
+} from "@agent/lib/payments/direct";
 import { directModelSelection } from "@agent/lib/model/direct";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { yandexPurchasePilot } from "@agent/lib/yandex/pilot";
 import { telegramConversationIdSchema } from "@agent/lib/telegram-conversation";
 import {
+  type StepIdentity,
   stepIdentity,
   stepStartedEventSchema,
 } from "@agent/lib/turn-kind/step";
@@ -74,6 +84,7 @@ import {
   updateQueuedBrowserRun,
 } from "@db/services/browser-runs";
 import { forgetBrowserSignIns } from "@db/services/browser-sign-ins";
+import { claimDirectPurchase } from "@db/services/direct-purchases";
 import { ensureBrowserVmRecord } from "@db/services/browser-vms";
 import { ensureScope } from "@db/services/scope";
 import {
@@ -124,6 +135,8 @@ import { env } from "@shared/environment";
 import {
   browserRunNeeds,
   type BrowserRunNeed,
+  parseBrowserOutcome,
+  priceRubFromTotal,
 } from "@agent/lib/browser-use/outcome";
 import { browserRunNeedGuidance } from "@agent/lib/browser-use/guidance";
 import { reportedBrowserRunId } from "@agent/lib/browser-use/report-caller";
@@ -135,6 +148,7 @@ import {
   paymentAnswer,
   personWordsThisTurn,
   quotedFromPerson,
+  personMessages,
   recentPersonMessages,
 } from "@agent/lib/browser-use/said";
 import {
@@ -757,6 +771,15 @@ function commitmentLine(
 ) {
   if (consent?.kind === "confirmed") {
     const cap = consent.submission.paymentCapRub;
+    const asked = consent.submission.directRequest?.request;
+    // The person's request to buy (DIRECT_PURCHASE_WORKSPACES): staged
+    // first, paid once its total was checked against it.
+    const direct =
+      asked === undefined
+        ? undefined
+        : cap === undefined
+          ? `The person asked for this in their own words — «${asked}». When it costs nothing, you may fill it in and press its final button. When it costs money, take it up to the payment step and stop there before paying, with NEEDS: payment, the ITEMS and the TOTAL with every fee: the order and its total are checked against their request before anything is paid. The known details are below:`
+          : `The person asked for this purchase in their own words — «${asked}» — and the order staged with this total was checked against that request, so they are not asked again. You may fill it in, pay and press its final button, with the known details below:`;
     const header = {
       agency:
         "Bro's own agency rule started this one submission in the person's name: it is free, and it was not put to the person on a card. You may fill it in and press its final button, with the known details below:",
@@ -774,7 +797,7 @@ function commitmentLine(
       standing: `The person gave a standing permission that covers this one submission in their name (${consent.by === "standing" ? describeStandingAction(consent.rule) : ""}), so they are not asked again. You may fill it in and press its final button, with the known details below:`,
     }[consent.by];
     return [
-      header,
+      direct ?? header,
       submissionTerms(consent.submission),
       ...boundSubmissionLines(consent.submission),
       `Submit nothing beyond it: no other slot, organisation, item or amount, no second booking, order or application, no extra sign-ups, newsletters or messages, and none of the person's details beyond those listed. When the page would submit something that differs — a slot outside that time, ${cap === undefined ? "a higher cost" : "a total above the payment ceiling below"}, another organisation, more of their details than listed — stop before the final button with NEEDS: decision and say in DETAILS what differs.`,
@@ -1330,6 +1353,8 @@ function goAheadLine(
   const pay = aliases.includes(browserSecretAliases.cardNumber)
     ? "Place it, fill the card form with the saved card and press its pay button, until the site shows that the payment went through («Оплата прошла», the order confirmed): that is this errand, not a step to stop short of."
     : "Place it and take it up to the card form: the saved card comes with the follow-up.";
+  if (submission.directRequest !== undefined)
+    return `The person asked for this order themselves — «${submission.directRequest.request}» — and its total of ${total} was checked against that request: ${submission.what}, for ${submission.forWhom}, at ${submission.where}. ${pay}`;
   return `The person asked for this order themselves and said yes to paying ${total} for it: ${submission.what}, for ${submission.forWhom}, at ${submission.where}. ${pay}`;
 }
 
@@ -2454,6 +2479,8 @@ function unchosenOption(
     consent.by === "schedule"
   )
     return undefined;
+  // The person's request names what to buy, and the run is held to it.
+  if (consent.submission.directRequest !== undefined) return undefined;
   if (input.submission === undefined) return undefined;
   const searching =
     input.action === "continue" &&
@@ -2489,6 +2516,10 @@ type ErrandRow = NonNullable<
  */
 type PersonTurn = ReturnType<typeof personWordsThisTurn> & {
   readonly siteWords?: readonly string[];
+  /** The step it was read at, for a request that pays (`directPurchase`). */
+  readonly step?: StepIdentity;
+  /** The person's recent messages, which may withdraw a recorded request. */
+  readonly personTexts?: readonly string[];
 };
 
 /**
@@ -2882,8 +2913,19 @@ function turnWords(context: ModeContext, turn: PersonTurn) {
   const opened = personTurn ? (turn.said ?? []) : [];
   const words = [...opened, ...answers];
   const picked = new Set(turn.picked);
+  const direct: DirectTurn | undefined =
+    personTurn && turn.step !== undefined
+      ? {
+          forwarded: forwardedMessage(context.session.auth.current),
+          personTurn,
+          said: turn.said,
+          step: turn.step,
+        }
+      : undefined;
   return {
+    direct,
     paymentAsked: personTurn ? turn.paymentAsked : null,
+    personTexts: turn.personTexts,
     personTurn,
     siteWords: turn.siteWords,
     typed: [...opened, ...answers.filter((answer) => !picked.has(answer))],
@@ -3424,6 +3466,11 @@ async function paymentUnanswered(
     consent.by === "person" ? paymentAnswer(said.words) : undefined;
   if (answer === "no") return paymentDeclinedRefusal;
   if (
+    consent.submission.directRequest !== undefined &&
+    consent.submission.paymentCapRub !== undefined
+  )
+    return undefined;
+  if (
     answer !== "yes" ||
     said.paymentAsked === null ||
     chargeRub === undefined ||
@@ -3471,6 +3518,126 @@ async function paymentUnanswered(
   } catch {
     return paymentMismatchRefusal(chargeRub);
   }
+}
+
+/**
+ * The person's request to buy that this call carries
+ * (DIRECT_PURCHASE_WORKSPACES, `agent/lib/payments/direct.ts`): read from
+ * their own words in a turn they opened — never one that answers Bro's
+ * question — or, on the turn of this errand's own report, the request its
+ * row recorded on theirs. The report itself adds nothing to it.
+ */
+function errandRequest(
+  scope: AccessScope,
+  said: ReturnType<typeof turnWords>,
+  errand: ErrandRow | undefined,
+  delegated: boolean
+) {
+  if (said.personTurn) {
+    return said.direct === undefined || paymentAnswer(said.words) !== undefined
+      ? undefined
+      : purchaseRequestOf(scope, said.direct);
+  }
+  const recorded = delegated ? errand?.submission?.directRequest : undefined;
+  if (recorded?.opener === undefined) return undefined;
+  // The person may have changed their mind since: «не покупай», «нет»,
+  // «сначала покажи цену». Without their opener in sight nothing is paid.
+  const texts = said.personTexts ?? [];
+  const at = texts.lastIndexOf(recorded.opener);
+  if (at === -1 || texts.slice(at + 1).some(withdrawsPurchase))
+    return undefined;
+  return recorded;
+}
+
+/** Whether the call pays: binds the card or names a total. */
+function payingCall(input: BrowserTaskInput) {
+  return input.allowPayment === true || (input.submission?.chargeRub ?? 0) > 0;
+}
+
+/**
+ * Whether a request covers paying this call: only an order the errand's
+ * finished run staged and has not placed, at the exact total the call
+ * names, no subscription or repeating charge, and what a judge finds is the
+ * request's own (`requestCovers`). Undefined for a call that pays nothing,
+ * or with no request; `stage` when nothing is staged to pay yet.
+ */
+async function directPaymentFor(
+  input: BrowserTaskInput,
+  scope: AccessScope,
+  errand: ErrandRow | undefined,
+  request: ReturnType<typeof errandRequest>
+): Promise<
+  | DirectPurchase
+  | { readonly kind: "stage" }
+  | { readonly kind: "total"; readonly totalRub: number }
+  | undefined
+> {
+  const { submission } = input;
+  if (request === undefined || submission === undefined || !payingCall(input))
+    return undefined;
+  const chargeRub = submission.chargeRub ?? 0;
+  const staged = parseBrowserOutcome(errand?.outcome);
+  const totalRub =
+    staged.total === undefined ? undefined : priceRubFromTotal(staged.total);
+  if (
+    !errand?.completedAt ||
+    // An order Bro's own worker staged is never the person's to pay here.
+    errand.startedByPerson === false ||
+    reportsPlacedOrder(errand.outcome) ||
+    // The run stopped at the payment step with the order and its total.
+    staged.needs !== "payment" ||
+    staged.items.length === 0 ||
+    totalRub === undefined ||
+    totalRub <= 0 ||
+    mentionsRecurringCharge(input.task, submission.what, submission.amount)
+  )
+    return { kind: "stage" };
+  // The total the run reported is what is checked and paid, never the
+  // model's own figure.
+  if (wholeRubles(chargeRub) !== totalRub) return { kind: "total", totalRub };
+  return requestCovers(scope, request, {
+    target: {
+      category: submission.kind,
+      merchant: normalizeMerchant(errand.site ?? input.site),
+    },
+    terms: { staged: errand.outcome, submission },
+    totalMinor: totalRub * 100,
+  });
+}
+
+const directStageRefusal =
+  "Nothing was paid: the person's request is their consent to pay, but only for the order a run has staged with its real total. Start or continue the errand with allowSubmit and a submission naming what they asked for, without allowPayment and chargeRub: the run takes it up to the payment step and stops there. On its report, continue it with allowSubmit, allowPayment and chargeRub of its Total, with no question: the tool checks the order and the total against their request.";
+
+/**
+ * The one question the person's request leaves, ahead of every other
+ * refusal: what was staged differs from it, the total is above their budget
+ * or the ceiling, a saved rule wants them asked — or nothing is staged yet
+ * to pay.
+ */
+async function directQuestion(
+  input: BrowserTaskInput,
+  consent: ConfirmedConsent,
+  said: ReturnType<typeof turnWords>,
+  scope: AccessScope,
+  errand: ErrandRow | undefined
+) {
+  if (
+    (consent.by !== "person" && consent.by !== "delegated") ||
+    consent.submission.directRequest !== undefined
+  )
+    return undefined;
+  const direct = await directPaymentFor(
+    input,
+    scope,
+    errand,
+    errandRequest(scope, said, errand, consent.by === "delegated")
+  );
+  if (direct?.kind === "stage") return directStageRefusal;
+  if (direct?.kind === "total")
+    return `Nothing was paid: chargeRub must be exactly the Total the run reported, ${String(direct.totalRub)} ₽. Make the same call with chargeRub ${String(direct.totalRub)}.`;
+  return direct?.kind === "ask"
+    ? `Nothing was paid. ${direct.reply}`
+    : undefined;
 }
 
 /**
@@ -3531,6 +3698,28 @@ async function consentFor(
       ? await standingConsent(input, submission, scope, errand)
       : undefined;
   if (standing) return standing;
+  const request = errandRequest(scope, said, errand, delegated);
+  if (request !== undefined && !payingCall(input) && byPerson) {
+    // Recorded on the person's own turn: the run stages, its report pays.
+    return {
+      by: "person",
+      kind: "confirmed",
+      submission: { ...submission, directRequest: request },
+    };
+  }
+  const direct = await directPaymentFor(input, scope, errand, request);
+  if (request !== undefined && direct?.kind === "granted") {
+    // Exactly the staged total, not the card margin.
+    return {
+      by: byPerson ? "person" : "delegated",
+      kind: "confirmed",
+      submission: {
+        ...submission,
+        directRequest: request,
+        paymentCapRub: wholeRubles(submission.chargeRub ?? 0),
+      },
+    };
+  }
   // A total of zero is a card guarantee only on a call that binds the card;
   // otherwise it is a free booking.
   const free = submission.chargeRub === 0 && input.allowPayment !== true;
@@ -3704,7 +3893,9 @@ export async function browserTaskApproval(
       : unsentWordsRefusal(input, errand, words.words);
   if (unsent) return { reason: unsent, type: "denied" };
   const said = words ?? {
+    direct: undefined,
     paymentAsked: null,
+    personTexts: undefined,
     personTurn: startedByPerson(context),
     siteWords: undefined,
     typed: [],
@@ -3714,6 +3905,7 @@ export async function browserTaskApproval(
   const consent = await consentFor(input, scope, errand, said, context, walled);
   if (!consent) return { reason: missingSubmissionRefusal, type: "denied" };
   const unchosen =
+    (await directQuestion(input, consent, said, scope, errand)) ??
     unchosenOption(input, consent, errand) ??
     (await paymentUnanswered(input, consent, said, errand, scope));
   if (unchosen) return { reason: unchosen, type: "denied" };
@@ -3761,12 +3953,47 @@ async function consentFromInput(
   );
   if (!consent) throw new Error(missingSubmissionRefusal);
   const unchosen =
+    (await directQuestion(input, consent, said, scope, errand)) ??
     unchosenOption(input, consent, errand) ??
     (await paymentUnanswered(input, consent, said, errand, scope));
   if (unchosen) throw new Error(unchosen);
   if (consent.by === "card")
     throw new Error(unrequestedSubmissionRefusal.reason);
+  // A payment on the person's request, not the errand's own carried on.
+  const paidRequest =
+    consent.by === "errand" || consent.submission.paymentCapRub === undefined
+      ? undefined
+      : consent.submission.directRequest;
+  // The errand pays it: its runs and a replayed call keep it, another
+  // errand on the same request is refused.
+  if (paidRequest !== undefined)
+    await spendDirectRequest(
+      scope,
+      paidRequest.key,
+      errand?.id ?? context.callId
+    );
   return consent.by === "errand" ? undefined : consent;
+}
+
+const directRequestSpentRefusal =
+  "Nothing was started: the person's request in this turn is already being paid by another purchase, and one request pays one. Check that purchase with status first; do not start another for the same request. Only if they want something more, ask them one short question with what it is and its total.";
+
+/**
+ * One request pays one purchase: the errand that pays takes it, and another
+ * on the same request is refused.
+ */
+async function spendDirectRequest(
+  scope: AccessScope,
+  consentKey: string,
+  ref: string
+) {
+  if (
+    !(await claimDirectPurchase(scope, {
+      consentKey,
+      ref: `browser:${ref}`,
+    }))
+  )
+    throw new Error(directRequestSpentRefusal);
 }
 
 /** Whether the consent lets the run pay, with the card bound. */
@@ -5583,6 +5810,13 @@ export const browserTask = defineTool({
     ),
 });
 
+/**
+ * What the direct-purchase pilot adds to the description: the person's
+ * request is their consent, so a paid errand starts paying at once.
+ */
+const directPurchaseNote =
+  " Direct purchase: when the person's own message in this turn plainly asks you to buy, order or pay for something («купи корм», «закажи пиццу из Додо», «оплати интернет»), that request is their consent to pay — do not ask «Оплачиваю?». Start the errand at once with allowSubmit and a submission naming what they asked for in their own words (the thing, the quantity, the place, the date), without allowPayment and chargeRub: the run stages it up to the payment step. On its report, continue it with allowSubmit, allowPayment and a submission naming the staged order with chargeRub of its Total, and say in one line that you are paying it: the tool checks the order and the total against their request and their budget or the ceiling. Ask one question about the substance only when the tool says what was staged differs from their request or the total is above their budget or the ceiling.";
+
 export default defineDynamic({
   events: {
     // Resolved before every model step, so a turn that keeps starting
@@ -5615,7 +5849,7 @@ export default defineDynamic({
       // In the autonomy pilot, whether the person named a site, for a
       // report's turn that takes their errand on to a fallback site: the
       // words of their last messages, not their text.
-      const turn: PersonTurn =
+      const autonomous: PersonTurn =
         scope !== undefined && errandAutonomyPilot(scope.workspaceId)
           ? {
               ...said,
@@ -5626,6 +5860,15 @@ export default defineDynamic({
               ),
             }
           : said;
+      // In the direct-purchase pilot the step names the request that pays.
+      const turn: PersonTurn =
+        scope !== undefined && directPurchasePilot(scope)
+          ? {
+              ...autonomous,
+              personTexts: personMessages(context.messages).slice(-50),
+              step,
+            }
+          : autonomous;
       const tool = defineTool({
         approval: async (ctx) => {
           const decision = await browserTaskApproval(ctx.toolInput, ctx, turn);
@@ -5641,11 +5884,13 @@ export default defineDynamic({
           );
           return rule === "not-applicable" ? decision : rule;
         },
-        description: short
-          ? shortBrowserTaskDescription
-          : delegating
-            ? delegatingBrowserTaskDescription
-            : browserTaskDescription,
+        description: `${
+          short
+            ? shortBrowserTaskDescription
+            : delegating
+              ? delegatingBrowserTaskDescription
+              : browserTaskDescription
+        }${turn.step === undefined || delegating ? "" : directPurchaseNote}`,
         inputSchema: short
           ? signUp
             ? shortSignUpInputSchema

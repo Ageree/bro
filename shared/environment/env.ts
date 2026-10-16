@@ -308,6 +308,21 @@ export const env = createEnv({
         "YANDEX_PURCHASE_WORKSPACES takes workspace ids or *, not emails"
       )
       .optional(),
+    // The person's own request pays without «Оплачиваю?» (owner 15.10,
+    // `agent/lib/payments/direct.ts`): «купи корм», «оплати интернет». Up to
+    // the budget they named, or DIRECT_PURCHASE_MAX_RUB without one; above
+    // it, or when what was found differs, one question. Workspace ids or `*`.
+    DIRECT_PURCHASE_WORKSPACES: workspaceListSchema
+      .refine(
+        (entries) => entries.every((entry) => !entry.includes("@")),
+        "DIRECT_PURCHASE_WORKSPACES takes workspace ids or *, not emails"
+      )
+      .optional(),
+    DIRECT_PURCHASE_MAX_RUB: z.coerce
+      .number()
+      .int()
+      .positive("DIRECT_PURCHASE_MAX_RUB must be greater than zero")
+      .default(5000),
     // Bro carries an errand on by itself (`agent/lib/browser-use/autonomy.ts`):
     // after a site never lets the run past its anti-bot check, the free part
     // of the errand goes on at a fallback site with no new word from the

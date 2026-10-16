@@ -95,3 +95,38 @@ export const spendEntriesRelations = relations(spendEntries, ({ one }) => ({
     references: [workspaces.id],
   }),
 }));
+
+/**
+ * A person's own request that paid without a question
+ * (DIRECT_PURCHASE_WORKSPACES, `agent/lib/payments/direct.ts`): one request
+ * — the words of one turn of theirs — pays one purchase. The key hashes the
+ * session, the turn and those words; `ref` is the purchase or errand it
+ * paid, so the same purchase taken up again keeps it, and any other is
+ * asked about.
+ */
+export const directPurchaseConsents = pgTable(
+  "direct_purchase_consents",
+  {
+    workspaceId: text("workspace_id").notNull(),
+    consentKey: text("consent_key").notNull(),
+    ref: text("ref").notNull(),
+    createdAt: timestamp("created_at", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    foreignKey({
+      name: "direct_purchase_consents_workspace_id_fkey",
+      columns: [table.workspaceId],
+      foreignColumns: [workspaces.id],
+    }).onDelete("cascade"),
+    unique("direct_purchase_consents_key_uidx").on(
+      table.workspaceId,
+      table.consentKey
+    ),
+  ]
+);

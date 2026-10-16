@@ -52,6 +52,10 @@ import {
   type OutboundFile,
 } from "@agent/lib/outbound-media/attachments";
 import { startedByPerson } from "@agent/lib/mode";
+import {
+  directPurchasePilot,
+  forwardedMarker,
+} from "@agent/lib/payments/direct";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import {
   conversationHoldsFiles,
@@ -400,20 +404,25 @@ export default telegramChannel({
       }
       return null;
     }
+    // A forwarded message is someone else's words: in the direct-purchase
+    // pilot it never reads as the person's request to pay
+    // (`agent/lib/payments/direct.ts`).
+    const forwarded = directPurchasePilot(scope) && isForwarded(message.raw);
+    const attributes = {
+      ...auth.attributes,
+      conversationChannel: "telegram",
+      conversationId: telegramContinuationToken({
+        chatId: message.chat.id,
+      }),
+      replyLanguage: replyLanguageFor(message.text || message.caption),
+      telegramChatId: message.chat.id,
+      telegramMessageId: message.messageId,
+      telegramUserId: from.id,
+      workspaceId: scope.workspaceId,
+    };
     const sessionAuth = {
       ...auth,
-      attributes: {
-        ...auth.attributes,
-        conversationChannel: "telegram",
-        conversationId: telegramContinuationToken({
-          chatId: message.chat.id,
-        }),
-        replyLanguage: replyLanguageFor(message.text || message.caption),
-        telegramChatId: message.chat.id,
-        telegramMessageId: message.messageId,
-        telegramUserId: from.id,
-        workspaceId: scope.workspaceId,
-      },
+      attributes: forwarded ? { ...attributes, forwarded: "1" } : attributes,
       principalId,
     };
     // A location the person shared (geolocation pilot): the message keeps a
@@ -445,10 +454,15 @@ export default telegramChannel({
     // because eve's lazy resolver drops a photo the Bot API serves without an
     // image content type and never reads a voice note at all. Spreadsheets
     // and documents reach the model only where task or browser files are on.
-    const media = await telegramMediaTurn(message, {
-      browserFiles: browserFilesEnabled(scope.workspaceId),
-      documents: taskFilesEnabled(scope.workspaceId),
-    });
+    const media = await telegramMediaTurn(
+      forwarded
+        ? { ...message, caption: `${forwardedMarker} ${message.caption}` }
+        : message,
+      {
+        browserFiles: browserFilesEnabled(scope.workspaceId),
+        documents: taskFilesEnabled(scope.workspaceId),
+      }
+    );
     if (media?.notice) await context.telegram.sendMessage(media.notice);
     // A voice note nobody could transcribe leaves nothing to answer, so the
     // retry line above is the whole reply and no model turn starts.
@@ -466,10 +480,40 @@ export default telegramChannel({
           )
         : []),
     ];
-    if (media === undefined) return { auth: sessionAuth, context: turnContext };
+    if (media === undefined) {
+      return forwarded
+        ? {
+            auth: sessionAuth,
+            context: turnContext,
+            message: inboundTurn(
+              `${forwardedMarker} ${message.text || message.caption}`,
+              []
+            ).message,
+          }
+        : { auth: sessionAuth, context: turnContext };
+    }
     return { auth: sessionAuth, context: turnContext, message: media.message };
   },
 });
+
+const forwardSchema = z.object({
+  forward_date: z.number().optional(),
+  forward_from: z.object({}).loose().optional(),
+  forward_origin: z.object({}).loose().optional(),
+  forward_sender_name: z.string().optional(),
+});
+
+/** Whether Telegram says the message was forwarded from somewhere else. */
+function isForwarded(raw: Parameters<typeof forwardSchema.safeParse>[0]) {
+  const parsed = forwardSchema.safeParse(raw);
+  return (
+    parsed.success &&
+    (parsed.data.forward_origin !== undefined ||
+      parsed.data.forward_date !== undefined ||
+      parsed.data.forward_from !== undefined ||
+      parsed.data.forward_sender_name !== undefined)
+  );
+}
 
 function bugHintText(botUsername: string) {
   return `Нашли ошибку? Напишите @${botUsername}: опишите, что сломалось, можно со скриншотом.`;
