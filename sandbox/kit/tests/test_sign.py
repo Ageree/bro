@@ -327,3 +327,37 @@ class Sign(unittest.TestCase):
         self.assertEqual(self.places(output)["signed_fields"], ["notary"])
         code, refused, _ = self.stamp(output, [{"field": "bro_sign_signature_1", "role": "signature"}])
         self.assertEqual((code, refused["code"]), (2, "already_signed"))
+
+    def test_spots_find_the_parties_initials_at_the_foot_of_every_page(self):
+        # Live 16.10: «Наймодатель ____  Наниматель ____» at the foot of each page of a lease named no paraf, and the
+        # tenant's on the last page, under the signatures, went unmarked.
+        from reportlab.lib.pagesizes import A4
+        from reportlab.pdfbase.pdfmetrics import stringWidth
+        from reportlab.pdfgen import canvas
+
+        from tests.pdf_fixtures import fonts
+
+        def party(c, x, y, name):
+            c.drawString(x, y, name)
+            start = x + stringWidth(name, "TestSerif", 11) + 6
+            c.line(start, y, start + 110, y)
+
+        fonts()
+        path = self.path("lease.pdf")
+        c = canvas.Canvas(path, pagesize=A4)
+        for number in (1, 2, 3):
+            c.setFont("TestSerif", 11)
+            c.drawString(60, 760, "Договор найма, страница %d: условия сторон." % number)
+            if number < 3:
+                party(c, 60, 50, "Наймодатель")
+                party(c, 320, 50, "Наниматель")
+            else:
+                party(c, 60, 300, "Арендатор")
+                # A party's line at the foot of one page only is no paraf.
+                party(c, 60, 50, "Исполнитель")
+            c.showPage()
+        c.save()
+        code, result = kit("pdf", "sign-spots", path, home=self.bare)
+        self.assertEqual(code, 0, result)
+        initials = [(s["page"], s["label"].split(" ")[0]) for s in result["spots"] if s["role"] == "initials"]
+        self.assertEqual(initials, [(1, "Наймодатель"), (1, "Наниматель"), (2, "Наймодатель"), (2, "Наниматель")])

@@ -117,6 +117,7 @@ class IdPhotoTest(unittest.TestCase):
         self.assertEqual(code, 0, result)
         self.assertEqual(result["roll_fixed_deg"], 0)
         self.assertAlmostEqual(result["roll_deg"], -ROLL, delta=1.0)
+        self.assertTrue(any("eye line on the result is tilted" in w for w in result["warnings"]), result["warnings"])
 
     def test_eyes_not_found_on_the_result_leave_the_roll_unknown(self):
         selfie(self.path("no_irises.jpg"), irises=False)

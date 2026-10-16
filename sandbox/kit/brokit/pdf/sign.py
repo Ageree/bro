@@ -40,6 +40,13 @@ HINTS = (
     ("signature", re.compile(r"подпис|signature|sign here")),
 )
 SIGNED_MARKER = "signed-by-bro"
+# A party of a contract, as it names itself at the foot of every page for its initials (парафы): «Наниматель ____».
+PARTY_RE = re.compile(
+    r"^(?:наймодател|нанимател|арендодател|арендатор|продав|покупател|заказчик|исполнител|подрядчик|работодател|работник"
+    r"|займодав|заимодав|заемщик|поставщик|доверител|поверенн|залогодател|залогодержател|дарител|одаряем|сторона)\w*\s*:?$"
+)
+# The foot of a page, where parafs stand: its last 15 %.
+FOOT_SHARE = 0.85
 
 
 def normalised(text):
@@ -698,6 +705,10 @@ def spots(argv):
                         )
         for number in numbers:
             found_spots.extend(_layout_spots(options.file, reader.pages[number - 1], number, words(number), covered.get(number, [])))
+        for paraf in _footer_parafs(options.file, reader, numbers, covered):
+            if not any(s["page"] == paraf["page"] and geom.iou(s["box"], paraf["box"]) > 0.5 for s in found_spots):
+                found_spots.append(paraf)
+    found_spots.sort(key=lambda s: (s["page"], s["box"][1], s["box"][0]))
     anchors = [(s["page"], s["box"]) for s in found_spots if s["role"] in ("signature", "initials")]
     anchors += [(e["page"], e["box"]) for e in existing]
     # A date or a name (расшифровка) is a signing spot only next to a signature place.
@@ -773,6 +784,29 @@ def _layout_spots(path, page, number, text_layer, covered):
         if not any(geom.iou(spot["box"], other["box"]) > 0.8 for other in kept):
             kept.append(spot)
     return kept
+
+
+def _footer_parafs(path, reader, numbers, covered):
+    """Blanks of a party at the foot of two pages or more («Наймодатель ____  Наниматель ____»): its initials.
+
+    No word there says «подпись» or «параф»: the repetition on every page does. A party's blank at the foot of one
+    page only is a signature line, and the printed words already name it or not.
+    """
+    from brokit.pdf import layout
+
+    by_party = {}
+    for number in numbers:
+        _, height = geom.view_size(reader.pages[number - 1])
+        for blank in layout.page_blanks(path, number):
+            label = normalised(blank.get("label") or "").strip()
+            box = blank["box"]
+            if blank["kind"] != "line" or blank.get("filled") or not PARTY_RE.match(label) or box[1] < FOOT_SHARE * height:
+                continue
+            if any(geom.intersection(box, c) > 0.3 * geom.area(box) for c in covered.get(number, [])):
+                continue
+            spot = {"role": "initials", "page": number, "box": geom.rounded(box), "label": blank["label"] + " (парафа внизу страницы)", "source": "layout", "confidence": 0.6}
+            by_party.setdefault(label.rstrip(": "), []).append(spot)
+    return [spot for spots in by_party.values() if len({s["page"] for s in spots}) >= 2 for spot in spots]
 
 
 def _phrases(words):

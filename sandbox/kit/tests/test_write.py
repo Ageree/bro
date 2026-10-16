@@ -8,7 +8,7 @@ import subprocess
 import tempfile
 import unittest
 
-from tests.pdf_fixtures import A4, kit, render, scan_form, write_json
+from tests.pdf_fixtures import A4, fonts, kit, render, scan_form, write_json
 from tests.test_layout import KOPECKS_X, small_cells_form, vector_form
 
 
@@ -18,6 +18,57 @@ def word_boxes(path):
         m.group(5): [float(m.group(i)) for i in range(1, 5)]
         for m in re.finditer(r'xMin="([\d.]+)" yMin="([\d.]+)" xMax="([\d.]+)" yMax="([\d.]+)">([^<]*)<', xml)
     }
+
+
+CELL = 14
+
+
+def money_row_form(path):
+    """A tax-form row: 13 rouble cells, a printed «.», 2 kopeck cells; a date in ДД.ММ.ГГГГ cells."""
+    from reportlab.pdfgen import canvas
+
+    fonts()
+    c = canvas.Canvas(path, pagesize=A4)
+    c.setFont("TestSans", 10)
+    c.drawString(60, 645, "Расходы на лечение")
+    c.setLineWidth(0.6)
+    for i in range(13):
+        c.rect(300 + i * CELL, 640, CELL, 18)
+    c.drawCentredString(486, 641.5, ".")
+    for i in range(2):
+        c.rect(490 + i * CELL, 640, CELL, 18)
+    c.drawString(60, 585, "Дата")
+    for start, count in ((300, 2), (336, 2), (372, 4)):
+        for i in range(count):
+            c.rect(start + i * CELL, 580, CELL, 18)
+    c.drawCentredString(332, 581.5, ".")
+    c.drawCentredString(368, 581.5, ".")
+    c.showPage()
+    c.save()
+    return path
+
+
+def cell_texts(path, xs, y):
+    """What each cell of a row (left edges `xs`, bottom `y` in PDF pt) holds: a word's width split evenly between its characters."""
+    xml = subprocess.run(["pdftotext", "-bbox", path, "-"], capture_output=True, check=True).stdout.decode("utf-8")
+    top, bottom = A4[1] - y - 18, A4[1] - y
+    out = [""] * len(xs)
+    for m in re.finditer(r'xMin="([\d.]+)" yMin="([\d.]+)" xMax="([\d.]+)" yMax="([\d.]+)">([^<]*)<', xml):
+        x0, y0, x1, y1 = (float(m.group(i)) for i in range(1, 5))
+        text = m.group(5)
+        if not text or not top <= (y0 + y1) / 2 <= bottom:
+            continue
+        step = (x1 - x0) / len(text)
+        for i, char in enumerate(text):
+            centre = x0 + step * (i + 0.5)
+            for index, left in enumerate(xs):
+                if left <= centre <= left + CELL:
+                    out[index] += char
+    return out
+
+
+ROUBLES = [300 + i * CELL for i in range(13)] + [490, 504]
+DATE = [300, 314, 336, 350, 372, 386, 400, 414]
 
 
 @unittest.skipUnless(shutil.which("pdftoppm"), "poppler is missing")
@@ -94,6 +145,44 @@ class Write(unittest.TestCase):
             self.assertGreater(len(xs), 20, index)
             centre = left + 2 + xs.mean() / 2
             self.assertLess(abs(centre - (left + width / 2)), 1.5, (index, centre, kopecks["box"]))
+
+    def money_groups(self):
+        form = money_row_form(os.path.join(self.directory, "money.pdf"))
+        code, result = kit("pdf", "layout", form, cache=self.cache)
+        self.assertEqual(code, 0, result)
+        combs = {(round(b["box"][0]), round(A4[1] - b["box"][3])): b for b in result["pages"][0]["blanks"] if b["kind"] == "comb"}
+        self.assertEqual({key: b["cells"] for key, b in combs.items()}, {(300, 640): 13, (490, 640): 2, (300, 580): 2, (336, 580): 2, (372, 580): 4})
+        return form, combs[(300, 640)]["id"], combs[(490, 640)]["id"], combs[(300, 580)]["id"]
+
+    def test_amount_with_kopecks_goes_on_into_the_kopeck_cells(self):
+        # 16.10: «180000.00» at the roubles put «.» and the kopecks into rouble cells, the kopeck cells stayed empty.
+        form, roubles, _, day = self.money_groups()
+        output, result = self.write(form, [{"at": roubles, "text": "180000.00", "dashes": True}, {"at": day, "text": "16.10.2026"}])
+        self.assertEqual([item["status"] for item in result["items"]], ["ok", "ok"], result)
+        self.assertEqual(cell_texts(output, ROUBLES, 640), list("180000") + ["-"] * 7 + ["0", "0"])
+        self.assertEqual(cell_texts(output, DATE, 580), list("16102026"))
+
+    def test_row_wide_comb_count_spreads_over_the_row_groups(self):
+        # «"comb": 15» over the 13 rouble cells drew 15 narrower cells: «-» landed in the cells of digits, status ok.
+        form, roubles, _, _ = self.money_groups()
+        output, result = self.write(form, [{"at": roubles, "text": "180000-------00", "comb": 15}])
+        self.assertEqual(result["items"][0]["status"], "ok", result)
+        self.assertEqual(cell_texts(output, ROUBLES, 640), list("180000") + ["-"] * 7 + ["0", "0"])
+        output = os.path.join(self.directory, "wrong-comb.pdf")
+        code, refused = kit("pdf", "write", form, write_json(output + ".json", [{"at": roubles, "text": "180000", "comb": 9}]), "-o", output, cache=self.cache)
+        self.assertEqual((code, refused["code"]), (2, "bad_spec"), refused)
+
+    def test_two_items_on_one_cell_group_are_refused(self):
+        # Dashes over the whole group and the digits over them: a cell held «1-».
+        form, roubles, kopecks, _ = self.money_groups()
+        for spec in (
+            [{"at": roubles, "text": "-------------"}, {"at": roubles, "text": "180000"}],
+            [{"at": roubles, "text": "180000.00"}, {"at": kopecks, "text": "00"}],
+        ):
+            output = os.path.join(self.directory, "twice.pdf")
+            code, refused = kit("pdf", "write", form, write_json(output + ".json", spec), "-o", output, cache=self.cache)
+            self.assertEqual((code, refused["code"]), (2, "bad_spec"), refused)
+            self.assertIn("dashes", refused["hint"])
 
     def test_text_on_a_skewed_scan_follows_the_rule(self):
         import numpy

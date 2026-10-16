@@ -17,7 +17,7 @@ FIELDS = {
     "BankName": "ПАО Сбербанк",
     "BIC": "044525225",
     "CorrespAcc": "30101810400000000225",
-    "Sum": "2450000",
+    "SumRub": "24 500,00",
     "Purpose": "Оплата по счёту № 15 от 03.02.2026",
     "PayeeINN": "770000000000",
 }
@@ -44,6 +44,16 @@ class QrTest(unittest.TestCase):
         self.assertTrue(payload.startswith("ST00012|Name=ИП Тестов Тест Тестович|PersonalAcc=40802810938000000001|"))
         self.assertIn("Sum=2450000", payload.split("|"))
 
+    def test_the_sum_is_given_in_rubles_and_written_in_kopecks(self):
+        # Live 16.10: «Sum=24500» for 24 500 ₽, which a bank app reads as 245 ₽.
+        with self.assertRaises(KitError) as caught:
+            gost_payload(dict({key: value for key, value in FIELDS.items() if key != "SumRub"}, Sum="24500"))
+        self.assertIn("SumRub", caught.exception.hint)
+        self.assertIn("Sum=2450050", gost_payload(dict(FIELDS, SumRub="24500.5")).split("|"))
+        for broken in ("0", "24,500.00", "двадцать"):
+            with self.assertRaises(KitError):
+                gost_payload(dict(FIELDS, SumRub=broken))
+
     def test_bad_values_are_refused(self):
         for broken in ({"Purpose": "оплата | аванс"}, {"BIC": "04452522"}, {"Name": ""}):
             with self.assertRaises(KitError):
@@ -64,12 +74,14 @@ class QrTest(unittest.TestCase):
         def text(fields):
             return "|".join(["ST00012"] + ["%s=%s" % item for item in fields.items()])
 
-        without_inn = {key: value for key, value in FIELDS.items() if key != "PayeeINN"}
+        # A ready string carries GOST's own Sum, in kopecks.
+        ready = dict({key: value for key, value in FIELDS.items() if key != "SumRub"}, Sum="2450000")
+        without_inn = {key: value for key, value in ready.items() if key != "PayeeINN"}
         code, result = kit("qr", "--text", text(without_inn), "-o", self.path("ready.png"))
         self.assertEqual((code, result.get("code")), (2, "bad_fields"))
         with self.assertRaises(KitError):
             qr_matrix(text(without_inn))
-        code, result = kit("qr", "--text", text(FIELDS), "-o", self.path("ready.png"))
+        code, result = kit("qr", "--text", text(ready), "-o", self.path("ready.png"))
         self.assertEqual(code, 0, result)
         self.assertEqual(result["payload"], gost_payload(FIELDS))
         self.assertTrue(any(w.startswith("account_checksum") for w in result["warnings"]))

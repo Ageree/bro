@@ -16,7 +16,9 @@ A tel is written as given, an extension after its comma included
 (+74950000001,123): bring numbers to +7… with `brokit ru phone` first. Types:
 cell, work, home, main (written PREF, as Android does), fax; a Russian mobile
 (+79…) without a type is CELL. `address` is a string or {street, city, region,
-postcode, country, type: home|work}; `birthday` is YYYY-MM-DD or DD.MM.YYYY.
+postcode, country, type: home|work}; `birthday` is YYYY-MM-DD or DD.MM.YYYY,
+and without a year DD.MM or --MM-DD, written BDAY:--MM-DD (ISO 8601 without
+the year: Android keeps it as is, Google and Apple read it).
 
 Every line ends with CRLF and is folded at 75 octets on a character boundary,
 TEXT is escaped (\\ \\; \\, and \\n): the same rules as brokit/ics.py.
@@ -176,9 +178,14 @@ def address_line(value, label, warnings):
 def birthday(value, label):
     raw = str(value).strip()
     russian = re.fullmatch(r"(\d{1,2})\.(\d{1,2})\.(\d{4})", raw)
+    yearless = re.fullmatch(r"(\d{1,2})\.(\d{1,2})\.?|--(\d{2})-?(\d{2})", raw)
     try:
         if russian:
             return dt.date(int(russian[3]), int(russian[2]), int(russian[1])).isoformat()
+        if yearless:
+            day, month = (yearless[1], yearless[2]) if yearless[1] else (yearless[4], yearless[3])
+            # 2000 is a leap year: 29.02 is a birthday too.
+            return "--" + dt.date(2000, int(month), int(day)).isoformat()[5:]
         if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
             raise ValueError(raw)
         return dt.date.fromisoformat(raw).isoformat()
@@ -186,7 +193,7 @@ def birthday(value, label):
         raise KitError(
             "bad_spec",
             "%s: birthday %r is not YYYY-MM-DD" % (label, value),
-            "a birthday without a year goes to the note",
+            "YYYY-MM-DD or DD.MM.YYYY; without a year DD.MM",
         )
 
 

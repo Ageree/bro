@@ -78,10 +78,54 @@ def _source_records(ctx, exclude) -> list:
     return [r for r in _manifest(ctx)["records"] if r.get("category") not in set(exclude)]
 
 
+def _text_of(data: bytes) -> str | None:
+    """A text file's words whatever its encoding (UTF-8 with or without BOM, cp1251), its line ends alike."""
+    for encoding in ("utf-8-sig", "cp1251"):
+        try:
+            return data.decode(encoding).replace("\r\n", "\n").strip()
+        except UnicodeDecodeError:
+            continue
+    return None
+
+
+def _bodies(data: bytes) -> dict:
+    """sha256 → bytes of every file in an archive, nested archives included."""
+    bodies = {}
+
+    def walk(data: bytes, depth: int):
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            for info in z.infolist():
+                if info.is_dir() or info.file_size > 200 * 1024 * 1024:
+                    continue
+                body = z.read(info)
+                bodies[hashlib.sha256(body).hexdigest()] = body
+                if depth < 2 and info.filename.lower().endswith(".zip"):
+                    try:
+                        walk(body, depth + 1)
+                    except zipfile.BadZipFile:
+                        pass
+
+    walk(data, 0)
+    return bodies
+
+
 @check("zip_preserves_content", "zip")
 def zip_preserves_content(ctx, params, item):
     have = {sha for _, _, sha, _ in zip_entries(ctx, item)}
     missing = sorted({r["path"] for r in _source_records(ctx, params.get("exclude_categories", [])) if r["sha256"] not in have})
+    if missing:
+        # issues: 16.10 a cp1251 note came back in UTF-8 — the same text, new bytes; it opens on a phone now.
+        records = {r["path"]: r for r in _manifest(ctx)["records"]}
+        sources = {}
+        for fixture in ctx.case.get("turns", [{}])[0].get("files", []):
+            if fixture.lower().endswith(".zip"):
+                sources.update(_bodies(ctx.fixture_path(fixture).read_bytes()))
+        texts = {_text_of(body) for body in _bodies(item.path.read_bytes()).values() if len(body) < 1024 * 1024}
+        missing = [
+            path
+            for path in missing
+            if not (path.lower().endswith((".txt", ".csv")) and _text_of(sources.get(records[path]["sha256"], b"\xff\xfe\x00")) in texts - {None})
+        ]
     if missing:
         return failed(f"нет {len(missing)}: " + ", ".join(missing[:6]))
     return passed("все нужные файлы на месте")

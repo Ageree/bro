@@ -335,6 +335,11 @@ def make_photo(image, eyes, chin, size_mm, head_mm, top_mm, whiten):
     if again:
         (ax, ay), (bx, by) = again
         residual = round(math.degrees(math.atan2(by - ay, bx - ax)), 2)
+        if abs(residual) > 1:
+            # Live 16.10: level --eyes on a tilted head left it at −3.9°, and the photo went out as is.
+            warnings.append(
+                "the eye line on the result is tilted %.1f°: the --eyes points are wrong; run again without --eyes or fix them" % residual
+            )
     else:
         warnings.append("eye line not re-measured: check it with look")
     head_out_mm = head_px * k / MM

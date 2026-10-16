@@ -69,7 +69,7 @@ def main(argv):
     if fields is None:
         payload = args.text
     else:
-        payload = gost_payload(fields)
+        payload = gost_payload(fields, ready=args.gost is None)
         warnings = gost_warnings(fields)
     out_path(args.output, args.gost)
     lower = args.output.lower()
@@ -82,8 +82,23 @@ def main(argv):
     return {"payload": payload, "modules": modules, "output": args.output, "warnings": warnings}
 
 
-def gost_payload(fields):
-    """The ST00012 string for a dict of GOST keys; required keys first."""
+def gost_payload(fields, ready=False):
+    """The ST00012 string for a dict of GOST keys; required keys first.
+
+    The sum is given as SumRub, in rubles, and written as GOST's Sum in
+    kopecks: a bare Sum was rubles as often as kopecks (24500 for 24 500 ₽ is
+    245 ₽ in a bank app). A ready GOST string (`ready`) keeps its Sum.
+    """
+    fields = dict(fields)
+    if not ready:
+        if "Sum" in fields:
+            raise KitError(
+                "bad_fields",
+                "Sum is kopecks and easy to get wrong",
+                "pass SumRub, the sum in rubles (24500 or 24500.50); the kit writes Sum in kopecks",
+            )
+        if "SumRub" in fields:
+            fields["Sum"] = kopecks(fields.pop("SumRub"))
     values = {}
     for key, value in fields.items():
         if not re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,39}", str(key)):
@@ -111,6 +126,18 @@ def gost_payload(fields):
     return "|".join([GOST_HEADER] + ["%s=%s" % (key, values[key]) for key in ordered])
 
 
+def kopecks(rubles):
+    """Rubles (24500, «24 500,50», 24500.5) as GOST's Sum: kopecks, digits only."""
+    text = re.sub(r"[\s\u00a0]", "", str(rubles)).replace(",", ".")
+    if not re.fullmatch(r"\d{1,16}(?:\.\d{1,2})?", text):
+        raise KitError("bad_fields", "SumRub must be rubles, 24500 or 24500.50: " + str(rubles))
+    whole, _, cents = text.partition(".")
+    total = int(whole) * 100 + int((cents + "00")[:2])
+    if total == 0:
+        raise KitError("bad_fields", "SumRub must be more than 0")
+    return str(total)
+
+
 def gost_fields(text):
     """The fields of a ready GOST string (ST0001…), or None for any other text."""
     text = text.strip()
@@ -136,7 +163,7 @@ def gost_fields(text):
 def checked_payload(payload):
     """A ready GOST string rebuilt by gost_payload (refused like --gost); any other text as is."""
     fields = gost_fields(payload)
-    return payload if fields is None else gost_payload(fields)
+    return payload if fields is None else gost_payload(fields, ready=True)
 
 
 def account_key_ok(prefix, account):

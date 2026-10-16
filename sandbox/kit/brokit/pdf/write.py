@@ -4,21 +4,33 @@ SPEC.json is a list of items, each with "page" and "box" (view pt) or "at" (a bl
 `pdf layout` of the same file — box, angle and rule come from its cache; the output keeps those
 ids, its written blanks marked "filled"):
   {"at": "p1b3", "text": "…", "size": "auto" | 11, "align": "left|center|right", "comb": 12,
-   "font": "sans|serif|mono", "color": "#000", "angle": deg}
+   "dashes": true, "font": "sans|serif|mono", "color": "#000", "angle": deg}
   {"page": 1, "box": [...], "check": true}
   {"page": 1, "box": [...], "image": "/workspace/x.png", "fit": "contain"}
 Text on a rule sits 1.5 pt above it and follows the rule's angle (a skewed scan); in a box it
 is centred vertically. Everything one page gets is drawn on one overlay, merged once.
+
+Cells (a comb) take a character each from the first; "dashes" fills the cells left over with «-»
+(the tax-form rule). A comb blank of `at` gets its cell count from the layout. A row the form
+splits into cell groups at a printed «.» (roubles.kopecks, ДД.ММ.ГГГГ) is written whole at its
+first group: "180000.00" puts 180000 into the roubles and 00 into the kopecks; a "comb" equal to
+the whole row's cells spreads the text over its groups in turn. One item per cell group — two
+would draw over each other. An item of such a row says what each group got ("groups").
 """
 
 import math
 import os
+import re
 
 from brokit.pdf import crypt, geom
 from brokit.util import KitError, out_path, parser, read_json
 
 FONTS = {"sans": "BroSans", "serif": "BroSerif", "mono": "BroMono"}
 ALIGN = ("left", "center", "right")
+SEPARATOR = re.compile(r"[.,]")
+NUMERIC_PART = re.compile(r"[0-9\-   ]*")
+SPACES = re.compile(r"[   ]")
+ONE_PER_GROUP = 'one item per cell group: a value with kopecks or a date goes whole to its first group ("180000.00"); empty cells — "dashes": true'
 
 
 def _number(value, name):
@@ -28,17 +40,84 @@ def _number(value, name):
         raise KitError("bad_spec", "%s must be a number" % name)
 
 
+def _row_groups(path, number, blank):
+    """The comb `blank` and the comb groups its row goes on in: same height, cells as wide, a cell apart at most."""
+    from brokit.pdf import layout
+
+    combs = [b for b in layout.page_blanks(path, number) if b.get("kind") == "comb" and b.get("cells") and not b.get("filled")]
+    groups = [blank]
+    while True:
+        x0, y0, x1, y1 = groups[-1]["box"]
+        cell = (x1 - x0) / groups[-1]["cells"]
+        following = next(
+            (
+                b
+                for b in combs
+                if b["id"] not in {g["id"] for g in groups}
+                and abs(b["box"][1] - y0) <= 2
+                and abs(b["box"][3] - y1) <= 2
+                and -1 <= b["box"][0] - x1 <= cell
+                and abs((b["box"][2] - b["box"][0]) / b["cells"] - cell) <= 0.25 * cell
+            ),
+            None,
+        )
+        if following is None:
+            return groups
+        groups.append(following)
+
+
+def _row_parts(item, groups, n):
+    """The text of a comb item cut into its row's cell groups, or None when it stays in the first group."""
+    text = str(item.get("text", ""))
+    cells = [g["cells"] for g in groups]
+    parts = SEPARATOR.split(text) if SEPARATOR.search(text) else None
+    if parts and all(NUMERIC_PART.fullmatch(p) for p in parts) and len(groups) > 1:
+        if len(parts) > len(groups):
+            raise KitError(
+                "bad_spec",
+                "item %d: %r has %d parts, the row %s has %d cell groups" % (n, text, len(parts), groups[0]["id"], len(groups)),
+                'digits without thousand separators, one «.» per printed dot: "180000.00", "16.10.2026"',
+            )
+        return [SPACES.sub("", p) for p in parts]
+    if "comb" not in item:
+        return None
+    wanted = int(_number(item["comb"], "comb"))
+    if wanted == cells[0]:
+        return None
+    totals = [sum(cells[: k + 1]) for k in range(len(cells))]
+    if wanted not in totals[1:]:
+        row = " + ".join("%s %d" % (g["id"], g["cells"]) for g in groups)
+        raise KitError(
+            "bad_spec",
+            "item %d: comb %d, but %s has %d cells (the row: %s)" % (n, wanted, groups[0]["id"], cells[0], row),
+            'leave "comb" out: "at" brings the cells; the picture shows other cells — "page", "box" and "comb" instead of "at"',
+        )
+    span = totals.index(wanted) + 1
+    starts = [0] + totals[: span - 1]
+    return [text[start : starts[k + 1]] if k + 1 < span else text[start:] for k, start in enumerate(starts)]
+
+
 def _resolve(path, reader, item, n):
-    """(page number, view box, angle, rule endpoints or None) of one spec item."""
+    """Pieces (page number, view box, angle, rule endpoints or None, item, blank id) of one spec item.
+
+    One piece, except an item at a comb that the row's cell groups share (see the module docstring).
+    """
     if "at" in item:
         from brokit.pdf import layout
 
         number, box, blank = layout.blank_by_id(path, str(item["at"]))
         line = blank.get("line") if blank.get("kind") in ("line", "underscores") else None
-        if blank.get("cells") and "comb" not in item:
-            item["comb"] = blank["cells"]
         angle = float(item["angle"]) if "angle" in item else float(blank.get("angle") or 0)
-        return number, geom.rect(box), angle, line
+        if not blank.get("cells"):
+            return [(number, geom.rect(box), angle, line, item, blank["id"])]
+        groups = _row_groups(path, number, blank)
+        parts = _row_parts(item, groups, n)
+        if parts is None:
+            return [(number, geom.rect(box), angle, line, dict(item, comb=blank["cells"]), blank["id"])]
+        return [
+            (number, geom.rect(group["box"]), angle, None, dict(item, text=part, comb=group["cells"]), group["id"])
+            for group, part in zip(groups, parts)
+        ]
     try:
         number = int(item.get("page"))
     except (TypeError, ValueError):
@@ -52,7 +131,7 @@ def _resolve(path, reader, item, n):
     width, height = geom.view_size(reader.pages[number - 1])
     if box[2] - box[0] < 1 or box[3] - box[1] < 1 or box[0] < -2 or box[1] < -2 or box[2] > width + 2 or box[3] > height + 2:
         raise KitError("bad_spec", "item %d: box %s is empty or outside the page (%.0f × %.0f pt)" % (n, box, width, height))
-    return number, box, _number(item.get("angle", 0), "angle"), None
+    return [(number, box, _number(item.get("angle", 0), "angle"), None, item, None)]
 
 
 def _lines(text, font_name, size, width, wrap):
@@ -90,6 +169,8 @@ def plan_text(item, box, font_name, on_rule):
         cells = int(_number(item["comb"], "comb"))
         if cells < 1:
             raise KitError("bad_spec", "comb must be ≥ 1")
+        if item.get("dashes"):
+            text += "-" * (cells - len(text))
         size = wanted if wanted not in (None, "auto") else min(12.0, (height - 3) / 1.2, width / cells * 1.3)
         status = "ok" if len(text) <= cells else "overflow"
         return {"size": size, "lines": [text[:cells]], "comb": cells, "status": status}
@@ -122,25 +203,29 @@ def main(argv):
         raise KitError("bad_spec", "SPEC.json must be a list of items")
     warnings = []
     reader = crypt.open_pdf(options.file, warnings=warnings)
-    placed = []
+    placed, combs = [], {}
     for n, item in enumerate(spec, start=1):
         if not isinstance(item, dict):
             raise KitError("bad_spec", "item %d is not an object" % n)
-        number, box, angle, rule = _resolve(options.file, reader, item, n)
-        if "image" in item:
-            image = str(item["image"])
-            if not os.path.isfile(image):
-                raise KitError("not_found", "item %d: no image %s" % (n, image))
-        font_name = geom.font(FONTS.get(str(item.get("font", "sans")), "BroSans"))
-        align = str(item.get("align", "left"))
-        if align not in ALIGN:
-            raise KitError("bad_spec", "align must be left, center or right")
-        plan = None
-        if not item.get("check") and "image" not in item:
-            plan = plan_text(item, box, font_name, rule is not None)
-        placed.append(
-            {"n": n, "page": number, "box": box, "angle": angle, "rule": rule, "item": item, "font": font_name, "align": align, "plan": plan}
-        )
+        for number, box, angle, rule, piece, blank_id in _resolve(options.file, reader, item, n):
+            if piece.get("comb") and blank_id:
+                if blank_id in combs:
+                    raise KitError("bad_spec", "items %d and %d both write the cells of %s" % (combs[blank_id], n, blank_id), ONE_PER_GROUP)
+                combs[blank_id] = n
+            if "image" in piece:
+                image = str(piece["image"])
+                if not os.path.isfile(image):
+                    raise KitError("not_found", "item %d: no image %s" % (n, image))
+            font_name = geom.font(FONTS.get(str(piece.get("font", "sans")), "BroSans"))
+            align = str(piece.get("align", "left"))
+            if align not in ALIGN:
+                raise KitError("bad_spec", "align must be left, center or right")
+            plan = None
+            if not piece.get("check") and "image" not in piece:
+                plan = plan_text(piece, box, font_name, rule is not None)
+            placed.append(
+                {"n": n, "at": blank_id, "page": number, "box": box, "angle": angle, "rule": rule, "item": piece, "font": font_name, "align": align, "plan": plan}
+            )
     writer = crypt.writer_from(reader)
     with crypt.parsing():
         _draw(writer, placed)
@@ -148,17 +233,21 @@ def main(argv):
     from brokit.pdf import layout
 
     layout.carry(options.file, output, [(p["page"], p["box"]) for p in placed])
-    items = [
-        {
-            "n": p["n"],
-            "page": p["page"],
-            "box": geom.rounded(p["box"]),
-            "size": round(p["plan"]["size"], 1) if p["plan"] else None,
-            "angle": round(p["angle"], 2),
-            "status": p["plan"]["status"] if p["plan"] else "ok",
+    items = []
+    for n in range(1, len(spec) + 1):
+        pieces = [p for p in placed if p["n"] == n]
+        first, statuses = pieces[0], [p["plan"]["status"] if p["plan"] else "ok" for p in pieces]
+        entry = {
+            "n": n,
+            "page": first["page"],
+            "box": geom.rounded(first["box"]),
+            "size": round(first["plan"]["size"], 1) if first["plan"] else None,
+            "angle": round(first["angle"], 2),
+            "status": next((s for s in ("overflow", "shrunk") if s in statuses), "ok"),
         }
-        for p in placed
-    ]
+        if len(pieces) > 1:
+            entry["groups"] = {p["at"]: p["plan"]["lines"][0] for p in pieces}
+        items.append(entry)
     problems = [i["n"] for i in items if i["status"] == "overflow"]
     result = {"output": output, "items": items, "warnings": warnings}
     if problems:
