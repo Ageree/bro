@@ -56,6 +56,15 @@ function lookPath(path: string) {
 }
 
 /**
+ * The zoom a call asked for: none for a region of zeros. GPT-6.1 Sol fills
+ * every optional field and sent «0,0,0,0» on its first look at every photo
+ * (16.10), and the kit refused each call.
+ */
+function givenRegion(region: string | undefined) {
+  return region === undefined || /^[0.,]+$/u.test(region) ? undefined : region;
+}
+
+/**
  * The task agent's eyes, where the person's files reach it
  * (TASK_FILES_WORKSPACES): PDF pages, photos and scans, office files drawn
  * as pages, through the kit's `brokit look` (`agent/lib/sandbox/kit.ts`).
@@ -114,6 +123,7 @@ export default defineDynamic({
             async execute(input, ctx) {
               const sandbox = await ctx.getSandbox();
               const paths = input.paths.map(lookPath);
+              const region = givenRegion(input.region);
               const out = `/workspace/.bro/look/${ctx.callId.replaceAll(/[^\w-]/gu, "_")}`;
               try {
                 const run = await runKit(
@@ -127,9 +137,7 @@ export default defineDynamic({
                       ? []
                       : ["--pages", input.pages]),
                     ...(input.grid === true ? ["--grid"] : []),
-                    ...(input.region === undefined
-                      ? []
-                      : ["--region", input.region]),
+                    ...(region === undefined ? [] : ["--region", region]),
                   ],
                   { signal: ctx.abortSignal, timeoutMs: 120_000 }
                 );
