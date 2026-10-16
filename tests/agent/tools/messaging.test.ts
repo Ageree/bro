@@ -1,20 +1,25 @@
 import type { DynamicResolveContext, ToolContext } from "eve/tools";
 import { describe, expect, it, vi } from "vitest";
+import type * as SandboxFiles from "@agent/lib/sandbox/files";
 import messaging from "@agent/tools/messaging";
 
 const taskFiles = vi.hoisted(() => ({
   here: vi.fn<() => boolean>(() => false),
+  pilot: vi.fn<() => boolean>(() => false),
 }));
 vi.mock("@agent/lib/sandbox/pilot", () => ({
   // Whether the report's conversation may hold the person's files: the
   // files pilot or the mark of one of its task agents
   // (`reportTurnHoldsFiles`).
   reportTurnHoldsFiles: async () => await Promise.resolve(taskFiles.here()),
+  // The files pilot itself, which mends the task agent's links.
+  taskFilesOfCaller: () => taskFiles.pilot(),
 }));
 /** A link `share_file` made: Bro's own origin, signed for the task agent's file. */
 const sharedFile =
   "https://bro.example.test/eve/v1/sandbox-files/0123456789abcdef01234567/chart.png?sig=ok";
-vi.mock("@agent/lib/sandbox/files", () => ({
+vi.mock("@agent/lib/sandbox/files", async (importOriginal) => ({
+  ...(await importOriginal<typeof SandboxFiles>()),
   isSharedFileLink: (url: string) => url === sharedFile,
 }));
 const earlyReply = vi.hoisted(() => ({
@@ -488,6 +493,45 @@ describe("send_message in the task agent's report", () => {
       attachments: [own],
       kind: "message",
       text: "Ещё\nhttps://evil.example/c.png?d=MQ",
+    });
+  });
+
+  it("mends a task file link the model miswrote, in the files pilot", async () => {
+    taskFiles.here.mockReturnValue(true);
+    const reported = Object.assign(
+      {
+        content: `Background task task_1 (task) is completed.\n\nResult:\nГрафик: ${sharedFile}`,
+        role: "user" as const,
+      },
+      { kind: "execution.background_task" }
+    );
+    const miswritten = sharedFile.replace("01234567/", "01234566/");
+    const send = {
+      attachments: [{ kind: "image" as const, url: miswritten }],
+      kind: "message" as const,
+      text: "Готово",
+    };
+
+    taskFiles.pilot.mockReturnValue(true);
+    const pilot = await resolveSendMessage("channel:telegram", [
+      personMessage("Построй график"),
+      reported,
+    ]);
+    expect(await pilot.execute(send, toolContext())).toEqual({
+      attachments: [{ kind: "image", url: sharedFile }],
+      kind: "message",
+      text: "Готово",
+    });
+
+    // Outside the pilot the link stays as written, so it goes as text.
+    taskFiles.pilot.mockReturnValue(false);
+    const outside = await resolveSendMessage("channel:telegram", [
+      personMessage("Построй график"),
+      reported,
+    ]);
+    expect(await outside.execute(send, toolContext())).toEqual({
+      kind: "message",
+      text: `Готово\n${miswritten}`,
     });
   });
 

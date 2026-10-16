@@ -1,0 +1,63 @@
+CREATE TABLE "document_signings" (
+	"id" uuid PRIMARY KEY NOT NULL,
+	"workspace_id" text NOT NULL,
+	"user_id" text NOT NULL,
+	"root_session_id" text NOT NULL,
+	"status" text DEFAULT 'prepared' NOT NULL,
+	"fingerprint" text NOT NULL,
+	"source_kind" text NOT NULL,
+	"source_ref" text NOT NULL,
+	"source_share_id" text,
+	"source_name" text NOT NULL,
+	"source_sha256" text NOT NULL,
+	"source_bytes" integer NOT NULL,
+	"plan" jsonb NOT NULL,
+	"signature_source" text NOT NULL,
+	"signature_id" uuid NOT NULL,
+	"signature_kind" text NOT NULL,
+	"signature_photo_path" text,
+	"signature_png_sha256" text,
+	"date_text" text NOT NULL,
+	"language" text NOT NULL,
+	"question" text NOT NULL,
+	"prepare_call_id" text NOT NULL,
+	"asked_at" timestamp (3) with time zone,
+	"asked_text" text,
+	"asked_verbatim" boolean DEFAULT false NOT NULL,
+	"asked_turn" text,
+	"shown_at" timestamp (3) with time zone,
+	"confirm_call_id" text,
+	"consent_text" text,
+	"output_url" text,
+	"output_sha256" text,
+	"output_bytes" integer,
+	"expires_at" timestamp (3) with time zone NOT NULL,
+	"created_at" timestamp (3) with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp (3) with time zone DEFAULT now() NOT NULL,
+	"signed_at" timestamp (3) with time zone,
+	CONSTRAINT "document_signings_fingerprint_uidx" UNIQUE("workspace_id","root_session_id","fingerprint"),
+	CONSTRAINT "document_signings_status_check" CHECK ("document_signings"."status" IN ('prepared', 'signing', 'signed', 'cancelled')),
+	CONSTRAINT "document_signings_source_check" CHECK ("document_signings"."source_kind" IN ('attachment', 'shared') AND ("document_signings"."source_kind" = 'shared') = ("document_signings"."source_share_id" IS NOT NULL)),
+	CONSTRAINT "document_signings_signature_check" CHECK ("document_signings"."signature_source" IN ('saved', 'photo') AND "document_signings"."signature_kind" IN ('image', 'typed') AND ("document_signings"."signature_source" = 'photo') = ("document_signings"."signature_photo_path" IS NOT NULL AND "document_signings"."signature_png_sha256" IS NOT NULL) AND ("document_signings"."signature_source" <> 'photo' OR "document_signings"."signature_kind" = 'image')),
+	CONSTRAINT "document_signings_language_check" CHECK ("document_signings"."language" IN ('ru', 'en')),
+	CONSTRAINT "document_signings_asked_check" CHECK (("document_signings"."asked_at" IS NULL) = ("document_signings"."asked_turn" IS NULL)),
+	CONSTRAINT "document_signings_signed_check" CHECK (("document_signings"."status" = 'signed') = ("document_signings"."output_url" IS NOT NULL AND "document_signings"."signed_at" IS NOT NULL)),
+	CONSTRAINT "document_signings_claim_check" CHECK ("document_signings"."status" NOT IN ('signing', 'signed') OR "document_signings"."confirm_call_id" IS NOT NULL)
+);
+--> statement-breakpoint
+CREATE TABLE "person_signatures" (
+	"workspace_id" text PRIMARY KEY NOT NULL,
+	"id" uuid NOT NULL,
+	"user_id" text NOT NULL,
+	"kind" text NOT NULL,
+	"encrypted_value" text NOT NULL,
+	"font" text,
+	"created_at" timestamp (3) with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp (3) with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "person_signatures_kind_check" CHECK ("person_signatures"."kind" IN ('image', 'typed')),
+	CONSTRAINT "person_signatures_font_check" CHECK (("person_signatures"."kind" = 'typed') = ("person_signatures"."font" IS NOT NULL))
+);
+--> statement-breakpoint
+ALTER TABLE "document_signings" ADD CONSTRAINT "document_signings_workspace_id_fkey" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspaces"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "person_signatures" ADD CONSTRAINT "person_signatures_workspace_id_fkey" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspaces"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+CREATE INDEX "document_signings_session_idx" ON "document_signings" USING btree ("workspace_id","root_session_id","created_at");

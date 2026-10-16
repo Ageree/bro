@@ -60,11 +60,14 @@ vi.mock("@db/services/scheduled-agent-jobs", () => ({
 }));
 const taskFiles = vi.hoisted(() => ({
   here: vi.fn<() => boolean>(() => false),
+  pilot: vi.fn<() => boolean>(() => false),
 }));
 vi.mock("@agent/lib/sandbox/pilot", () => ({
   // The files pilot, or a conversation one of whose task agents got them.
   conversationHoldsFiles: async () => await Promise.resolve(taskFiles.here()),
   taskFilesEnabled: () => false,
+  // The files pilot itself, which sends files up to 20 MB.
+  taskFilesOfCaller: () => taskFiles.pilot(),
 }));
 vi.mock("@db/services/channel-identities", () => ({
   findChannelIdentity: vi.fn<typeof findChannelIdentity>(),
@@ -622,6 +625,42 @@ describe("Telegram message delivery", () => {
       "sendPhoto",
       "sendDocument",
     ]);
+  });
+
+  it("sends a 12 MB picture as a document in the files pilot, and a link outside it", async () => {
+    const png = new Uint8Array(12 * 1024 * 1024);
+    png.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const url = "https://media.example/scan.png";
+    const send = sendMessageResult({
+      attachments: [{ kind: "image", url }],
+      kind: "message",
+      text: "Скан.",
+    });
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    taskFiles.pilot.mockReturnValue(true);
+    const pilot = stubNetwork({
+      download: () =>
+        new Response(new Uint8Array(png), {
+          headers: { "content-type": "image/png" },
+        }),
+    });
+    await handleActionResult(send, handlerContext().context, sessionContext());
+    const [upload] = botApiCalls(pilot);
+    expect(upload?.method).toBe("sendDocument");
+    expect(uploadedFile(upload?.form, "document")?.size).toBe(png.byteLength);
+
+    taskFiles.pilot.mockReturnValue(false);
+    const outside = stubNetwork({
+      download: () =>
+        new Response(new Uint8Array(png), {
+          headers: { "content-type": "image/png" },
+        }),
+    });
+    const { context, request } = handlerContext();
+    await handleActionResult(send, context, sessionContext());
+    expect(botApiCalls(outside)).toEqual([]);
+    expect(request.mock.calls.at(-1)?.[1]).toMatchObject({ text: url });
   });
 
   it("posts the links of attachments it could not download without a preview where the person's files reach the task agent", async () => {

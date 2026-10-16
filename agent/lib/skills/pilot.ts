@@ -7,6 +7,7 @@ import { resolveModeValue } from "@agent/lib/mode";
 import { backgroundActionsOfCaller } from "@agent/lib/schedules/delegation/pilot";
 import { eventZoneOfCaller } from "@agent/lib/schedules/event-zone";
 import { taskFilesOfCaller } from "@agent/lib/sandbox/pilot";
+import { signOfCaller } from "@agent/lib/signatures/pilot";
 import { env } from "@shared/environment";
 import { directModelActive } from "@shared/model/provider";
 import type { InstructionLayout, SkillSetup } from "./catalog";
@@ -71,18 +72,24 @@ export function autonomyPilot(context: SkillsContext) {
 /**
  * What this turn can do, and so which skills exist for it: the browser,
  * drawing and the person's files as the instructions check them
- * (`40-browser.ts`, `60-creative.ts`, `66-task-files.ts`), and how the
- * autonomy pilot reads them. Without the files or the pilot the setup has
- * no `taskFiles` or `autonomy` at all, so it reads as before them.
+ * (`40-browser.ts`, `60-creative.ts`, `66-task-files.ts`), signing with the
+ * files (`67-sign.ts`), and how the autonomy pilot reads them. Without the
+ * files, signing or the pilot the setup has no `taskFiles`, `sign` or
+ * `autonomy` at all, so it reads as before them.
  */
 export function skillSetup(context: SkillsContext): SkillSetup {
   const setup: SkillSetup = {
     browser: browserUseConfigured(),
     images: imageGenerationScope(context) !== undefined,
   };
-  const withFiles: SkillSetup = taskFilesOfCaller(context)
+  const files: SkillSetup = taskFilesOfCaller(context)
     ? { ...setup, taskFiles: true }
     : setup;
+  // Signing only with the files (`signEnabled` requires them).
+  const withFiles: SkillSetup =
+    files.taskFiles === true && signOfCaller(context)
+      ? { ...files, sign: true }
+      : files;
   const withAutonomy: SkillSetup = autonomyPilot(context)
     ? { ...withFiles, autonomy: true }
     : withFiles;

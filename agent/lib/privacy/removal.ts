@@ -32,7 +32,12 @@ export function memoryRemoval() {
  */
 export function removalOutsideMemory({
   location = false,
-}: { readonly location?: boolean } = {}) {
+  signature = false,
+}: {
+  readonly location?: boolean;
+  /** Signing with the person's signature is on (`signEnabled`). */
+  readonly signature?: boolean;
+} = {}) {
   return [
     `Личные данные (имя, телефон, почта, адрес, дата рождения) — это не память: они убираются в кабинете, ${cabinetPage("/personal-info", "раздел «Личные данные»")}, или просьбой («удали мой адрес»).`,
     ...(googleWorkspaceConfigured()
@@ -52,6 +57,11 @@ export function removalOutsideMemory({
         ]
       : []),
     `Сейф — карты, адреса и контакты — в кабинете, ${cabinetPage("/workspace", "раздел «Сейф»")}. Сохранённый вход сайта (логин и пароль) — просьбой «забудь мой вход на …».`,
+    ...(signature
+      ? [
+          "Образец подписи — «удали мою подпись»; записи о подписаниях и уже подписанные файлы остаются.",
+        ]
+      : []),
     ...(browserUseConfigured()
       ? [
           "Входы на сайты в облачном браузере — «забудь мои входы на сайты»: профиль браузера удаляется со всеми куки, и следующее поручение входит заново; «не заходи больше в <сайт>» — Бро больше никогда не открывает этот сайт сам, даже после новых поручений там.",

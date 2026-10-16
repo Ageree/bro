@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { MessageStreamEvent } from "eve/client";
@@ -24,10 +24,12 @@ function recordFor(journal: CaseJournal, promptSent: string): RunRecord {
     driver: {
       approvedTools: [],
       backgroundRuns: [],
+      backgroundTasks: [],
       supersededRuns: [],
       confirmPaymentUpToRub: null,
       decisions: [],
       declinedTools: [],
+      files: null,
       fixtures: [],
       heldTools: [],
       host: "http://127.0.0.1:9",
@@ -194,8 +196,9 @@ describe("CaseJournal", () => {
     record.driver.supersededRuns.push("run_551177");
     await journal.save(record);
 
+    const { events, log, record: recordPath } = journal.paths;
     const written = await Promise.all(
-      Object.values(journal.paths).map((path) => readFile(path, "utf8"))
+      [events, log, recordPath].map((path) => readFile(path, "utf8"))
     );
     for (const text of written) {
       expect(text).toContain("Екатеринбург");
@@ -245,5 +248,22 @@ describe("CaseJournal", () => {
     expect(await readFile(record.transcript, "utf8")).toContain(
       "первый прогон"
     );
+  });
+
+  it("moves a files case's directory aside with the rest", async () => {
+    const outDir = await mkdtemp(join(tmpdir(), "bench-journal-"));
+    const first = new CaseJournal(outDir, "f-test", "Europe/Moscow");
+    await first.open();
+    await mkdir(join(first.paths.files, "received"), { recursive: true });
+    await writeFile(join(first.paths.files, "files-run.json"), "{}");
+
+    await new CaseJournal(outDir, "f-test", "Europe/Moscow").open();
+
+    const [archived] = await readdir(join(outDir, "previous"));
+    if (!archived) throw new Error("the first run was not kept");
+    expect(await readdir(join(outDir, "previous", archived, "f-test"))).toEqual(
+      ["files-run.json", "received"]
+    );
+    expect(await readdir(outDir)).toEqual(["previous"]);
   });
 });

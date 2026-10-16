@@ -9,8 +9,10 @@ import {
   browserSessions,
   browserTraces,
   chats,
+  documentSignings,
   encryptedSecrets,
   gmailAttachmentArtifacts,
+  personSignatures,
   scheduledAgentJobs,
   settings,
   vaultItems,
@@ -53,6 +55,8 @@ describe("database schema", () => {
       settings,
       chats,
       encryptedSecrets,
+      personSignatures,
+      documentSignings,
     ]) {
       expect(
         getTableConfig(table).foreignKeys.some((foreignKey) =>
