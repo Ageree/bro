@@ -179,6 +179,12 @@ def gost_warnings(fields):
     for key, limit in MAX_LENGTH.items():
         if len(values.get(key, "")) > limit:
             warnings.append("too_long: %s is longer than %d characters, some bank apps cut it" % (key, limit))
+    if re.search(r"(?<![\w])[А-ЯЁ]\.\s*[А-ЯЁ]\.", values.get("Name", "")):
+        # Live 16.10: «ИП Образцова Е. С.» from the card's short name; the bank matches the payee by the full one.
+        warnings.append(
+            "name_initials: Name has initials; write the payee's full name from the card "
+            "(«ИП Фамилия Имя Отчество» or «Индивидуальный предприниматель …»)"
+        )
     bic = values.get("BIC", "")
     if not account_key_ok(bic[-3:], values.get("PersonalAcc", "")):
         warnings.append("account_checksum: PersonalAcc does not match BIC, check both")
