@@ -209,10 +209,20 @@ export async function findPhoneNumber(number: string) {
 
 async function sipForNumber(input: z.input<typeof importInput>) {
   const value = valid(importInput, input);
-  if (!(await findOwnedNumber(value.number))) return null;
-  if ((await findSip(value.number.slice(1)))?.sipId !== value.sipId)
-    return null;
-  const credentials = await readSipCredentials(value.sipId);
+  // Чтения Exolve независимы и идут разом: каждое — 1–2 с (16.10), подряд они
+  // были большей частью паузы перед набором. Сбой чтения учётных данных
+  // важен, только если номер и SIP наши: иначе ответ прежний — «не наш».
+  const [owned, sip, [read]] = await Promise.all([
+    findOwnedNumber(value.number),
+    findSip(value.number.slice(1)),
+    Promise.allSettled([readSipCredentials(value.sipId)]),
+  ]);
+  if (!owned || sip?.sipId !== value.sipId) return null;
+  if (read.status === "rejected")
+    throw new Error("Exolve SIP credentials are unavailable.", {
+      cause: read.reason,
+    });
+  const credentials = read.value;
   if (
     credentials.publicNumber !== value.number ||
     !rawSipLogin.safeParse(credentials.username).success
@@ -335,8 +345,8 @@ async function importIdentity(
   );
 }
 
-async function verifyTrunk(phoneNumberId: string, username: string) {
-  const trunk = await request(
+async function readTrunk(phoneNumberId: string) {
+  return request(
     `/v1/convai/phone-numbers/${valid(id, phoneNumberId)}`,
     z.object({
       outbound_trunk: z.object({
@@ -356,6 +366,12 @@ async function verifyTrunk(phoneNumberId: string, username: string) {
       }),
     })
   );
+}
+
+function checkTrunk(
+  trunk: Awaited<ReturnType<typeof readTrunk>>,
+  username: string
+) {
   if (
     !trunk ||
     trunk.outbound_trunk.username !== username ||
@@ -372,6 +388,10 @@ async function verifyTrunk(phoneNumberId: string, username: string) {
     throw new Error(
       "ElevenLabs imported SIP configuration could not be verified."
     );
+}
+
+async function verifyTrunk(phoneNumberId: string, username: string) {
+  checkTrunk(await readTrunk(phoneNumberId), username);
 }
 
 const binding = importInput.extend({
@@ -637,19 +657,18 @@ export async function startCall(input: z.input<typeof initiation>) {
   // сделан», его можно повторять (в отличие от сбоя самого POST).
   let provider;
   try {
-    const credentials = await sipForNumber({
-      number: value.publicNumber,
-      sipId: value.sipId,
-    });
-    if (!credentials)
-      throw new Error("Call Exolve caller identity is not verified.");
-    // Три чтения ElevenLabs идут параллельно: каждое бывает медленным
-    // (13.10 — 25–40 с), и подряд они не укладывались в минуту.
-    const [outgoing, , ready] = await Promise.all([
+    // Все чтения Exolve и ElevenLabs идут разом, сверка — после: каждое бывает
+    // медленным (13.10 — 25–40 с у ElevenLabs, 16.10 — 1–2 с и обрыв за 13 с у
+    // Exolve), и подряд они набегали в секунды тишины до набора.
+    const [credentials, outgoing, trunk, ready] = await Promise.all([
+      sipForNumber({ number: value.publicNumber, sipId: value.sipId }),
       readPhone(value.phoneNumberId),
-      verifyTrunk(value.phoneNumberId, credentials.username),
+      readTrunk(value.phoneNumberId),
       requirePhoneAgentReady(),
     ]);
+    if (!credentials)
+      throw new Error("Call Exolve caller identity is not verified.");
+    checkTrunk(trunk, credentials.username);
     if (!outgoing || outgoing.phone_number !== credentials.username)
       throw new Error(
         "Call phone must be the dedicated outbound SIP-login identity."
