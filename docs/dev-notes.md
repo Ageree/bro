@@ -1060,7 +1060,9 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
 - Правило, которое слабая модель не держит из промпта, повторяйте в результате
   инструмента: «три варианта» (`pick` в `agent/tools/route_time.ts`), «билеты
   ищет браузер» (`ticketSearch` в `agent/tools/web_search.ts`), «сузь Google»
-  (`agent/lib/privacy/google-access.ts`).
+  (`agent/lib/privacy/google-access.ts`), «≤ 80 слов на слайде» (`share_file`
+  помощника один раз не отдаёт такую .pptx: 16.10 он пропустил предупреждение
+  `look` и отдал слайды по 112–129 слов; тот же sha256 второй раз уходит как есть).
 - Язык, род Бро и обращение держит пометка `replyDirective` в конце промпта
   каждого шага (`agent/lib/delivery/language.ts`; обращение — `settings`
   `form_of_address`), а не промпт или память; отправки по языку не фильтруйте
