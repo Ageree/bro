@@ -7,11 +7,12 @@ import {
 } from "@agent/lib/browser-use/report-caller";
 import { phoneReportCaller } from "@agent/lib/phone/report-caller";
 import {
+  deliversBackgroundTask,
+  isBackgroundNotice,
+  messagesSinceLastStep,
   turnOpenedByBackgroundTask,
-  turnOpeningTexts,
 } from "@agent/lib/delivery/turn-sends";
 import { resolveModeValue } from "@agent/lib/mode";
-import { backgroundNoticeText } from "@shared/chat/background-turn";
 import type { StepIdentity } from "./step";
 
 /**
@@ -62,12 +63,14 @@ export function turnKind(
 }
 
 /**
- * Whether the turn is a web chat's notice and nothing else
- * (`browserNoticeAuthenticator`). The caller alone does not tell: eve keeps
- * the last caller for a delivery that brings none (the task agent's report,
- * `turn-step.js`), and coalesces queued deliveries into one turn. Every
- * message that opened the turn must be the notice, or the turn goes to the
- * model as any other.
+ * Whether the turn is a web chat's notice (`browserNoticeAuthenticator`),
+ * which calls no model. The caller alone does not tell: eve keeps the last
+ * caller for a delivery that brings none (the task agent's report,
+ * `turn-step.js`). So the notice must be the last message, and no task
+ * report may wait unanswered beside it — coalesced into the turn, or left
+ * by a turn that failed: that one goes to the model as the task's turn.
+ * Browser reports whose turns failed do not: they are why the notice is
+ * sent, and the model they failed on would fail again.
  */
 export function browserNoticeTurn(context: Parameters<typeof turnKind>[0]) {
   if (
@@ -75,14 +78,23 @@ export function browserNoticeTurn(context: Parameters<typeof turnKind>[0]) {
   ) {
     return false;
   }
-  const openings = turnOpeningTexts(context.messages);
+  const unanswered = messagesSinceLastStep(context.messages);
+  const last = unanswered.at(-1);
   return (
-    openings.length > 0 &&
-    openings.every((text) => backgroundNoticeText(text) !== undefined)
+    last !== undefined &&
+    isBackgroundNotice(last) &&
+    !unanswered.some(deliversBackgroundTask)
   );
 }
 
 function callerTurnKind(context: Parameters<typeof turnKind>[0]): TurnKind {
+  // A notice's caller, kept by a later delivery that brings none, never
+  // passes for the person: such a turn takes the fewest tools.
+  if (
+    context.session.auth.current?.authenticator === browserNoticeAuthenticator
+  ) {
+    return "background-task";
+  }
   if (phoneReportCaller(context.session.auth.current)) return "phone-report";
   if (reportedBrowserRunId(context.session.auth.current) !== undefined) {
     return "browser-report";

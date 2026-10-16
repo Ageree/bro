@@ -217,7 +217,7 @@ describe("root agent model resolution", () => {
 
     for (const messages of [
       [notice, quietEnd, taskReport],
-      [humanMessage("Найди билеты"), notice],
+      [quietEnd, taskReport, notice],
     ]) {
       // oxlint-disable-next-line eslint/no-await-in-loop -- Each turn is resolved on its own.
       const model = await agent.model.events["step.started"]?.(
