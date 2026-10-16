@@ -44,6 +44,7 @@ import ruAmount from "../../../sandbox/kit/brokit/ru/amount.py?raw";
 import ruDecline from "../../../sandbox/kit/brokit/ru/decline.py?raw";
 import ruInit from "../../../sandbox/kit/brokit/ru/__init__.py?raw";
 import ruRules from "../../../sandbox/kit/brokit/ru/rules.py?raw";
+import ruVacation from "../../../sandbox/kit/brokit/ru/vacation.py?raw";
 
 /**
  * The task agent's file kit `brokit` (sandbox/kit/README.md) travels with
@@ -96,6 +97,7 @@ const kitFiles: readonly (readonly [string, string])[] = [
   ["brokit/ru/amount.py", ruAmount],
   ["brokit/ru/decline.py", ruDecline],
   ["brokit/ru/rules.py", ruRules],
+  ["brokit/ru/vacation.py", ruVacation],
   ["brokit/survey.py", brokitSurvey],
   ["brokit/util.py", brokitUtil],
   ["brokit/zipx.py", brokitZipx],

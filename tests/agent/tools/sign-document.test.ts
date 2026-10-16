@@ -607,6 +607,23 @@ describe("confirming a signing", () => {
     expect(stampRuns()).toHaveLength(0);
   });
 
+  it("after a cancel on «да, но …» asks to prepare again, and after «нет» not to offer again", async () => {
+    services.cancel.mockResolvedValue(true);
+    const cancelInput = { action: "cancel" as const, signingId };
+    const butYes = await call(
+      [...asked, person("да, но поставь вчерашнюю дату")],
+      cancelInput
+    );
+    expect(butYes.result).toMatchObject({ status: "cancelled" });
+    expect(z.object({ reply: z.string() }).parse(butYes.result).reply).toMatch(
+      /prepare again/u
+    );
+    const no = await call([...asked, person("нет")], cancelInput);
+    expect(z.object({ reply: z.string() }).parse(no.result).reply).toMatch(
+      /do not offer again/u
+    );
+  });
+
   it("asks to send the file with the question when it did not reach the person first", async () => {
     services.read.mockResolvedValue(row({ shownAt: null }));
     expect((await call(yes, confirmInput)).result).toMatchObject({

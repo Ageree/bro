@@ -87,5 +87,24 @@ class AmountTest(unittest.TestCase):
         self.assertEqual((code, result["code"]), (2, "bad_number"))
 
 
+class VacationTest(unittest.TestCase):
+    def test_holidays_inside_the_leave_lengthen_it(self):
+        # f-flat-scan-otpusk-overlay: 14 days from 3 November end on the 17th, 4 November is not counted.
+        code, result = kit("ru", "vacation", "--start", "03.11.2026", "--days", "14")
+        self.assertEqual(
+            (code, result["end"], result["holidays"], result["back_to_work"]),
+            (0, "17.11.2026", ["04.11.2026"], "18.11.2026"),
+        )
+        # Over the New Year: 1-8 January are left out and a leave ending on 31 December returns on the 9th.
+        code, result = kit("ru", "vacation", "--start", "2026-12-25", "--days", "7")
+        self.assertEqual((result["end"], result["back_to_work"]), ("31.12.2026", "09.01.2027"))
+        code, result = kit("ru", "vacation", "--start", "28.12.2026", "--days", "14")
+        self.assertEqual((result["end"], len(result["holidays"])), ("18.01.2027", 8))
+
+    def test_a_bad_date_or_length_is_refused(self):
+        self.assertEqual(kit("ru", "vacation", "--start", "31.02.2026", "--days", "5")[1]["code"], "bad_date")
+        self.assertEqual(kit("ru", "vacation", "--start", "01.03.2026", "--days", "0")[1]["code"], "bad_args")
+
+
 if __name__ == "__main__":
     unittest.main()

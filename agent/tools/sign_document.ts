@@ -159,6 +159,19 @@ const askAgainReply =
 const failedReply =
   "Nothing was signed. Try confirm once more; if it fails again, tell the person and send the unsigned file.";
 
+/**
+ * What to do after a cancel: after their no, nothing more; otherwise the
+ * question is gone, so a «да, но …» that still wants it signed needs a new
+ * prepare and its question in this turn — the model cancelled on «да, но
+ * поставь вчерашнюю дату» and asked in its own words, and the person's
+ * «да» then found nothing to confirm (16.10).
+ */
+function cancelledReply(facts: TurnFacts) {
+  return facts.turn === "person" && signAnswer(facts.said) === "no"
+    ? "Confirm briefly that nothing was signed and do not offer again."
+    : "Nothing will be signed under that question. If the person still wants it signed (their message was not a no, e.g. «да, но …»), prepare again in this turn — after fixing the file or places if those were the problem — and end your message with the new `question` verbatim; a change you will not make (a date other than today) — say so in one line before it.";
+}
+
 function documentTitle(name: string) {
   return Array.from(sharedFileName(name)).slice(0, 80).join("");
 }
@@ -794,7 +807,10 @@ export default defineDynamic({
             }
             if (input.action === "cancel") {
               if (await cancelSigning(owner, ctx.session.id, input.signingId)) {
-                return { status: "cancelled" as const };
+                return {
+                  reply: cancelledReply(facts),
+                  status: "cancelled" as const,
+                };
               }
               const existing = await readSigning(
                 owner,
