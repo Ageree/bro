@@ -29,7 +29,7 @@
 
 <!-- kit: office scans -->
 
-- Склонение ФИО, суммы прописью — `brokit ru decline`, `brokit ru amount`; телефоны — `brokit ru phone`; календарь — `brokit ics write`; контакты — `brokit vcf write` (номера в нём — из `brokit ru phone`); сам не склоняй и строки VCF/ICS руками не собирай.
+- Склонение ФИО, суммы прописью — `brokit ru decline`, `brokit ru amount`; телефоны — `brokit ru phone`; календарь — `brokit ics write`; контакты — `brokit vcf write` (номера ему — как в источнике, с добавочным: он сам приводит их к +7… и пишет «доб. 123» после запятой, в заметку добавочный не выноси); сам не склоняй и строки VCF/ICS руками не собирай.
 
 <!-- kit: money data scans -->
 

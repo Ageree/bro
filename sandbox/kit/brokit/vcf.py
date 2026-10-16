@@ -15,7 +15,8 @@ card with an org and no name is a company card (FN is the org, X-ABShowAs:COMPAN
 A tel is brought to +7… by the rules of `brokit ru phone`, an extension after
 its comma (8-495-000-00-01 доб. 123 → +74950000001,123); one those rules cannot
 bring for sure («00-12-34» without a code) is written as given and named in
-`warnings`. Types:
+`warnings`. A note that is only an extension («доб. 123») on a card with one
+phone without one becomes that phone's extension. Types:
 cell, work, home, main (written PREF, as Android does), fax; a Russian mobile
 (+79…) without a type is CELL. `address` is a string or {street, city, region,
 postcode, country, type: home|work}; `birthday` is YYYY-MM-DD or DD.MM.YYYY,
@@ -69,6 +70,8 @@ FAMILY_LIKE = re.compile(r"(?:ов|ев|ёв|ова|ева|ёва|ский|цк�
 RUSSIAN_MOBILE = re.compile(r"\+79\d{9}(?:,\d+)?")
 # A tel already in the form a phone dials: +, the digits, an extension after a comma.
 WRITTEN_TEL = re.compile(r"\+\d{6,15}(?:,\d{1,6})?")
+# A note that is nothing but an extension: «доб. 123», «вн.12», «ext 5».
+EXTENSION_NOTE = re.compile(r"(?i)(?:доб(?:авочный)?|вн(?:утр(?:енний)?)?|ext)\.?\s*[:.]?\s*(\d{1,6})\.?")
 CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 
 
@@ -258,6 +261,14 @@ def write(argv):
                     % (label, doubt)
                 )
         tels, keys = phone_lines(contact, label, warnings)
+        note = str(contact.get("note") or "").strip()
+        lone = EXTENSION_NOTE.fullmatch(note)
+        if lone and len(tels) == 1 and "," not in keys[0]:
+            # 17.10 the task agent kept «доб. 123» in the note and the bare number in the card: iPhone
+            # would dial the office without the extension.
+            tels[0], keys[0] = tels[0] + "," + lone.group(1), keys[0] + "," + lone.group(1)
+            warnings.append("%s: the note «%s» is the phone's extension, written after its comma" % (label, note))
+            note = ""
         full = name or " ".join(p for p in (family, given, middle) if p)
         if not full and not org and not tels:
             raise KitError("bad_spec", "contact %d needs a name, an org or a phone" % n, SPEC_HINT)
@@ -289,7 +300,6 @@ def write(argv):
                 card.append(address)
         if contact.get("birthday"):
             card.append("BDAY:" + birthday(contact["birthday"], label))
-        note = str(contact.get("note") or "").strip()
         if note:
             card.append("NOTE:" + text(note))
         if company:
