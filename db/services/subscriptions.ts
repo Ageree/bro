@@ -767,14 +767,21 @@ function isPersonTemplate(template: string) {
   return personTemplates.some((person) => person === template);
 }
 
-/** The wake rule of the watch a job reports for (`subscriptions.wake`). */
-export async function readSubscriptionWake(jobId: string) {
+/**
+ * How the watch a job reports for may reach the person: its wake rule
+ * (`subscriptions.wake`), and whether Bro started it unasked, from Russian
+ * Post's own letter (`startMailParcelWatches`).
+ */
+export async function readSubscriptionDelivery(jobId: string) {
   const [row] = await db
-    .select({ wake: subscriptions.wake })
+    .select({
+      unasked: sql<boolean>`${subscriptions.template} = 'parcel' AND ${subscriptions.source}->>'origin' = 'mail'`,
+      wake: subscriptions.wake,
+    })
     .from(subscriptions)
     .where(eq(subscriptions.jobId, jobId))
     .limit(1);
-  return row?.wake ?? "day_only";
+  return { unasked: row?.unasked === true, wake: row?.wake ?? "day_only" };
 }
 
 /** A flight's watch key: its event and start, as its reminders' keys begin. */

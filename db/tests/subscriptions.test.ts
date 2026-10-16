@@ -224,9 +224,9 @@ describe("event subscriptions", { timeout: 30_000 }, () => {
         now: new Date("2026-12-30T00:00:00.000Z"),
       })
     ).toEqual([]);
-    expect(await subscriptions.readSubscriptionWake(subscription.jobId)).toBe(
-      "day_only"
-    );
+    expect(
+      await subscriptions.readSubscriptionDelivery(subscription.jobId)
+    ).toEqual({ unasked: false, wake: "day_only" });
   });
 
   it("stops after the third failure in a row and tells the person once", async () => {
@@ -682,6 +682,19 @@ describe("event subscriptions", { timeout: 30_000 }, () => {
       })
     ).toBe(0);
     expect(await db.query.subscriptions.findMany()).toHaveLength(2);
+    // Bro started the letter's watch unasked; the person's own, they asked.
+    if (!started) throw new Error("Expected the letter's watch.");
+    expect(await subscriptions.readSubscriptionDelivery(started.jobId)).toEqual(
+      { unasked: true, wake: "day_only" }
+    );
+    const own = await db.query.subscriptions.findFirst({
+      where: eq(schema.subscriptions.dedupeKey, "10100012345678"),
+    });
+    if (!own) throw new Error("Expected the person's own watch.");
+    expect(await subscriptions.readSubscriptionDelivery(own.jobId)).toEqual({
+      unasked: false,
+      wake: "day_only",
+    });
     // A run that carries the letters marks the person's live watch as told,
     // and only theirs.
     const told = {

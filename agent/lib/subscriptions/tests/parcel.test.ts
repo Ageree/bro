@@ -439,6 +439,8 @@ describe("tracking numbers in words and letters", () => {
       "10100012345679",
     ]);
     expect(parcelNumbersIn(`трек ${number} 2 шт`)).toEqual([number]);
+    expect(parcelNumbersIn("трек 1010 0012 3456 78 2 шт")).toEqual([number]);
+    expect(parcelNumbersIn("размеры 42 44 46 48 50 52 54 56")).toEqual([]);
     expect(parcelNumbersIn("4276 1234 5678 9012 34")).toEqual([]);
     expect(parcelNumbersIn("заказ 123456789012345 от 15.10")).toEqual([]);
   });
