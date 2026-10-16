@@ -188,6 +188,21 @@ describe("the kit router", () => {
     expect(kitBlocksOfSession()).toEqual(["money", "office", "scans"]);
   });
 
+  it("gives a loan schedule the rules of money whatever Jev says", async () => {
+    // Live 17.10: a mortgage schedule with prepayments got `money` 0.08.
+    jev.askRouterQuestions.mockResolvedValue(answer({ office: 0.99 }));
+
+    await hearKitJob(
+      turnOf([
+        fromBro(
+          "Посчитай график по ипотеке в экселе с формулами и двумя досрочками."
+        ),
+      ])
+    );
+
+    expect(kitBlocksOfSession()).toEqual(["money", "office"]);
+  });
+
   it("sends Jev no number of the job: a passport, a СНИЛС or a phone", async () => {
     jev.askRouterQuestions.mockResolvedValue(answer({ forms: 0.99 }));
 

@@ -78,14 +78,14 @@ function writeKitState(next: KitState) {
  * file of the block's kind or its own words. Live 16.10, Jev gave a
  * travel expense report of eight receipt photos 0.06 for `money` and 0.04
  * for `scans`, and the task agent went without the rules of receipts and
- * photos. The floor only adds: a block it brings in costs some text, a
+ * photos; 17.10 a mortgage schedule got `money` 0.08. The floor only adds: a block it brings in costs some text, a
  * block it misses costs the job.
  */
 const plainBlocks = {
   data: /\.(?:ics|vcf|xml|json|sig|p7s)(?![\p{L}\d])|календар|контакт|телефон|кодировк|выгрузк/iu,
   forms: /бланк|анкет|заявлени|согласи[ея]|доверенност|заполни|подпис|параф/iu,
   money:
-    /(?<!\p{L})(?:чек|сч[её]т|выписк|авансов|возмещени|вычет|смет|оплат|выручк|сумм)|₽|(?<!\p{L})руб/iu,
+    /(?<!\p{L})(?:чек|сч[её]т|выписк|авансов|возмещени|вычет|смет|оплат|выручк|сумм|ипотек|кредит|займ|досрочн)|₽|(?<!\p{L})руб/iu,
   office:
     /\.(?:docx?|xlsx?|csv|pptx?|odt|ods)(?![\p{L}\d])|excel|эксел|word|ворд|таблиц|презентац|слайд/iu,
   scans: /\.(?:jpe?g|png|heic|webp|tiff?|zip)(?![\p{L}\d])|фото|скан|снимк/iu,
