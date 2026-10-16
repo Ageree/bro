@@ -17,7 +17,10 @@ import { Message, MessageContent } from "@web/components/ai-elements/message";
 import { Shimmer } from "@web/components/ai-elements/shimmer";
 import { Alert, AlertDescription, AlertTitle } from "@web/components/ui/alert";
 import { Button } from "@web/components/ui/button";
-import { isBackgroundTurnText } from "@shared/chat/background-turn";
+import {
+  backgroundNoticeText,
+  isBackgroundTurnText,
+} from "@shared/chat/background-turn";
 import { AgentMessage } from "./message";
 import type { ChatAgent } from "../chat-agent";
 
@@ -112,9 +115,25 @@ export function ChatConversation({
             return null;
           }
           // A scheduled or proactive report is Bro's own prompt to itself;
-          // the person sees only what Bro sent them from it.
+          // the person sees only what Bro sent them from it. A notice code
+          // wrote in Bro's name has no message of Bro's behind it: its text
+          // is shown as one.
           if (traceView === "imessage" && isBackgroundTurnMessage(message)) {
-            return null;
+            const notice = backgroundNoticeOf(message);
+            return notice === undefined ? null : (
+              <AgentMessage
+                canRespond={false}
+                isStreaming={false}
+                key={message.id}
+                message={{ ...message, role: "assistant" }}
+                onInputResponses={(responses) => agent.respond(responses)}
+                sentMessageParts={[
+                  { state: "done", text: notice, type: "text" },
+                ]}
+                timestamp={timestamps.get(message.id)}
+                userVisibleOnly
+              />
+            );
           }
 
           const deliveries =
@@ -169,6 +188,11 @@ function isBackgroundTurnMessage(message: EveMessage) {
   if (message.role !== "user") return false;
   const text = message.parts.find((part) => part.type === "text");
   return text?.type === "text" && isBackgroundTurnText(text.text);
+}
+
+function backgroundNoticeOf(message: EveMessage) {
+  const text = message.parts.find((part) => part.type === "text");
+  return text?.type === "text" ? backgroundNoticeText(text.text) : undefined;
 }
 
 function toErrorMessage(cause: unknown): string {
