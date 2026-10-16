@@ -1,5 +1,6 @@
 import { defineHook, type HookContext } from "eve/hooks";
 import { z } from "zod";
+import { browserNoticeAuthenticator } from "@agent/lib/browser-use/report-caller";
 import { resolveModeValue } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { recordProactiveTarget } from "@db/services/proactive";
@@ -23,6 +24,7 @@ export default defineHook({
       if (
         caller?.principalType !== "user" ||
         caller.authenticator === "browser-result" ||
+        caller.authenticator === browserNoticeAuthenticator ||
         caller.authenticator === "phone-result"
       ) {
         return;

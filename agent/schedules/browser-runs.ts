@@ -157,7 +157,9 @@ async function reconcileBrowserRuns(delivery: BrowserRunDelivery) {
   // A report still pending here is one whose delivery failed; it is retried
   // every poll until it lands or runs out of attempts.
   await pollStage("redeliver", () => redeliverPendingReports(delivery));
-  await pollStage("abandoned", () => noticeAbandonedBrowserRunReports(now));
+  await pollStage("abandoned", () =>
+    noticeAbandonedBrowserRunReports(delivery, now)
+  );
   await pollStage("overdue", () => watchOverdueReports(new Date()));
   // Browser VMs on their way up are followed until their worker answers, and
   // idle ones are stopped. Only after the reports: every call here goes to

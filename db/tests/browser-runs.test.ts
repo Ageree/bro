@@ -1337,7 +1337,7 @@ describe("browser run reports out of attempts", () => {
     };
   }
 
-  it("are taken once at a time, and a web chat's never", async () => {
+  it("are taken once at a time, a web chat's too", async () => {
     const { browserRuns, now } = await fixture();
 
     const [first, second] = await Promise.all([
@@ -1345,7 +1345,9 @@ describe("browser run reports out of attempts", () => {
       browserRuns.takeAbandonedBrowserRunReports(now),
     ]);
 
-    expect([...first, ...second].map((row) => row.id)).toEqual([runId]);
+    expect([...first, ...second].map((row) => row.id).toSorted()).toEqual(
+      [runId, web].toSorted()
+    );
   });
 
   it("stay on the overdue list until the person was told, and are taken again if the send failed", async () => {
@@ -1363,10 +1365,13 @@ describe("browser run reports out of attempts", () => {
     // The send failed: taken again after the retry delay.
     const later = new Date(now.getTime() + 11 * 60_000);
     const retaken = await browserRuns.takeAbandonedBrowserRunReports(later);
-    expect(retaken.map((row) => row.id)).toEqual([runId]);
+    expect(retaken.map((row) => row.id).toSorted()).toEqual(
+      [runId, web].toSorted()
+    );
 
     await browserRuns.markBrowserRunNoticeSent(runId, later);
-    expect(await overdue()).toEqual([other, web].toSorted());
+    await browserRuns.markBrowserRunNoticeSent(web, later);
+    expect(await overdue()).toEqual([other]);
     expect(
       await browserRuns.takeAbandonedBrowserRunReports(
         new Date(later.getTime() + 60 * 60_000)
