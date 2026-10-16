@@ -1396,6 +1396,13 @@ describe("schedules that act (BACKGROUND_ACTIONS_WORKSPACES)", () => {
   });
 });
 
+/** `schedules-update` as a deployment with or without the pilot reads it. */
+async function updateTool(routinePilot: string) {
+  vi.resetModules();
+  vi.stubEnv("ROUTINE_SETUP_WORKSPACES", routinePilot);
+  return (await import("@agent/tools/schedules")).updateSchedule;
+}
+
 describe("routines set up whole (ROUTINE_SETUP_WORKSPACES)", () => {
   const summary =
     "Утренняя сводка: что сегодня в календаре, на какие письма я ещё не ответил и погода.";
@@ -1521,7 +1528,8 @@ describe("routines set up whole (ROUTINE_SETUP_WORKSPACES)", () => {
       },
       toolContext("schedules-create", "photon-imessage")
     );
-    expect(receipt.reply).not.toContain("trial");
+    // Only offered, as outside the pilot: a run now may well show nothing.
+    expect(receipt.reply).toContain("offer to send one right now as a trial");
 
     // A trial of a run that sends a letter would send it now.
     const acting = await createTool("workspace-1", "workspace-1");
@@ -1682,6 +1690,89 @@ describe("routines set up whole (ROUTINE_SETUP_WORKSPACES)", () => {
     // The new summary gets its trial as any other.
     expect(services.runNow).toHaveBeenCalledOnce();
     expect(result.reply).toContain("now deleted");
+  });
+
+  // EN D7 across languages: the words share nothing, the time is the same.
+  it("has the model compare a new summary with a schedule at its time", async () => {
+    const create = await createTool("workspace-1");
+    const existing = morningSummary();
+    services.list.mockResolvedValue([existing]);
+    const english = {
+      ...repeat,
+      prompt:
+        "Every weekday send me a summary: today's calendar, unanswered emails and the weather.",
+    };
+
+    await expect(
+      create.execute(
+        english,
+        toolContext("schedules-create", "photon-imessage")
+      )
+    ).rejects.toThrow(
+      "Nothing was created: the person already has an active schedule at about the same time"
+    );
+    expect(services.create).not.toHaveBeenCalled();
+
+    await create.execute(
+      { ...english, keepAlongside: [existing.id] },
+      toolContext("schedules-create", "photon-imessage")
+    );
+    expect(services.create).toHaveBeenCalledOnce();
+  });
+
+  it("makes a second reminder near the first one of an earlier turn", async () => {
+    // «В 8:00 омепразол», and the next day «в 8:30 эналаприл».
+    const create = await createTool("workspace-1");
+    services.list.mockResolvedValue([
+      { ...morningSummary(), prompt: "Напомнить выпить омепразол." },
+    ]);
+
+    await create.execute(
+      {
+        missedRunPolicy: "run_latest",
+        prompt: "Напомнить выпить эналаприл.",
+        timing: { ...weekdays, localTime: "08:30" },
+        trialNow: false,
+      },
+      toolContext("schedules-create", "photon-imessage")
+    );
+
+    expect(services.create).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the task of a schedule that acts in the person's name", async () => {
+    const acting = morningSummary({
+      about: "показания счётчиков",
+      kind: "email",
+      to: ["buh@example.com"],
+    });
+    services.getJob.mockResolvedValue(acting);
+    services.update.mockResolvedValue(acting);
+
+    const pilot = await updateTool("workspace-1");
+    await expect(
+      pilot.execute(
+        { id: acting.id, prompt: "Присылай мне курс доллара." },
+        toolContext("schedules-update")
+      )
+    ).rejects.toThrow("a new task does not inherit it");
+    expect(services.update).not.toHaveBeenCalled();
+    // Its time still moves.
+    await pilot.execute(
+      {
+        id: acting.id,
+        timing: { ...weekdays, localTime: "09:00" },
+      },
+      toolContext("schedules-update")
+    );
+    expect(services.update).toHaveBeenCalledOnce();
+
+    const outside = await updateTool("");
+    await outside.execute(
+      { id: acting.id, prompt: "Присылай мне курс доллара." },
+      toolContext("schedules-update")
+    );
+    expect(services.update).toHaveBeenCalledTimes(2);
   });
 
   it("never asks about a schedule made in this same turn", async () => {

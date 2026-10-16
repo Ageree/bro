@@ -1,4 +1,9 @@
+import type { ModelMessage, ToolResultPart } from "ai";
 import { z } from "zod";
+import {
+  currentTurnMessages,
+  sendReachedPerson,
+} from "@agent/lib/delivery/turn-sends";
 import type { resolveModeValue } from "@agent/lib/mode";
 import { env } from "@shared/environment";
 import type { ScheduleTiming } from "@shared/schedules/timing";
@@ -203,11 +208,14 @@ function nearInWords(left: string, right: string) {
 }
 
 /**
- * The person's active recurring schedules a new recurring one repeats: at
- * one time and asking for mostly the same. Time alone is no repeat — «в 8:00
- * омепразол, в 8:30 эналаприл» are two reminders — and neither are words
- * alone: a summary in the evening is not the morning one. A one-off reminder
- * is never one, and is never held up by one.
+ * The person's active recurring schedules a new recurring one may repeat.
+ * `alike` run at one time and ask for mostly the same. Time alone is no
+ * repeat — «в 8:00 омепразол, в 8:30 эналаприл» are two reminders — and
+ * neither are words alone: a summary in the evening is not the morning one.
+ * A routine that gathers something (`gathers`) also has `nearby`, the others
+ * at one time, for the model to compare: words do not cross languages, and
+ * an English summary next to a Russian one shares none (EN D7). A one-off
+ * reminder is never one, and is never held up by one.
  */
 export function similarSchedules<
   Job extends {
@@ -217,14 +225,96 @@ export function similarSchedules<
   },
 >(
   fresh: { readonly prompt: string; readonly timing: ScheduleTiming },
-  jobs: readonly Job[]
+  jobs: readonly Job[],
+  gathers: boolean
 ) {
-  if (fresh.timing.kind === "once") return [];
-  return jobs.filter(
+  if (fresh.timing.kind === "once") return { alike: [], nearby: [] };
+  const near = jobs.filter(
     (job) =>
       job.status === "active" &&
       job.timing.kind !== "once" &&
-      nearInTime(fresh.timing, job.timing) &&
-      nearInWords(fresh.prompt, job.prompt)
+      nearInTime(fresh.timing, job.timing)
+  );
+  const alike = near.filter((job) => nearInWords(fresh.prompt, job.prompt));
+  return {
+    alike,
+    nearby: gathers ? near.filter((job) => !alike.includes(job)) : [],
+  };
+}
+
+/** How `schedules-create` opens a refusal over a schedule like the new one. */
+export const similarRefusalOpening =
+  "Nothing was created: the person already has an active schedule";
+
+function resultText(output: ToolResultPart["output"]) {
+  switch (output.type) {
+    case "error-text":
+    case "text":
+      return output.value;
+    case "error-json":
+    case "json":
+      return JSON.stringify(output.value);
+    default:
+      return "";
+  }
+}
+
+function refusedAsSimilar(message: ModelMessage) {
+  return (
+    message.role === "tool" &&
+    message.content.some(
+      (part) =>
+        part.type === "tool-result" &&
+        part.toolName === "schedules-create" &&
+        resultText(part.output).includes(similarRefusalOpening)
+    )
+  );
+}
+
+const sentTextSchema = z.object({ text: z.string() });
+
+/** The texts of the messages that reached the person. */
+function deliveredTexts(messages: readonly ModelMessage[]) {
+  const delivered = new Set(
+    messages.flatMap((message) =>
+      message.role === "tool"
+        ? message.content.flatMap((part) =>
+            part.type === "tool-result" &&
+            part.toolName === "send_message" &&
+            sendReachedPerson(part.output)
+              ? [part.toolCallId]
+              : []
+          )
+        : []
+    )
+  );
+  return messages.flatMap((message) =>
+    message.role === "assistant" && Array.isArray(message.content)
+      ? message.content.flatMap((part) =>
+          part.type === "tool-call" &&
+          part.toolName === "send_message" &&
+          delivered.has(part.toolCallId)
+            ? [sentTextSchema.safeParse(part.input).data?.text ?? ""]
+            : []
+        )
+      : []
+  );
+}
+
+/**
+ * Whether this turn put a schedule like one the person has to them — a
+ * `schedules-create` refused over it, then a question that reached them —
+ * so that whether to replace it or keep both is theirs to say, in their
+ * next message. Until then `schedules-create` waits, as the actions a
+ * question holds do (`turnAwaitsAnswer`): with `replaces` it deletes. A
+ * message sent in the refused call's own step was written before the
+ * refusal, and one that asks nothing («Сейчас настрою») holds nothing.
+ */
+export function routineAnswerOwed(messages: readonly ModelMessage[]) {
+  const turn = currentTurnMessages(messages);
+  const refused = turn.findLastIndex(refusedAsSimilar);
+  return (
+    refused !== -1 &&
+    deliveredTexts(turn.slice(refused + 1)).some((text) => /[?？]/u.test(text))
   );
 }

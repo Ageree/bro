@@ -134,6 +134,10 @@ describe("the tools of a step", () => {
     expect(turnTools({ ...pilot, heldForAnswer: true })).toEqual({
       withheldTools: [...actionsHeldForAnswer, "task"],
     });
+    // A new schedule waits for the answer about one like the person's.
+    expect(turnTools({ ...pilot, heldRoutine: true })).toEqual({
+      withheldTools: ["schedules-create", "task"],
+    });
     expect(turnTools({ ...pilot, taskAgent: true })).toEqual({
       withheldTools: [],
     });

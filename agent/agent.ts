@@ -5,6 +5,10 @@ import { recordStepHistory } from "@agent/lib/compaction/record";
 import { compactsAtTurnStart } from "@agent/lib/compaction/turn-start";
 import { compactionThresholdPercent } from "@agent/lib/compaction/window";
 import { scheduledRunIdentity } from "@agent/lib/schedules/identity";
+import {
+  routineAnswerOwed,
+  routineSetupOfCaller,
+} from "@agent/lib/schedules/routine";
 import { isScheduledAgentRunLeaseActive } from "@db/services/scheduled-agent-run-leases";
 import { getFormOfAddress, getWorkspaceModelId } from "@db/services/settings";
 import {
@@ -336,6 +340,12 @@ export default defineAgent({
         // they are only logged.
         const routed = routerMode === "on" ? routerGroups : undefined;
         const heldForAnswer = turnAwaitsAnswer(ctx.messages);
+        // In the pilot of routines set up whole, a new schedule waits for
+        // that answer too, and for the one about a schedule like the
+        // person's: with `replaces` it deletes.
+        const heldRoutine =
+          routineSetupOfCaller(ctx) &&
+          (heldForAnswer || routineAnswerOwed(ctx.messages));
         const notes = [
           timeZone === undefined ? undefined : localClock(new Date(), timeZone),
           formOfAddress
@@ -464,6 +474,7 @@ export default defineAgent({
             askedQuestion: turnAskedQuestion(ctx.messages),
             cardsHeld,
             heldForAnswer,
+            heldRoutine,
             kind,
             reportPastAnswer,
             stableContext,

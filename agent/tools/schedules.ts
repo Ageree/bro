@@ -27,6 +27,7 @@ import { siteHostname } from "@agent/lib/browser-use/host";
 import { backgroundActionsOfCaller } from "@agent/lib/schedules/delegation/pilot";
 import {
   routineSetupOfCaller,
+  similarRefusalOpening,
   similarSchedules,
 } from "@agent/lib/schedules/routine";
 import { subscriptionsPilot } from "@agent/lib/subscriptions/pilot";
@@ -202,8 +203,9 @@ function runsOften(timing: ScheduleTiming) {
  * gives, before its first regular run: never of a one-off, which is its own
  * run, nor of one that acts in the person's name. Until an input it lacks
  * comes, a trial would show a summary without it: it is offered for after.
- * A trial that did not start is offered instead, as outside the pilot: the
- * schedule itself is made.
+ * A month's or a year's check is offered, as outside the pilot, for the
+ * person to say whether a run now shows anything. A trial that did not
+ * start is offered instead too: the schedule itself is made.
  */
 async function startTrial(
   scope: ScheduleToCreate["owner"]["scope"],
@@ -211,14 +213,10 @@ async function startTrial(
   trialNow: boolean,
   lacksInputs: boolean
 ) {
-  if (
-    !trialNow ||
-    job.timing.kind === "once" ||
-    job.delegation !== null ||
-    !runsOften(job.timing)
-  )
+  if (!trialNow || job.timing.kind === "once" || job.delegation !== null)
     return "none";
   if (lacksInputs) return "after_inputs";
+  if (!runsOften(job.timing)) return "offered";
   if (job.nextRunAt && job.nextRunAt.getTime() - Date.now() < trialLeadMs)
     return "none";
   try {
@@ -331,23 +329,44 @@ const shortDelegatingRoutineCreateScheduleInputSchema =
 
 type ListedJob = Awaited<ReturnType<typeof listScheduledAgentJobs>>[number];
 
-/**
- * Why nothing was made: the person has an active schedule like this one,
- * and only they say whether the new one replaces it or comes beside it. A
- * replaced one is deleted, never changed: a change would keep the action
- * it does in the person's name (`delegation`) under the new task.
- */
-function similarScheduleRefusal(
+function namedSchedules(
   similar: readonly ReturnType<typeof scheduleSummary>[]
 ) {
-  const named = similar.map(({ id, nextRunLocal, prompt, timing }) => ({
+  return similar.map(({ id, nextRunLocal, prompt, timing }) => ({
     id,
     nextRunLocal,
     prompt,
     timing,
   }));
+}
+
+/**
+ * Why nothing was made: the person has an active schedule like this one,
+ * and only they say whether the new one replaces it or comes beside it. A
+ * replaced one is deleted, never changed: a change would keep the action
+ * it does in the person's name (`delegation`) under the new task. Once the
+ * question reached them, `schedules-create` waits for their next message
+ * (`routineAnswerOwed`).
+ */
+function similarScheduleRefusal(
+  similar: readonly ReturnType<typeof scheduleSummary>[]
+) {
+  const named = namedSchedules(similar);
   const ids = JSON.stringify(named.map(({ id }) => id));
-  return `Nothing was created: the person already has an active schedule like this one: ${JSON.stringify(named)}. Unless their message already said to add it beside that one («ещё одно», «и в 15:00 тоже»), ask them in one short message whether to replace it or keep both, naming its time (nextRunLocal) and what it does, and wait for their answer. Then call schedules-create again with the same input and replaces ${ids} — the old one is deleted once the new one is made — or keepAlongside ${ids} to keep both.`;
+  return `${similarRefusalOpening} like this one: ${JSON.stringify(named)}. Unless their message already said to add it beside that one («ещё одно», «и в 15:00 тоже»), ask them in one short message whether to replace it or keep both, naming its time (nextRunLocal) and what it does, and wait for their answer. Then call schedules-create again with the same input and replaces ${ids} — the old one is deleted once the new one is made — or keepAlongside ${ids} to keep both.`;
+}
+
+/**
+ * Why nothing was made yet: a new summary or check comes at the time of
+ * another active schedule whose words share too little to tell, in another
+ * language perhaps, and the model compares the two.
+ */
+function nearbyScheduleRefusal(
+  nearby: readonly ReturnType<typeof scheduleSummary>[]
+) {
+  const named = namedSchedules(nearby);
+  const ids = JSON.stringify(named.map(({ id }) => id));
+  return `${similarRefusalOpening} at about the same time: ${JSON.stringify(named)}. Compare what it does with the new one, whatever the language or words. If it already gives the same summary or check, ask the person in one short message whether to replace it or keep both, naming its time (nextRunLocal) and what it does, and wait for their answer; then call schedules-create again with the same input and replaces or keepAlongside its id. If it does other work, call schedules-create again right away with the same input and keepAlongside ${ids}, saying nothing of it.`;
 }
 
 /**
@@ -406,25 +425,26 @@ async function runRoutineCreateSchedule(
   const replaces = new Set(input.replaces ?? []);
   const chosen = new Set([...(input.keepAlongside ?? []), ...replaces]);
   // A one-off reminder is never held up by a routine.
-  const similar =
+  const { alike, nearby } =
     made.timing.kind === "once"
-      ? []
+      ? { alike: [], nearby: [] }
       : similarSchedules(
           { prompt: input.prompt, timing: made.timing },
           (await listScheduledAgentJobs(made.owner.scope)).filter(
             (job) => !madeThisTurn(job, made.owner.conversation, turnStartedAt)
-          )
+          ),
+          input.trialNow
         );
-  const unanswered = similar.filter((job) => !chosen.has(job.id));
-  if (unanswered.length > 0) {
-    throw new Error(
-      similarScheduleRefusal(
-        unanswered.map((job) => scheduleSummary(job, made.timeZone))
-      )
-    );
-  }
+  const unanswered = (jobs: readonly ListedJob[]) =>
+    jobs
+      .filter((job) => !chosen.has(job.id))
+      .map((job) => scheduleSummary(job, made.timeZone));
+  if (unanswered(alike).length > 0)
+    throw new Error(similarScheduleRefusal(unanswered(alike)));
+  if (unanswered(nearby).length > 0)
+    throw new Error(nearbyScheduleRefusal(unanswered(nearby)));
   const created = await createAndConfirm(input, context, made, input.trialNow);
-  const replaced = similar.filter((job) => replaces.has(job.id));
+  const replaced = [...alike, ...nearby].filter((job) => replaces.has(job.id));
   if (replaced.length === 0) return created;
   return {
     ...created,
@@ -635,6 +655,15 @@ const updateScheduleInputSchema = updateScheduleInput(
   scheduleTimingInputSchema
 );
 
+/**
+ * Why the task of a schedule that acts in the person's name stays as it is,
+ * in the pilot of routines set up whole: the action (`delegation`) was
+ * granted for that task, and a new task needs it granted anew.
+ */
+function delegatedTaskRefusal(id: string) {
+  return `Nothing was changed: this schedule also acts in the person's name (delegation), granted for its present task, and a new task does not inherit it. Make the new task a new schedule: schedules-create with it, with delegate as schedules-list shows it only if the new task still needs that action; then delete this one with schedules-update status deleted — or, if schedules-create names this one as similar, pass replaces ["${id}"] instead.`;
+}
+
 async function runUpdateSchedule(
   { id, runNow, timing, ...patch }: z.infer<typeof updateScheduleInputSchema>,
   context: ToolContext
@@ -645,10 +674,19 @@ async function runUpdateSchedule(
     timing !== undefined ||
     patch.prompt !== undefined ||
     patch.status !== undefined;
+  // The pilot of routines set up whole keeps a delegated schedule's task.
+  const newTask = patch.prompt !== undefined && routineSetupOfCaller(context);
   const [timeZone, current] = await Promise.all([
     readWorkspaceTimeZone(scope),
-    timing || !changes ? getScheduledAgentJob(scope, id) : undefined,
+    timing || !changes || newTask ? getScheduledAgentJob(scope, id) : undefined,
   ]);
+  if (
+    newTask &&
+    current !== undefined &&
+    current.delegation !== null &&
+    current.prompt !== patch.prompt
+  )
+    throw new Error(delegatedTaskRefusal(id));
   if ((timing || !changes) && !current) {
     const watch = await updateWatch(
       scope,
