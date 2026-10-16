@@ -268,17 +268,23 @@ def shape_words(shapes):
     return total
 
 
-def dense_slides(path, warnings):
-    """One warning for a .pptx whose slides carry more than SLIDE_WORDS words (charts and notes are not counted)."""
+def crowded_slides(path):
+    """[(slide number, words)] of a .pptx's slides over SLIDE_WORDS words (charts and notes are not counted), or None
+    for a deck python-pptx cannot read."""
     try:
         import pptx
 
         counts = [shape_words(slide.shapes) for slide in pptx.Presentation(path).slides]
     except Exception:  # noqa: BLE001 — a deck python-pptx refuses is still drawn by LibreOffice
-        return
+        return None
+    return [(number, words) for number, words in enumerate(counts, 1) if words > SLIDE_WORDS]
+
+
+def dense_slides(path, warnings):
+    """One warning for a .pptx whose slides carry more than SLIDE_WORDS words."""
     from brokit.ru.amount import plural
 
-    dense = ["слайд %d: %d %s" % (number, words, plural(words, ("слово", "слова", "слов"))) for number, words in enumerate(counts, 1) if words > SLIDE_WORDS]
+    dense = ["слайд %d: %d %s" % (number, words, plural(words, ("слово", "слова", "слов"))) for number, words in crowded_slides(path) or []]
     if dense:
         warnings.append(
             "%s has too much text on a slide: %s. A slide holds a heading and 3–5 short points (≤ %d words, body text ≥ 16 pt); "

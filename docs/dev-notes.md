@@ -1060,9 +1060,15 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
 - Правило, которое слабая модель не держит из промпта, повторяйте в результате
   инструмента: «три варианта» (`pick` в `agent/tools/route_time.ts`), «билеты
   ищет браузер» (`ticketSearch` в `agent/tools/web_search.ts`), «сузь Google»
-  (`agent/lib/privacy/google-access.ts`), «≤ 80 слов на слайде» (`share_file`
-  помощника один раз не отдаёт такую .pptx: 16.10 он пропустил предупреждение
-  `look` и отдал слайды по 112–129 слов; тот же sha256 второй раз уходит как есть).
+  (`agent/lib/privacy/google-access.ts`), приёмка файлов помощника: `share_file`
+  один раз не отдаёт .xlsx/.pdf/.pptx, где `brokit check` нашёл проблему
+  (`sandbox/kit/brokit/check.py`: непересчитанные формулы, даты текстом, сырое
+  фото страницы в PDF, слайд > 80 слов), тот же sha256 второй раз уходит как есть;
+  вне пилота файлов и при сбое проверки слайды считает сам `share_file`.
+  Проверке нужна только надёжная тревога: ложная задерживает человеку файл.
+- Команды набора с `limits()` (look, pdf info, check) тесты зовут дочерним
+  процессом (`kit` в `sandbox/kit/tests/pdf_fixtures.py`): RLIMIT_AS 768 МБ
+  остаётся на процессе тестов, и следующий `img scan` падает «needs more memory».
 - Язык, род Бро и обращение держит пометка `replyDirective` в конце промпта
   каждого шага (`agent/lib/delivery/language.ts`; обращение — `settings`
   `form_of_address`), а не промпт или память; отправки по языку не фильтруйте

@@ -9,6 +9,7 @@ import unpackScript from "../../../sandbox/kit/boot/unpack.py?raw";
 // left out never reaches a sandbox: tests/agent/sandbox/kit.test.ts walks
 // sandbox/kit/brokit and compares.
 import brokitAes from "../../../sandbox/kit/brokit/aes.py?raw";
+import brokitCheck from "../../../sandbox/kit/brokit/check.py?raw";
 import brokitCli from "../../../sandbox/kit/brokit/cli.py?raw";
 import brokitIcs from "../../../sandbox/kit/brokit/ics.py?raw";
 import brokitInit from "../../../sandbox/kit/brokit/__init__.py?raw";
@@ -70,6 +71,7 @@ const kitFiles: readonly (readonly [string, string])[] = [
   ["brokit/__init__.py", brokitInit],
   ["brokit/__main__.py", brokitMain],
   ["brokit/aes.py", brokitAes],
+  ["brokit/check.py", brokitCheck],
   ["brokit/cli.py", brokitCli],
   ["brokit/ics.py", brokitIcs],
   ["brokit/img/__init__.py", imgInit],

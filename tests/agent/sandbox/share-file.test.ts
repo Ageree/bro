@@ -30,6 +30,14 @@ const storage = vi.hoisted(() => ({
 const pilot = vi.hoisted(() => ({
   taskFilesOfCaller: vi.fn<() => boolean>(() => false),
 }));
+/** The task sandbox's process runner, where `brokit check` runs. */
+const kit = vi.hoisted(() => ({
+  run: vi.fn<
+    (options: {
+      readonly env?: Record<string, string>;
+    }) => Promise<{ exitCode: number; stderr: string; stdout: string }>
+  >(),
+}));
 
 vi.mock("@agent/lib/sandbox/files", async (importOriginal) => ({
   ...(await importOriginal<typeof Files>()),
@@ -43,6 +51,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   for (const reset of stateControls.reset) reset();
   pilot.taskFilesOfCaller.mockReturnValue(false);
+  kit.run.mockResolvedValue(checked([]));
   storage.shareSandboxFile.mockImplementation(async (input) => {
     // The store keeps its own cap, 10 MB unless the caller raises it.
     if (input.bytes.byteLength > (input.maximumBytes ?? 10 * 1024 * 1024)) {
@@ -56,6 +65,22 @@ beforeEach(() => {
     });
   });
 });
+
+/** What `brokit check` prints for a file with these problems. */
+function checked(
+  problems: readonly { code: string; fix: string; where: string }[]
+) {
+  return {
+    exitCode: 0,
+    stderr: "",
+    stdout: `${JSON.stringify({ file: "/workspace/x", kind: "xlsx", ok: true, problems })}\n`,
+  };
+}
+
+/** The arguments the kit ran with, as runKit passes them (BROKIT_ARGS). */
+function kitArguments() {
+  return kit.run.mock.calls.map(([options]) => options.env?.BROKIT_ARGS);
+}
 
 /** A file the sandbox serves in chunks of a megabyte, `chunks` of them. */
 function servedFile(chunks: number, first = new Uint8Array(0)) {
@@ -148,6 +173,9 @@ function served(bytes: Uint8Array) {
   });
 }
 
+/** Bytes of a workbook: what they hold is the kit's to read, not the tool's. */
+const workbook = new TextEncoder().encode("PK workbook");
+
 /**
  * Slides shown in another order than their files: the title, then 112
  * words in two paragraphs, then 129 with a word split across runs and a
@@ -206,9 +234,11 @@ describe("share_file", () => {
     await expect(
       share(served(crowdedDeck), "/workspace/Итоги.pptx")
     ).rejects.toThrow(
-      `Итоги.pptx was not shared: too much text on a slide (slide 2: 112 words; slide 3: 129 words).`
+      "Итоги.pptx was not shared: the check found what to fix first.\n- dense_slides (slide 2: 112 words; slide 3: 129 words): a slide holds a heading and 3–5 short points, at most 80 words: move the details to the speaker notes.\nFix it and call share_file again.\nIf the person asked for it as it is, call share_file once more on the same file: it goes out as it is."
     );
     expect(storage.shareSandboxFile).not.toHaveBeenCalled();
+    // Outside the files pilot the sandbox holds no kit: the deck's words are counted here.
+    expect(kit.run).not.toHaveBeenCalled();
 
     await expect(
       share(served(crowdedDeck), "/workspace/Итоги.pptx")
@@ -228,6 +258,13 @@ describe("share_file", () => {
     ).resolves.toMatchObject({ mediaType: "application/zip" });
   });
 
+  it("checks no workbook or PDF outside the files pilot", async () => {
+    await expect(
+      share(served(workbook), "/workspace/Итоги.xlsx")
+    ).resolves.toMatchObject({ name: "Итоги.xlsx" });
+    expect(kit.run).not.toHaveBeenCalled();
+  });
+
   it("types a calendar invitation by its name", async () => {
     const invitation = new TextEncoder().encode("BEGIN:VCALENDAR\r\n");
     expect(
@@ -236,15 +273,125 @@ describe("share_file", () => {
   });
 });
 
+describe("share_file's check in the files pilot", () => {
+  beforeEach(() => {
+    pilot.taskFilesOfCaller.mockReturnValue(true);
+  });
+
+  it("holds a workbook back once for what brokit check names, then shares the same bytes", async () => {
+    const longPlace = `Операции!A (999 cells like 01.01.2025)${"!".repeat(400)}`;
+    kit.run.mockResolvedValue(
+      checked([
+        {
+          code: "not_recalculated",
+          fix: "brokit xlsx recalc FILE -o OUT computes every formula and names the ones that give an error; share OUT",
+          where: "39 formula cells without a computed value: Итоги!B4",
+        },
+        {
+          code: "text_dates",
+          fix: "write datetime values into these cells with number_format 'DD.MM.YYYY' (or 'DD.MM.YYYY hh:mm'), not text",
+          where: longPlace,
+        },
+      ])
+    );
+    await expect(share(served(workbook), "Отчёт.xlsx")).rejects.toThrow(
+      new Error(
+        [
+          "Отчёт.xlsx was not shared: the check found what to fix first.",
+          "- not_recalculated (39 formula cells without a computed value: Итоги!B4): brokit xlsx recalc FILE -o OUT computes every formula and names the ones that give an error; share OUT.",
+          // A long place is cut, so a sheet of names cannot fill the model's step.
+          `- text_dates (${longPlace.slice(0, 300)}…): write datetime values into these cells with number_format 'DD.MM.YYYY' (or 'DD.MM.YYYY hh:mm'), not text.`,
+          "Fix it, check the result with look and call share_file again.",
+          "If the person asked for it as it is, call share_file once more on the same file: it goes out as it is.",
+        ].join("\n")
+      )
+    );
+    // A relative path goes as it is: the kit runs in /workspace, as readFile reads.
+    expect(kitArguments()).toStrictEqual([
+      JSON.stringify(["check", "Отчёт.xlsx"]),
+    ]);
+    expect(storage.shareSandboxFile).not.toHaveBeenCalled();
+
+    await expect(share(served(workbook), "Отчёт.xlsx")).resolves.toMatchObject({
+      name: "Отчёт.xlsx",
+    });
+    // The same bytes are not checked again.
+    expect(kit.run).toHaveBeenCalledOnce();
+    expect(storage.shareSandboxFile).toHaveBeenCalledOnce();
+  });
+
+  it("shares a file brokit check finds clean at once", async () => {
+    await expect(
+      share(served(workbook), "/workspace/Итоги.xlsx")
+    ).resolves.toMatchObject({ name: "Итоги.xlsx" });
+    await expect(
+      share(served(crowdedDeck), "/workspace/Итоги.pptx")
+    ).resolves.toMatchObject({ name: "Итоги.pptx" });
+    // The kit counted the deck's words: they are not counted again here.
+    expect(kitArguments()).toStrictEqual([
+      JSON.stringify(["check", "/workspace/Итоги.xlsx"]),
+      JSON.stringify(["check", "/workspace/Итоги.pptx"]),
+    ]);
+  });
+
+  it("shares the file when the check itself fails, and logs no text of it", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const failures = [
+      async () => Promise.reject(new Error("The sandbox stopped: Итоги")),
+      async () =>
+        Promise.resolve({
+          exitCode: 1,
+          stderr: "brokit: TypeError: Итоги",
+          stdout: '{"ok":false,"code":"bug","error":"TypeError: Итоги"}\n',
+        }),
+      async () =>
+        Promise.resolve({ exitCode: 0, stderr: "", stdout: "Итоги\n" }),
+    ];
+    for (const [index, failure] of failures.entries()) {
+      kit.run.mockImplementationOnce(failure);
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Each failure is shared on its own.
+      await expect(
+        share(served(new Uint8Array([index + 1])), "/workspace/Итоги.pdf")
+      ).resolves.toMatchObject({ name: "Итоги.pdf" });
+    }
+    expect(storage.shareSandboxFile).toHaveBeenCalledTimes(3);
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("Итоги");
+    expect(warn.mock.calls).toStrictEqual([
+      ["[share_file] the file check failed", { cause: "Error" }],
+      ["[share_file] the file check failed", { code: "bug", exitCode: 1 }],
+      [
+        "[share_file] the file check failed",
+        { code: "no output", exitCode: 0 },
+      ],
+    ]);
+    warn.mockRestore();
+  });
+
+  it("counts a deck's slides itself when the check fails", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    kit.run.mockRejectedValue(new Error("no kit"));
+    await expect(
+      share(served(crowdedDeck), "/workspace/Итоги.pptx")
+    ).rejects.toThrow(
+      "- dense_slides (slide 2: 112 words; slide 3: 129 words)"
+    );
+    vi.mocked(console.warn).mockRestore();
+  });
+});
+
 function toolContext(stream: ReadableStream<Uint8Array>) {
-  const sandbox: Pick<SandboxSession, "readFile"> = {
+  const sandbox: Pick<SandboxSession, "readFile" | "run" | "writeTextFile"> = {
     readFile: async () => Promise.resolve(stream),
+    run: kit.run,
+    writeTextFile: async () => {
+      throw new Error("The kit is delivered outside this focused test.");
+    },
   };
   return {
     abortSignal: new AbortController().signal,
     callId: "call-1",
     async getSandbox() {
-      // SAFETY: The tool only reads the file's stream from the sandbox.
+      // SAFETY: The tool reads the file's stream and runs the kit's check in the sandbox.
       // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- A complete sandbox session would add unrelated process and file handles.
       return sandbox as SandboxSession;
     },

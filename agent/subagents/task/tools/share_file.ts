@@ -12,10 +12,20 @@ import {
   sharedFileName,
   taskFilesShareBytes,
 } from "@agent/lib/sandbox/files";
+import { runKit } from "@agent/lib/sandbox/kit";
 import { taskFilesOfCaller } from "@agent/lib/sandbox/pilot";
 
 const presentationMediaType =
   "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+const spreadsheetMediaType =
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+
+/** The files `brokit check` reads (sandbox/kit/brokit/check.py). */
+const checkedMediaTypes: ReadonlySet<string> = new Set([
+  "application/pdf",
+  presentationMediaType,
+  spreadsheetMediaType,
+]);
 
 /** What a file is by its name, when its bytes do not say (text, csv, office). */
 const mediaTypesByExtension: ReadonlyMap<string, string> = new Map([
@@ -38,10 +48,7 @@ const mediaTypesByExtension: ReadonlyMap<string, string> = new Map([
   [".svg", "image/svg+xml"],
   [".txt", "text/plain"],
   [".vcf", "text/vcard"],
-  [
-    ".xlsx",
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-  ],
+  [".xlsx", spreadsheetMediaType],
   [".xml", "application/xml"],
   [".zip", "application/zip"],
 ]);
@@ -84,11 +91,64 @@ async function readWithin(
 }
 
 /**
- * The words a slide may carry, past which `brokit look` warns (`SLIDE_WORDS`
- * in sandbox/kit/brokit/look.py), as the task agent's instructions say: a
- * heading and 3–5 short points.
+ * What `brokit check FILE` prints (sandbox/kit/brokit/check.py): each
+ * problem with where it is and how to fix it.
+ */
+const checkSchema = z.object({
+  problems: z.array(
+    z.object({ code: z.string(), fix: z.string(), where: z.string() })
+  ),
+});
+
+type Problem = z.infer<typeof checkSchema>["problems"][number];
+
+/** How long the check may take before the file goes out unchecked. */
+const checkTimeoutMs = 60_000;
+
+/**
+ * The problems `brokit check` finds in the file, run in the task sandbox
+ * as `look` runs the kit: in /workspace, where a relative path names the
+ * file `readFile` read. Undefined when the check itself fails (no kit, a
+ * timeout, a refusal, output it does not print): the file then goes out as
+ * it would without it, and the warning names no text of the file.
+ */
+async function checkedProblems(
+  sandbox: Parameters<typeof runKit>[0],
+  path: string,
+  signal: AbortSignal
+) {
+  try {
+    const run = await runKit(sandbox, ["check", path], {
+      signal,
+      timeoutMs: checkTimeoutMs,
+    });
+    const checked =
+      run.exitCode === 0 ? checkSchema.safeParse(run.json).data : undefined;
+    if (checked === undefined) {
+      const refused = z.object({ code: z.string() }).safeParse(run.json).data;
+      console.warn("[share_file] the file check failed", {
+        code: refused?.code ?? "no output",
+        exitCode: run.exitCode,
+      });
+    }
+    return checked?.problems;
+  } catch (error) {
+    console.warn("[share_file] the file check failed", {
+      cause: error instanceof Error ? error.name : "unknown",
+    });
+    return undefined;
+  }
+}
+
+/**
+ * The words a slide may carry, past which `brokit look` warns and `brokit
+ * check` names the slide (`SLIDE_WORDS` in sandbox/kit/brokit/look.py), as
+ * the task agent's instructions say: a heading and 3–5 short points.
  */
 const slideWords = 80;
+
+/** The fix `brokit check` gives crowded slides (`FIXES` in check.py). */
+const crowdedSlidesFix = `a slide holds a heading and 3–5 short points, at most ${String(slideWords)} words: move the details to the speaker notes`;
 
 /** What a deck's slides may unpack to, in all, for their words to be counted. */
 const maximumSlidesBytes = 64 * 1024 * 1024;
@@ -104,18 +164,19 @@ const slideText = /<a:t(?:\s[^>]*)?>([^<]*)<\/a:t>|<a:br\b[^>]*>|<\/a:p>/gu;
 const xmlReference = /&(?:#x([\da-f]{1,6})|#(\d{1,7})|\w+);/giu;
 
 /**
- * The decks `share_file` held back once for crowded slides, by the sha256
+ * The files `share_file` held back once for their problems, by the sha256
  * of their bytes, in eve's durable session state: the same bytes again go
- * out as they are (the person may have asked for full slides), and a deck
- * changed in any byte is counted anew.
+ * out as they are (the person may have asked for them so), and a file
+ * changed in any byte is checked anew. The name stays from when only
+ * crowded decks were held, so a session keeps what it held then.
  */
-const heldDecks = defineState<{ readonly digests: readonly string[] }>(
+const heldFiles = defineState<{ readonly digests: readonly string[] }>(
   "bro.task-crowded-decks",
   () => ({ digests: [] })
 );
 
-/** How many held decks a session remembers, the latest ones. */
-const maximumHeldDecks = 32;
+/** How many held files a session remembers, the latest ones. */
+const maximumHeldFiles = 32;
 
 /**
  * The words of XML text as `word_count` in look.py counts them: runs
@@ -199,11 +260,12 @@ function slidesInOrder(parts: ReadonlyMap<string, Buffer>) {
 }
 
 /**
- * The slides of a .pptx with more than `slideWords` words, numbered as the
- * deck shows them; none for bytes that do not read as a deck, which go out
- * as they would without the count.
+ * The crowded slides of a .pptx as `brokit check` names them, numbered as
+ * the deck shows them; none for bytes that do not read as a deck, which go
+ * out as they would without the count. The check outside the files pilot,
+ * and where the kit's own check failed.
  */
-function crowdedSlides(bytes: Uint8Array) {
+function crowdedSlides(bytes: Uint8Array): Problem[] {
   const parts = unpackZipEntries(
     bytes,
     (name) =>
@@ -213,47 +275,80 @@ function crowdedSlides(bytes: Uint8Array) {
     maximumSlidesBytes
   );
   if (parts === undefined) return [];
-  return slidesInOrder(parts).flatMap((part, index) => {
+  const crowded = slidesInOrder(parts).flatMap((part, index) => {
     const words = slideWordCount(parts.get(part)?.toString("utf8") ?? "");
-    return words > slideWords ? [{ slide: index + 1, words }] : [];
+    return words > slideWords
+      ? [`slide ${String(index + 1)}: ${String(words)} words`]
+      : [];
   });
+  return crowded.length === 0
+    ? []
+    : [
+        {
+          code: "dense_slides",
+          fix: crowdedSlidesFix,
+          where: crowded.join("; "),
+        },
+      ];
 }
 
 /**
- * Whether a crowded deck is held back now: the first time its bytes come,
- * and the hold is recorded so the next call shares it. A hold that cannot
- * be recorded is none, or the deck could never go out.
+ * Whether these bytes were held back before in this session. A state that
+ * cannot be read counts as held: a hold could not be recorded either, and
+ * the file could never go out.
  */
-function holdsBack(digest: string) {
+function heldBefore(digest: string) {
   try {
-    if (heldDecks.get().digests.includes(digest)) return false;
-    heldDecks.update(({ digests }) => ({
-      digests: [...digests, digest].slice(-maximumHeldDecks),
+    return heldFiles.get().digests.includes(digest);
+  } catch (error) {
+    console.warn("[share_file] held files not read", {
+      cause: error instanceof Error ? error.name : "unknown",
+    });
+    return true;
+  }
+}
+
+/**
+ * Records a hold, so the next call on the same bytes shares them; false
+ * when it cannot be recorded, and then the file goes out now.
+ */
+function hold(digest: string) {
+  try {
+    heldFiles.update(({ digests }) => ({
+      digests: [...digests, digest].slice(-maximumHeldFiles),
     }));
     return true;
   } catch (error) {
-    console.warn("[share_file] crowded deck not held", {
+    console.warn("[share_file] file not held", {
       cause: error instanceof Error ? error.name : "unknown",
     });
     return false;
   }
 }
 
+/** How many problems, and how much of where each is, the refusal names. */
+const listedProblems = 8;
+const whereCharacters = 300;
+
 /**
- * Why a crowded deck did not go out. The rule is in the instructions and in
- * look's warning, yet on 16.10 the model shared slides of 112–129 words: it
- * comes again here, with the way to share the deck as it is when the person
+ * Why a file did not go out yet. The rules are in the instructions and in
+ * the kit's warnings, yet the model shared slides of 112–129 words (16.10),
+ * formulas no spreadsheet computed and raw photos of receipts: they come
+ * again here, once, with the way to share the file as it is when the person
  * wants it so.
  */
-function crowdedDeckRefusal(
-  name: string,
-  slides: ReturnType<typeof crowdedSlides>,
-  canLook: boolean
-) {
-  const counts = slides
-    .map(({ slide, words }) => `slide ${String(slide)}: ${String(words)} words`)
-    .join("; ");
-  return `${name} was not shared: too much text on a slide (${counts}). A slide holds a heading and 3–5 short points, at most ${String(slideWords)} words: move the details to the speaker notes${canLook ? ", check the deck with look" : ""} and call share_file again. If the person asked for detailed slides themselves, call share_file once more on the same file: it goes out as it is.`;
+function refusal(name: string, problems: readonly Problem[], canLook: boolean) {
+  return [
+    `${name} was not shared: the check found what to fix first.`,
+    ...problems
+      .slice(0, listedProblems)
+      .map(
+        ({ code, fix, where }) =>
+          `- ${code} (${where.length > whereCharacters ? `${where.slice(0, whereCharacters)}…` : where}): ${fix}.`
+      ),
+    `Fix it${canLook ? ", check the result with look" : ""} and call share_file again.`,
+    "If the person asked for it as it is, call share_file once more on the same file: it goes out as it is.",
+  ].join("\n");
 }
 
 export default defineTool({
@@ -292,13 +387,24 @@ export default defineTool({
     if (bytes.byteLength === 0) throw new Error(`The file ${path} is empty.`);
     const fileName = sharedFileName(name ?? path);
     const mediaType = mediaTypeOf(fileName, bytes);
-    if (mediaType === presentationMediaType || /\.pptx$/iu.test(path)) {
-      const slides = crowdedSlides(bytes);
-      if (
-        slides.length > 0 &&
-        holdsBack(createHash("sha256").update(bytes).digest("hex"))
-      ) {
-        throw new Error(crowdedDeckRefusal(fileName, slides, filesPilot));
+    // Every .xlsx, .pdf and .pptx is checked once before it goes out: by
+    // `brokit check` where the kit is (the files pilot), by the slides' word
+    // count of a deck elsewhere or when the kit's check failed.
+    const deck = mediaType === presentationMediaType || /\.pptx$/iu.test(path);
+    if (
+      deck ||
+      checkedMediaTypes.has(mediaType) ||
+      /\.(?:pdf|xlsx)$/iu.test(path)
+    ) {
+      const digest = createHash("sha256").update(bytes).digest("hex");
+      if (!heldBefore(digest)) {
+        const problems =
+          (filesPilot
+            ? await checkedProblems(sandbox, path, ctx.abortSignal)
+            : undefined) ?? (deck ? crowdedSlides(bytes) : []);
+        if (problems.length > 0 && hold(digest)) {
+          throw new Error(refusal(fileName, problems, filesPilot));
+        }
       }
     }
     const caller = ctx.session.auth.current ?? ctx.session.auth.initiator;
