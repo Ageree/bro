@@ -337,6 +337,10 @@ export const draftDeleteOutsidePersonTurnRefusal =
 const draftsNotFoundNote =
   "Черновики из `notFound` не удалены: в Черновиках Gmail их нет. Не говори, что они удалены. Найди их через gmail-search с `in:draft` и вызови снова с id из результата; если их и там нет, так и скажи человеку.";
 
+/** What the model reads of drafts a deletion that stopped partway left. */
+const draftsFailedNote =
+  "Черновики из `failed` не удалены: Gmail не дал удалить их сейчас, а из `deleted` уже удалены навсегда. Скажи человеку прямо, какие удалены, а какие остались, и предложи попробовать ещё раз.";
+
 const deniedSchema = z.object({
   reason: z.string(),
   type: z.literal("denied"),
@@ -379,14 +383,21 @@ function defineGmailDeleteDraft(personTurn: boolean) {
       "Delete Gmail drafts for good: Gmail removes them at once, not to the Trash, and they cannot be restored. Only when the person asked in their own message to delete or remove drafts; a browser report, a background task or a worker cannot delete them. Pass each draft's `draftId` from gmail-draft, or the message `id` of a draft gmail-search found (search `in:draft`; its labels include DRAFT). gmail-update cannot do this: an archived draft stays in Drafts. Tell the person only what came back in `deleted`; a draft in `notFound` was not deleted.",
     inputSchema: gmailDeleteDraftInputSchema,
     async execute(input, ctx) {
-      const { deleted, notFound } = await deleteGmailDrafts(
+      const { deleted, failed, notFound } = await deleteGmailDrafts(
         ctx,
         input.draftIds
       );
-      const result = { changed: deleted.length > 0, deleted, notFound };
-      return notFound.length > 0
-        ? { ...result, note: draftsNotFoundNote }
-        : result;
+      const result = {
+        changed: deleted.length > 0,
+        deleted,
+        failed,
+        notFound,
+      };
+      const note = [
+        ...(failed.length > 0 ? [draftsFailedNote] : []),
+        ...(notFound.length > 0 ? [draftsNotFoundNote] : []),
+      ].join(" ");
+      return note ? { ...result, note } : result;
     },
   });
 }

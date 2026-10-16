@@ -1630,6 +1630,24 @@ describe("sendRefusal on claims of what a declined or failed call did not do", (
     ).toBeUndefined();
   });
 
+  it("delivers an edit of a text that names a draft", () => {
+    expect(
+      refusal(
+        [userMessage("перепиши пост короче, убери пафос")],
+        "Убрал пафос, вот черновик: «Запустили бету, пишите отзывы»."
+      )
+    ).toBeUndefined();
+    expect(
+      refusal(
+        [
+          userMessage("убери из черновика письма Ивану последний абзац"),
+          ...toolStep("gmail-draft", { draftId: "r-2", saved: true }),
+        ],
+        "Убрал из черновика последний абзац, новый черновик ждёт в Gmail."
+      )
+    ).toBeUndefined();
+  });
+
   it.each([
     [
       "an email",

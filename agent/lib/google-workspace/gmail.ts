@@ -820,6 +820,9 @@ const draftListPages = 10;
  * search finds it; one the mailbox holds no draft for comes back in
  * `notFound`, not deleted. Archiving a draft (`gmail-update`) leaves it in
  * Drafts, and Bro once told the person «убрал оба черновика» after it.
+ * A failure after some drafts went returns what went and what did not
+ * (`failed`): those are gone for good, and an error would read as nothing
+ * deleted. With none deleted the failure itself is the answer.
  */
 export async function deleteGmailDrafts(
   ctx: ToolContext,
@@ -829,24 +832,39 @@ export async function deleteGmailDrafts(
   // Outside the call Google may make again after a rate limit: a draft
   // deleted before it is gone, and the retry would no longer find it.
   const deleted = new Map<string, string>();
-  return withGoogleAuth(ctx, async (google) => {
-    const pending = requested.filter((id) => !deleted.has(id));
-    const drafts = await draftIdsOf(google, pending);
-    for (const id of pending) {
-      const draftId = drafts.get(id);
-      if (draftId === undefined) continue;
-      // A draft named by both its ids is deleted once.
-      if (![...deleted.values()].includes(draftId)) {
+  const missing = new Set<string>();
+  try {
+    await withGoogleAuth(ctx, async (google) => {
+      missing.clear();
+      const pending = requested.filter((id) => !deleted.has(id));
+      const drafts = await draftIdsOf(google, pending);
+      for (const id of pending) {
+        const draftId = drafts.get(id);
+        // A draft named by both its ids is deleted once.
+        if (draftId !== undefined && [...deleted.values()].includes(draftId)) {
+          deleted.set(id, draftId);
+          continue;
+        }
         // oxlint-disable-next-line eslint/no-await-in-loop -- One draft at a time, like Gmail's per-user limit wants.
-        if (!(await deleteDraft(google, draftId))) continue;
+        if (draftId === undefined || !(await deleteDraft(google, draftId))) {
+          missing.add(id);
+          continue;
+        }
+        deleted.set(id, draftId);
       }
-      deleted.set(id, draftId);
-    }
-    return {
-      deleted: requested.filter((id) => deleted.has(id)),
-      notFound: requested.filter((id) => !deleted.has(id)),
-    };
-  });
+    });
+  } catch (error) {
+    if (deleted.size === 0) throw error;
+    console.warn("[gmail] draft deletion stopped partway", {
+      deleted: deleted.size,
+      status: googleApiErrorStatus(error),
+    });
+  }
+  return {
+    deleted: requested.filter((id) => deleted.has(id)),
+    failed: requested.filter((id) => !deleted.has(id) && !missing.has(id)),
+    notFound: requested.filter((id) => missing.has(id)),
+  };
 }
 
 /**

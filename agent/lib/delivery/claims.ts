@@ -730,10 +730,58 @@ const memoryAsked =
  * that did not go through, since «задача» is also a browser run's or
  * Notion's, and an order is the run's to report.
  */
+/**
+ * Words that may stand between a verb and the draft it took away, so the
+ * draft is the verb's object: «удалил оба старых черновика», «deleted the
+ * two drafts». A preposition («убрал из черновика абзац») or another object
+ * («убрал пафос, вот черновик») between them is an edit of a text.
+ */
+const draftCounts = new Set([
+  "оба",
+  "обе",
+  "два",
+  "две",
+  "три",
+  "все",
+  "эти",
+  "этот",
+  "эту",
+  "те",
+  "тот",
+  "ту",
+  "старый",
+  "старые",
+  "старых",
+  "лишний",
+  "лишние",
+  "лишних",
+  "ненужный",
+  "ненужные",
+  "ненужных",
+  "пустой",
+  "пустые",
+  "пустых",
+  "свои",
+  "твои",
+  "ваши",
+  "both",
+  "the",
+  "two",
+  "three",
+  "all",
+  "these",
+  "those",
+  "old",
+  "empty",
+  "your",
+]);
+
 const actClaims: readonly {
   readonly act: Act;
   readonly asked?: RegExp;
   readonly noun?: RegExp;
+  /** The only words that may stand between the verb and its noun. */
+  readonly object?: ReadonlySet<string>;
   readonly verbs: readonly string[];
 }[] = [
   {
@@ -789,9 +837,12 @@ const actClaims: readonly {
     verbs: ["отправил", "ответил", "переслал", "sent", "replied", "forwarded"],
   },
   {
+    // The draft itself is what went: «убрал оба черновика». «Убрал пафос,
+    // вот черновик» and «убрал из черновика абзац» edit a text.
     act: "draft",
     asked: /удали|убери|убрать|сотри|стереть|выкин|почисти|delete|remove/u,
     noun: /черновик|draft/u,
+    object: draftCounts,
     verbs: [
       "удалил",
       "убрал",
@@ -891,12 +942,14 @@ const leadWords = new Set([
 
 /**
  * Whether a clause opens with one of `verbs` as Bro's own act, with a `noun`
- * within three words after it when the action has one.
+ * within three words after it when the action has one, and only `object`
+ * words between them when the action names those.
  */
 function saysAct(
   clause: string,
   verbs: readonly string[],
-  noun: RegExp | undefined
+  noun: RegExp | undefined,
+  object?: ReadonlySet<string>
 ) {
   const words = wordsOf(clause);
   const start = words.findIndex((word) => !leadWords.has(word));
@@ -909,7 +962,14 @@ function saysAct(
     const end = start + phrase.length - 1;
     return (
       noun === undefined ||
-      words.some((word, at) => at > end && at - end <= 3 && noun.test(word))
+      words.some(
+        (word, at) =>
+          at > end &&
+          at - end <= 3 &&
+          noun.test(word) &&
+          (object === undefined ||
+            words.slice(end + 1, at).every((between) => object.has(between)))
+      )
     );
   });
 }
@@ -929,8 +989,10 @@ function saysAct(
  */
 function actClaim(text: string, actions: ReturnType<typeof turnActions>) {
   const clauses = clausesOf(text);
-  for (const { act, asked, noun, verbs } of actClaims) {
-    if (!clauses.some((clause) => saysAct(clause, verbs, noun))) continue;
+  for (const { act, asked, noun, object, verbs } of actClaims) {
+    if (!clauses.some((clause) => saysAct(clause, verbs, noun, object))) {
+      continue;
+    }
     const outcome = actions.acts[act];
     if (outcome.done) continue;
     if (act === "order") {

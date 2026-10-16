@@ -268,6 +268,36 @@ describe("deleting a Gmail draft", () => {
     );
   });
 
+  it("tells what went when Gmail fails partway, and fails when nothing went", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    composio.proxy.mockImplementation(({ method, url }) => {
+      if (method === "GET") {
+        return { data: { drafts: [{ id: "r-1" }, { id: "r-2" }] } };
+      }
+      return url.pathname === `${mailbox}/drafts/r-1`
+        ? { data: "", status: 204 }
+        : { data: { error: { message: "Backend Error" } }, status: 500 };
+    });
+    const remove = await resolveGmailTool(
+      "gmail-delete-draft",
+      [asked],
+      "telegram-webhook"
+    );
+    const context = composioToolContext("ca_google", { userId: "user-1" });
+
+    const partial = await remove.execute({ draftIds: ["r-1", "r-2"] }, context);
+    expect(partial).toMatchObject({
+      changed: true,
+      deleted: ["r-1"],
+      failed: ["r-2"],
+      notFound: [],
+    });
+    expect(JSON.stringify(partial)).toContain("уже удалены навсегда");
+    await expect(
+      remove.execute({ draftIds: ["r-2"] }, context)
+    ).rejects.toThrow(/500/u);
+  });
+
   it("keeps the draft in a read-only workspace", async () => {
     settings.access.mockResolvedValueOnce("read_only");
 
