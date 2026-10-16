@@ -44,6 +44,7 @@ afterEach(() => {
 });
 
 const optionalServices = [
+  "AGENT_SANDBOX",
   "BROWSER_USE_API_KEY",
   "BROWSER_USE_PROXY_HOST",
   "BROWSER_USE_PROXY_PORT",
@@ -74,6 +75,7 @@ const optionalServices = [
   "SANDBOX_HOST_ORIGIN",
   "SANDBOX_SIGNING_KEY",
   "SANDBOX_WORKSPACES",
+  "SIGN_WORKSPACES",
   "SUPERMEMORY_API_KEY",
   "TASK_FILES_WORKSPACES",
   "TELEGRAM_BOT_TOKEN",
@@ -171,6 +173,37 @@ describe("privacy", () => {
     expect(kept).toContain(
       "ещё до 14 дней остаются в ночных зашифрованных резервных копиях"
     );
+  });
+
+  it("names the signature sample and the signings' record only in the signing pilot", async () => {
+    const signing = {
+      BROWSER_STATE_BUCKET: "test-bucket",
+      CLOUDRU_KEY_ID: "test-key-id",
+      CLOUDRU_KEY_SECRET: "test-key-secret",
+      CLOUDRU_S3_TENANT_ID: "test-tenant",
+      OPENROUTER_API_KEY: "openrouter-test-key",
+      SANDBOX_HOST_ID: "sbx-test",
+      SANDBOX_HOST_ORIGIN: "https://sandbox.example.test",
+      SANDBOX_SIGNING_KEY: "ab".repeat(32),
+      SANDBOX_WORKSPACES: "*",
+      TASK_FILES_WORKSPACES: "*",
+    };
+    const outside = await overview((await withServices(signing)).tool);
+    expect(outside.kept.join("\n")).not.toContain("Образец подписи");
+
+    const pilot = await overview(
+      (
+        await withServices({
+          ...signing,
+          AGENT_SANDBOX: "bro-cloudru",
+          SIGN_WORKSPACES: "*",
+        })
+      ).tool
+    );
+    expect(pilot.kept.join("\n")).toContain(
+      "в той же базе Postgres в зашифрованном виде"
+    );
+    expect(pilot.remove.join("\n")).toContain("«удали мою подпись»");
   });
 
   it("names the decision model only for the tool router's pilot", async () => {

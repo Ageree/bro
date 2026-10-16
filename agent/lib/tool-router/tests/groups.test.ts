@@ -45,6 +45,7 @@ afterEach(() => {
 const everyPilot = {
   ...fullDeployment,
   ...taskAgentDeployment,
+  AGENT_SANDBOX: "bro-cloudru",
   AGENTMAIL_API_KEY: "agentmail-test-key",
   CONTACTS_WORKSPACES: "*",
   ELEVENLABS_API_KEY: "elevenlabs-test-key",
@@ -56,9 +57,11 @@ const everyPilot = {
   PHONE_INIT_SECRET: "i".repeat(32),
   PHONE_WEBHOOK_SECRET: "w".repeat(32),
   PHONE_WORKSPACES: "*",
+  SIGN_WORKSPACES: "*",
   SKILLS_WORKSPACES: "*",
   STEP_CONTEXT_WORKSPACES: "*",
   SUBSCRIPTIONS_WORKSPACES: "*",
+  TASK_FILES_WORKSPACES: "*",
   TIMEPAD_API_KEY: "timepad-test-key",
   TOOL_ROUTER_MODE: "on",
   TOOL_ROUTER_WORKSPACES: "*",
@@ -148,6 +151,7 @@ describe("the tool router's groups", () => {
         "location_history",
         "location_edit",
         "place_reminder",
+        "sign_document",
       ]) {
         expect([name, names.has(name)]).toEqual([name, true]);
       }
@@ -172,6 +176,7 @@ describe("a skill's router groups", () => {
       autonomy: true,
       browser: true,
       images: true,
+      sign: true,
       taskFiles: true,
     };
     const unreachable = availableSkills(setup).flatMap((skill) => {

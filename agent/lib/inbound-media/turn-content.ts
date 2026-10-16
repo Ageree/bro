@@ -138,10 +138,19 @@ export function lineName(name: string | undefined) {
  * Assembles the turn message from the text and the resolved media. The text
  * part is never empty when a file part is present, so the model knows a
  * picture or a document is attached even without a caption.
+ *
+ * With `fileNotes` (the files pilot) a photo and a PDF get the `[файл: …]`
+ * line a document gets, in the order of the file parts, so the model pairs
+ * each original name with the sandbox path it sees next to the part
+ * (`agent/lib/staged-files/`). A photo sent without a caption still opens
+ * with `[фото]`, which the meter-reading trigger reads
+ * (`agent/lib/skills/triggers.ts`); a lone PDF or document needs no
+ * `[документ]`, its line says it.
  */
 export function inboundTurn(
   text: string,
-  items: readonly InboundMediaItem[]
+  items: readonly InboundMediaItem[],
+  { fileNotes = false }: { readonly fileNotes?: boolean } = {}
 ): InboundTurn {
   const lines: string[] = [];
   const trimmed = text.trim();
@@ -150,12 +159,18 @@ export function inboundTurn(
   let voiceFailed = 0;
   let voiceUnsupported = false;
   let hasImage = false;
+  /** The lines that only name a file the turn carries as a part. */
+  let attachedNotes = 0;
   const locations: CardPoint[] = [];
 
   for (const item of items) {
     switch (item.kind) {
       case "image": {
         hasImage = true;
+        if (fileNotes) {
+          lines.push(fileNote(item.filename, item.mediaType));
+          attachedNotes += 1;
+        }
         files.push({
           data: toBase64(item.data),
           filename: item.filename,
@@ -165,6 +180,10 @@ export function inboundTurn(
         break;
       }
       case "pdf": {
+        if (fileNotes) {
+          lines.push(fileNote(item.filename, "application/pdf"));
+          attachedNotes += 1;
+        }
         files.push({
           data: toBase64(item.data),
           filename: item.filename,
@@ -175,6 +194,7 @@ export function inboundTurn(
       }
       case "document": {
         lines.push(fileNote(item.filename, item.mediaType));
+        attachedNotes += 1;
         files.push({
           data: toBase64(item.data),
           filename: item.filename,
@@ -218,6 +238,8 @@ export function inboundTurn(
   }
   if (lines.length === 0 && files.length > 0) {
     lines.push(hasImage ? photoNote : documentNote);
+  } else if (fileNotes && hasImage && lines.length === attachedNotes) {
+    lines.unshift(photoNote);
   }
   const located = locations.length > 0 ? { locations } : {};
   if (files.length === 0) {

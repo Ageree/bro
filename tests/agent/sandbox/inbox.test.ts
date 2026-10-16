@@ -222,11 +222,11 @@ describe("the inbox in Object Storage", () => {
     expect(calls).toHaveLength(3);
   });
 
-  it("refuses a file over 10 MB both ways", async () => {
+  it("refuses a file over 20 MB both ways", async () => {
     const calls = stubStorage(
       new Response(null, {
         headers: {
-          "content-length": String(10 * 1024 * 1024 + 1),
+          "content-length": String(20 * 1024 * 1024 + 1),
           "last-modified": storedAgo(0),
         },
         status: 200,
@@ -236,9 +236,9 @@ describe("the inbox in Object Storage", () => {
     const key = inboxKey("w", "s", path);
 
     await expect(
-      putInbox(key, new Uint8Array(10 * 1024 * 1024 + 1))
-    ).rejects.toThrow(/10 MB/u);
-    await expect(getInbox(key)).rejects.toThrow(/10 MB/u);
+      putInbox(key, new Uint8Array(20 * 1024 * 1024 + 1))
+    ).rejects.toThrow(/20 MB/u);
+    await expect(getInbox(key)).rejects.toThrow(/20 MB/u);
     expect(calls.map((call) => call.method)).toEqual(["GET"]);
   });
 

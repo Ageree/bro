@@ -53,6 +53,11 @@ export function turnTools(step: {
   readonly stableContext: boolean;
   /** The task agent's pilot (`taskAgentPilot`). */
   readonly taskAgent: boolean;
+  /**
+   * Signing with the person's signature (`signEnabled`): the task agent's
+   * report brings the file `sign_document prepare` offers to sign.
+   */
+  readonly signing?: boolean;
 }): StepToolSet {
   const reportTurn =
     step.kind === "browser-report" ||
@@ -65,9 +70,11 @@ export function turnTools(step: {
     step.kind === "phone-report"
       ? ["send_message", "react_to_message", "phone-status", "calculate"]
       : step.kind === "background-task"
-        ? step.browserFiles
-          ? ["browser_files", ...backgroundTaskTurnTools]
-          : backgroundTaskTurnTools
+        ? [
+            ...(step.browserFiles ? ["browser_files"] : []),
+            ...(step.signing === true ? ["sign_document"] : []),
+            ...backgroundTaskTurnTools,
+          ]
         : step.kind === "agentic-worker"
           ? agenticWorkerTurnTools
           : step.stableContext && step.kind === "browser-report"

@@ -16,10 +16,10 @@ import { presignS3Url, uriEncode } from "@shared/object-storage/sigv4";
  * bytes, so each side checks the file it moves against it.
  */
 
-/** The cap of a document the person sends, so any of them can go. */
-export const attachmentByteCap = 10 * 1024 * 1024;
+/** The cap of a file the person sends, so any of them can go. */
+export const attachmentByteCap = documentByteCap;
 /** The files one message to the task agent brings along. */
-export const attachmentsPerMessage = 10;
+export const attachmentsPerMessage = 20;
 
 /**
  * Where eve's staging puts a file, its name as `safeFilename` leaves it:
@@ -115,7 +115,7 @@ export async function putInbox(
   maximumBytes = attachmentByteCap
 ) {
   if (bytes.byteLength > Math.min(maximumBytes, documentByteCap)) {
-    throw new InboxStorageError("A file in the inbox may be at most 10 MB.");
+    throw new InboxStorageError("A file in the inbox may be at most 20 MB.");
   }
   const response = await request(
     key,
@@ -168,11 +168,11 @@ export async function getInbox(
   const length = Number(response.headers.get("content-length") ?? "0");
   if (length > Math.min(maximumBytes, documentByteCap)) {
     await response.body?.cancel();
-    throw new InboxStorageError("The file in the inbox is over 10 MB.");
+    throw new InboxStorageError("The file in the inbox is over 20 MB.");
   }
   const bytes = new Uint8Array(await response.arrayBuffer());
   if (bytes.byteLength > Math.min(maximumBytes, documentByteCap)) {
-    throw new InboxStorageError("The file in the inbox is over 10 MB.");
+    throw new InboxStorageError("The file in the inbox is over 20 MB.");
   }
   return { bytes, kind: "file" };
 }

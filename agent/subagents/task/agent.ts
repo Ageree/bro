@@ -42,14 +42,16 @@ export default defineAgent({
           );
         }
         // The router's pilot picks the model by the job's kind, once per
-        // session (`taskAgentModel`).
+        // session (`taskAgentModel`). Pictures of its tools, `look`'s above
+        // all, reach the model in a user message (`toolImagesMiddleware`).
         return modelSelection(
           await taskAgentModel(
             scope,
             ctx.session.id,
             ctx.messages,
             env.TASK_AGENT_MODEL ?? (await getWorkspaceModelId(scope))
-          )
+          ),
+          { toolImages: { sessionId: ctx.session.id } }
         );
       },
     },

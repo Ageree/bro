@@ -27,6 +27,8 @@ const services = vi.hoisted(() => ({
   earlyReplySplitPilot: vi.fn<() => Promise<boolean>>(),
   skillsLayout: vi.fn<() => "core" | "full">(),
   taskAgentPilot: vi.fn<() => Promise<boolean>>(),
+  taskFilesEnabled: vi.fn<(workspaceId: string | undefined) => boolean>(),
+  signEnabled: vi.fn<(workspaceId: string | undefined) => boolean>(),
   routerGroupsOfStep: vi.fn<typeof RouterTurn.routerGroupsOfStep>(),
   routerSkillNote: vi.fn<typeof RouterTurn.routerSkillNote>(),
   stampRouterUse: vi.fn<typeof RouterTurn.stampRouterUse>(),
@@ -52,7 +54,12 @@ vi.mock("@agent/lib/skills/pilot", async (importOriginal) => ({
 }));
 vi.mock("@agent/lib/sandbox/pilot", () => ({
   taskAgentPilot: services.taskAgentPilot,
+  taskFilesEnabled: services.taskFilesEnabled,
   taskFilesOfCaller: () => false,
+}));
+vi.mock("@agent/lib/signatures/pilot", () => ({
+  signEnabled: services.signEnabled,
+  signOfCaller: () => false,
 }));
 vi.mock("@agent/lib/history/pilot", () => ({
   historyTrimPilot: services.historyTrimPilot,
@@ -111,7 +118,11 @@ import {
   rewriteSendNotice,
   skippedSendNotice,
 } from "@agent/lib/delivery/turn-sends";
-import { backgroundTurnMarker } from "@shared/chat/background-turn";
+import { emptyTurnSelection } from "@agent/lib/model/empty-turn";
+import {
+  backgroundNoticeMessage,
+  backgroundTurnMarker,
+} from "@shared/chat/background-turn";
 import { defaultFormOfAddress } from "@shared/chat/form-of-address";
 
 const runId = "00000000-0000-4000-8000-000000000001";
@@ -125,6 +136,8 @@ beforeEach(() => {
   services.browserRunReportDelivered.mockResolvedValue(false);
   services.directModelActive.mockReturnValue(false);
   services.taskAgentPilot.mockResolvedValue(false);
+  services.taskFilesEnabled.mockReturnValue(false);
+  services.signEnabled.mockReturnValue(false);
   services.historyTrimPilot.mockResolvedValue(false);
   services.compactionPilot.mockResolvedValue(false);
   services.compactionHeld.mockReturnValue(false);
@@ -173,6 +186,56 @@ describe("root agent model resolution", () => {
       agent.model.events["step.started"]?.({}, scheduledWorkerContext())
     ).rejects.toThrow("The scheduled run lease is no longer active.");
     expect(services.getModel).not.toHaveBeenCalled();
+  });
+
+  it("calls no model in a web chat's notice of an undelivered report", async () => {
+    const model = await agent.model.events["step.started"]?.(
+      {},
+      interactiveContext(
+        [humanMessage(backgroundNoticeMessage("Поручение закончено."))],
+        "browser-notice",
+        reportAttributes
+      )
+    );
+
+    expect(model).toBe(emptyTurnSelection);
+    expect(services.getModel).not.toHaveBeenCalled();
+  });
+
+  it("hands the model a turn that keeps the notice's caller but not its message", async () => {
+    // eve opens the task agent's report in a turn that keeps the previous
+    // caller, here the notice's; queued deliveries share one turn.
+    const notice = humanMessage(
+      backgroundNoticeMessage("Поручение закончено.")
+    );
+    const taskReport = Object.assign(
+      {
+        content:
+          "Background task task_1 (task) is completed.\n\nResult:\nГотово",
+        role: "user" as const,
+      },
+      { kind: "execution.background_task" }
+    );
+    const quietEnd = {
+      content: "<eve-empty-delivery/>",
+      role: "assistant" as const,
+    };
+    // The task agent's report is held to its tools on the direct model only.
+    services.directModelActive.mockReturnValue(true);
+    services.modelSelection.mockReturnValue("deepseek/deepseek-v4.1-flash");
+
+    for (const messages of [
+      [notice, quietEnd, taskReport],
+      [quietEnd, taskReport, notice],
+    ]) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Each turn is resolved on its own.
+      const model = await agent.model.events["step.started"]?.(
+        {},
+        interactiveContext(messages, "browser-notice", reportAttributes)
+      );
+      expect(model).not.toBe(emptyTurnSelection);
+    }
+    expect(services.getModel).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -884,6 +947,21 @@ describe("interactive delivery enforcement", () => {
       "task",
       "task_cancel",
     ]);
+
+    // In the signing pilot the report may offer to sign the file it brings.
+    services.signEnabled.mockReturnValue(true);
+    services.modelSelection.mockReturnValueOnce("deepseek/deepseek-v4.1-flash");
+    await agent.model.events["step.started"]?.(
+      {},
+      interactiveContext([taskReport], "browser-result", reportAttributes)
+    );
+    expect(services.modelSelection.mock.lastCall?.[1]?.offeredTools).toEqual([
+      "sign_document",
+      "react_to_message",
+      "send_message",
+      "task",
+      "task_cancel",
+    ]);
   });
 
   it("offers a person's step the tools of its skills' groups in the skills pilot", async () => {
@@ -1033,6 +1111,33 @@ describe("interactive delivery enforcement", () => {
       ...outside,
       historyTrim: undefined,
     });
+  });
+
+  it("shows the model the person's files only in the files pilot", async () => {
+    services.directModelActive.mockReturnValue(true);
+    services.modelSelection
+      .mockReturnValueOnce("deepseek/deepseek-v4.1-flash")
+      .mockReturnValueOnce("deepseek/deepseek-v4.1-flash");
+    const event = { data: { stepIndex: 0, turnId: "turn_0" } };
+
+    await agent.model.events["step.started"]?.(
+      event,
+      interactiveContext([humanMessage("заполни анкету")])
+    );
+    const outside = services.modelSelection.mock.lastCall?.[1];
+    expect(outside).not.toHaveProperty("stagedFiles", true);
+
+    services.taskFilesEnabled.mockImplementation(
+      (workspaceId) => workspaceId === "workspace-1"
+    );
+    await agent.model.events["step.started"]?.(
+      event,
+      interactiveContext([humanMessage("заполни анкету")])
+    );
+    const inside = services.modelSelection.mock.lastCall?.[1];
+    expect(inside?.stagedFiles).toBe(true);
+    // Nothing else of the step changes with it.
+    expect({ ...inside, stagedFiles: undefined }).toEqual(outside);
   });
 
   it("lets only the first step of a text turn compact, in the pilot", async () => {
