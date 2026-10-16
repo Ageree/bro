@@ -40,7 +40,10 @@ vi.mock("@db/services/yoomoney/payments", () => ({
 }));
 vi.mock("@db/services/yoomoney/card", () => ({
   sendYoomoneyCardPayment: services.sendCard,
-  yoomoneyCardReturn: async () => "https://bro.example/return",
+  yoomoneyCardReturn: async () => ({
+    passed: "https://bro.example/return?r=ok",
+    failed: "https://bro.example/return?r=fail",
+  }),
   yoomoneyPayLink: services.link,
 }));
 vi.mock("@shared/yoomoney/showcase", async (original) => ({
@@ -381,6 +384,29 @@ describe("wallet payments", () => {
     await call(answered("ну что там?"), { action: "status", paymentId });
     expect(services.process).not.toHaveBeenCalled();
     expect(services.history).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a card payment pending while the person is at their bank", async () => {
+    services.read.mockResolvedValue(
+      row({
+        state: "pending",
+        cardId: "card-1",
+        cardLabel: "••4310",
+        bankUri: "https://bank.example/3ds",
+        bankParams: { MD: "md-1" },
+      })
+    );
+    // What YooMoney answered the request alone mid-3-D Secure (15.10).
+    services.process.mockResolvedValue({
+      kind: "refused",
+      error: "illegal_params",
+    });
+    await call(answered("оплатил"), { action: "status", paymentId });
+    expect(services.history).toHaveBeenCalledTimes(1);
+    expect(services.settle.mock.calls[0]?.[1]).toMatchObject({
+      from: ["pending"],
+      state: "pending",
+    });
   });
 
   it("reads a card payment back by its request alone, never from the balance", async () => {
