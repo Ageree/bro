@@ -29,6 +29,7 @@ const workspaceId = "workspace-1";
 
 /** Every variable a case sets; `tests/setup-env.ts` unsets them all. */
 const variables = [
+  "AGENT_SANDBOX",
   "BROWSER_STATE_BUCKET",
   "BROWSER_USE_API_KEY",
   "CLOUDRU_KEY_ID",
@@ -39,6 +40,7 @@ const variables = [
   "SANDBOX_HOST_ORIGIN",
   "SANDBOX_SIGNING_KEY",
   "SANDBOX_WORKSPACES",
+  "SIGN_WORKSPACES",
   "SKILLS_WORKSPACES",
   "TASK_FILES_WORKSPACES",
 ] as const;
@@ -386,6 +388,38 @@ describe("the skills memory slot", () => {
         })
       )
     ).toBeNull();
+  });
+
+  it("attaches the signing rules only where the workspace signs", async () => {
+    const asked = person(
+      "заполни анкету и подпиши\n[файл: Анкета.pdf (application/pdf)]"
+    );
+    const recalledIds = async (
+      environment: Parameters<typeof load>[0]
+    ): Promise<string[]> => {
+      const { skills } = await load(environment);
+      const recalled = recalledSchema.parse(
+        await skills.provider.recall["turn.started"](
+          turnContext({ input: [asked] })
+        )
+      );
+      return (recalled?.messages ?? []).map(({ id }) => id);
+    };
+    const files = {
+      AGENT_SANDBOX: "bro-cloudru",
+      BROWSER_USE_API_KEY: "test-browser-use-key",
+      OPENROUTER_API_KEY: "test-openrouter-key",
+      SKILLS_WORKSPACES: workspaceId,
+      ...taskFiles,
+      TASK_FILES_WORKSPACES: workspaceId,
+    };
+    expect(await recalledIds(files)).toEqual(["skill:files"]);
+    expect(
+      await recalledIds({ ...files, SIGN_WORKSPACES: "workspace-2" })
+    ).toEqual(["skill:files"]);
+    expect(
+      await recalledIds({ ...files, SIGN_WORKSPACES: workspaceId })
+    ).toEqual(["skill:files", "skill:sign"]);
   });
 
   it("attaches nothing in a worker's turn", async () => {

@@ -1,4 +1,5 @@
 import type { BenchCase } from "./cases.ts";
+import { filesSteps, type TurnGate } from "./files/suite.ts";
 import { caseFixtures, type FixtureFile } from "./fixtures.ts";
 
 /**
@@ -18,11 +19,19 @@ const voiceMarker = "[голосовое]";
 export interface PlannedStep {
   readonly at: string;
   readonly files: readonly FixtureFile[];
+  /** The files suite: what must hold before this message goes. */
+  readonly gate?: TurnGate;
   /** Something the tester does by hand before this message. */
   readonly manual: string | undefined;
   readonly newConversation: boolean;
   /** The exact text sent, placeholders resolved. */
   readonly text: string;
+  /** The files suite: the turn's index in `cases.json`. */
+  readonly turn?: number;
+  /** Voice notes sent as their transcript line (`media.ts`). */
+  readonly voice?: readonly string[];
+  /** Bro's background work ends before this message goes. */
+  readonly waitBefore?: boolean;
 }
 
 export type CasePlan =
@@ -45,8 +54,21 @@ const manualPattern = /^\(([^)]*)\)\s*/u;
 
 export function planCase(
   benchCase: BenchCase,
-  fills: ReadonlyMap<string, string>
+  fills: ReadonlyMap<string, string>,
+  options: {
+    /** Where the files suite's fixtures were built (`fixtures.py`). */
+    readonly filesDir: string;
+  } = { filesDir: "" }
 ): CasePlan {
+  // The files suite has no placeholders: every turn is sent as written,
+  // with the files its generator built.
+  if (benchCase.suite === "files") {
+    return {
+      kind: "ready",
+      notes: [],
+      steps: filesSteps(benchCase, options.filesDir),
+    };
+  }
   const notes: string[] = [];
   const steps: PlannedStep[] = [];
   const fixtures = caseFixtures.get(benchCase.id);

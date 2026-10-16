@@ -7,7 +7,7 @@ import {
   pilotVerdictOfTurn,
 } from "@agent/lib/workspace-list";
 import { env } from "@shared/environment";
-import { sandboxHostConfigured } from "./host";
+import { sandboxHostConfigured, taskFilesEnabled } from "@shared/sandbox/pilot";
 import {
   conversationHoldsPersonFiles,
   workspaceHoldsPersonFiles,
@@ -45,26 +45,8 @@ export async function taskAgentPilot(
   });
 }
 
-/**
- * Whether the person's files reach the task agent in this workspace
- * (TASK_FILES_WORKSPACES, docs/roadmap.md item 30): only inside the task
- * agent's pilot, and decided without a lookup, so ingestion, the skill's
- * setup and both hooks agree: SANDBOX_WORKSPACES must name the workspace by
- * id or be `*` (a pilot named only by the owner's email stays out), and the
- * files travel through the object store (`agent/lib/sandbox/inbox.ts`).
- */
-export function taskFilesEnabled(workspaceId: string | undefined) {
-  if (workspaceId === undefined) return false;
-  const files = env.TASK_FILES_WORKSPACES ?? [];
-  const pilot = env.SANDBOX_WORKSPACES ?? [];
-  return (
-    (files.includes("*") || files.includes(workspaceId)) &&
-    (pilot.includes("*") || pilot.includes(workspaceId)) &&
-    sandboxHostConfigured() &&
-    directModelActive() &&
-    objectStorageConfigured()
-  );
-}
+// Defined beside the web chat, which reads it too; agent code imports it here.
+export { taskFilesEnabled };
 
 /**
  * Whether `taskFilesEnabled` holds for some workspace of this deployment,
@@ -96,7 +78,7 @@ const userCallerSchema = z.object({
 });
 
 /** The workspace of the caller that holds the turn, if it has one. */
-function callerWorkspaceId(context: {
+export function callerWorkspaceId(context: {
   readonly session: Pick<SessionContext["session"], "auth">;
 }) {
   const caller = context.session.auth.current ?? context.session.auth.initiator;

@@ -42,13 +42,40 @@ const settledStatuses = new Set([
  */
 const browserReportPattern = /^Browser run (\S+) finished\./mu;
 
+/** A `task` call: its answer may be a receipt for work that goes on. */
+const taskCallSchema = z.object({
+  callId: z.string().min(1),
+  kind: z.literal("tool-call"),
+  toolName: z.literal("task"),
+});
+
+/**
+ * A `task` call answered with a background-task receipt: the child goes on
+ * working and wakes the parent when it is done
+ * (`eve/dist/src/protocol/message.d.ts`, `SubagentCompletedStreamEvent`).
+ */
+const taskReceiptSchema = z.object({
+  backgroundTask: z.object({ taskId: z.string().min(1) }),
+});
+
+/**
+ * The wake a background task's end arrives as (eve's
+ * `formatTaskNotification`); several can come in one delivery.
+ */
+const taskEndPattern =
+  /^Background task (\S+) \(.*?\) (?:is completed|failed|is cancelled|needs input)\./gmu;
+/** Wakes that leave the task working: progress and a sign-in it waits on. */
+const taskProgressPattern =
+  /^Background task \S+ (?:\(.*?\) update: |needs authorization\.)/mu;
+
 /**
  * What a conversation's stream says about where it stands: cards waiting
  * for an answer, an authorization Bro is parked on, and the browser errands
- * still due to report. The driver decides its next move from it.
+ * and background tasks (`task` with a receipt) still due to report. The
+ * driver decides its next move from it.
  *
- * Only an errand's report settles it. A turn the tester or a nudge started
- * says nothing about the errands, even when Bro answers «ещё ищу».
+ * Only an errand's report or a task's wake settles it. A turn the tester or
+ * a nudge started says nothing about them, even when Bro answers «ещё ищу».
  */
 export class TurnTracker {
   readonly pending = new Map<string, InputRequest>();
@@ -60,17 +87,29 @@ export class TurnTracker {
   readonly #superseded: Set<string>;
   /** `browser_task` calls in flight: the run each one named. */
   readonly #calls = new Map<string, string>();
+  /** Background tasks due to wake Bro, by eve's task id. */
+  readonly #tasks: Set<string>;
+  /** `task` calls whose answer has not come yet. */
+  readonly #taskCalls = new Set<string>();
   #expectReport = false;
+  /**
+   * A task wake of a shape the driver does not know arrived, and it stopped
+   * waiting for every task rather than wait forever; the driver journals it
+   * and clears the flag.
+   */
+  unknownWake = false;
 
   constructor(
     pending: readonly InputRequest[] = [],
     backgroundRuns: readonly string[] = [],
     turnFailure?: string,
-    supersededRuns: readonly string[] = []
+    supersededRuns: readonly string[] = [],
+    backgroundTasks: readonly string[] = []
   ) {
     for (const request of pending) this.pending.set(request.requestId, request);
     this.#runs = new Set(backgroundRuns);
     this.#superseded = new Set(supersededRuns);
+    this.#tasks = new Set(backgroundTasks);
     this.turnFailure = turnFailure;
   }
 
@@ -87,9 +126,10 @@ export class TurnTracker {
         break;
       }
       case "message.received": {
-        const report = event.data.kind
-          ? undefined
-          : this.#reportedRun(event.data.message);
+        const wake = event.data.kind === "execution.background_task";
+        this.#settleTasks(event.data.message, wake);
+        if (wake) break;
+        const report = this.#reportedRun(event.data.message);
         if (report !== undefined) this.#settleReport(report);
         break;
       }
@@ -99,10 +139,22 @@ export class TurnTracker {
           if (call.success && call.data.input.runId) {
             this.#calls.set(call.data.callId, call.data.input.runId);
           }
+          const task = taskCallSchema.safeParse(action);
+          if (task.success) this.#taskCalls.add(task.data.callId);
+        }
+        break;
+      }
+      case "subagent.completed": {
+        const receipt = taskReceiptSchema.safeParse(event.data);
+        if (receipt.success) {
+          this.#tasks.add(receipt.data.backgroundTask.taskId);
         }
         break;
       }
       case "action.result": {
+        // A receipt came before the answer, so the task stays on record;
+        // a call that failed or was refused leaves nothing to wait for.
+        this.#taskCalls.delete(event.data.result.callId);
         const requested = this.#calls.get(event.data.result.callId);
         this.#calls.delete(event.data.result.callId);
         const result = browserOutputSchema.safeParse(event.data.result);
@@ -155,14 +207,27 @@ export class TurnTracker {
     }
   }
 
-  /** Whether a browser errand this conversation started has yet to report. */
+  /**
+   * Whether a browser errand or a background task this conversation started
+   * has yet to report.
+   */
   awaitingBackground() {
-    return this.#expectReport || this.#runs.size > 0;
+    return (
+      this.#expectReport ||
+      this.#runs.size > 0 ||
+      this.#tasks.size > 0 ||
+      this.#taskCalls.size > 0
+    );
   }
 
   /** The errands still due to report, for the run record. */
   backgroundRuns() {
     return [...this.#runs];
+  }
+
+  /** The background tasks still due to wake Bro, for the run record. */
+  backgroundTasks() {
+    return [...this.#tasks];
   }
 
   supersededRuns() {
@@ -178,7 +243,30 @@ export class TurnTracker {
    * record, as if one were running, until the next report.
    */
   expectBackground() {
-    if (this.#runs.size === 0) this.#expectReport = true;
+    if (this.#runs.size === 0 && this.#tasks.size === 0) {
+      this.#expectReport = true;
+    }
+  }
+
+  /**
+   * A task wake settles each task it names as ended; progress changes
+   * nothing. Every message is read for them: eve merges a wake that comes
+   * with the tester's message or an errand's report into one input and
+   * drops its kind (`coalesceFrameworkMessageKind`). A `wake` of no known
+   * shape ends the wait for every task, so a changed eve never makes the
+   * driver wait forever.
+   */
+  #settleTasks(message: string, wake: boolean) {
+    const ended = [...message.matchAll(taskEndPattern)];
+    for (const [, taskId] of ended) {
+      if (taskId !== undefined) this.#tasks.delete(taskId);
+    }
+    const known = ended.length > 0 || taskProgressPattern.test(message);
+    if (known || wake) this.#expectReport = false;
+    if (known || !wake) return;
+    this.#tasks.clear();
+    this.#taskCalls.clear();
+    this.unknownWake = true;
   }
 
   #reportedRun(message: string) {

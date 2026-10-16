@@ -127,6 +127,10 @@ const toolGroupEntries = {
   "schedules-list": "core",
   "schedules-update": "schedules",
   send_message: "core",
+  // Signing (SIGN_WORKSPACES) stays in the core: the person's «да» must
+  // reach `sign_document` even after compaction folded the sign block.
+  sign_document: "core",
+  signature: "core",
   "site-login-link": "core",
   site_sign_ins: "core",
   "slack-read": "apps",

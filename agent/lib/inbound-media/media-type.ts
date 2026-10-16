@@ -1,3 +1,5 @@
+import { inspectZip } from "./zip";
+
 /**
  * Media types the inbound channels can hand to the model, decided from the
  * bytes rather than from what a messenger declared: a Telegram photo is served
@@ -16,9 +18,10 @@ export const pdfByteCap = 20 * 1024 * 1024;
  */
 export const audioByteCap = 25 * 1024 * 1024;
 /**
- * A spreadsheet, document or text file the person sends for the task agent
- * (TASK_FILES_WORKSPACES); the object store's copy for the task agent
- * (`attachmentByteCap` in `agent/lib/sandbox/inbox.ts`) takes this cap.
+ * A file the person sends for the task agent (TASK_FILES_WORKSPACES): under
+ * that pilot it caps every document, PDF and photo kept as a file on the web,
+ * Telegram and iMessage alike, and the object store's copy for the task
+ * agent (`attachmentByteCap` in `agent/lib/sandbox/inbox.ts`).
  */
 export const documentByteCap = 20 * 1024 * 1024;
 
@@ -122,15 +125,17 @@ export function resolveMediaType(
 
 /**
  * What a document's bytes must be for its extension to be believed: an OOXML
- * or OpenDocument package (both zips), an OLE compound file, or text.
+ * or OpenDocument package (both zips), an OLE compound file, text, or a ZIP
+ * archive whose directory reads as one (`inspectZip`).
  */
-type DocumentContainer = "cfb" | "odf" | "ooxml" | "text";
+type DocumentContainer = "cfb" | "odf" | "ooxml" | "text" | "zip";
 
 /**
  * The documents the task agent can open, by extension: the canonical media
  * type and the container its bytes come in. Nothing here is an image or a
- * PDF, which the model reads itself; archives, executables and videos are
- * left out on purpose and stay a one-line note.
+ * PDF, which the model reads itself; a ZIP counts only where its caller asks
+ * for archives (`documentMediaType`), and other archives, executables and
+ * videos are left out on purpose and stay a one-line note.
  */
 const documentTypes: ReadonlyMap<
   string,
@@ -194,11 +199,35 @@ const documentTypes: ReadonlyMap<
   ["md", { container: "text", mediaType: "text/markdown" }],
   ["json", { container: "text", mediaType: "application/json" }],
   ["xml", { container: "text", mediaType: "application/xml" }],
+  ["zip", { container: "zip", mediaType: "application/zip" }],
 ]);
 
+/**
+ * The documents' own types a sender may declare for another listed
+ * extension. A ZIP's is not one: a `.csv` declared `application/zip` stays a
+ * note.
+ */
 const documentMediaTypes: ReadonlySet<string> = new Set(
-  [...documentTypes.values()].map((type) => type.mediaType)
+  [...documentTypes.values()]
+    .filter((type) => type.container !== "zip")
+    .map((type) => type.mediaType)
 );
+
+/** What senders declare for a ZIP archive. */
+const zipMediaTypes: ReadonlySet<string> = new Set([
+  "application/x-zip",
+  "application/x-zip-compressed",
+  "application/zip",
+  "multipart/x-zip",
+]);
+
+/** What senders declare for the archives the task agent cannot open. */
+const unsupportedArchiveMediaTypes: ReadonlySet<string> = new Set([
+  "application/vnd.rar",
+  "application/x-7z-compressed",
+  "application/x-rar",
+  "application/x-rar-compressed",
+]);
 
 /**
  * What a sender may declare next to an allowlisted extension: nothing, the
@@ -214,6 +243,7 @@ function declaredFits(
   if (declared === undefined || declared === "application/octet-stream") {
     return true;
   }
+  if (container === "zip") return zipMediaTypes.has(declared);
   if (documentMediaTypes.has(declared)) return true;
   if (container === "ooxml" || container === "odf") {
     return (
@@ -232,17 +262,73 @@ function extensionOf(name: string | undefined) {
 /**
  * The canonical media type of a document the task agent can open, decided by
  * the file name's extension and checked against the declared type, or
- * `undefined` when the file is not one. It never returns an image or a PDF.
+ * `undefined` when the file is not one. It never returns an image or a PDF,
+ * and a ZIP archive only with `archives` (the files pilot).
  */
 export function documentMediaType(
   name: string | undefined,
-  declared: string | undefined
+  declared: string | undefined,
+  { archives = false }: { readonly archives?: boolean } = {}
 ) {
   const type = documentTypes.get(extensionOf(name) ?? "");
   if (type === undefined || !declaredFits(type.container, declared)) {
     return undefined;
   }
+  if (type.container === "zip" && !archives) return undefined;
   return type.mediaType;
+}
+
+/**
+ * Whether the file is a RAR or 7z archive, by its name or declared type: the
+ * task agent opens only ZIP, so the person hears what to send instead.
+ */
+export function unsupportedArchive(
+  name: string | undefined,
+  declared: string | undefined
+) {
+  const extension = extensionOf(name);
+  return (
+    extension === "rar" ||
+    extension === "7z" ||
+    (declared !== undefined && unsupportedArchiveMediaTypes.has(declared))
+  );
+}
+
+/** Why a file stayed a note, as the model reads it after its name. */
+export const fileDetails = {
+  archiveRefused: "архив повреждён или слишком велик",
+  archiveUnsupported: "архив RAR или 7z не открыть — нужен ZIP",
+  mismatch: "содержимое не совпадает с расширением",
+} as const;
+
+/** The media types of the files the benchmark sends, by extension. */
+const namedMediaTypes: ReadonlyMap<string, string> = new Map([
+  ["7z", "application/x-7z-compressed"],
+  ["gif", "image/gif"],
+  ["heic", "image/heic"],
+  ["heif", "image/heif"],
+  ["jpeg", "image/jpeg"],
+  ["jpg", "image/jpeg"],
+  ["m4a", "audio/mp4"],
+  ["mp3", "audio/mpeg"],
+  ["ogg", "audio/ogg"],
+  ["pdf", "application/pdf"],
+  ["png", "image/png"],
+  ["rar", "application/vnd.rar"],
+  ["wav", "audio/wav"],
+  ["webp", "image/webp"],
+  ...[...documentTypes].map(
+    ([extension, { mediaType }]) => [extension, mediaType] as const
+  ),
+]);
+
+/**
+ * The media type a file's name implies: the photos, PDFs and voice notes
+ * people send, every document the task agent opens and the archives; or
+ * `undefined` for any other name.
+ */
+export function mediaTypeForName(name: string) {
+  return namedMediaTypes.get(extensionOf(name) ?? "");
 }
 
 const zipSignature = [0x50, 0x4b, 0x03, 0x04] as const;
@@ -314,6 +400,7 @@ export function textDocumentLooksLikeAudio(
 /**
  * Whether the bytes are what a document of `mediaType` comes in: its own
  * package for OOXML and OpenDocument (`packageMatches`), an OLE compound file for the legacy Office formats,
+ * a ZIP whose directory reads within its limits for an archive (`inspectZip`),
  * and text without NUL bytes (or with a UTF-16 byte order mark) for the rest.
  * A renamed executable or archive of another kind fails here.
  */
@@ -330,6 +417,9 @@ export function documentBytesMatch(mediaType: string, bytes: Uint8Array) {
     case "text": {
       if (startsWithUtf16Bom(bytes)) return true;
       return !bytes.subarray(0, textProbeBytes).includes(0);
+    }
+    case "zip": {
+      return inspectZip(bytes).kind === "zip";
     }
     default: {
       return false;

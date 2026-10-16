@@ -152,21 +152,19 @@ export function authorizedPhoneTurn(session: SessionContext["session"]) {
 
 /**
  * Approval of an action only the person's own root turn may start: phone
- * calls and writes to the address book.
+ * calls, writes to the address book, saving the person's signature and
+ * signing for them. `reason` is what a refusal says.
  */
 export function rootApproval(
   context: Pick<
     ApprovalContext,
     "session" | "callId" | "toolName" | "toolInput"
-  >
+  >,
+  reason = "Only an authenticated person's own root turn may initiate phone actions."
 ) {
   const input = JSON.stringify(context.toolInput ?? null);
   if (authorizedPhoneTurn(context.session)) recordPhoneAction(context, input);
   return phoneActionTurn(context, input)
     ? ownTurnApproval(context)
-    : {
-        type: "denied" as const,
-        reason:
-          "Only an authenticated person's own root turn may initiate phone actions.",
-      };
+    : { type: "denied" as const, reason };
 }
