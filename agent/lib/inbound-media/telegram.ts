@@ -12,12 +12,14 @@ import {
   documentByteCap,
   documentBytesMatch,
   documentMediaType,
+  fileDetails,
   inlineImageByteCap,
   isImageMediaType,
   pdfByteCap,
   resolveMediaType,
   sniffMediaType,
   textDocumentLooksLikeAudio,
+  unsupportedArchive,
 } from "./media-type";
 import { transcribeAudio, transcriptionAvailable } from "./transcription";
 import {
@@ -184,17 +186,19 @@ async function photoItem(
 }
 
 /**
- * A spreadsheet or document for the task agent, fetched under its own cap.
- * Bytes that turn out to be an image or a PDF take the branches the model
- * reads itself; bytes that do not match the extension stay a note.
+ * A spreadsheet or document for the task agent, fetched under its own cap
+ * (`large`: 20 MiB rather than 10 MB). Bytes that turn out to be an image or
+ * a PDF take the branches the model reads itself; bytes that do not match
+ * the extension stay a note, a ZIP that does not read as one or claims too
+ * much saying so.
  */
 async function taskDocumentItem(
   document: z.infer<typeof documentSchema>,
   name: string,
   mediaType: string,
-  browserFiles: boolean
+  large: boolean
 ): Promise<InboundMediaItem> {
-  const cap = browserFiles ? documentByteCap : legacyDocumentByteCap;
+  const cap = large ? documentByteCap : legacyDocumentByteCap;
   if (document.file_size !== undefined && document.file_size > cap) {
     return {
       kind: "note",
@@ -231,7 +235,7 @@ async function taskDocumentItem(
   }
   if (isImageMediaType(sniffed)) {
     if (download.bytes.byteLength > inlineImageByteCap) {
-      if (browserFiles) {
+      if (large) {
         return {
           data: download.bytes,
           filename: name,
@@ -254,7 +258,11 @@ async function taskDocumentItem(
   if (sniffed !== undefined || !documentBytesMatch(mediaType, download.bytes)) {
     return {
       kind: "note",
-      text: fileNote(name, sniffed ?? baseMediaType(document.mime_type)),
+      text: fileNote(
+        name,
+        sniffed ?? baseMediaType(document.mime_type),
+        mediaType === "application/zip" ? fileDetails.archiveRefused : undefined
+      ),
     };
   }
   console.info("[inbound-media] telegram document", {
@@ -265,30 +273,41 @@ async function taskDocumentItem(
   return { data: download.bytes, filename: name, kind: "document", mediaType };
 }
 
+/**
+ * A document the person sent. `files` (the task or the browser files pilot)
+ * hands the model allowlisted documents and raises the caps to 20 MiB;
+ * `archives` (the task files pilot) also takes a ZIP and names a RAR or 7z
+ * as one the task agent cannot open, without downloading it.
+ */
 async function documentItem(
   document: z.infer<typeof documentSchema>,
-  documents: boolean,
-  browserFiles: boolean
+  files: boolean,
+  archives: boolean
 ): Promise<InboundMediaItem> {
   const declared = baseMediaType(document.mime_type);
   const name = document.file_name ?? "file";
   const isPdf =
     declared === "application/pdf" || name.toLowerCase().endsWith(".pdf");
   if (!isImageMediaType(declared) && !isPdf) {
-    const taskType = documents
-      ? documentMediaType(document.file_name, declared)
+    const taskType = files
+      ? documentMediaType(document.file_name, declared, { archives })
       : undefined;
     if (taskType !== undefined && document.file_name !== undefined) {
-      return taskDocumentItem(
-        document,
-        document.file_name,
-        taskType,
-        browserFiles
-      );
+      return taskDocumentItem(document, document.file_name, taskType, files);
+    }
+    if (archives && unsupportedArchive(document.file_name, declared)) {
+      return {
+        kind: "note",
+        text: fileNote(
+          document.file_name,
+          declared,
+          fileDetails.archiveUnsupported
+        ),
+      };
     }
     return { kind: "note", text: fileNote(document.file_name, declared) };
   }
-  const cap = browserFiles
+  const cap = files
     ? isPdf
       ? pdfByteCap
       : documentByteCap
@@ -304,7 +323,7 @@ async function documentItem(
   const download = await downloadTelegramFile(
     document.file_id,
     cap,
-    browserFiles ? documentDownloadTimeoutMs : downloadTimeoutMs
+    files ? documentDownloadTimeoutMs : downloadTimeoutMs
   );
   if (download.kind === "oversize") {
     return {
@@ -329,7 +348,7 @@ async function documentItem(
   }
   if (isImageMediaType(mediaType)) {
     if (download.bytes.byteLength > inlineImageByteCap) {
-      if (browserFiles && isImageMediaType(sniffMediaType(download.bytes))) {
+      if (files && isImageMediaType(sniffMediaType(download.bytes))) {
         return {
           data: download.bytes,
           filename: name,
@@ -376,8 +395,10 @@ async function voiceItem(
  * audio file, or video note, or `undefined` when it carries none and eve's
  * default text turn applies. `documents` (`taskFilesEnabled`) or `browserFiles`
  * also hands the model allowlisted documents; without either they stay a note
- * and are never downloaded. `browserFiles` preserves verified image documents
- * above the inline cap as staged files and raises the document cap to 20 MiB.
+ * and are never downloaded. Either preserves verified image documents above
+ * the inline cap as staged files and raises the document cap to 20 MiB;
+ * `documents` also takes a ZIP and names each photo and PDF in the text
+ * (`inboundTurn`'s `fileNotes`).
  */
 export async function telegramMediaTurn(
   message: TelegramMessage,
@@ -393,7 +414,7 @@ export async function telegramMediaTurn(
   if (media.photo && media.photo.length > 0) tasks.push(photoItem(media.photo));
   if (media.document) {
     tasks.push(
-      documentItem(media.document, documents || browserFiles, browserFiles)
+      documentItem(media.document, documents || browserFiles, documents)
     );
   }
   if (media.voice) {
@@ -414,5 +435,7 @@ export async function telegramMediaTurn(
     tasks.push(voiceItem(media.video_note, "video/mp4", "note.mp4"));
   if (tasks.length === 0) return undefined;
   const items = await Promise.all(tasks);
-  return inboundTurn(message.text || message.caption, items);
+  return inboundTurn(message.text || message.caption, items, {
+    fileNotes: documents,
+  });
 }

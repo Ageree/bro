@@ -6,24 +6,33 @@ import shareFile from "@agent/subagents/task/tools/share_file";
 const storage = vi.hoisted(() => ({
   shareSandboxFile: vi.fn<typeof Files.shareSandboxFile>(),
 }));
+const pilot = vi.hoisted(() => ({
+  taskFilesOfCaller: vi.fn<() => boolean>(() => false),
+}));
 
 vi.mock("@agent/lib/sandbox/files", async (importOriginal) => ({
   ...(await importOriginal<typeof Files>()),
   shareSandboxFile: storage.shareSandboxFile,
 }));
+vi.mock("@agent/lib/sandbox/pilot", () => pilot);
 
 type SandboxSession = Awaited<ReturnType<ToolContext["getSandbox"]>>;
 
 beforeEach(() => {
   vi.clearAllMocks();
-  storage.shareSandboxFile.mockImplementation(async (input) =>
-    Promise.resolve({
+  pilot.taskFilesOfCaller.mockReturnValue(false);
+  storage.shareSandboxFile.mockImplementation(async (input) => {
+    // The store keeps its own cap, 10 MB unless the caller raises it.
+    if (input.bytes.byteLength > (input.maximumBytes ?? 10 * 1024 * 1024)) {
+      throw new Error("A shared file is over the store's cap.");
+    }
+    return await Promise.resolve({
       bytes: input.bytes.byteLength,
       mediaType: input.mediaType,
       name: input.name,
       url: "https://bro.example.test/eve/v1/sandbox-files/x/y?sig=z",
-    })
-  );
+    });
+  });
 });
 
 /** A file the sandbox serves in chunks of a megabyte, `chunks` of them. */
@@ -62,6 +71,18 @@ describe("share_file", () => {
     expect(storage.shareSandboxFile).not.toHaveBeenCalled();
   });
 
+  it("shares a file of 15 MB in the files pilot", async () => {
+    pilot.taskFilesOfCaller.mockReturnValue(true);
+    const file = servedFile(15);
+
+    await expect(
+      share(file.stream, "/workspace/scan.pdf")
+    ).resolves.toMatchObject({ bytes: 15 * 1024 * 1024 });
+    await expect(
+      share(servedFile(25).stream, "/workspace/huge.pdf")
+    ).rejects.toThrow("is over 20 MB");
+  });
+
   it("types a file by its bytes first, and by its name when they do not tell", async () => {
     const png = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
     expect(
@@ -74,6 +95,13 @@ describe("share_file", () => {
       mediaType:
         "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     });
+  });
+
+  it("types a calendar invitation by its name", async () => {
+    const invitation = new TextEncoder().encode("BEGIN:VCALENDAR\r\n");
+    expect(
+      await share(servedFile(1, invitation).stream, "/workspace/meeting.ics")
+    ).toMatchObject({ mediaType: "text/calendar", name: "meeting.ics" });
   });
 });
 

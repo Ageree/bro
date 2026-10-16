@@ -10,15 +10,15 @@ import type {
 import { presignStoredObject } from "@shared/object-storage/s3";
 import { env } from "@shared/environment";
 import { applicationOrigin } from "@shared/environment/origin";
+import { sandboxHostConfigured } from "@shared/sandbox/pilot";
+import { inUse, openWithRoom } from "./capacity";
 import {
   deleteSandbox,
   execInSandbox,
   type SandboxOpenRequest,
   killSandboxProcess,
-  openSandbox,
   readSandboxFile,
   removeSandboxPath,
-  sandboxHostConfigured,
   setSandboxNetwork,
   settleSandbox,
   streamSandboxFile,
@@ -379,7 +379,8 @@ function spawnCommand(
     stdout.close(error);
     stderr.close(error);
   };
-  const exit = (async () => {
+  // The command is a use of the sandbox until it ends (`inUse`).
+  const exit = inUse(sandboxId, async () => {
     try {
       for await (const event of execInSandbox(
         sandboxId,
@@ -417,7 +418,7 @@ function spawnCommand(
       closeStreams(failure);
       throw failure;
     }
-  })();
+  });
   // A caller that never waits must not see an unhandled rejection.
   exit.catch(() => undefined);
   return {
@@ -432,23 +433,47 @@ function spawnCommand(
 }
 
 function sandboxSession(sandboxId: string): SandboxSession {
+  // Each call is a use of the sandbox (`inUse`), a streamed read until its
+  // bytes start: no release stops the sandbox meanwhile.
   const readBinaryFile = async (options: {
     readonly abortSignal?: AbortSignal;
     readonly path: string;
   }) =>
-    await readSandboxFile(
+    await inUse(
       sandboxId,
-      resolveSandboxPath(options.path),
-      options.abortSignal
+      async () =>
+        await readSandboxFile(
+          sandboxId,
+          resolveSandboxPath(options.path),
+          options.abortSignal
+        )
     );
+  const write = async (
+    path: string,
+    content: Uint8Array,
+    signal: AbortSignal | undefined
+  ) => {
+    await inUse(sandboxId, async () => {
+      await writeSandboxFile(
+        sandboxId,
+        resolveSandboxPath(path),
+        content,
+        signal
+      );
+    });
+  };
   return {
     id: sandboxId,
     readBinaryFile,
     readFile: async (options) =>
-      await streamSandboxFile(
+      await inUse(
         sandboxId,
-        resolveSandboxPath(options.path),
-        options.abortSignal
+        async () =>
+          await streamSandboxFile(
+            sandboxId,
+            resolveSandboxPath(options.path),
+            options.abortSignal
+          )
       ),
     readTextFile: async (options) => {
       const bytes = await readBinaryFile(options);
@@ -460,11 +485,13 @@ function sandboxSession(sandboxId: string): SandboxSession {
       );
     },
     removePath: async (options) => {
-      await removeSandboxPath(sandboxId, {
-        force: options.force,
-        path: resolveSandboxPath(options.path),
-        recursive: options.recursive,
-        signal: options.abortSignal,
+      await inUse(sandboxId, async () => {
+        await removeSandboxPath(sandboxId, {
+          force: options.force,
+          path: resolveSandboxPath(options.path),
+          recursive: options.recursive,
+          signal: options.abortSignal,
+        });
       });
     },
     resolvePath: resolveSandboxPath,
@@ -483,30 +510,25 @@ function sandboxSession(sandboxId: string): SandboxSession {
           "The Cloud.ru code sandbox has no network: only deny-all is supported."
         );
       }
-      await setSandboxNetwork(sandboxId, policy);
+      await inUse(sandboxId, async () => {
+        await setSandboxNetwork(sandboxId, policy);
+      });
     },
     spawn: async (options) =>
       await Promise.resolve(spawnCommand(sandboxId, options)),
     writeBinaryFile: async (options) => {
-      await writeSandboxFile(
-        sandboxId,
-        resolveSandboxPath(options.path),
-        options.content,
-        options.abortSignal
-      );
+      await write(options.path, options.content, options.abortSignal);
     },
     writeFile: async (options) => {
-      await writeSandboxFile(
-        sandboxId,
-        resolveSandboxPath(options.path),
+      await write(
+        options.path,
         await readAll(options.content),
         options.abortSignal
       );
     },
     writeTextFile: async (options) => {
-      await writeSandboxFile(
-        sandboxId,
-        resolveSandboxPath(options.path),
+      await write(
+        options.path,
         encode(options.content, options.encoding),
         options.abortSignal
       );
@@ -530,7 +552,10 @@ function savedWorkspace(
  * needs the sandbox — takes up the live container or restores the saved
  * `/workspace`, and hands the host a fresh tool router token and snapshot
  * links. The workspace comes from `onSession` (`use({ workspaceId })`) and is
- * kept in eve's reconnect state for the session's later steps.
+ * kept in eve's reconnect state for the session's later steps. A full host
+ * is waited out a while, and the session's turn end stops the sandbox again
+ * (`agent/lib/sandbox/capacity.ts`): eve's own `ctx.getSandbox()` would open
+ * a sandbox just to stop it.
  */
 export function cloudRuSandbox(
   settings: {
@@ -549,10 +574,14 @@ export function cloudRuSandbox(
         );
       }
       const sandboxId = sandboxIdFor(input.sessionKey);
+      // The eve session this step runs for: its turn's end lets go of the
+      // sandbox (`releaseSessionSandboxes`).
+      const sessionId = input.tags?.sessionId;
       let workspaceId = savedWorkspace(input.existingMetadata) ?? "";
-      await openSandbox(
+      await openWithRoom(
         sandboxId,
-        openRequest(sandboxId, workspaceId, settings.memoryMb)
+        openRequest(sandboxId, workspaceId, settings.memoryMb),
+        sessionId
       );
       const session = sandboxSession(sandboxId);
       const handle: SandboxBackendHandle<CloudRuSessionOptions> = {
@@ -587,9 +616,10 @@ export function cloudRuSandbox(
             options.workspaceId !== workspaceId
           ) {
             workspaceId = options.workspaceId;
-            await openSandbox(
+            await openWithRoom(
               sandboxId,
-              openRequest(sandboxId, workspaceId, settings.memoryMb)
+              openRequest(sandboxId, workspaceId, settings.memoryMb),
+              sessionId
             );
           }
           return session;

@@ -4,7 +4,7 @@ import { defineState } from "eve/context";
 import { startsTurn } from "@agent/lib/delivery/turn-sends";
 import { documentByteCap } from "@agent/lib/inbound-media/media-type";
 import { namedAttachmentPaths } from "@agent/lib/sandbox/inbox";
-import { isSharedFileLink } from "@agent/lib/sandbox/files";
+import { isSharedFileLink, linksInText } from "@agent/lib/sandbox/files";
 import { env } from "@shared/environment";
 import { browserUseConfigured } from "./client";
 import { isPersonMessage } from "./said";
@@ -111,7 +111,7 @@ export function reportedSharedFileLinks(messages: readonly ModelMessage[]) {
           .flatMap((part) => (part.type === "text" ? [part.text] : []))
           .join("\n")
       : message.content;
-    for (const [link] of text.matchAll(/https:\/\/[^\s<>"')\]]+/gu)) {
+    for (const link of linksInText(text)) {
       if (isSharedFileLink(link)) links.add(link);
     }
   }

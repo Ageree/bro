@@ -130,4 +130,39 @@ describe("shared sandbox files", () => {
       sharedFileLocation({ id: "nothex", name: "итог (1).txt", signature: "x" })
     ).toBeUndefined();
   });
+
+  it("reads back a file of 15 MB that its owner shared in the files pilot", async () => {
+    const stored = new Map<string, Uint8Array>();
+    vi.stubGlobal("fetch", async (input: string | URL, init?: RequestInit) => {
+      const key = new URL(input).pathname;
+      if (init?.method === "PUT") {
+        stored.set(
+          key,
+          new Uint8Array(await new Response(init.body).arrayBuffer())
+        );
+        return new Response(null, { status: 200 });
+      }
+      const bytes = stored.get(key);
+      return bytes === undefined
+        ? new Response(null, { status: 404 })
+        : new Response(new Uint8Array(bytes), {
+            headers: { "content-length": String(bytes.byteLength) },
+          });
+    });
+    const { readOwnedSharedFile, shareSandboxFile } = await files();
+    const owner = { sessionId: "session-1", workspaceId: "workspace-1" };
+    const bytes = new Uint8Array(15 * 1024 * 1024).fill(7);
+    const { url } = await shareSandboxFile({
+      bytes,
+      maximumBytes: 20 * 1024 * 1024,
+      mediaType: "application/pdf",
+      name: "Анкета (подписано).pdf",
+      owner,
+    });
+
+    const read = await readOwnedSharedFile(url, owner);
+
+    expect(read?.bytes.byteLength).toBe(bytes.byteLength);
+    expect(read?.name).toBe("Анкета (подписано).pdf");
+  });
 });

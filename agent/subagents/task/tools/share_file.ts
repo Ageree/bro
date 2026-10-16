@@ -6,7 +6,9 @@ import {
   maximumSharedFileBytes,
   shareSandboxFile,
   sharedFileName,
+  taskFilesShareBytes,
 } from "@agent/lib/sandbox/files";
+import { taskFilesOfCaller } from "@agent/lib/sandbox/pilot";
 
 /** What a file is by its name, when its bytes do not say (text, csv, office). */
 const mediaTypesByExtension: ReadonlyMap<string, string> = new Map([
@@ -15,8 +17,14 @@ const mediaTypesByExtension: ReadonlyMap<string, string> = new Map([
     ".docx",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   ],
+  [".ics", "text/calendar"],
+  [".jpeg", "image/jpeg"],
+  [".jpg", "image/jpeg"],
   [".json", "application/json"],
   [".md", "text/markdown"],
+  [".odp", "application/vnd.oasis.opendocument.presentation"],
+  [".ods", "application/vnd.oasis.opendocument.spreadsheet"],
+  [".odt", "application/vnd.oasis.opendocument.text"],
   [".pdf", "application/pdf"],
   [".png", "image/png"],
   [
@@ -25,10 +33,12 @@ const mediaTypesByExtension: ReadonlyMap<string, string> = new Map([
   ],
   [".svg", "image/svg+xml"],
   [".txt", "text/plain"],
+  [".vcf", "text/vcard"],
   [
     ".xlsx",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   ],
+  [".xml", "application/xml"],
   [".zip", "application/zip"],
 ]);
 
@@ -88,13 +98,19 @@ export default defineTool({
       ),
   }),
   async execute({ name, path }, ctx) {
+    // The files pilot sends files up to 20 MB; the description keeps saying
+    // 10 MB so the tool block stays the same outside it, and the pilot's
+    // instructions say 20.
+    const cap = taskFilesOfCaller(ctx)
+      ? taskFilesShareBytes
+      : maximumSharedFileBytes;
     const sandbox = await ctx.getSandbox();
     const stream = await sandbox.readFile({ path });
     if (stream === null) throw new Error(`There is no file at ${path}.`);
-    const bytes = await readWithin(stream, maximumSharedFileBytes);
+    const bytes = await readWithin(stream, cap);
     if (bytes === undefined) {
       throw new Error(
-        `The file ${path} is over 10 MB: compress it or split it into parts.`
+        `The file ${path} is over ${String(cap / 1024 / 1024)} MB: compress it or split it into parts.`
       );
     }
     if (bytes.byteLength === 0) throw new Error(`The file ${path} is empty.`);
@@ -102,6 +118,7 @@ export default defineTool({
     const caller = ctx.session.auth.current ?? ctx.session.auth.initiator;
     const shared = await shareSandboxFile({
       bytes,
+      maximumBytes: cap,
       mediaType: mediaTypeOf(fileName, bytes),
       name: fileName,
       owner:

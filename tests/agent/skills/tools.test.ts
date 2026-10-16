@@ -80,8 +80,11 @@ describe("the tools of the skills pilot", () => {
         await catalog("web", true, {
           ...fullDeployment,
           ...taskAgentDeployment,
+          AGENT_SANDBOX: "bro-cloudru",
           LOCATION_WORKSPACES: "workspace-1",
+          SIGN_WORKSPACES: "*",
           SUBSCRIPTIONS_WORKSPACES: "*",
+          TASK_FILES_WORKSPACES: "*",
         })
       ).keys(),
       ...(await catalog("web", false)).keys(),
@@ -92,6 +95,8 @@ describe("the tools of the skills pilot", () => {
     // geolocation tools of theirs.
     expect(names.has("watch-create")).toBe(true);
     expect(names.has("place_reminder")).toBe(true);
+    // The signing tools of theirs.
+    expect(names.has("sign_document")).toBe(true);
     expect(
       [...names].filter((name) => !groupedToolNames.includes(name))
     ).toEqual([]);

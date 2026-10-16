@@ -7,12 +7,14 @@ import {
   documentByteCap,
   documentBytesMatch,
   documentMediaType,
+  fileDetails,
   inlineImageByteCap,
   isAudioMediaType,
   isImageMediaType,
   pdfByteCap,
   resolveMediaType,
   textDocumentLooksLikeAudio,
+  unsupportedArchive,
 } from "./media-type";
 import { transcribeAudio, transcriptionAvailable } from "./transcription";
 import {
@@ -140,8 +142,18 @@ async function attachmentBytes(
   return { kind: "failed", reason: "no source" };
 }
 
-function byteCapFor(declared: string | undefined, voiceLike: boolean) {
-  if (isImageMediaType(declared)) return inlineImageByteCap;
+/**
+ * What an attachment may weigh before its bytes are read. `large` (the files
+ * pilot) keeps a photo past the inline cap as a file, up to a document's cap.
+ */
+function byteCapFor(
+  declared: string | undefined,
+  voiceLike: boolean,
+  large: boolean
+) {
+  if (isImageMediaType(declared)) {
+    return large ? documentByteCap : inlineImageByteCap;
+  }
   if (declared === "application/pdf") return pdfByteCap;
   if (voiceLike) return audioByteCap;
   return pdfByteCap;
@@ -152,9 +164,9 @@ function isVoiceName(name: string | undefined) {
 }
 
 /**
- * A spreadsheet or document for the task agent (`documentMediaType`), or the
- * note it was before when the name, the declared type or the bytes say it is
- * not one.
+ * A spreadsheet, document or ZIP for the task agent (`documentMediaType`), or
+ * the note it was before when the name, the declared type or the bytes say
+ * it is not one; a ZIP that does not read as one or claims too much says so.
  */
 function taskDocumentItem(
   attachment: Attachment,
@@ -162,13 +174,22 @@ function taskDocumentItem(
   bytes: Uint8Array,
   mediaType: string | undefined
 ): InboundMediaItem {
-  const taskType = documentMediaType(attachment.name, declared);
+  const taskType = documentMediaType(attachment.name, declared, {
+    archives: true,
+  });
   if (
     attachment.name === undefined ||
     taskType === undefined ||
     !documentBytesMatch(taskType, bytes)
   ) {
-    return { kind: "note", text: fileNote(attachment.name, mediaType) };
+    return {
+      kind: "note",
+      text: fileNote(
+        attachment.name,
+        mediaType,
+        taskType === "application/zip" ? fileDetails.archiveRefused : undefined
+      ),
+    };
   }
   if (bytes.byteLength > documentByteCap) {
     return {
@@ -227,17 +248,20 @@ async function attachmentItem(
   if (voiceLike && !transcriptionAvailable()) {
     return { kind: "voice-unsupported" };
   }
-  // A file that may be one for the task agent is up to 10 MB: its download
-  // gets a document's time, not a photo's.
+  // The task agent opens only ZIP: a RAR or 7z is named, never read.
+  if (documents && unsupportedArchive(attachment.name, declared)) {
+    return {
+      kind: "note",
+      text: fileNote(attachment.name, declared, fileDetails.archiveUnsupported),
+    };
+  }
+  // In the files pilot any file may be one for the task agent, up to 20 MiB:
+  // its download gets a document's time, not a photo's.
   const resolved = await attachmentBytes(
     attachment,
     reader,
-    byteCapFor(declared, voiceLike),
-    documents &&
-      !voiceLike &&
-      documentMediaType(attachment.name, declared) !== undefined
-      ? documentDownloadTimeoutMs
-      : undefined
+    byteCapFor(declared, voiceLike, documents),
+    documents && !voiceLike ? documentDownloadTimeoutMs : undefined
   );
   if (resolved.kind === "oversize") {
     if (voiceLike) return { kind: "voice-failed" };
@@ -263,7 +287,7 @@ async function attachmentItem(
   // could send it to transcription.
   const taskType =
     documents && !voiceLike
-      ? documentMediaType(attachment.name, declared)
+      ? documentMediaType(attachment.name, declared, { archives: true })
       : undefined;
   if (
     taskType !== undefined &&
@@ -275,6 +299,15 @@ async function attachmentItem(
     resolveMediaType(resolved.bytes, resolved.mediaType) ?? declared;
   if (isImageMediaType(mediaType)) {
     if (resolved.bytes.byteLength > inlineImageByteCap) {
+      // The model cannot be shown it, but the task agent can open it.
+      if (documents) {
+        return {
+          data: resolved.bytes,
+          filename: attachment.name ?? `photo.${mediaType.slice(6)}`,
+          kind: "document",
+          mediaType,
+        };
+      }
       return {
         kind: "note",
         text: fileNote(attachment.name, mediaType, "слишком большой"),
@@ -325,9 +358,11 @@ async function attachmentItem(
 /**
  * The turn for an iMessage that carries attachments, or `undefined` when it is
  * text only and eve's default turn applies. `documents` (`taskFilesEnabled`)
- * also hands the model the spreadsheets and documents the task agent can
- * open; without it they stay a note. `location` (the geolocation pilot)
- * reads a location card as a point (`InboundTurn.locations`).
+ * also hands the model the spreadsheets, documents and ZIPs the task agent
+ * can open, keeps a photo past the inline cap as a file, and names each
+ * photo and PDF in the text (`inboundTurn`'s `fileNotes`); without it they
+ * stay a note. `location` (the geolocation pilot) reads a location card as a
+ * point (`InboundTurn.locations`).
  */
 export async function photonMediaTurn(
   message: Message,
@@ -344,5 +379,5 @@ export async function photonMediaTurn(
       attachmentItem(attachment, readers[index], documents, location)
     )
   );
-  return inboundTurn(message.text, items);
+  return inboundTurn(message.text, items, { fileNotes: documents });
 }

@@ -1,4 +1,4 @@
-import { createServer } from "node:http";
+import { createServer, type IncomingMessage } from "node:http";
 import { text } from "node:stream/consumers";
 import type { MessageStreamEvent } from "eve/client";
 import { z } from "zod";
@@ -8,7 +8,8 @@ import { z } from "zod";
  * `eve/client` the driver uses: create, send, respond, and the NDJSON stream
  * with its version header. Each POST appends the batch of events the test
  * scripts for it; `append` adds events nobody asked for, as a background
- * turn would.
+ * turn would. `serve` answers the other GETs a test needs (Bro's file
+ * links, Object Storage, artifacts).
  */
 
 const sessionId = "wrun_fake";
@@ -30,8 +31,16 @@ export type FakePost = z.infer<typeof postBodySchema> & {
   readonly route: "create" | "session";
 };
 
+/** What `serve` answers a GET with. */
+export interface FakeAnswer {
+  readonly body?: Uint8Array | string;
+  readonly headers?: Readonly<Record<string, string>>;
+  readonly status: number;
+}
+
 export async function startFakeEve(
-  reply: (post: FakePost) => readonly MessageStreamEvent[]
+  reply: (post: FakePost) => readonly MessageStreamEvent[],
+  serve?: (url: URL, request: IncomingMessage) => FakeAnswer | undefined
 ) {
   const events: MessageStreamEvent[] = [];
   const posts: FakePost[] = [];
@@ -86,6 +95,12 @@ export async function startFakeEve(
             .map((event) => `${JSON.stringify(event)}\n`)
             .join("")
         );
+        return;
+      }
+      const served = serve?.(url, request);
+      if (served) {
+        response.writeHead(served.status, served.headers);
+        response.end(served.body);
         return;
       }
       json(404, { error: "not found" });
