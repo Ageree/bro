@@ -968,15 +968,11 @@ export async function listOverdueBrowserRunReports(
 /** A notice that was taken but not sent is taken again after this. */
 const abandonedNoticeRetryMs = 10 * 60_000;
 
-/** Channels a notice can be sent to without a session: a web chat has none. */
-const noticeChannels = ["photon", "telegram"] as const;
-
 function abandonedNoticeDue(now: Date) {
   return and(
     isNotNull(browserRuns.report),
     isNull(browserRuns.reportDeliveredAt),
     isNull(browserRuns.reportNoticeSentAt),
-    inArray(browserRuns.conversationChannel, noticeChannels),
     gte(browserRuns.reportAttempts, maximumReportAttempts),
     or(
       isNull(browserRuns.reportAbandonedAt),
@@ -1018,9 +1014,11 @@ export async function takeAbandonedBrowserRunReports(
     .returning({
       conversationChannel: browserRuns.conversationChannel,
       conversationId: browserRuns.conversationId,
+      createdByUserId: browserRuns.createdByUserId,
       id: browserRuns.id,
       site: browserRuns.site,
       task: browserRuns.task,
+      workspaceId: browserRuns.workspaceId,
     });
 }
 
