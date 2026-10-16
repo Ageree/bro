@@ -747,7 +747,9 @@ def ocr_region(ctx, params, item):
         page = int(truth.get("page", 1))
         img = crop_rect(ctx, pdf, page, expand(truth["rect"], 2), dpi)
         got = ocr(ctx, img.convert("L"), psm=7)
-        value = cer(got, want)
+        # A specimen's «(образец)» tail is the bench's marker, not the person's data: a field without it is right too.
+        bare = re.sub(r"\s*\((?:образец|specimen)\)\s*$", "", want, flags=re.I)
+        value = min(cer(got, want), cer(got, bare))
         (problems if value > limit else seen).append(f"{name}: CER {value:.2f} «{norm_text(got)}»")
     if problems:
         return failed("; ".join(problems))
