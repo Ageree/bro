@@ -12,8 +12,10 @@ patronymic stands second; «оглы», «кызы» after the patronymic stay w
 any other string goes whole into the given name («Мама», «Саша с работы»). A
 card with an org and no name is a company card (FN is the org, X-ABShowAs:COMPANY).
 
-A tel is written as given, an extension after its comma included
-(+74950000001,123): bring numbers to +7… with `brokit ru phone` first. Types:
+A tel is brought to +7… by the rules of `brokit ru phone`, an extension after
+its comma (8-495-000-00-01 доб. 123 → +74950000001,123); one those rules cannot
+bring for sure («00-12-34» without a code) is written as given and named in
+`warnings`. Types:
 cell, work, home, main (written PREF, as Android does), fax; a Russian mobile
 (+79…) without a type is CELL. `address` is a string or {street, city, region,
 postcode, country, type: home|work}; `birthday` is YYYY-MM-DD or DD.MM.YYYY,
@@ -34,6 +36,7 @@ import json
 import re
 
 from brokit.ics import fold, text
+from brokit.ru.phone import phones
 from brokit.util import KitError, need_file, out_path, parser
 
 MAX_CONTACTS = 5000
@@ -64,6 +67,8 @@ PATRONYMIC = re.compile(r"(?:ич|вна|чна)$")
 PATRONYMIC_TAILS = ("оглы", "кызы", "улы", "уулу", "гызы")
 FAMILY_LIKE = re.compile(r"(?:ов|ев|ёв|ова|ева|ёва|ский|цкий|ская|цкая)$")
 RUSSIAN_MOBILE = re.compile(r"\+79\d{9}(?:,\d+)?")
+# A tel already in the form a phone dials: +, the digits, an extension after a comma.
+WRITTEN_TEL = re.compile(r"\+\d{6,15}(?:,\d{1,6})?")
 CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 
 
@@ -116,6 +121,11 @@ def phone_lines(contact, label, warnings):
             continue
         if not re.search(r"\d", tel):
             raise KitError("bad_spec", "%s: phone %r has no digits" % (label, tel), SPEC_HINT)
+        if not WRITTEN_TEL.fullmatch(tel):
+            # The task agent once passed «8-495-000-00-01 доб. 123» as it stood, and iPhone dialled it wrong.
+            rows = phones(tel)
+            if len(rows) == 1 and rows[0]["e164"]:
+                tel = rows[0]["tel"]
         key = re.sub(r"[^\d+,]", "", tel)
         if key in keys:
             warnings.append("%s: phone %s is given twice, written once" % (label, tel))

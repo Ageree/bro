@@ -152,6 +152,27 @@ beforeEach(() => {
 });
 
 describe("the task agent's look", () => {
+  it("takes a region of zeros for no region", async () => {
+    // GPT-6.1 Sol fills every optional field: «0,0,0,0» on its first look at every photo (16.10).
+    const tool = await lookTool();
+    const sandbox = sandboxWith(
+      lookOutput(picture),
+      new Map([[picture, jpeg]])
+    );
+
+    await tool.execute(
+      {
+        paths: ["attachments/0123456789abcdef/act.pdf"],
+        region: "0,0,0,0",
+      },
+      toolContext(sandbox)
+    );
+
+    expect(
+      JSON.parse(sandbox.run.mock.lastCall?.[0].env?.BROKIT_ARGS ?? "")
+    ).not.toContain("--region");
+  });
+
   it("is not there where the person's files do not reach the task agent", async () => {
     pilot.taskFilesOfCaller.mockReturnValue(false);
 

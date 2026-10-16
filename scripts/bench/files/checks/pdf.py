@@ -1182,35 +1182,54 @@ def pdf_pages_match_templates(ctx, params, item):
     return passed(f"{count} стр. на местах и прямо")
 
 
+def _receipt_scores(ctx, pdf, page, templates, side: int) -> dict:
+    """The page's best correlation with any receipt template at each rotation, keyed by degrees."""
+    pic = page_picture(ctx, pdf, page)
+    scores = {}
+    for rot in (0, 90, 180, 270):
+        view = rotated(pic, rot)
+        best = (-2.0, None)
+        for name, tpl in templates.items():
+            k = side / max(tpl.size)
+            size = (max(8, int(tpl.width * k)), max(8, int(tpl.height * k)))
+            c = corr_to_template(view, tpl, size=size)
+            if c > best[0]:
+                best = (c, name)
+        scores[rot] = best
+    return scores
+
+
 @check("pdf_pages_upright", "pdf")
 def pdf_pages_upright(ctx, params, item):
+    """Every receipt page upright. One page like no receipt at any turn, first or last (a summary table put in front),
+    is no receipt: named here and left to `pdf_page_count`, not failed a second and third time here and in the order.
+    More such pages, or one in the middle, are receipts too crooked or dim to know."""
     doc = ctx.truth_doc("chek_receipts.json")
     names = sorted({r["template"] for r in doc["receipts"] if r.get("template")})
-    templates = _templates(ctx, names)
+    templates = dict(zip(names, _templates(ctx, names)))
     side = int(params.get("long_side_px", 128))
     need, margin = float(params.get("min_corr", 0.2)), float(params.get("min_margin", 0.08))
     pdf = item.path
-    notes = []
+    notes, others = [], []
     for page in range(1, ctx.page_count(pdf) + 1):
-        pic = page_picture(ctx, pdf, page)
-        scores = {}
-        for rot in (0, 90, 180, 270):
-            view = rotated(pic, rot)
-            best = -2.0
-            for tpl in templates:
-                k = side / max(tpl.size)
-                size = (max(8, int(tpl.width * k)), max(8, int(tpl.height * k)))
-                best = max(best, corr_to_template(view, tpl, size=size))
-            scores[rot] = best
+        scores = {rot: c for rot, (c, _) in _receipt_scores(ctx, pdf, page, templates, side).items()}
+        if max(scores.values()) < need:
+            others.append(str(page))
+            continue
         other = max(scores[r] for r in (90, 180, 270))
         if scores[0] < need or scores[0] - other < margin:
             return failed(f"стр. {page}: при 0° {scores[0]:.2f}, при повороте до {other:.2f}")
         notes.append(f"{scores[0]:.2f}")
-    return passed("все страницы прямо (" + ", ".join(notes) + ")")
+    count = ctx.page_count(pdf)
+    if len(others) > 1 or (others and others[0] not in ("1", str(count))) or not notes:
+        return failed(f"не похожи на чек ни при каком повороте: стр. {', '.join(others)}")
+    tail = f"; не чек: стр. {', '.join(others)}" if others else ""
+    return passed("все чеки прямо (" + ", ".join(notes) + ")" + tail)
 
 
 @check("pdf_page_order", "pdf")
 def pdf_page_order(ctx, params, item):
+    """The receipts' order; pages like no receipt (`pdf_pages_upright`) are left out of it."""
     doc = ctx.truth_doc("chek_receipts.json")
     by_template = {}
     for r in doc["receipts"]:
@@ -1218,19 +1237,13 @@ def pdf_page_order(ctx, params, item):
             by_template.setdefault(r["template"], r["n"] if not r.get("duplicate_of") else r["duplicate_of"])
     names = sorted(by_template)
     templates = dict(zip(names, _templates(ctx, names)))
+    need = float(params.get("min_corr", 0.2))
     pdf = item.path
     got = []
     for page in range(1, ctx.page_count(pdf) + 1):
-        pic = page_picture(ctx, pdf, page)
-        best = (-2.0, None)
-        for name, tpl in templates.items():
-            for rot in (0, 90, 180, 270):
-                k = 128 / max(tpl.size)
-                size = (max(8, int(tpl.width * k)), max(8, int(tpl.height * k)))
-                c = corr_to_template(rotated(pic, rot), tpl, size=size)
-                if c > best[0]:
-                    best = (c, name)
-        got.append(by_template[best[1]])
+        best = max(_receipt_scores(ctx, pdf, page, templates, 128).values(), key=lambda x: x[0])
+        if best[0] >= need:
+            got.append(by_template[best[1]])
     want = list(params["expected_receipts"])
     if got != want:
         return failed(f"порядок чеков {got}, нужно {want}")

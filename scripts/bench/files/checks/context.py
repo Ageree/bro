@@ -419,10 +419,14 @@ class Context:
         return self._cache[key]
 
     def recalculated(self, path) -> pathlib.Path:
-        """An XLSX copy recalculated by LibreOffice (formula results cached in the file)."""
+        """An XLSX copy recalculated by LibreOffice (formula results cached in the file); a workbook without a single
+        formula is its own values. LibreOffice took longer than the check's whole budget over a summary with its
+        120 000 source rows on a sheet of their own (f-csv, 16.10), and there was nothing to recalculate."""
         key = ("recalc", str(path))
         if key not in self._cache:
-            self._cache[key] = self._soffice(pathlib.Path(path), "xlsx", "xlsx:Calc MS Excel 2007 XML")
+            path = pathlib.Path(path)
+            self._cache[key] = (self._soffice(path, "xlsx", "xlsx:Calc MS Excel 2007 XML")
+                                if _has_formulas(path) else path)
         return self._cache[key]
 
     def _soffice(self, src: pathlib.Path, ext: str, target: str | None = None) -> pathlib.Path:
@@ -438,6 +442,27 @@ class Context:
         if not out.exists():
             raise CheckError(f"LibreOffice не сконвертировал {src.name} в {ext}")
         return out
+
+
+def _has_formulas(path: pathlib.Path) -> bool:
+    """Whether any sheet of the workbook holds a formula (`<f>` element); a file that is not a readable XLSX counts
+    as having them, so LibreOffice opens it and says what is wrong."""
+    import zipfile
+
+    try:
+        with zipfile.ZipFile(path) as z:
+            for name in z.namelist():
+                if not re.fullmatch(r"xl/worksheets/[^/]+\.xml", name):
+                    continue
+                tail = b""
+                with z.open(name) as stream:
+                    while chunk := stream.read(1 << 20):
+                        if re.search(rb"<(?:\w+:)?f[\s>/]", tail + chunk):
+                            return True
+                        tail = chunk[-16:]
+    except (OSError, zipfile.BadZipFile):
+        return True
+    return False
 
 
 def _tool_version(name: str, path: str) -> str:

@@ -451,7 +451,9 @@ cases.append({
                    {"row_regex": "(?i)маркетплейс", "expected": B["marketplaces_net_after_refund"], "alt_expected": B["marketplaces_net_after_refund"] - 1299.0},
                    {"row_regex": "(?i)связь|подписк", "expected": B["by_my_category_net"]["Связь и подписки"]},
                    # issues: 16.10 the income row counted an incoming transfer from a person too (233 500): a fair reading.
-                   {"row_regex": "(?i)доход", "expected": B["by_my_category_net"]["Доходы"], "alt_expected": 233500.0}]),
+                   # The WB refund not netted against marketplaces (allowed above and in the total) lands in income: + 1 299.
+                   {"row_regex": "(?i)доход", "expected": B["by_my_category_net"]["Доходы"],
+                    "alt_expected": [233500.0, B["by_my_category_net"]["Доходы"] + 1299.0, 233500.0 + 1299.0]}]),
         chk("xlsx_find_value", "Итог расходов без переводов на вклад (варианты: с/без исходящих переводов людям 3 700, с/без неттинга возврата WB 1 299)",
             value=SPEND, alt_values=[round(SPEND - 1299.0, 2), round(SPEND + 3700.0, 2), round(SPEND + 3700.0 - 1299.0, 2)], tol=0.01, recalc=True, abs_compare=True,
             forbid_values=[round(SPEND + 50000.0, 2), round(SPEND + 53700.0, 2)],
@@ -1314,7 +1316,9 @@ cases.append({
     ],
     "expected_outputs": ["DOCX протокола", "XLSX сбора: 25 учеников × (1500 + 900) = 60 000 ₽ (формулами)"],
     "checks": [
-        chk("docx_text_contains", "Протокол: дата, кворум, председатель/секретарь, 3 вопроса, голосование", regex_all=["14\\.10\\.2026|14 октября 2026", "18\\s*(из|/)\\s*25", "Смирнова", "Ким", "(?i)за\\W+16", "(?i)против\\W+1", "(?i)воздерж\\w*\\W+1", "(?i)единогласно", "20\\.11|20 ноября", "1[\\s ]?500", "900"]),
+        chk("docx_text_contains", "Протокол: дата, кворум, председатель/секретарь, 3 вопроса, голосование", regex_all=["14\\.10\\.2026|14 октября 2026", "18\\s*(?:\\S+\\s+){0,2}(?:из|/)\\s*25", "Смирнова", "Ким", "(?i)за\\W+16",
+                     # issues: 16.10 the driver's own transcription read «Против Т1?»: an honest «неразборчиво» counts too.
+                     "(?i)против\\W+1|против[^\\n]{0,120}(?:неразборчив|не определ|не установ|неясн)", "(?i)воздерж\\w*\\W+1", "(?i)единогласно", "20\\.11|20 ноября", "1[\\s ]?500", "900"]),
         chk("xlsx_find_value", "Итого к сбору 60 000 (25 × 2 400), формулой", value=60000, tol=0.01, recalc=True, require_formula=True),
         chk("xlsx_find_value", "По ученику 2 400", value=2400, tol=0.01, recalc=True),
     ],
