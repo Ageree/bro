@@ -24,7 +24,6 @@ export const unperformedClaims = [
   "browser",
   "calendar",
   "declined",
-  "draft",
   "undone",
 ] as const;
 
@@ -45,14 +44,10 @@ function succeeded(output: ToolResultPart["output"]) {
 
 /**
  * Tools that answer every call and say in their result whether they changed
- * anything: a point named or forgotten, a draft deleted (`changed`), a place
- * reminder set or cancelled (`created`, `cancelled`).
+ * anything: a point named or forgotten (`changed`), a place reminder set or
+ * cancelled (`created`, `cancelled`).
  */
-const flaggedWriteTools = new Set([
-  "gmail-delete-draft",
-  "location_edit",
-  "place_reminder",
-]);
+const flaggedWriteTools = new Set(["location_edit", "place_reminder"]);
 
 const changeFlagsSchema = z.object({
   cancelled: z.boolean().optional(),
@@ -138,23 +133,13 @@ function wroteCalendar(part: ToolResultPart, appsCalls: Set<string>) {
  * resumed wrote «Я перенастроил вашу задачу на 8 октября, 09:20». A setting
  * Bro keeps outside memory — the form of address, the spend limit, Personal
  * Info — is remembered too («Запомнил: на «вы»»), and a reminder of an event
- * is set with the event. A draft is deleted by its own tool alone: Bro once
- * archived two drafts with `gmail-update` and wrote «убрал оба черновика»,
- * while both stayed in Drafts.
+ * is set with the event.
  */
-const acts = [
-  "draft",
-  "email",
-  "memory",
-  "message",
-  "order",
-  "schedule",
-] as const;
+const acts = ["email", "memory", "message", "order", "schedule"] as const;
 
 type Act = (typeof acts)[number];
 
 const actTools: Record<Act, readonly string[]> = {
-  draft: ["gmail-delete-draft"],
   email: ["gmail-draft", "gmail-send"],
   // A point the person named is remembered too: «Запомнил точку как
   // «парковка»» after `location_edit` went back as undone (prod, 15.10).
@@ -269,7 +254,6 @@ function actOutcomes(
   previousTurn: readonly ModelMessage[]
 ) {
   const outcomes: Record<Act, ReturnType<typeof noCalls>> = {
-    draft: noCalls(),
     email: noCalls(),
     memory: noCalls(),
     message: noCalls(),
@@ -731,80 +715,10 @@ const memoryAsked =
  * that did not go through, since «задача» is also a browser run's or
  * Notion's, and an order is the run's to report.
  */
-/**
- * Words that may stand between a verb and the draft it took away, so the
- * draft is the verb's object: «удалил оба старых черновика», «удалил все 3
- * черновика», «deleted the two drafts». A preposition («убрал из черновика
- * абзац») or another object («убрал пафос, вот черновик») between them is an
- * edit of a text.
- */
-const draftObjectWords = new Set([
-  "оба",
-  "обе",
-  "два",
-  "две",
-  "три",
-  "четыре",
-  "пять",
-  "все",
-  "эти",
-  "этот",
-  "эту",
-  "те",
-  "тот",
-  "ту",
-  "его",
-  "ее",
-  "их",
-  "мои",
-  "моих",
-  "свои",
-  "своих",
-  "твои",
-  "твоих",
-  "ваши",
-  "ваших",
-  "старый",
-  "старые",
-  "старых",
-  "лишний",
-  "лишние",
-  "лишних",
-  "ненужный",
-  "ненужные",
-  "ненужных",
-  "пустой",
-  "пустые",
-  "пустых",
-  "both",
-  "the",
-  "two",
-  "three",
-  "all",
-  "these",
-  "those",
-  "old",
-  "empty",
-  "my",
-  "your",
-  "his",
-  "her",
-  "their",
-]);
-
-function draftObjectWord(word: string) {
-  return draftObjectWords.has(word) || /^\d+$/u.test(word);
-}
-
 const actClaims: readonly {
   readonly act: Act;
   readonly asked?: RegExp;
   readonly noun?: RegExp;
-  /**
-   * The only words that may stand between the verb and its noun, which
-   * must then be the verb's object, not another word's («draft's»).
-   */
-  readonly object?: (word: string) => boolean;
   readonly verbs: readonly string[];
 }[] = [
   {
@@ -858,23 +772,6 @@ const actClaims: readonly {
     asked: /отправь|напиши|ответь|перешли|send|reply|forward|write/u,
     noun: /письм|email|e-mail/u,
     verbs: ["отправил", "ответил", "переслал", "sent", "replied", "forwarded"],
-  },
-  {
-    // The draft itself is what went: «убрал оба черновика». «Убрал пафос,
-    // вот черновик» and «убрал из черновика абзац» edit a text.
-    act: "draft",
-    asked: /удали|убери|убрать|сотри|стереть|выкин|почисти|delete|remove/u,
-    noun: /черновик|draft/u,
-    object: draftObjectWord,
-    verbs: [
-      "удалил",
-      "убрал",
-      "стер",
-      "выкинул",
-      "deleted",
-      "removed",
-      "erased",
-    ],
   },
   {
     act: "message",
@@ -964,14 +861,12 @@ const leadWords = new Set([
 
 /**
  * Whether a clause opens with one of `verbs` as Bro's own act, with a `noun`
- * within three words after it when the action has one, and only `object`
- * words between them when the action names those.
+ * within three words after it when the action has one.
  */
 function saysAct(
   clause: string,
   verbs: readonly string[],
-  noun: RegExp | undefined,
-  object?: (word: string) => boolean
+  noun: RegExp | undefined
 ) {
   const words = wordsOf(clause);
   const start = words.findIndex((word) => !leadWords.has(word));
@@ -984,15 +879,7 @@ function saysAct(
     const end = start + phrase.length - 1;
     return (
       noun === undefined ||
-      words.some(
-        (word, at) =>
-          at > end &&
-          at - end <= 3 &&
-          noun.test(word) &&
-          (object === undefined ||
-            (words[at + 1] !== "s" &&
-              words.slice(end + 1, at).every((between) => object(between))))
-      )
+      words.some((word, at) => at > end && at - end <= 3 && noun.test(word))
     );
   });
 }
@@ -1012,10 +899,8 @@ function saysAct(
  */
 function actClaim(text: string, actions: ReturnType<typeof turnActions>) {
   const clauses = clausesOf(text);
-  for (const { act, asked, noun, object, verbs } of actClaims) {
-    if (!clauses.some((clause) => saysAct(clause, verbs, noun, object))) {
-      continue;
-    }
+  for (const { act, asked, noun, verbs } of actClaims) {
+    if (!clauses.some((clause) => saysAct(clause, verbs, noun))) continue;
     const outcome = actions.acts[act];
     if (outcome.done) continue;
     if (act === "order") {
@@ -1037,9 +922,7 @@ function actClaim(text: string, actions: ReturnType<typeof turnActions>) {
       !actions.background &&
       !outcome.earlierCall
     ) {
-      // A deleted draft cannot come back: its own notice never asks for
-      // the deletion, since an edit of a draft's text reads the same.
-      return act === "draft" ? "draft" : "undone";
+      return "undone";
     }
   }
   return undefined;

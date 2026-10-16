@@ -1594,83 +1594,6 @@ describe("sendRefusal on claims of what a declined or failed call did not do", (
     ).toEqual({ rewrite: "declined" });
   });
 
-  it("returns «убрал оба черновика» after archiving, which deletes no draft", () => {
-    const archived = [
-      userMessage("удали оба черновика Ивану"),
-      ...toolStep("gmail-update", { update: "archive", updatedCount: 2 }),
-    ];
-    const claim = "Убрал оба черновика Ивану.";
-
-    expect(refusal(archived, claim)).toEqual({ rewrite: "draft" });
-    expect(
-      refusal(archived, "Удалил 2 черновика Ивану и два твоих старых.")
-    ).toEqual({ rewrite: "draft" });
-    // An edit of a draft's text reads the same: the note never asks to
-    // delete one.
-    expect(rewriteSendNotice("draft")).toContain(
-      "Do not delete a draft because of this note"
-    );
-    expect(
-      refusal(
-        [
-          ...archived,
-          ...toolStep("gmail-delete-draft", {
-            changed: false,
-            deleted: [],
-            notFound: ["m-1", "m-2"],
-          }),
-        ],
-        claim
-      )
-    ).toEqual({ rewrite: "declined" });
-    expect(
-      refusal(
-        [
-          ...archived,
-          ...toolStep("gmail-delete-draft", {
-            changed: true,
-            deleted: ["m-1", "m-2"],
-            notFound: [],
-          }),
-        ],
-        claim
-      )
-    ).toBeUndefined();
-  });
-
-  it("delivers an edit of a text that names a draft", () => {
-    expect(
-      refusal(
-        [userMessage("перепиши пост короче, убери пафос")],
-        "Убрал пафос, вот черновик: «Запустили бету, пишите отзывы»."
-      )
-    ).toBeUndefined();
-    expect(
-      refusal(
-        [
-          userMessage("убери из черновика письма Ивану последний абзац"),
-          ...toolStep("gmail-draft", { draftId: "r-2", saved: true }),
-        ],
-        "Убрал из черновика последний абзац, новый черновик ждёт в Gmail."
-      )
-    ).toBeUndefined();
-    expect(
-      refusal(
-        [
-          userMessage("почисти черновик письма Ивану от канцелярита"),
-          ...toolStep("gmail-draft", { draftId: "r-3", saved: true }),
-        ],
-        "Почистил черновик от канцелярита, вот он: «Иван, привет!»"
-      )
-    ).toBeUndefined();
-    expect(
-      refusal(
-        [userMessage("remove the last paragraph from my draft")],
-        "Removed the draft's last paragraph."
-      )
-    ).toBeUndefined();
-  });
-
   it.each([
     [
       "an email",
@@ -2943,8 +2866,6 @@ describe("rewriteSendNotice", () => {
       // Only in a browser report's turn, which keeps the calendar tool.
       "calendar-later": false,
       declined: false,
-      // A deleted draft cannot come back: the note asks for no tool.
-      draft: false,
       found: true,
       report: false,
       restated: false,
