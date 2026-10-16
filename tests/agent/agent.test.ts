@@ -516,6 +516,83 @@ describe("interactive delivery enforcement", () => {
     );
   });
 
+  describe("in the pilot of routines set up whole", () => {
+    // «Заменить её?» names none of the held actions' words.
+    const askedAboutRepeat = [
+      humanMessage("каждое утро присылай сводку"),
+      {
+        content: [
+          {
+            output: {
+              type: "error-text" as const,
+              value:
+                "Nothing was created: the person already has an active schedule like this one: [].",
+            },
+            toolCallId: "call-1",
+            toolName: "schedules-create",
+            type: "tool-result" as const,
+          },
+        ],
+        role: "tool" as const,
+      },
+      {
+        content: [
+          {
+            input: {
+              kind: "message",
+              text: "Такая сводка уже приходит в 8:00. Заменить её?",
+            },
+            toolCallId: "call-2",
+            toolName: "send_message",
+            type: "tool-call" as const,
+          },
+        ],
+        role: "assistant" as const,
+      },
+      {
+        content: [
+          {
+            output: { type: "text" as const, value: "submitted" },
+            toolCallId: "call-2",
+            toolName: "send_message",
+            type: "tool-result" as const,
+          },
+        ],
+        role: "tool" as const,
+      },
+    ];
+
+    afterEach(() => {
+      vi.stubEnv("ROUTINE_SETUP_WORKSPACES", "");
+      vi.resetModules();
+    });
+
+    it("holds a new schedule until the person answers about one like theirs", async () => {
+      await agent.model.events["step.started"]?.(
+        {},
+        interactiveContext(askedAboutRepeat)
+      );
+      expect(services.modelSelection.mock.lastCall?.[1]?.withheldTools).toEqual(
+        ["task"]
+      );
+
+      vi.stubEnv("ROUTINE_SETUP_WORKSPACES", "workspace-1");
+      vi.resetModules();
+      const pilot = (await import("@agent/agent")).default;
+      await pilot.model.events["step.started"]?.(
+        {},
+        interactiveContext(askedAboutRepeat)
+      );
+      expect(services.modelSelection.mock.lastCall?.[1]?.withheldTools).toEqual(
+        ["schedules-create", "task"]
+      );
+      // A second schedule the same message asked for is not said to be made.
+      expect(lastReplyNote()).toContain(
+        "these tools are not available: schedules-create."
+      );
+    });
+  });
+
   it("holds what a question asked about until the person answers", async () => {
     await agent.model.events["step.started"]?.(
       {},

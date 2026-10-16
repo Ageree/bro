@@ -1039,6 +1039,19 @@ export const env = createEnv({
         "BACKGROUND_ACTIONS_WORKSPACES takes workspace ids or *, not emails"
       )
       .optional(),
+    // The pilot of routines set up whole (docs/roadmap.md, item 13,
+    // `agent/lib/schedules/routine.ts`): workspace ids, or `*` for every
+    // workspace, whose new recurring schedule that gathers something (a
+    // summary, a check) runs once right away as a trial, and whose
+    // `schedules-create` asks the person before adding one like an active
+    // schedule of theirs. Unset, nobody: a trial is only offered, and a
+    // second summary is made beside the first.
+    ROUTINE_SETUP_WORKSPACES: workspaceListSchema
+      .refine(
+        (entries) => entries.every((entry) => !entry.includes("@")),
+        "ROUTINE_SETUP_WORKSPACES takes workspace ids or *, not emails"
+      )
+      .optional(),
     // The pilot of one-off schedules on the clock of an event elsewhere
     // (docs/roadmap.md, item 18): workspace ids, or `*` for every workspace,
     // whose `schedules-create` takes a flight's departure on its airport's

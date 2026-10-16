@@ -1944,6 +1944,24 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   схему выбирает функция с широким типом результата (`createInputSchemaOf`).
 - `schedules-answer` принимает лишь run id, чей вопрос доставлен в этот чат
   после прошлого сообщения человека (`answerableScheduledQuestions`).
+- Пилот `ROUTINE_SETUP_WORKSPACES` (id или `*`, 15.10, п. 13): `schedules-create`
+  берёт `trialNow`, `keepAlongside` и `replaces`. Проба сразу — лишь у правила дней
+  или интервала с `trialNow`; месячному и годовому она только предлагается, у
+  `delegate` её нет (сделала бы действие сейчас), при `missingInputs` — после, при
+  первом запуске ближе часа — нет. Повтор активного (`alike`) — время ±1 ч по минутам
+  недели **и** половина основ слов общая (`agent/lib/schedules/routine.ts`); у сводки
+  (`trialNow`) есть и `nearby` — то же время, другие слова, сравнивает модель: слова
+  не переходят языки (EN D7). Расписания этого же хода не в счёт (`turnStartedAt`).
+  Отказ «Nothing was created», пока id нет в `keepAlongside`/`replaces`. `replaces`
+  удаляет лишь `alike`, названное отказом и вопросом в прошлом ходе, когда ход
+  открыло сообщение человека (`askedToReplace` на `turn.started`): id из
+  `schedules-list` даёт снова отказ, `nearby` и прочие id остаются, и ответ говорит,
+  что они идут. Удаляется после создания нового, а не правится: правка оставила бы
+  `delegation`; в пилоте `schedules-update` задачу такого не меняет, только дописывает
+  после её слов. После отказа и вопроса — и при `turnAwaitsAnswer` — `schedules-create`
+  снят с шага до сообщения человека (`routineAnswerOwed`, `heldRoutine`,
+  `routineHeldNote`). Вне пилота инструмент байт в байт прежний (`execute` —
+  идентификатор, пилот — инлайн-стрелка с замыканием).
 - `eve dev` не запускает расписания по cron: `POST /eve/v1/dev/schedules/<имя>`.
   Через `next dev` этому POST нужна локальная сессионная cookie: без неё
   middleware ведёт на `/sign-in`, а клиент с авто-редиректом видит HTML с 200

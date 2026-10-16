@@ -46,6 +46,12 @@ export function turnTools(step: {
   readonly cardsHeld: boolean;
   /** The turn's question holds the actions it asked about. */
   readonly heldForAnswer: boolean;
+  /**
+   * The pilot of routines set up whole: `schedules-create`, whose `replaces`
+   * deletes, waits for the person's answer about a schedule like theirs, or
+   * to the turn's question (`routineAnswerOwed`).
+   */
+  readonly heldRoutine?: boolean;
   readonly kind: TurnKind;
   /** A browser report's turn whose send was dropped as past its answer. */
   readonly reportPastAnswer: boolean;
@@ -64,7 +70,10 @@ export function turnTools(step: {
     step.kind === "scheduled-report" ||
     step.kind === "phone-report";
   const askQuestion = reportTurn || step.askedQuestion ? ["ask_question"] : [];
-  const held = step.heldForAnswer ? actionsHeldForAnswer : [];
+  const held = [
+    ...(step.heldForAnswer ? actionsHeldForAnswer : []),
+    ...(step.heldRoutine === true ? ["schedules-create"] : []),
+  ];
   const task = step.taskAgent ? [] : [taskAgentTool];
   const offeredTools =
     step.kind === "phone-report"
