@@ -7,7 +7,9 @@ import { env } from "@shared/environment";
  * (SCHEDULE_EVENT_ZONE_WORKSPACES, docs/roadmap.md item 18): a step before an
  * event in another city, above all online check-in before a flight, is set
  * as the event itself on its own clock and how long before it to run
- * (`minutesBefore`), and code counts the moment (`resolveScheduleTiming`).
+ * (`minutesBefore`), and code subtracts that on the event's clock
+ * (`resolveScheduleTiming`). How long before a flight check-in opens is the
+ * airline's, which code does not know: the model says it.
  * Ids only, or `*`, so the verdict needs no lookup.
  */
 export function eventZonePilot(workspaceId: string | undefined) {
@@ -43,12 +45,12 @@ export const eventZoneRewrites = [
   // its line within its budget: the skill comes with `schedules-create`.
   [
     "Заведи `schedules-create` на момент, когда шаг станет возможен (`once`; ежемесячный — `calendar`)",
-    "Заведи `schedules-create` на момент, когда шаг станет возможен (`once`; ежемесячный — `calendar`; регистрация на рейс — `once` с `at` самого вылета по часам аэропорта, его `timezone` и `minutesBefore: 1440`, а не момент открытия: его считает код)",
+    "Заведи `schedules-create` на момент, когда шаг станет возможен (`once`; ежемесячный — `calendar`; регистрация на рейс — `once` с `at` самого вылета по часам аэропорта, его `timezone` и `minutesBefore` — упреждением авиакомпании: вылет минус момент открытия регистрации из `Next` отчёта или по правилам авиакомпании, 1440 — только если момент неизвестен)",
   ],
   // role/interactive.md, the schedules skill.
   [
     "другую — только если он её назвал («по Нью-Йорку»).",
-    "другую — только если он её назвал («по Нью-Йорку») или для шага перед событием в другом городе: регистрация на рейс — `at` самого вылета по часам аэропорта, `timezone` этого аэропорта и `minutesBefore: 1440`, момент считает код.",
+    "другую — только если он её назвал («по Нью-Йорку») или для шага перед событием в другом городе: регистрация на рейс — `at` самого вылета по часам аэропорта, `timezone` этого аэропорта и `minutesBefore` — упреждение авиакомпании (вылет минус момент открытия регистрации; 1440 — только если момент неизвестен).",
   ],
 ] as const;
 
@@ -65,4 +67,4 @@ export function withEventZoneRules(text: string) {
  * (`laterStepInstruction`), which sets the step at the moment it opens.
  */
 export const laterStepEventZoneNote =
-  "For check-in before a flight, schedules-create takes the departure itself, not the moment check-in opens: kind once with at the departure on its airport's clock, timezone that airport's IANA zone and minutesBefore 1440, and code counts when it opens.";
+  "For check-in before a flight, schedules-create takes the departure itself, not the moment check-in opens: kind once with at the departure on its airport's clock, timezone that airport's IANA zone and minutesBefore the airline's lead, the departure minus the moment check-in opens from Next or the airline's rules; 1440 only when that moment is unknown.";

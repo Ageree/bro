@@ -2110,8 +2110,9 @@ describe("settling a browser run", () => {
     }
 
     const prompt = z.string().parse(send.mock.calls[0]?.[0]);
+    // The lead is the airline's, read from Next: code does not know it.
     expect(prompt).toContain(
-      "schedules-create takes the departure itself, not the moment check-in opens"
+      "minutesBefore the airline's lead, the departure minus the moment check-in opens"
     );
     expect(stepsAskedBy(prompt).map(({ tool }) => tool)).toContain(
       "schedules-create"

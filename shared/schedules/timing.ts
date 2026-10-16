@@ -226,13 +226,13 @@ function eventOnceFields(words: {
 const eventOnceWords = {
   full: {
     minutesBefore:
-      "Only for a run a set time before an event, above all online check-in that opens 24 h before a flight: at is then the event's own time on the clock where it happens (the departure as the booking shows it), timezone the IANA zone of that place (the departure airport's), and the run happens this many minutes earlier, 1440 for 24 h. Code counts the moment: never subtract it yourself or move it to the person's clock. Leave it out otherwise.",
+      "Only for a run a set time before an event, above all online check-in before a flight: at is then the event's own time on the clock where it happens (the departure as the booking shows it), timezone the IANA zone of that place (the departure airport's), and the run happens this many minutes earlier. For check-in it is the airline's lead: the departure minus the moment check-in opens, from a report's Next or the airline's rules; 1440 only when that moment is unknown. Never subtract it from at yourself or move at to the person's clock. Leave it out otherwise.",
     timezone:
       "IANA timezone, e.g. Europe/Moscow. Leave it out: a new schedule takes the person's own zone from their profile, and a changed one keeps its own. Name one only when they asked for another («по Нью-Йорку»), or with minutesBefore for an event elsewhere: the zone of the place where it happens, for a flight its departure airport's (JFK America/New_York, ORD America/Chicago), never the person's.",
   },
   short: {
     minutesBefore:
-      "Only for a run before an event (check-in 24 h before a flight): at is the event's time where it happens, timezone its zone, and the run comes this many minutes earlier (1440). Never subtract it yourself.",
+      "Only for a run before an event (check-in before a flight): at is the event's time where it happens, timezone its zone, and the run comes this many minutes earlier (for check-in the airline's lead; 1440 only if unknown). Never subtract it yourself.",
     timezone:
       "IANA timezone. Leave it out (the person's zone, or the schedule's own); only for another zone they named, or with minutesBefore the zone where the event happens (a flight's departure airport).",
   },

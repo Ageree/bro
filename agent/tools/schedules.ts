@@ -291,12 +291,13 @@ const shortDelegatingCreateScheduleDescription =
 /**
  * What the pilot of event zones reads in the descriptions of
  * `schedules-create`, full and short, beside its `minutesBefore`: a step
- * before an event elsewhere is set on that place's clock, and code counts it.
+ * before an event elsewhere is set on that place's clock, and code subtracts
+ * the lead the model names.
  */
 const eventZoneRewrites = [
   [
     "counted from their current local time.",
-    "counted from their current local time. A run a set time before an event elsewhere — online check-in that opens 24 h before a flight — is kind once with at the event's own time on the clock where it happens (the departure as the booking shows it), timezone that place's IANA zone (the departure airport's, not the person's) and minutesBefore (1440 for 24 h): code counts the moment, never you.",
+    "counted from their current local time. A run a set time before an event elsewhere — online check-in before a flight — is kind once with at the event's own time on the clock where it happens (the departure as the booking shows it), timezone that place's IANA zone (the departure airport's, not the person's) and minutesBefore how long before it to run: for check-in the airline's lead, the departure minus the moment check-in opens (from a report's Next or the airline's rules), 1440 only when that moment is unknown. Never subtract it from at yourself.",
   ],
   [
     "Leave timezone out: the person's own zone from their profile is used.",
@@ -304,7 +305,7 @@ const eventZoneRewrites = [
   ],
   [
     "«Напомни завтра в 10» is kind once with at on their wall clock;",
-    "«Напомни завтра в 10» is kind once with at on their wall clock; check-in 24 h before a flight is once with at the departure on its airport's clock, timezone that airport's and minutesBefore 1440;",
+    "«Напомни завтра в 10» is kind once with at on their wall clock; check-in before a flight is once with at the departure on its airport's clock, timezone that airport's and minutesBefore the airline's lead (1440 only when unknown);",
   ],
   // schedules-update, full and short.
   [
