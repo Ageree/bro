@@ -173,6 +173,21 @@ describe("the kit router", () => {
     );
   });
 
+  it("adds the blocks a job plainly names when Jev rules them out", async () => {
+    // Live 16.10: a travel expense report of receipt photos got `money` 0.06 and `scans` 0.04.
+    jev.askRouterQuestions.mockResolvedValue(answer({ office: 0.98 }));
+
+    await hearKitJob(
+      turnOf([
+        fromBro(
+          "Сделай авансовый отчёт по командировке и собери все чеки в один PDF.\n/workspace/attachments/a/chek_1.jpg — кассовый чек такси."
+        ),
+      ])
+    );
+
+    expect(kitBlocksOfSession()).toEqual(["money", "office", "scans"]);
+  });
+
   it("sends Jev no number of the job: a passport, a СНИЛС or a phone", async () => {
     jev.askRouterQuestions.mockResolvedValue(answer({ forms: 0.99 }));
 
@@ -216,7 +231,8 @@ describe("the kit router", () => {
     await hearKitJob(turnOf([fromBro(job)]));
 
     expect(jev.askRouterQuestions).toHaveBeenCalledTimes(1);
-    expect(kitBlocksOfSession()).toEqual(["forms"]);
+    // The job names its .docx: `office` comes in whatever Jev says.
+    expect(kitBlocksOfSession()).toEqual(["forms", "office"]);
   });
 
   it("keeps every block for a session that ran turns before the pilot reached it", async () => {
