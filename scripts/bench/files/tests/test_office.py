@@ -174,6 +174,11 @@ class RenderNoOverflowTest(OfficeTest):
         self.assertEqual(outcome.status, "fail")
         self.assertIn("налезают", outcome.detail)
 
+    def test_bullets_dashes_and_signs_are_no_words(self):
+        deck = pptx_bytes([("• слово — % ₽ " * 50, 1, 1, 8, 5)])
+        outcome = self.run_check(self.ITEM, deck, "deck.pptx")
+        self.assertNotIn("больше 90 слов", outcome.detail)
+
     def test_every_slide_over_the_word_limit_is_named(self):
         deck = pptx_bytes([("слово " * 100, 1, 1, 8, 5)], [("Итоги", 1, 1, 8, 1)], [("слово " * 95, 1, 1, 8, 5)])
         outcome = self.run_check(self.ITEM, deck, "deck.pptx")

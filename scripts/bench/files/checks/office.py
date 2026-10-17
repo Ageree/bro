@@ -1059,7 +1059,9 @@ def render_no_overflow(ctx, params, item):
     max_words = int(params.get("max_words", 90))
     wordy = []
     for n, slide in enumerate(prs.slides, start=1):
-        words = len(_slide_text(slide).split())
+        # Words as the kit's own check counts them (brokit look.word_count): runs between spaces with a letter or a
+        # digit, so «•», «—», «%», «₽» are not words (17.10: 74 words of a slide counted 94).
+        words = sum(1 for token in _slide_text(slide).split() if any(ch.isalnum() for ch in token))
         if words > max_words:
             wordy.append(f"слайд {n} — {words}")
         for s in _shapes(slide.shapes):
