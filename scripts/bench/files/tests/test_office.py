@@ -158,6 +158,32 @@ class SplitOperationTest(OfficeTest):
         self.assertEqual(outcome.status, "fail")
 
 
+class TableValueTest(OfficeTest):
+    """f-voice-meeting-protocol: the sums may be a table of the protocol in Word, not a sheet of their own."""
+
+    ITEM = {"kind": "table_value", "params": {"value": 60000, "tol": 0.01, "require_formula": True}}
+
+    @staticmethod
+    def protocol(total: str) -> bytes:
+        import docx
+
+        document = docx.Document()
+        table = document.add_table(rows=2, cols=2)
+        table.cell(0, 0).text, table.cell(0, 1).text = "Ученик", "Сумма"
+        table.cell(1, 0).text, table.cell(1, 1).text = "ИТОГО", total
+        out = io.BytesIO()
+        document.save(out)
+        return out.getvalue()
+
+    def test_the_total_in_a_table_of_the_protocol_passes(self):
+        outcome = self.run_check(self.ITEM, self.protocol("60000"), "protokol.docx")
+        self.assertEqual(outcome.status, "pass", outcome.detail)
+
+    def test_another_total_fails(self):
+        outcome = self.run_check(self.ITEM, self.protocol("57600"), "protokol.docx")
+        self.assertEqual(outcome.status, "fail")
+
+
 class RenderNoOverflowTest(OfficeTest):
     ITEM = {"kind": "render_no_overflow", "params": {"max_words": 90, "max_word_overlap": 0.2}}
 

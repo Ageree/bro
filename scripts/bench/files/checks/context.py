@@ -382,12 +382,16 @@ class Context:
             pages.append(words)
         return pages
 
-    def text(self, path, page: int | None = None, *, layout: bool = False) -> str:
-        key = ("text", str(path), page, layout)
+    def text(self, path, page: int | None = None, *, layout: bool = False, raw: bool = False) -> str:
+        """pdftotext of the file or a page; `raw` in the order the text is drawn, which keeps a table cell's wrapped
+        lines together where the reading order interleaves them with the next column."""
+        key = ("text", str(path), page, layout, raw)
         if key not in self._cache:
             args = ["-enc", "UTF-8"]
             if layout:
                 args.append("-layout")
+            if raw:
+                args.append("-raw")
             if page is not None:
                 args += ["-f", str(page), "-l", str(page)]
             self._cache[key] = self.run_tool("pdftotext", [*args, str(path), "-"]).decode("utf-8", "replace")

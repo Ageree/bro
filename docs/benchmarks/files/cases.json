@@ -3908,8 +3908,8 @@
         }
       },
       {
-        "kind": "xlsx_find_value",
-        "description": "Итого к сбору 60 000 (25 × 2 400), формулой",
+        "kind": "table_value",
+        "description": "Итого к сбору 60 000 (25 × 2 400): в таблице Excel формулой или в таблице протокола",
         "params": {
           "value": 60000,
           "tol": 0.01,
@@ -3918,7 +3918,7 @@
         }
       },
       {
-        "kind": "xlsx_find_value",
+        "kind": "table_value",
         "description": "По ученику 2 400",
         "params": {
           "value": 2400,

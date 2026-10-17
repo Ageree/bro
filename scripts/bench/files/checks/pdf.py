@@ -326,11 +326,13 @@ def pdf_text_contains(ctx, params, item):
     pages = select_pages(ctx, pdf, params)
     if not pages:
         return failed("нет подходящих страниц" + (f" ({params['page_text_regex']})" if params.get("page_text_regex") else ""))
-    text = " ".join(norm_text(ctx.text(pdf, p)) for p in pages)
     ci = bool(params.get("case_insensitive"))
-    missing = [s for s in params.get("all_of", []) if not _contains(text, s, ci)]
-    missing += [p for p in params.get("regex_all", []) if not re.search(p, text, re.I if ci else 0)]
-    if params.get("any_of") and not any(_contains(text, s, ci) for s in params["any_of"]):
+    # Each string in the reading order or in the drawn order: a value wrapped inside a table cell (17.10: «ПАО «Банк» /
+    # «Образец»» beside the next column) is whole only in the second.
+    texts = [" ".join(norm_text(ctx.text(pdf, p, raw=raw)) for p in pages) for raw in (False, True)]
+    missing = [s for s in params.get("all_of", []) if not any(_contains(t, s, ci) for t in texts)]
+    missing += [p for p in params.get("regex_all", []) if not any(re.search(p, t, re.I if ci else 0) for t in texts)]
+    if params.get("any_of") and not any(_contains(t, s, ci) for t in texts for s in params["any_of"]):
         missing.append("одно из " + ", ".join(params["any_of"]))
     if missing:
         return failed("нет: " + "; ".join(missing[:6]))

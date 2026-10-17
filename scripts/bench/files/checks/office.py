@@ -161,6 +161,29 @@ def xlsx_find_value(ctx, params, item):
     return passed("; ".join(found))
 
 
+@check("table_value", "any")
+def table_value(ctx, params, item):
+    """The number in a sheet (as xlsx_find_value, its formula asked of a sheet only) or in a table of a Word file:
+    «табличку» beside a protocol in Word may be a table in it (17.10: 25 × 2 400 = 60 000 in the .docx)."""
+    from .select import group_of
+
+    group = group_of(item)
+    if group == "xlsx":
+        return xlsx_find_value(ctx, params, item)
+    if group != "docx":
+        return failed("не таблица")
+    import docx
+
+    tol = float(params.get("tol", 0.01))
+    for t, table in enumerate(docx.Document(str(item.path)).tables, start=1):
+        for row in table.rows:
+            for cell in row.cells:
+                n = _number(cell.text.strip())
+                if n is not None and abs(n - float(params["value"])) <= tol:
+                    return passed(f"{params['value']} в таблице {t} документа")
+    return failed(f"нет числа {params['value']} в таблицах документа")
+
+
 def _header_columns(rows, pattern, max_header_rows: int = 30) -> list:
     out = []
     for r, row in enumerate(rows[:max_header_rows]):
