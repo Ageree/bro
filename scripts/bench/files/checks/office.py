@@ -161,6 +161,29 @@ def xlsx_find_value(ctx, params, item):
     return passed("; ".join(found))
 
 
+@check("table_value", "any")
+def table_value(ctx, params, item):
+    """The number in a sheet (as xlsx_find_value, its formula asked of a sheet only) or in a table of a Word file:
+    «табличку» beside a protocol in Word may be a table in it (17.10: 25 × 2 400 = 60 000 in the .docx)."""
+    from .select import group_of
+
+    group = group_of(item)
+    if group == "xlsx":
+        return xlsx_find_value(ctx, params, item)
+    if group != "docx":
+        return failed("не таблица")
+    import docx
+
+    tol = float(params.get("tol", 0.01))
+    for t, table in enumerate(docx.Document(str(item.path)).tables, start=1):
+        for row in table.rows:
+            for cell in row.cells:
+                n = _number(cell.text.strip())
+                if n is not None and abs(n - float(params["value"])) <= tol:
+                    return passed(f"{params['value']} в таблице {t} документа")
+    return failed(f"нет числа {params['value']} в таблицах документа")
+
+
 def _header_columns(rows, pattern, max_header_rows: int = 30) -> list:
     out = []
     for r, row in enumerate(rows[:max_header_rows]):
@@ -443,13 +466,22 @@ def xlsx_chart(ctx, params, item):
 
 @check("xlsx_row_lookup", "xlsx")
 def xlsx_row_lookup(ctx, params, item):
-    for name, rows in grids(ctx, item.path):
+    """The row of a cell matching find_regex (with a sum beside it). `or_row_all_of`: a row where each regex matches a
+    cell of its own passes too — the operation found by what it is when its marker text was left out."""
+    sheets = grids(ctx, item.path)
+    for name, rows in sheets:
         for r, c, v in _cells(rows):
             if isinstance(v, str) and re.search(params["find_regex"], v):
                 if not params.get("same_row_numeric") or any(_number(x) not in (None, 0.0) and not _is_date(x)
                                                               for i, x in enumerate(rows[r]) if i != c):
                     return passed(f"{name}!R{r + 1}: «{_norm(v)[:40]}»")
                 return failed(f"{name}!R{r + 1}: «{_norm(v)[:40]}» без суммы в строке")
+    wanted = params.get("or_row_all_of") or []
+    for name, rows in sheets if wanted else []:
+        for r, row in enumerate(rows):
+            texts = [_cell_text(x) for x in row]
+            if all(any(re.search(rx, t) for t in texts) for rx in wanted):
+                return passed(f"{name}!R{r + 1}: строка без маркера, но с {', '.join(wanted)}")
     return failed(f"«{params['find_regex']}» нет")
 
 
@@ -1050,7 +1082,9 @@ def render_no_overflow(ctx, params, item):
     max_words = int(params.get("max_words", 90))
     wordy = []
     for n, slide in enumerate(prs.slides, start=1):
-        words = len(_slide_text(slide).split())
+        # Words as the kit's own check counts them (brokit look.word_count): runs between spaces with a letter or a
+        # digit, so «•», «—», «%», «₽» are not words (17.10: 74 words of a slide counted 94).
+        words = sum(1 for token in _slide_text(slide).split() if any(ch.isalnum() for ch in token))
         if words > max_words:
             wordy.append(f"слайд {n} — {words}")
         for s in _shapes(slide.shapes):

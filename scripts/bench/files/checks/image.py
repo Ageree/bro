@@ -221,14 +221,27 @@ def image_aspect(ctx, params, item):
 
 @check("image_dpi", "image", quantifier="all")
 def image_dpi(ctx, params, item):
+    """DPI `dpi` in the metadata, or pixels of 35×45 / 10×15 at it. An `alt_dpi` passes only when the metadata and
+    the pixels agree on it, so the print still comes out at the size."""
     img, dpi = open_image(item)
     want = float(params.get("dpi", 300))
     if dpi and abs(float(dpi[0]) - want) <= 1:
         return passed(f"DPI {dpi[0]:.0f}")
-    for mm in ((35, 45), (100, 150), (45, 35), (150, 100)):
-        px = (mm[0] / 25.4 * want, mm[1] / 25.4 * want)
-        if abs(img.width - px[0]) <= 0.02 * px[0] and abs(img.height - px[1]) <= 0.02 * px[1]:
-            return passed(f"{img.width}×{img.height} = {mm[0]}×{mm[1]} мм при {want:.0f} dpi")
+
+    def sized(at):
+        for mm in ((35, 45), (100, 150), (45, 35), (150, 100)):
+            px = (mm[0] / 25.4 * at, mm[1] / 25.4 * at)
+            if abs(img.width - px[0]) <= 0.02 * px[0] and abs(img.height - px[1]) <= 0.02 * px[1]:
+                return mm
+        return None
+
+    mm = sized(want)
+    if mm:
+        return passed(f"{img.width}×{img.height} = {mm[0]}×{mm[1]} мм при {want:.0f} dpi")
+    for alt in params.get("alt_dpi", []):
+        mm = sized(float(alt))
+        if dpi and abs(float(dpi[0]) - float(alt)) <= 1 and mm:
+            return passed(f"DPI {alt}: {img.width}×{img.height} = {mm[0]}×{mm[1]} мм")
     return failed(f"DPI {dpi}, {img.width}×{img.height} px")
 
 

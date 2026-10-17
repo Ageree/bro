@@ -326,11 +326,13 @@ def pdf_text_contains(ctx, params, item):
     pages = select_pages(ctx, pdf, params)
     if not pages:
         return failed("нет подходящих страниц" + (f" ({params['page_text_regex']})" if params.get("page_text_regex") else ""))
-    text = " ".join(norm_text(ctx.text(pdf, p)) for p in pages)
     ci = bool(params.get("case_insensitive"))
-    missing = [s for s in params.get("all_of", []) if not _contains(text, s, ci)]
-    missing += [p for p in params.get("regex_all", []) if not re.search(p, text, re.I if ci else 0)]
-    if params.get("any_of") and not any(_contains(text, s, ci) for s in params["any_of"]):
+    # Each string in the reading order or in the drawn order: a value wrapped inside a table cell (17.10: «ПАО «Банк» /
+    # «Образец»» beside the next column) is whole only in the second.
+    texts = [" ".join(norm_text(ctx.text(pdf, p, raw=raw)) for p in pages) for raw in (False, True)]
+    missing = [s for s in params.get("all_of", []) if not any(_contains(t, s, ci) for t in texts)]
+    missing += [p for p in params.get("regex_all", []) if not any(re.search(p, t, re.I if ci else 0) for t in texts)]
+    if params.get("any_of") and not any(_contains(t, s, ci) for t in texts for s in params["any_of"]):
         missing.append("одно из " + ", ".join(params["any_of"]))
     if missing:
         return failed("нет: " + "; ".join(missing[:6]))
@@ -1461,9 +1463,33 @@ def cell_form(ctx, params, item):
     return passed("все символы в своих клетках")
 
 
+def _zipped_images(ctx, archives) -> list:
+    """The image members of received ZIP archives, unpacked to scratch, as stand-ins with a `path`."""
+    import pathlib
+    import types
+    import zipfile
+
+    out = []
+    for n, item in enumerate(archives):
+        try:
+            with zipfile.ZipFile(item.path) as z:
+                for m, info in enumerate(z.infolist()):
+                    if info.is_dir() or not re.search(r"(?i)\.(jpe?g|png|webp|tiff?)$", info.filename):
+                        continue
+                    if info.file_size > 64 << 20:
+                        continue
+                    dest = ctx.scratch("zipped") / f"{n}-{m}{pathlib.PurePosixPath(info.filename).suffix.lower()}"
+                    dest.write_bytes(z.read(info))
+                    out.append(types.SimpleNamespace(path=dest))
+        except (OSError, zipfile.BadZipFile):
+            continue
+    return out
+
+
 @check("extracted_images")
 def extracted_images(ctx, params):
-    """Every source photo came back at its own size: same bytes as the truth JPEG, or PSNR ≥ min_psnr."""
+    """Every source photo came back at its own size: same bytes as the truth JPEG, or PSNR ≥ min_psnr. The photos
+    may come one file each or in a ZIP (17.10: six page JPGs in the chat, the five originals zipped beside them)."""
     import hashlib
 
     import numpy as np
@@ -1476,7 +1502,9 @@ def extracted_images(ctx, params):
     for entry in doc["images"]:
         path = ctx.truth_dir / entry["file"] if entry.get("file") else None
         truth[tuple(entry["px"])] = path
-    images = [r for r in ctx.received if r.turn is not None and not is_preview(r) and group_of(r) == "image"]
+    sent = [r for r in ctx.received if r.turn is not None and not is_preview(r)]
+    images = [r for r in sent if group_of(r) == "image"]
+    images += _zipped_images(ctx, [r for r in sent if r.name.lower().endswith(".zip") or "zip" in r.media_type])
     problems = []
     for w, h in params["dims"]:
         ref = truth.get((w, h))

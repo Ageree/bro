@@ -36,6 +36,12 @@ function stubHost(...answers: readonly (() => Response)[]) {
 const opened = () =>
   Response.json({ created: true, id: "sb", restored: false, state: "running" });
 
+const stopped = () =>
+  Response.json(
+    { error: "sandbox_stopped", message: "PUT it first" },
+    { status: 409 }
+  );
+
 function ndjson(...events: readonly object[]) {
   const text = events.map((event) => `${JSON.stringify(event)}\n`).join("");
   // Split mid-line: the client must join chunks before it parses a line.
@@ -180,6 +186,33 @@ describe("the Cloud.ru sandbox backend", () => {
       command: "echo привет; exit 3",
       cwd: "/workspace/out",
     });
+  });
+
+  it("opens a sandbox stopped under its step again and tries the call once more", async () => {
+    const calls = stubHost(
+      opened,
+      stopped,
+      opened,
+      () => ndjson({ code: 0, type: "exit" }),
+      stopped,
+      opened,
+      () => new Response("подпись")
+    );
+    const { cloudRuSandbox } = await backend();
+    const { session } = await cloudRuSandbox().create(createInput);
+    expect(await session.run({ command: "true" })).toMatchObject({
+      exitCode: 0,
+    });
+    expect(await session.readTextFile({ path: "a.txt" })).toBe("подпись");
+    expect(calls.map(({ method }) => method)).toEqual([
+      "PUT",
+      "POST",
+      "PUT",
+      "POST",
+      "GET",
+      "PUT",
+      "GET",
+    ]);
   });
 
   it("ignores the host's keepalive and keeps only the first megabyte of output", async () => {

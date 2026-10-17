@@ -131,11 +131,16 @@ def zip_preserves_content(ctx, params, item):
     return passed("все нужные файлы на месте")
 
 
+# A top folder for what was thrown out: duplicates and junk kept there, not deleted, are out of the sorted archive
+# (17.10: «3 дубля и 4 мусорных убрал в „Мусор“ (ничего не удалял)»).
+TRASH = re.compile(r"(?i)^(?:мусор|корзин|удал|дубл|trash|junk)[^/]*/")
+
+
 @check("zip_no_duplicates", "zip")
 def zip_no_duplicates(ctx, params, item):
     counts = {}
     for name, _, sha, info in zip_entries(ctx, item):
-        if info.file_size:
+        if info.file_size and not TRASH.match(name):
             counts.setdefault(sha, []).append(name)
     worst = max(counts.values(), key=len, default=[])
     if len(worst) > int(params.get("max_same_hash", 1)):
@@ -148,7 +153,9 @@ def _by_source(ctx, item) -> dict:
     where = {}
     for name, _, sha, _ in zip_entries(ctx, item):
         where.setdefault(sha, []).append(name)
-    return {path: where.get(r["sha256"], []) for path, r in records.items()}
+    # A file sorted into its folder comes before its copy in the trash folder.
+    return {path: sorted(where.get(r["sha256"], []), key=lambda name: bool(TRASH.match(name)))
+            for path, r in records.items()}
 
 
 @check("zip_same_folder", "zip")

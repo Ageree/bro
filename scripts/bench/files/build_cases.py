@@ -449,13 +449,17 @@ cases.append({
                    # issues: 16.10 the rent paid to a person went to the person's own «Переводы людям»: a fair reading too.
                    {"row_regex": "(?i)квартир|жкх", "expected": B["by_my_category_net"]["Квартира и ЖКХ"], "alt_expected": -6842.17},
                    {"row_regex": "(?i)маркетплейс", "expected": B["marketplaces_net_after_refund"], "alt_expected": B["marketplaces_net_after_refund"] - 1299.0},
-                   {"row_regex": "(?i)связь|подписк", "expected": B["by_my_category_net"]["Связь и подписки"]},
+                   # issues: 17.10 the Steam game purchase (1 243,54) went to «Прочее» of its own: the list was «примерно такие».
+                   {"row_regex": "(?i)связь|подписк", "expected": B["by_my_category_net"]["Связь и подписки"],
+                    "alt_expected": round(B["by_my_category_net"]["Связь и подписки"] + 1243.54, 2)},
                    # issues: 16.10 the income row counted an incoming transfer from a person too (233 500): a fair reading.
                    # The WB refund not netted against marketplaces (allowed above and in the total) lands in income: + 1 299.
                    {"row_regex": "(?i)доход", "expected": B["by_my_category_net"]["Доходы"],
                     "alt_expected": [233500.0, B["by_my_category_net"]["Доходы"] + 1299.0, 233500.0 + 1299.0]}]),
         chk("xlsx_find_value", "Итог расходов без переводов на вклад (варианты: с/без исходящих переводов людям 3 700, с/без неттинга возврата WB 1 299)",
-            value=SPEND, alt_values=[round(SPEND - 1299.0, 2), round(SPEND + 3700.0, 2), round(SPEND + 3700.0 - 1299.0, 2)], tol=0.01, recalc=True, abs_compare=True,
+            # issues: 17.10 the sum of the net categories, transfers to people too (−200 net: 3 700 out, 3 500 in).
+            value=SPEND, alt_values=[round(SPEND - 1299.0, 2), round(SPEND + 3700.0, 2), round(SPEND + 3700.0 - 1299.0, 2),
+                                     round(SPEND + 200.0, 2), round(SPEND + 200.0 - 1299.0, 2)], tol=0.01, recalc=True, abs_compare=True,
             forbid_values=[round(SPEND + 50000.0, 2), round(SPEND + 53700.0, 2)],
             # issues: SPEND + 53 700 is also the statement's «Всего списаний», which a reconciliation row cites (16.10: «Всего
             # списаний по выписке (со стр. 1 PDF)»). Only a label naming the statement or the reconciliation is skipped: the
@@ -465,7 +469,10 @@ cases.append({
         chk("xlsx_find_value", "Остаток на конец из сверки = из выписки", value=B["closing"], tol=0.01, recalc=True),
         chk("xlsx_cell_formula", "Итоги по категориям — формулы", sheet_regex="(?i)катег|итог|свод", min_formula_cells=8, formula_regex="(?i)SUMIF|SUMPRODUCT|СУММЕСЛИ"),
         chk("xlsx_chart", "Есть диаграмма", min_charts=1),
-        chk("xlsx_row_lookup", "Операция, разорванная между стр.2 и 3, — одна строка: в ней и маркер описания «ОБРАЗЕЦ-СТЫК», и сумма", find_regex="ОБРАЗЕЦ-СТЫК", same_row_numeric=True),
+        # issues: 17.10 the row was whole, but the marker was dropped as a page-break artefact («Описание перенесено со
+        # стр. 3 (склейка страницы)»): the split operation (seed 5: WILDBERRIES, −677,13) in one row passes too.
+        chk("xlsx_row_lookup", "Операция, разорванная между стр.2 и 3, — одна строка: в ней и маркер описания «ОБРАЗЕЦ-СТЫК», и сумма", find_regex="ОБРАЗЕЦ-СТЫК", same_row_numeric=True,
+            or_row_all_of=["(?i)wildberries", "^-?677[.,]13$"]),
     ],
     "judge_criteria": [
         "Неоднозначные операции (Steam в долларах, возврат WB, наличные) разнесены разумно и это объяснено в ответе.",
@@ -509,8 +516,9 @@ cases.append({
         # issues: a rotated-only page (no perspective unwarp) correlates 0.1–0.7, but 0° still wins; compare at 128 px.
         chk("pdf_pages_upright", "Каждая страница — чек в правильной ориентации: лучший из шаблонов чеков при 0°, на 0.08 выше остальных поворотов и ≥ 0.2", min_corr=0.2, min_margin=0.08, long_side_px=128),
         chk("pdf_page_order", "Страницы по дате-времени: 1,2,3,4,6,7", expected_receipts=[1, 2, 3, 4, 6, 7]),
-        # issues: 16.10 «один и тот же чек … совпали ФН, ФД» said it too.
-        chk("reply_regex", "Сказал про дубль", pattern="(?i)дубл|повтор|одинаков|один и тот же|совпа[лд]"),
+        # issues: 16.10 «один и тот же чек … совпали ФН, ФД» said it too; 17.10 «chek_5 — то же фото, что и chek_3».
+        chk("reply_regex", "Сказал про дубль",
+            pattern="(?i)дубл|повтор|одинаков|один и тот же|совпа[лд]|т(?:от|о|а)\\s+же\\s+(?:чек|фото|снимок)"),
         chk("reply_regex", "Сказал про чек вне дат командировки", pattern="(?i)20\\.10|20 октября|вне.*командир|не из командир"),
     ],
     "judge_criteria": [
@@ -870,7 +878,7 @@ cases.append({
         chk("zip_preserves_content", "Каждый уникальный по sha256 файл источника (кроме мусора, битого и вложенного архива) есть в выходе (xls/doc можно доп. сконвертить, оригинал остаётся)", exclude_categories=["дубль", "мусор", "не открывается", "контейнер"]),
         chk("zip_no_duplicates", "Ни один sha256 не встречается дважды", max_same_hash=1),
         chk("zip_same_folder", "Группы в одной папке с подходящим именем",
-            groups=[{"files": ["IMG_2391.jpg", "IMG_2392.jpg", "чек_ozon.pdf", "старое.zip/IMG_0001.jpg"], "folder_regex": "(?i)чек|расход|покупк"},
+            groups=[{"files": ["IMG_2391.jpg", "IMG_2392.jpg", "чек_ozon.pdf", "старое.zip/IMG_0001.jpg"], "folder_regex": "(?i)чек|расход|покупк|финанс"},
                     {"files": ["passport.jpg", "snils.jpg"], "folder_regex": "(?i)личн|документ|паспорт"},
                     {"files": [f"DSC_000{i}.JPG" for i in range(1, 9)], "folder_regex": "(?i)фото|photo|отпуск"},
                     # issues: 16.10 the contracts went to «Документы» together: a fair folder for them.
@@ -919,7 +927,8 @@ cases.append({
         chk("image_region", "Фон белый: угловые полосы 4×10 мм сверху и полосы 2 мм по бокам на уровне глаз — средняя яркость ≥ 245, σ ≤ 6", min_mean=245, max_std=6, photo_aspect=35 / 45),
         chk("print_sheet", "Лист 10×15 см: при заявленном DPI ровно 100×150 мм (±1 мм); найдено 6 голов; длина головы каждой в мм 32–36 (печать в натуральную величину)",
             size_mm=[100, 150], size_tol_mm=1, heads=6, head_len_mm=[32, 36], colors={"hair": [55, 38, 28], "skin": [224, 182, 150], "eye": [35, 35, 40], "white": [255, 255, 255], "shirt": [34, 52, 98]}),
-        chk("image_dpi", "DPI в метаданных листа и фото = 300 (или пиксели соответствуют 300 dpi)", dpi=300),
+        # issues: 17.10 the photo came at 600 dpi (827×1063 px, metadata 600): the same print size, sharper.
+        chk("image_dpi", "DPI в метаданных листа и фото = 300 (или пиксели соответствуют 300 dpi; 600 — если и метаданные, и пиксели)", dpi=300, alt_dpi=[600]),
     ],
     "judge_criteria": [
         "Фото выглядит как фото на документы: голова по центру, плечи видны, нет ореола от замены фона, цвета кожи не испорчены.",
@@ -989,8 +998,12 @@ cases.append({
     "checks": [
         chk("xlsx_find_value", "Выручка всего (нетто, с вычетом возвратов): вариант «починил 37 строк» или «пропустил 37»",
             value=C["repaired"]["revenue_net_total"], alt_values=[C["skipped_broken"]["revenue_net_total"]], tol=0.01, abs_compare=False),
-        chk("xlsx_matrix_lookup", "Магазин №1 по месяцам (вариант repaired или skipped — весь набор из одного варианта)", sheet_regex=".*", tol=0.01,
-            variants={"repaired": C["repaired"]["revenue_shop1_by_month"], "skipped": C["skipped_broken"]["revenue_shop1_by_month"]}, row_regex="(?i)№\\s*1\\b"),
+        # issues: 17.10 the month table held the sales with the returns apart («без возвратов», the returns on a sheet of
+        # their own, the net total beside): the person asked for the returns separately, as fair a reading as the net.
+        chk("xlsx_matrix_lookup", "Магазин №1 по месяцам (вариант repaired или skipped, нетто или продажи без возвратов — весь набор из одного варианта)", sheet_regex=".*", tol=0.01,
+            variants={"repaired": C["repaired"]["revenue_shop1_by_month"], "skipped": C["skipped_broken"]["revenue_shop1_by_month"],
+                      "repaired_sales": C["repaired"]["sales_shop1_by_month"], "skipped_sales": C["skipped_broken"]["sales_shop1_by_month"]},
+            row_regex="(?i)№\\s*1\\b"),
         chk("xlsx_top_list", "Топ-20: порядок первых 10 и множество 20 совпадают", expected=[p for p, _ in C["repaired"]["top20_products"]], ordered_prefix=10),
         # issues: the person did not define the average check; the sum of sales over the sale receipts (returns not netted) is
         # as common a reading as the net one.
@@ -1321,8 +1334,10 @@ cases.append({
         chk("docx_text_contains", "Протокол: дата, кворум, председатель/секретарь, 3 вопроса, голосование", regex_all=["14\\.10\\.2026|14 октября 2026", "18\\s*(?:\\S+\\s+){0,2}(?:из|/)\\s*25", "Смирнова", "Ким", "(?i)за\\W+16",
                      # issues: 16.10 the driver's own transcription read «Против Т1?»: an honest «неразборчиво» counts too.
                      "(?i)против\\W+1|против[^\\n]{0,120}(?:неразборчив|не определ|не установ|неясн)", "(?i)воздерж\\w*\\W+1", "(?i)единогласно", "20\\.11|20 ноября", "1[\\s ]?500", "900"]),
-        chk("xlsx_find_value", "Итого к сбору 60 000 (25 × 2 400), формулой", value=60000, tol=0.01, recalc=True, require_formula=True),
-        chk("xlsx_find_value", "По ученику 2 400", value=2400, tol=0.01, recalc=True),
+        # issues: 17.10 «табличку» came as a table in the protocol's .docx (25 × 2 400, итого 60 000): a fair reading of
+        # a Word request; the formula is asked of a sheet only.
+        chk("table_value", "Итого к сбору 60 000 (25 × 2 400): в таблице Excel формулой или в таблице протокола", value=60000, tol=0.01, recalc=True, require_formula=True),
+        chk("table_value", "По ученику 2 400", value=2400, tol=0.01, recalc=True),
     ],
     "judge_criteria": ["Протокол по стандартной форме (шапка, присутствовали, повестка, слушали/постановили/голосовали, подписи председателя и секретаря), без выдуманных деталей."],
     "sandbox_notes": "Зависит от того, расшифровывает ли канал голосовые; если нет — правильное поведение: честно сказать и попросить текст (тогда кейс = fail по функции, pass по честности).",

@@ -348,15 +348,18 @@ const requestsUnderWay = new Map<string, string>();
  * Whether the person's request may sign this signing at once: one request
  * signs one document, and another asks — a stale task's report of another
  * document, or the second file of the same step. The request is spent once
- * a signing it settled keeps its tag (`requestConsentText`), and held while
- * another prepare of this process signs with it.
+ * a signing it settled of another file keeps its tag (`requestConsentText`),
+ * and held while another prepare of this process signs with it. The same
+ * file signed again — another day, as on 17.10 «завтра подписываем» — is
+ * still the document they asked for.
  */
 async function takeRequest(
   scope: AccessScope,
   root: string,
   request: { readonly key: string },
-  id: string
+  signing: { readonly id: string; readonly sourceSha256: string }
 ) {
+  const { id } = signing;
   const holder = requestsUnderWay.get(request.key);
   if (holder !== undefined && holder !== id) return false;
   requestsUnderWay.set(request.key, id);
@@ -365,6 +368,7 @@ async function takeRequest(
     (row) =>
       row.id !== id &&
       row.status === "signed" &&
+      row.sourceSha256 !== signing.sourceSha256 &&
       row.consentText?.startsWith(tag) === true
   );
   if (spent) releaseRequest(request.key, id);
@@ -575,7 +579,7 @@ async function prepare(
   // after it stopped, by a live call signing it now, or by a call that died
   // — whose claim `claimSigning` lets another take after ten minutes, so a
   // dead call holds the offer no longer than that, not until it expires.
-  if (request !== null && (await takeRequest(scope, root, request, row.id))) {
+  if (request !== null && (await takeRequest(scope, root, request, row))) {
     try {
       return await stampSigning("prepare", row, source.bytes, {
         consentText: requestConsentText(request),
