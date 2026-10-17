@@ -156,6 +156,18 @@ class VcfTest(unittest.TestCase):
         self.assertEqual([value for _, value in store["TEL"]], ["+74950000002", "+74950000003"])
         self.assertEqual(components(store["NOTE"][0][1]), ["доб. 5"])
 
+    def test_a_birthday_in_the_note_is_the_birthday(self):
+        spec = {"contacts": [{"name": "Мама", "phones": ["+79160001234"], "note": "ДР: 12.05; дом"},
+                             {"name": "Папа", "note": "день рождения 03.11.1960", "birthday": "1960-11-03"}]}
+        code, result, raw = self.write(spec)
+        self.assertEqual(code, 0, result)
+        mom, dad = parse(raw)
+        self.assertEqual(mom["BDAY"], [([], "--05-12")])
+        self.assertEqual(components(mom["NOTE"][0][1]), ["дом"])
+        # A birthday given apart: the note is the person's own words and stays.
+        self.assertEqual(dad["BDAY"], [([], "1960-11-03")])
+        self.assertIn("NOTE", dad)
+
     def test_bad_specs_are_refused(self):
         refused = [
             {"contacts": [{"note": "без имени и номера", "emails": ["a@b.ru"]}]},
