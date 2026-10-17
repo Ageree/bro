@@ -319,11 +319,6 @@ function outputPipe(onChange: () => void, onCancel: () => void) {
 }
 
 /**
- * Starts one command and hands its output over as streams. The command
- * lives as long as its stream: `kill`, the caller's abort and cancelling
- * both output streams close it, and the host kills the process with it.
- */
-/**
  * The call, tried once more after the sandbox is opened again when the host
  * refused it as stopped (409 `sandbox_stopped`, so it never ran): a release
  * (`agent/lib/sandbox/capacity.ts`) stopped the sandbox under a step that
@@ -349,6 +344,11 @@ async function againIfStopped<T>(
   }
 }
 
+/**
+ * Starts one command and hands its output over as streams. The command
+ * lives as long as its stream: `kill`, the caller's abort and cancelling
+ * both output streams close it, and the host kills the process with it.
+ */
 function spawnCommand(
   sandboxId: string,
   options: CommandOptions,
@@ -407,7 +407,6 @@ function spawnCommand(
     stdout.close(error);
     stderr.close(error);
   };
-  // The command is a use of the sandbox until it ends (`inUse`).
   const follow = async () => {
     for await (const event of execInSandbox(
       sandboxId,
@@ -438,6 +437,7 @@ function spawnCommand(
     }
     throw new Error("The sandbox command stream ended without an exit.");
   };
+  // The command is a use of the sandbox until it ends (`inUse`).
   const exit = inUse(sandboxId, async () => {
     try {
       return await againIfStopped(sandboxId, reopen, follow);
