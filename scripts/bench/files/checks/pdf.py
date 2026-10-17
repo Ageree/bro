@@ -1463,29 +1463,6 @@ def cell_form(ctx, params, item):
     return passed("все символы в своих клетках")
 
 
-def _zipped_images(ctx, archives) -> list:
-    """The image members of received ZIP archives, unpacked to scratch, as stand-ins with a `path`."""
-    import pathlib
-    import types
-    import zipfile
-
-    out = []
-    for n, item in enumerate(archives):
-        try:
-            with zipfile.ZipFile(item.path) as z:
-                for m, info in enumerate(z.infolist()):
-                    if info.is_dir() or not re.search(r"(?i)\.(jpe?g|png|webp|tiff?)$", info.filename):
-                        continue
-                    if info.file_size > 64 << 20:
-                        continue
-                    dest = ctx.scratch("zipped") / f"{n}-{m}{pathlib.PurePosixPath(info.filename).suffix.lower()}"
-                    dest.write_bytes(z.read(info))
-                    out.append(types.SimpleNamespace(path=dest))
-        except (OSError, zipfile.BadZipFile):
-            continue
-    return out
-
-
 @check("extracted_images")
 def extracted_images(ctx, params):
     """Every source photo came back at its own size: same bytes as the truth JPEG, or PSNR ≥ min_psnr. The photos
@@ -1504,7 +1481,7 @@ def extracted_images(ctx, params):
         truth[tuple(entry["px"])] = path
     sent = [r for r in ctx.received if r.turn is not None and not is_preview(r)]
     images = [r for r in sent if group_of(r) == "image"]
-    images += _zipped_images(ctx, [r for r in sent if r.name.lower().endswith(".zip") or "zip" in r.media_type])
+    images += [r for r in ctx.unzipped() if group_of(r) == "image"]
     problems = []
     for w, h in params["dims"]:
         ref = truth.get((w, h))

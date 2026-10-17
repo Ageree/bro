@@ -603,7 +603,8 @@ cases.append({
     "expected_outputs": ["DOCX с отслеживаемыми правками; нумерация и колонтитулы сохранены"],
     "checks": [
         chk("docx_revision_contains", "Срок оплаты", pairs=[{"del": "10 (десяти) календарных", "ins_regex": "5\\s*\\(пяти\\)\\s*банковских|5 банковских"}]),
-        chk("docx_inserted_paragraph", "Новый абзац целиком во w:ins (включая знак абзаца) сразу после 6.2; numPr тот же numId и ilvl, что у 6.2 → рендер «6.3.»", after_text_regex="Сторона, нарушившая сроки поставки", same_numbering_as_previous=True, text_regex="(?i)конфиденциальн"),
+        # issues: «про конфиденциальность» — и пункт о неразглашении коммерческой тайны без самого слова (17.10).
+        chk("docx_inserted_paragraph", "Новый абзац целиком во w:ins (включая знак абзаца) сразу после 6.2; numPr тот же numId и ilvl, что у 6.2 → рендер «6.3.»", after_text_regex="Сторона, нарушившая сроки поставки", same_numbering_as_previous=True, text_regex="(?i)конфиденциальн|неразглаш|не\\s+разглаш|коммерческ\\w*\\s+тайн"),
         chk("pdf_render_text", "После конвертации в PDF (soffice) бывший 6.3 стал 6.4 автоматически", regex="6\\.4\\.?\\s+Уплата неустойки"),
         chk("docx_revision_contains", "Реквизиты: старое удалено, новое вставлено; ИНН/КПП без пометок", pairs=[{"del": "40702810000000000111", "ins": "40702810000000000222"}, {"del": "044500111", "ins": "044500222"}, {"del": "30101810000000000111", "ins": "30101810000000000222"}, {"del": "Банк Старый Образец", "ins": "Банк Новый Образец"}], untouched=["7700000086", "770001001"]),
         chk("docx_parts_unchanged", "Колонтитулы и логотип не тронуты (XML header*/footer* и media/* совпадают с исходником)", parts=["word/header*.xml", "word/footer*.xml", "word/media/*"]),
@@ -725,11 +726,11 @@ cases.append({
     ],
     "expected_outputs": ["PDF без пароля (6 стр.)", "5 изображений в исходном разрешении", "6 JPG страниц"],
     "checks": [
-        chk("pdf_unencrypted", "Открывается без пароля, 6 стр., текст = исходному (pdftotext, ratio ≥ 0.99)", pages=6, text_ratio=0.99),
+        chk("pdf_unencrypted", "Открывается без пароля, 6 стр., текст = исходному (pdftotext, ratio ≥ 0.99)", pages=6, text_ratio=0.99, zipped=True),
         chk("extracted_images", "5 картинок с размерами как у исходных (порядок любой); байты = исходным ИЛИ PSNR ≥ 38 дБ",
             dims=[[3000, 2000], [2400, 1600], [1600, 1600], [2000, 3000], [1200, 800]], min_psnr=38),
         # issues: the extracted photos are .jpg too; a page JPG has the A4 aspect 1.414 ± 0.02 (the photos are 1.5, 1.0, 0.667).
-        chk("file_count", "6 JPG страниц (аспект A4 1.414 ± 0.02), длинная сторона ≥ 1600 px", ext="jpg", page_images=6, min_long_side=1600, page_aspect=1.414, aspect_tol=0.02),
+        chk("file_count", "6 JPG страниц (аспект A4 1.414 ± 0.02), длинная сторона ≥ 1600 px", ext="jpg", page_images=6, min_long_side=1600, page_aspect=1.414, aspect_tol=0.02, zipped=True),
         # W5: replies are checked after journal masking, which may touch digit runs; the word alone is masking-safe.
         chk("reply_not_regex", "Пароль не повторён в ответе без нужды", pattern="Kvartira"),
     ],

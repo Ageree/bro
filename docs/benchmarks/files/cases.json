@@ -1514,7 +1514,7 @@
         "params": {
           "after_text_regex": "Сторона, нарушившая сроки поставки",
           "same_numbering_as_previous": true,
-          "text_regex": "(?i)конфиденциальн"
+          "text_regex": "(?i)конфиденциальн|неразглаш|не\\s+разглаш|коммерческ\\w*\\s+тайн"
         }
       },
       {
@@ -1870,7 +1870,8 @@
         "description": "Открывается без пароля, 6 стр., текст = исходному (pdftotext, ratio ≥ 0.99)",
         "params": {
           "pages": 6,
-          "text_ratio": 0.99
+          "text_ratio": 0.99,
+          "zipped": true
         }
       },
       {
@@ -1895,7 +1896,8 @@
           "page_images": 6,
           "min_long_side": 1600,
           "page_aspect": 1.414,
-          "aspect_tol": 0.02
+          "aspect_tol": 0.02,
+          "zipped": true
         }
       },
       {
