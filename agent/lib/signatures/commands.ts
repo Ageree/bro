@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { SandboxSession } from "eve/sandbox";
 import { z } from "zod";
 import { taskFilesShareBytes } from "@agent/lib/sandbox/files";
+import { SandboxHostError } from "@agent/lib/sandbox/host";
 import { runFreshKit } from "@agent/lib/sandbox/kit";
 // eve takes only modules under agent/lib, so the signing assets live beside
 // the kit; its asset plugin inlines a relative import as a data URL.
@@ -86,8 +87,27 @@ async function kit(
   timeoutMs: number
 ) {
   try {
-    return await runFreshKit(sandbox, dir, args, { signal, timeoutMs });
-  } catch {
+    const result = await runFreshKit(sandbox, dir, args, {
+      signal,
+      timeoutMs,
+    });
+    // 2 is the kit's refusal of the file, which its caller answers.
+    if (result.exitCode !== 0 && result.exitCode !== 2) {
+      console.warn("[sign] the kit failed", {
+        command: args.slice(0, 2).join(" "),
+        exitCode: result.exitCode,
+      });
+    }
+    return result;
+  } catch (error) {
+    // The command and how it failed, not the message: it may name the
+    // person's file.
+    console.warn("[sign] the kit did not run", {
+      command: args.slice(0, 2).join(" "),
+      ...(error instanceof SandboxHostError
+        ? { code: error.code, status: error.status }
+        : { error: error instanceof Error ? error.name : "thrown" }),
+    });
     return "unavailable" as const;
   }
 }

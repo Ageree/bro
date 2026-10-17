@@ -18,6 +18,7 @@ import {
   type SandboxOpenRequest,
   killSandboxProcess,
   readSandboxFile,
+  SandboxHostError,
   removeSandboxPath,
   setSandboxNetwork,
   settleSandbox,
@@ -322,9 +323,36 @@ function outputPipe(onChange: () => void, onCancel: () => void) {
  * lives as long as its stream: `kill`, the caller's abort and cancelling
  * both output streams close it, and the host kills the process with it.
  */
+/**
+ * The call, tried once more after the sandbox is opened again when the host
+ * refused it as stopped (409 `sandbox_stopped`, so it never ran): a release
+ * (`agent/lib/sandbox/capacity.ts`) stopped the sandbox under a step that
+ * still held it.
+ */
+async function againIfStopped<T>(
+  sandboxId: string,
+  reopen: () => Promise<void>,
+  call: () => Promise<T>
+) {
+  try {
+    return await call();
+  } catch (error) {
+    if (
+      !(error instanceof SandboxHostError) ||
+      error.code !== "sandbox_stopped"
+    ) {
+      throw error;
+    }
+    console.warn("[sandbox] opened again under its step", { sandboxId });
+    await reopen();
+    return await call();
+  }
+}
+
 function spawnCommand(
   sandboxId: string,
-  options: CommandOptions
+  options: CommandOptions,
+  reopen: () => Promise<void>
 ): SandboxProcess {
   const controller = new AbortController();
   const signal = options.abortSignal
@@ -380,36 +408,39 @@ function spawnCommand(
     stderr.close(error);
   };
   // The command is a use of the sandbox until it ends (`inUse`).
+  const follow = async () => {
+    for await (const event of execInSandbox(
+      sandboxId,
+      {
+        command: options.command,
+        cwd: resolveSandboxPath(options.workingDirectory ?? workspaceRoot),
+        env: options.env,
+        timeoutMs: defaultCommandTimeoutMs,
+      },
+      signal
+    )) {
+      // A command its reader gave up on stops here, even while the host
+      // still has output for it.
+      signal.throwIfAborted();
+      if (event.type === "start") pid = event.pid;
+      else if (event.type === "stdout") {
+        await deliver(stdout, stderr, Buffer.from(event.data, "base64"));
+      } else if (event.type === "stderr") {
+        await deliver(stderr, stdout, Buffer.from(event.data, "base64"));
+      } else if (event.type === "ping") {
+        continue;
+      } else if (event.type === "exit") {
+        closeStreams();
+        return { exitCode: event.code };
+      } else {
+        throw new Error(`The sandbox command failed: ${event.message}`);
+      }
+    }
+    throw new Error("The sandbox command stream ended without an exit.");
+  };
   const exit = inUse(sandboxId, async () => {
     try {
-      for await (const event of execInSandbox(
-        sandboxId,
-        {
-          command: options.command,
-          cwd: resolveSandboxPath(options.workingDirectory ?? workspaceRoot),
-          env: options.env,
-          timeoutMs: defaultCommandTimeoutMs,
-        },
-        signal
-      )) {
-        // A command its reader gave up on stops here, even while the host
-        // still has output for it.
-        signal.throwIfAborted();
-        if (event.type === "start") pid = event.pid;
-        else if (event.type === "stdout") {
-          await deliver(stdout, stderr, Buffer.from(event.data, "base64"));
-        } else if (event.type === "stderr") {
-          await deliver(stderr, stdout, Buffer.from(event.data, "base64"));
-        } else if (event.type === "ping") {
-          continue;
-        } else if (event.type === "exit") {
-          closeStreams();
-          return { exitCode: event.code };
-        } else {
-          throw new Error(`The sandbox command failed: ${event.message}`);
-        }
-      }
-      throw new Error("The sandbox command stream ended without an exit.");
+      return await againIfStopped(sandboxId, reopen, follow);
     } catch (error) {
       const failure =
         error instanceof Error
@@ -432,15 +463,23 @@ function spawnCommand(
   };
 }
 
-function sandboxSession(sandboxId: string): SandboxSession {
+function sandboxSession(
+  sandboxId: string,
+  reopen: () => Promise<void>
+): SandboxSession {
   // Each call is a use of the sandbox (`inUse`), a streamed read until its
-  // bytes start: no release stops the sandbox meanwhile.
+  // bytes start: no release stops the sandbox meanwhile, and one that came
+  // first is undone (`againIfStopped`).
+  const inSandbox = async <T>(call: () => Promise<T>) =>
+    await inUse(
+      sandboxId,
+      async () => await againIfStopped(sandboxId, reopen, call)
+    );
   const readBinaryFile = async (options: {
     readonly abortSignal?: AbortSignal;
     readonly path: string;
   }) =>
-    await inUse(
-      sandboxId,
+    await inSandbox(
       async () =>
         await readSandboxFile(
           sandboxId,
@@ -453,7 +492,7 @@ function sandboxSession(sandboxId: string): SandboxSession {
     content: Uint8Array,
     signal: AbortSignal | undefined
   ) => {
-    await inUse(sandboxId, async () => {
+    await inSandbox(async () => {
       await writeSandboxFile(
         sandboxId,
         resolveSandboxPath(path),
@@ -466,8 +505,7 @@ function sandboxSession(sandboxId: string): SandboxSession {
     id: sandboxId,
     readBinaryFile,
     readFile: async (options) =>
-      await inUse(
-        sandboxId,
+      await inSandbox(
         async () =>
           await streamSandboxFile(
             sandboxId,
@@ -485,7 +523,7 @@ function sandboxSession(sandboxId: string): SandboxSession {
       );
     },
     removePath: async (options) => {
-      await inUse(sandboxId, async () => {
+      await inSandbox(async () => {
         await removeSandboxPath(sandboxId, {
           force: options.force,
           path: resolveSandboxPath(options.path),
@@ -496,7 +534,7 @@ function sandboxSession(sandboxId: string): SandboxSession {
     },
     resolvePath: resolveSandboxPath,
     run: async (options) => {
-      const process = spawnCommand(sandboxId, options);
+      const process = spawnCommand(sandboxId, options, reopen);
       const [stdout, stderr, exit] = await Promise.all([
         readOutput(process.stdout),
         readOutput(process.stderr),
@@ -510,12 +548,12 @@ function sandboxSession(sandboxId: string): SandboxSession {
           "The Cloud.ru code sandbox has no network: only deny-all is supported."
         );
       }
-      await inUse(sandboxId, async () => {
+      await inSandbox(async () => {
         await setSandboxNetwork(sandboxId, policy);
       });
     },
     spawn: async (options) =>
-      await Promise.resolve(spawnCommand(sandboxId, options)),
+      await Promise.resolve(spawnCommand(sandboxId, options, reopen)),
     writeBinaryFile: async (options) => {
       await write(options.path, options.content, options.abortSignal);
     },
@@ -583,7 +621,15 @@ export function cloudRuSandbox(
         openRequest(sandboxId, workspaceId, settings.memoryMb),
         sessionId
       );
-      const session = sandboxSession(sandboxId);
+      // A release that stopped the sandbox under this step's handle is
+      // undone with the same open (`againIfStopped`).
+      const session = sandboxSession(sandboxId, async () => {
+        await openWithRoom(
+          sandboxId,
+          openRequest(sandboxId, workspaceId, settings.memoryMb),
+          sessionId
+        );
+      });
       const handle: SandboxBackendHandle<CloudRuSessionOptions> = {
         captureState: async () =>
           await Promise.resolve({
