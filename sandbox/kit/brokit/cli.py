@@ -52,6 +52,7 @@ COMMANDS = {
     ("img", "resize"): ("brokit.img.basic", "resize", "img resize IN -o OUT (--max PX | --width W | --height H)"),
     ("img", "rotate"): ("brokit.img.basic", "rotate", "img rotate IN --angle DEG -o OUT"),
     ("img", "crop"): ("brokit.img.basic", "crop", "img crop IN --box x0,y0,x1,y1 -o OUT"),
+    ("img", "redact"): ("brokit.img.basic", "redact", "img redact IN --box x0,y0,x1,y1 [--box …] [--pad 6] -o OUT"),
     ("docx", "fill"): ("brokit.office.word", "fill", "docx fill TPL VALUES.json -o OUT"),
     ("docx", "edit"): ("brokit.office.word", "edit", "docx edit FILE EDITS.json -o OUT [--author Бро] [--date ISO]"),
     ("docx", "compare"): ("brokit.office.word", "compare", "docx compare A B -o REDLINE [--author Бро]"),
