@@ -878,7 +878,7 @@ cases.append({
         chk("zip_preserves_content", "Каждый уникальный по sha256 файл источника (кроме мусора, битого и вложенного архива) есть в выходе (xls/doc можно доп. сконвертить, оригинал остаётся)", exclude_categories=["дубль", "мусор", "не открывается", "контейнер"]),
         chk("zip_no_duplicates", "Ни один sha256 не встречается дважды", max_same_hash=1),
         chk("zip_same_folder", "Группы в одной папке с подходящим именем",
-            groups=[{"files": ["IMG_2391.jpg", "IMG_2392.jpg", "чек_ozon.pdf", "старое.zip/IMG_0001.jpg"], "folder_regex": "(?i)чек|расход|покупк"},
+            groups=[{"files": ["IMG_2391.jpg", "IMG_2392.jpg", "чек_ozon.pdf", "старое.zip/IMG_0001.jpg"], "folder_regex": "(?i)чек|расход|покупк|финанс"},
                     {"files": ["passport.jpg", "snils.jpg"], "folder_regex": "(?i)личн|документ|паспорт"},
                     {"files": [f"DSC_000{i}.JPG" for i in range(1, 9)], "folder_regex": "(?i)фото|photo|отпуск"},
                     # issues: 16.10 the contracts went to «Документы» together: a fair folder for them.
@@ -927,7 +927,8 @@ cases.append({
         chk("image_region", "Фон белый: угловые полосы 4×10 мм сверху и полосы 2 мм по бокам на уровне глаз — средняя яркость ≥ 245, σ ≤ 6", min_mean=245, max_std=6, photo_aspect=35 / 45),
         chk("print_sheet", "Лист 10×15 см: при заявленном DPI ровно 100×150 мм (±1 мм); найдено 6 голов; длина головы каждой в мм 32–36 (печать в натуральную величину)",
             size_mm=[100, 150], size_tol_mm=1, heads=6, head_len_mm=[32, 36], colors={"hair": [55, 38, 28], "skin": [224, 182, 150], "eye": [35, 35, 40], "white": [255, 255, 255], "shirt": [34, 52, 98]}),
-        chk("image_dpi", "DPI в метаданных листа и фото = 300 (или пиксели соответствуют 300 dpi)", dpi=300),
+        # issues: 17.10 the photo came at 600 dpi (827×1063 px, metadata 600): the same print size, sharper.
+        chk("image_dpi", "DPI в метаданных листа и фото = 300 (или пиксели соответствуют 300 dpi; 600 — если и метаданные, и пиксели)", dpi=300, alt_dpi=[600]),
     ],
     "judge_criteria": [
         "Фото выглядит как фото на документы: голова по центру, плечи видны, нет ореола от замены фона, цвета кожи не испорчены.",
@@ -997,8 +998,12 @@ cases.append({
     "checks": [
         chk("xlsx_find_value", "Выручка всего (нетто, с вычетом возвратов): вариант «починил 37 строк» или «пропустил 37»",
             value=C["repaired"]["revenue_net_total"], alt_values=[C["skipped_broken"]["revenue_net_total"]], tol=0.01, abs_compare=False),
-        chk("xlsx_matrix_lookup", "Магазин №1 по месяцам (вариант repaired или skipped — весь набор из одного варианта)", sheet_regex=".*", tol=0.01,
-            variants={"repaired": C["repaired"]["revenue_shop1_by_month"], "skipped": C["skipped_broken"]["revenue_shop1_by_month"]}, row_regex="(?i)№\\s*1\\b"),
+        # issues: 17.10 the month table held the sales with the returns apart («без возвратов», the returns on a sheet of
+        # their own, the net total beside): the person asked for the returns separately, as fair a reading as the net.
+        chk("xlsx_matrix_lookup", "Магазин №1 по месяцам (вариант repaired или skipped, нетто или продажи без возвратов — весь набор из одного варианта)", sheet_regex=".*", tol=0.01,
+            variants={"repaired": C["repaired"]["revenue_shop1_by_month"], "skipped": C["skipped_broken"]["revenue_shop1_by_month"],
+                      "repaired_sales": C["repaired"]["sales_shop1_by_month"], "skipped_sales": C["skipped_broken"]["sales_shop1_by_month"]},
+            row_regex="(?i)№\\s*1\\b"),
         chk("xlsx_top_list", "Топ-20: порядок первых 10 и множество 20 совпадают", expected=[p for p, _ in C["repaired"]["top20_products"]], ordered_prefix=10),
         # issues: the person did not define the average check; the sum of sales over the sale receipts (returns not netted) is
         # as common a reading as the net one.

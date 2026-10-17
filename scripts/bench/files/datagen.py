@@ -294,6 +294,7 @@ def csv_expected(seed: int = 17):
         receipts = defaultdict(set)
         rev_shop = defaultdict(float)
         sales_shop = defaultdict(float)  # sale lines only: the gross average check does not net the returns
+        sales_shop_month = defaultdict(float)
         ret_count = ret_sum = 0
         n = 0
         for f, _, kind in rows:
@@ -311,12 +312,14 @@ def csv_expected(seed: int = 17):
             else:
                 receipts[f[2]].add(f[3])
                 sales_shop[f[2]] += s
+                sales_shop_month[(f[2], d.month)] += s
         top = sorted(rev_product.items(), key=lambda kv: -kv[1])[:20]
         return dict(
             rows_used=n,
             revenue_net_total=round(sum(rev_shop.values()), 2),
             revenue_net_by_shop={k: round(v, 2) for k, v in sorted(rev_shop.items())},
             revenue_shop1_by_month={m: round(rev_shop_month[(CSV_SHOPS[0], m)], 2) for m in range(1, 13)},
+            sales_shop1_by_month={m: round(sales_shop_month[(CSV_SHOPS[0], m)], 2) for m in range(1, 13)},
             top20_products=[(k, round(v, 2)) for k, v in top],
             avg_check_by_shop={k: round(rev_shop[k] / len(receipts[k]), 2) for k in sorted(rev_shop)},
             avg_check_gross_by_shop={k: round(sales_shop[k] / len(receipts[k]), 2) for k in sorted(sales_shop)},
