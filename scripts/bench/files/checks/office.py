@@ -570,7 +570,9 @@ def xlsx_inventory(ctx, params, item):
         width = max((len(r) for r in rows), default=0)
         for c in range(width):
             column = [_norm(_at(rows, r, c)) for r in range(len(rows))]
-            hits = sum(1 for x in column if x and (x in names or x.split("/")[-1] in names))
+            # Distinct names: a column of bare names holds «scan0001.pdf» twice (the root and the nested archive), the
+            # column of paths beside it tells them apart (17.10).
+            hits = len({x for x in column if x and (x in names or x.split("/")[-1] in names)})
             if best is None or hits > best[0]:
                 best = (hits, name, rows, c)
     if best is None or best[0] < 5:

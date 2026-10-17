@@ -184,6 +184,31 @@ class TableValueTest(OfficeTest):
         self.assertEqual(outcome.status, "fail")
 
 
+class InventoryTest(OfficeTest):
+    """f-zip: the inventory's column of old names is the one that tells every source file apart."""
+
+    PATHS = ["a.pdf", "b.jpg", "c.docx", "scan0001.pdf", "старое.zip/scan0001.pdf", "старое.zip/d.vcf"]
+    ITEM = {"kind": "xlsx_inventory", "params": {"min_rows": 6, "max_rows": 7}}
+
+    def setUp(self):
+        super().setUp()
+        import json
+
+        truth = self.root / "fixtures" / "truth"
+        truth.mkdir(parents=True)
+        records = [{"path": p, "name": p.split("/")[-1]} for p in self.PATHS]
+        (truth / "zip_manifest.json").write_text(json.dumps({"records": records}), encoding="utf-8")
+
+    def test_the_column_of_paths_counts_two_files_of_one_name(self):
+        rows = [("Исходное имя", "Откуда")] + [(p.split("/")[-1], p) for p in self.PATHS]
+        got = self.run_check(self.ITEM, xlsx_bytes(rows), "opis.xlsx")
+        self.assertEqual(got.status, "pass", got.detail)
+
+    def test_an_inventory_of_the_kept_files_only_fails(self):
+        rows = [("Исходное имя", "Откуда")] + [(p.split("/")[-1], p) for p in self.PATHS[:4]]
+        self.assertEqual(self.run_check(self.ITEM, xlsx_bytes(rows), "opis.xlsx").status, "fail")
+
+
 class RenderNoOverflowTest(OfficeTest):
     ITEM = {"kind": "render_no_overflow", "params": {"max_words": 90, "max_word_overlap": 0.2}}
 
