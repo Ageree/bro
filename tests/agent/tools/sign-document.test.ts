@@ -680,7 +680,12 @@ describe("signing at the person's own request", () => {
     expect(await prepareInReport(messages)).toMatchObject({ status: "signed" });
     const consentText = services.settle.mock.lastCall?.[0].consentText ?? null;
     services.list.mockResolvedValue([
-      row({ consentText, outputUrl: signedUrl, status: "signed" }),
+      row({
+        consentText,
+        outputUrl: signedUrl,
+        sourceSha256: "f".repeat(64),
+        status: "signed",
+      }),
     ]);
     services.prepare.mockImplementation(async (_scope, input) =>
       row({ ...input, askedAt: null, askedText: null, id: otherId })
@@ -689,6 +694,22 @@ describe("signing at the person's own request", () => {
       status: "prepared",
     });
     expect(stampRuns()).toHaveLength(1);
+  });
+
+  it("signs the same file again at once on another day of the same request", async () => {
+    const messages = reported("Завтра подписываем, подпиши договор");
+    expect(await prepareInReport(messages)).toMatchObject({ status: "signed" });
+    const consentText = services.settle.mock.lastCall?.[0].consentText ?? null;
+    services.list.mockResolvedValue([
+      row({ consentText, outputUrl: signedUrl, status: "signed" }),
+    ]);
+    services.prepare.mockImplementation(async (_scope, input) =>
+      row({ ...input, askedAt: null, askedText: null, id: otherId })
+    );
+    expect(
+      await prepareInReport(messages, { date: "18.10.2026" })
+    ).toMatchObject({ status: "signed" });
+    expect(stampRuns()).toHaveLength(2);
   });
 
   it("signs one of two documents prepared in the same step at once", async () => {
