@@ -55,7 +55,9 @@ import {
   approvedResendOwed,
   earlyReplyNote,
   earlyReplySplitNote,
+  taskCorrectionNote,
   turnMustEnd,
+  turnReportsTaskCorrection,
   turnSends,
 } from "@agent/lib/delivery/turn-sends";
 import {
@@ -402,6 +404,12 @@ export default defineAgent({
             ? owedStepsNote(owedSteps, stableContext)
             : undefined,
           writesToPerson && sendFailed ? failedSendNote : undefined,
+          // The task agent changed Bro's task: the reply says what and why.
+          writesToPerson &&
+          sends.delivered.length === 0 &&
+          turnReportsTaskCorrection(ctx.messages)
+            ? taskCorrectionNote
+            : undefined,
           // A group open without its skill's block: load it first.
           routed === undefined
             ? undefined

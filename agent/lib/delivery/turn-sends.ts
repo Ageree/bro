@@ -713,6 +713,37 @@ export function turnOpenedByBackgroundTask(messages: readonly ModelMessage[]) {
   return opening !== undefined && deliversBackgroundTask(opening);
 }
 
+/**
+ * The task agent's report opens with a change it made to Bro's task: its
+ * rules have it name the discrepancy on the report's first line
+ * («Расхождение с задачей: …» — a vacation's end past a holiday, a name in
+ * the genitive, the person's words over Bro's retelling). 17.10 Bro passed
+ * such a report on as a bare «Готово», and before that once told the task
+ * agent to put its own wrong date back.
+ */
+const correctionLine = /^[*_\s]*Расхождени[ея] с (?:задачей|заданием)/iu;
+
+/** Whether the turn is the task agent's report and it opens with such a change. */
+export function turnReportsTaskCorrection(messages: readonly ModelMessage[]) {
+  const opening = messages.findLast(startsTurn);
+  if (opening === undefined || !deliversBackgroundTask(opening)) return false;
+  const text = openingText(opening);
+  const result = text.slice(text.indexOf("\nResult:\n") + 1);
+  const first = result
+    .split("\n")
+    .slice(1)
+    .find((line) => line.trim() !== "");
+  return text.includes("\nResult:\n") && correctionLine.test(first ?? "");
+}
+
+/**
+ * Asks the reply to say what the task agent changed and why. It does not
+ * quote the report: the report may carry the files' text, and the model
+ * follows a note as the system's own word.
+ */
+export const taskCorrectionNote =
+  "Отчёт помощника начинается с расхождения с твоей задачей: он поправил её данные по своим правилам. В ответе человеку одной фразой скажи, что исправлено и почему, по отчёту помощника, и не проси помощника вернуть твоё.";
+
 /** Whether a message is eve's delivery of finished background work. */
 export function deliversBackgroundTask(message: ModelMessage) {
   return (
