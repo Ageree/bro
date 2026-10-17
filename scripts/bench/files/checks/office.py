@@ -443,13 +443,22 @@ def xlsx_chart(ctx, params, item):
 
 @check("xlsx_row_lookup", "xlsx")
 def xlsx_row_lookup(ctx, params, item):
-    for name, rows in grids(ctx, item.path):
+    """The row of a cell matching find_regex (with a sum beside it). `or_row_all_of`: a row where each regex matches a
+    cell of its own passes too — the operation found by what it is when its marker text was left out."""
+    sheets = grids(ctx, item.path)
+    for name, rows in sheets:
         for r, c, v in _cells(rows):
             if isinstance(v, str) and re.search(params["find_regex"], v):
                 if not params.get("same_row_numeric") or any(_number(x) not in (None, 0.0) and not _is_date(x)
                                                               for i, x in enumerate(rows[r]) if i != c):
                     return passed(f"{name}!R{r + 1}: «{_norm(v)[:40]}»")
                 return failed(f"{name}!R{r + 1}: «{_norm(v)[:40]}» без суммы в строке")
+    wanted = params.get("or_row_all_of") or []
+    for name, rows in sheets if wanted else []:
+        for r, row in enumerate(rows):
+            texts = [_cell_text(x) for x in row]
+            if all(any(re.search(rx, t) for t in texts) for rx in wanted):
+                return passed(f"{name}!R{r + 1}: строка без маркера, но с {', '.join(wanted)}")
     return failed(f"«{params['find_regex']}» нет")
 
 

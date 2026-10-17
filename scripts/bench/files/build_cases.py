@@ -449,13 +449,17 @@ cases.append({
                    # issues: 16.10 the rent paid to a person went to the person's own «Переводы людям»: a fair reading too.
                    {"row_regex": "(?i)квартир|жкх", "expected": B["by_my_category_net"]["Квартира и ЖКХ"], "alt_expected": -6842.17},
                    {"row_regex": "(?i)маркетплейс", "expected": B["marketplaces_net_after_refund"], "alt_expected": B["marketplaces_net_after_refund"] - 1299.0},
-                   {"row_regex": "(?i)связь|подписк", "expected": B["by_my_category_net"]["Связь и подписки"]},
+                   # issues: 17.10 the Steam game purchase (1 243,54) went to «Прочее» of its own: the list was «примерно такие».
+                   {"row_regex": "(?i)связь|подписк", "expected": B["by_my_category_net"]["Связь и подписки"],
+                    "alt_expected": round(B["by_my_category_net"]["Связь и подписки"] + 1243.54, 2)},
                    # issues: 16.10 the income row counted an incoming transfer from a person too (233 500): a fair reading.
                    # The WB refund not netted against marketplaces (allowed above and in the total) lands in income: + 1 299.
                    {"row_regex": "(?i)доход", "expected": B["by_my_category_net"]["Доходы"],
                     "alt_expected": [233500.0, B["by_my_category_net"]["Доходы"] + 1299.0, 233500.0 + 1299.0]}]),
         chk("xlsx_find_value", "Итог расходов без переводов на вклад (варианты: с/без исходящих переводов людям 3 700, с/без неттинга возврата WB 1 299)",
-            value=SPEND, alt_values=[round(SPEND - 1299.0, 2), round(SPEND + 3700.0, 2), round(SPEND + 3700.0 - 1299.0, 2)], tol=0.01, recalc=True, abs_compare=True,
+            # issues: 17.10 the sum of the net categories, transfers to people too (−200 net: 3 700 out, 3 500 in).
+            value=SPEND, alt_values=[round(SPEND - 1299.0, 2), round(SPEND + 3700.0, 2), round(SPEND + 3700.0 - 1299.0, 2),
+                                     round(SPEND + 200.0, 2), round(SPEND + 200.0 - 1299.0, 2)], tol=0.01, recalc=True, abs_compare=True,
             forbid_values=[round(SPEND + 50000.0, 2), round(SPEND + 53700.0, 2)],
             # issues: SPEND + 53 700 is also the statement's «Всего списаний», which a reconciliation row cites (16.10: «Всего
             # списаний по выписке (со стр. 1 PDF)»). Only a label naming the statement or the reconciliation is skipped: the
@@ -465,7 +469,10 @@ cases.append({
         chk("xlsx_find_value", "Остаток на конец из сверки = из выписки", value=B["closing"], tol=0.01, recalc=True),
         chk("xlsx_cell_formula", "Итоги по категориям — формулы", sheet_regex="(?i)катег|итог|свод", min_formula_cells=8, formula_regex="(?i)SUMIF|SUMPRODUCT|СУММЕСЛИ"),
         chk("xlsx_chart", "Есть диаграмма", min_charts=1),
-        chk("xlsx_row_lookup", "Операция, разорванная между стр.2 и 3, — одна строка: в ней и маркер описания «ОБРАЗЕЦ-СТЫК», и сумма", find_regex="ОБРАЗЕЦ-СТЫК", same_row_numeric=True),
+        # issues: 17.10 the row was whole, but the marker was dropped as a page-break artefact («Описание перенесено со
+        # стр. 3 (склейка страницы)»): the split operation (seed 5: WILDBERRIES, −677,13) in one row passes too.
+        chk("xlsx_row_lookup", "Операция, разорванная между стр.2 и 3, — одна строка: в ней и маркер описания «ОБРАЗЕЦ-СТЫК», и сумма", find_regex="ОБРАЗЕЦ-СТЫК", same_row_numeric=True,
+            or_row_all_of=["(?i)wildberries", "^-?677[.,]13$"]),
     ],
     "judge_criteria": [
         "Неоднозначные операции (Steam в долларах, возврат WB, наличные) разнесены разумно и это объяснено в ответе.",
@@ -509,8 +516,9 @@ cases.append({
         # issues: a rotated-only page (no perspective unwarp) correlates 0.1–0.7, but 0° still wins; compare at 128 px.
         chk("pdf_pages_upright", "Каждая страница — чек в правильной ориентации: лучший из шаблонов чеков при 0°, на 0.08 выше остальных поворотов и ≥ 0.2", min_corr=0.2, min_margin=0.08, long_side_px=128),
         chk("pdf_page_order", "Страницы по дате-времени: 1,2,3,4,6,7", expected_receipts=[1, 2, 3, 4, 6, 7]),
-        # issues: 16.10 «один и тот же чек … совпали ФН, ФД» said it too.
-        chk("reply_regex", "Сказал про дубль", pattern="(?i)дубл|повтор|одинаков|один и тот же|совпа[лд]"),
+        # issues: 16.10 «один и тот же чек … совпали ФН, ФД» said it too; 17.10 «chek_5 — то же фото, что и chek_3».
+        chk("reply_regex", "Сказал про дубль",
+            pattern="(?i)дубл|повтор|одинаков|один и тот же|совпа[лд]|т(?:от|о|а)\\s+же\\s+(?:чек|фото|снимок)"),
         chk("reply_regex", "Сказал про чек вне дат командировки", pattern="(?i)20\\.10|20 октября|вне.*командир|не из командир"),
     ],
     "judge_criteria": [

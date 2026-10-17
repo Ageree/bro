@@ -140,6 +140,24 @@ class LeftOutReceiptTest(OfficeTest):
         self.assertEqual(outcome.status, "fail")
 
 
+class SplitOperationTest(OfficeTest):
+    """f-bank-statement: the operation split between pages is one row; its marker text may be left out."""
+
+    def setUp(self):
+        super().setUp()
+        _, self.item = suite_check("f-bank-statement-pdf-categories", "Операция, разорванная")
+
+    def test_the_whole_row_without_its_marker_passes(self):
+        rows = [("12.09.2026 19:53", "WILDBERRIES MOSCOW RUS", -677.13)]
+        outcome = self.run_check(self.item, xlsx_bytes(rows), "vypiska.xlsx")
+        self.assertEqual(outcome.status, "pass", outcome.detail)
+
+    def test_its_sum_and_description_in_two_rows_fail(self):
+        rows = [("12.09.2026 19:53", "", -677.13), ("", "WILDBERRIES MOSCOW RUS", None)]
+        outcome = self.run_check(self.item, xlsx_bytes(rows), "vypiska.xlsx")
+        self.assertEqual(outcome.status, "fail")
+
+
 class RenderNoOverflowTest(OfficeTest):
     ITEM = {"kind": "render_no_overflow", "params": {"max_words": 90, "max_word_overlap": 0.2}}
 
