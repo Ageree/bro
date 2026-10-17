@@ -312,6 +312,37 @@ class Context:
             raise CheckError(f"{name} завершился с кодом {res.returncode}: {tail}")
         return res.stdout
 
+    def unzipped(self) -> list:
+        """The members of every received ZIP (cleanup turns aside), unpacked to scratch, as files of the archive's turn.
+
+        A check takes them only where the case asks for files that may come zipped (`zipped: true`, `extracted_images`):
+        17.10 Bro sent the unlocked booklet and its six page JPGs in one ZIP beside a single page in the chat."""
+        if "unzipped" in self._cache:
+            return self._cache["unzipped"]
+        import zipfile
+
+        out = []
+        for n, archive in enumerate(r for r in self.received if r.turn is not None):
+            if not (archive.name.lower().endswith(".zip") or "zip" in archive.media_type):
+                continue
+            try:
+                with zipfile.ZipFile(archive.path) as z:
+                    for m, info in enumerate(z.infolist()):
+                        if info.is_dir() or info.file_size > 64 << 20:
+                            continue
+                        name = pathlib.PurePosixPath(info.filename).name
+                        data = z.read(info)
+                        dest = self.scratch(f"unzipped/{n}-{m}") / name
+                        dest.write_bytes(data)
+                        out.append(Received(turn=archive.turn, at=archive.at, name=name, shown_name=None, media_type="",
+                                            size=len(data), sha256=hashlib.sha256(data).hexdigest(), path=dest,
+                                            source=archive.source, url_path="",
+                                            cache={"archive": f"{archive.path.relative_to(self.case_dir)}!{info.filename}"}))
+            except (OSError, zipfile.BadZipFile):
+                continue
+        self._cache["unzipped"] = out
+        return out
+
     def scratch(self, name: str) -> pathlib.Path:
         if self._scratch is None:
             self._scratch = pathlib.Path(tempfile.mkdtemp(prefix="bench-check-"))

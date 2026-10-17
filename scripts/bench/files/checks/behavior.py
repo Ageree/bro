@@ -144,6 +144,8 @@ def _counted(ctx, params) -> list:
 
     keep_previews = names_preview(params)
     items = [r for r in ctx.received if r.turn is not None and (keep_previews or not is_preview(r))]
+    if params.get("zipped"):
+        items += ctx.unzipped()
     if isinstance(params.get("turn"), int):
         items = [r for r in items if r.turn == params["turn"]]
     if params.get("name_regex"):

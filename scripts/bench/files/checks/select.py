@@ -4,6 +4,7 @@
   `file_count`/`file_regex` that names them.
 - Positive kinds look at the latest version: the files of the check's group from the largest turn that has any (f-rent's
   signed PDF in turn 1, not the unsigned one of turn 0). `turn: N` takes exactly turn N, `all_files: true` every turn.
+- `zipped: true` adds the members of received ZIPs, as files of the archive's turn.
 - Negative kinds look at every file of every turn. Files of the cleanup turns (turn null) are never checked.
 - What a check forbids (`no_mark_in_rect`, `pdf_text_not_contains`, `none_of…`, `forbid_regex`, a box that stays /Off)
   must hold for every file of the turn it reads, not only for one (`check.FORBIDDING`).
@@ -89,6 +90,8 @@ def names_preview(params: dict) -> bool:
 def candidates(ctx, spec, params: dict, *, signed_test=None) -> tuple[list, str]:
     """(files, reason when empty). `signed_test(ctx, item) -> bool` backs `file_filter: signed`."""
     items = [r for r in ctx.received if r.turn is not None]
+    if params.get("zipped"):
+        items += ctx.unzipped()
     if spec.group not in (None, "any"):
         items = [r for r in items if group_of(r) == spec.group]
     keep_previews = spec.kind == "signature_preview" or names_preview(params)

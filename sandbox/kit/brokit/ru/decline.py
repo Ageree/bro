@@ -11,6 +11,8 @@ the noun («Вороне», not «Вороной»), and surnames with a fleetin
 table does not know.
 """
 
+import re
+
 from brokit.util import KitError, need_file, parser
 
 CASES = ("gen", "dat", "acc", "ins", "pre")
@@ -59,6 +61,25 @@ def main(argv):
         if gender == "androgynous":
             warnings.append("gender_unknown: " + name + " (pass --gender m|f)")
     return {"results": results, "warnings": warnings}
+
+
+# A patronymic in the nominative: «Сергеевна», «Петрович», «Ильич» (the genitive is «Сергеевны», «Петровича»).
+NOMINATIVE_PATRONYMIC = re.compile(r"(?<![\w-])[А-ЯЁ][а-яё]+(?:ович|евич|ич|овна|евна|ична|инична)(?![\w-])")
+
+
+def nominative_warning(where, text):
+    """A warning for a text that holds a full name in the nominative, or None.
+
+    `pdf write` gives it back with its result: 17.10 a vacation form went out «от … Кузнецова Ольга Сергеевна» although the
+    task agent's rules ask for the genitive there.
+    """
+    if not NOMINATIVE_PATRONYMIC.search(text):
+        return None
+    return (
+        "nominative_name: %s «%s» is a full name in the nominative. On an application's «от …» line (заявление, "
+        "объяснительная) the position and the name go in the genitive: brokit ru decline --case gen. A form's own name "
+        "field («ФИО», «Фамилия, имя, отчество») keeps the nominative." % (where, text)
+    )
 
 
 def short_gender(gender):

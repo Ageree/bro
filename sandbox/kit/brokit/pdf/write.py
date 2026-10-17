@@ -248,6 +248,12 @@ def main(argv):
         if len(pieces) > 1:
             entry["groups"] = {p["at"]: p["plan"]["lines"][0] for p in pieces}
         items.append(entry)
+    from brokit.ru import decline
+
+    for n, item in enumerate(spec, start=1):
+        warning = decline.nominative_warning("item %d" % n, str(item.get("text") or ""))
+        if warning:
+            warnings.append(warning)
     problems = [i["n"] for i in items if i["status"] == "overflow"]
     result = {"output": output, "items": items, "warnings": warnings}
     if problems:

@@ -113,6 +113,13 @@ class Write(unittest.TestCase):
         x0, y0, x1, y1 = words["Казань"]
         self.assertTrue(bx0 <= x0 and x1 <= bx1 and by0 <= y0 and y1 <= by1, (words["Казань"], box["box"]))
 
+    def test_a_full_name_in_the_nominative_comes_back_with_a_warning(self):
+        line = self.blank(self.vector, lambda b: b["label"].startswith("ФИО"))
+        _, result = self.write(self.vector, [{"at": line["id"], "text": "Кузнецова Ольга Сергеевна"}])
+        self.assertEqual([w.split(":")[0] for w in result["warnings"]], ["nominative_name"])
+        _, result = self.write(self.vector, [{"at": line["id"], "text": "Кузнецовой Ольги Сергеевны"}])
+        self.assertEqual(result["warnings"], [])
+
     def test_written_file_keeps_the_ids_of_its_source(self):
         code, source = kit("pdf", "layout", self.vector, cache=self.cache)
         self.assertEqual(code, 0, source)

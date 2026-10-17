@@ -107,6 +107,13 @@ def evaluate(ctx: Context, item: dict) -> tuple:
         return Outcome("error", str(e)), None
 
 
+def _where(ctx: Context, f) -> str:
+    """The checked file as the report names it: its path in the case, or `archive.zip!member` for a zipped one."""
+    if ctx.case_dir in f.path.parents:
+        return str(f.path.relative_to(ctx.case_dir))
+    return f.cache.get("archive", f.path.name)
+
+
 def _safe(fn, *args) -> Outcome:
     try:
         out = fn(*args)
@@ -130,27 +137,26 @@ def _aggregate(spec, results: list, ctx: Context, every: bool = False) -> tuple:
         bad = [(f, o) for f, o in results if o.status == "fail"]
         if bad:
             f, o = bad[0]
-            return Outcome("fail", f"{label(f)}: {o.detail}"), str(f.path.relative_to(ctx.case_dir))
+            return Outcome("fail", f"{label(f)}: {o.detail}"), _where(ctx, f)
         errs = [(f, o) for f, o in results if o.status != "pass"]
         if errs:
             f, o = errs[0]
-            return Outcome("error", f"{label(f)}: {o.detail}"), str(f.path.relative_to(ctx.case_dir))
+            return Outcome("error", f"{label(f)}: {o.detail}"), _where(ctx, f)
         if spec.negative and ctx.failed_downloads:
             return Outcome("error", "есть нескачанные файлы"), None
         f, o = results[0]
         detail = o.detail if len(results) == 1 else f"{len(results)} файл(ов) в порядке; {label(f)}: {o.detail}"
-        return Outcome("pass", detail), str(f.path.relative_to(ctx.case_dir))
+        return Outcome("pass", detail), _where(ctx, f)
     for f, o in results:
         if o.status == "pass":
-            return Outcome("pass", f"{label(f)}: {o.detail}" if len(results) > 1 else o.detail), str(
-                f.path.relative_to(ctx.case_dir))
+            return Outcome("pass", f"{label(f)}: {o.detail}" if len(results) > 1 else o.detail), _where(ctx, f)
     errs = [(f, o) for f, o in results if o.status == "error"]
     if errs:
         f, o = errs[0]
-        return Outcome("error", f"{label(f)}: {o.detail}"), str(f.path.relative_to(ctx.case_dir))
+        return Outcome("error", f"{label(f)}: {o.detail}"), _where(ctx, f)
     f, o = results[0]
     detail = o.detail if len(results) == 1 else "; ".join(f"{label(x)}: {y.detail}" for x, y in results[:3])
-    return Outcome("fail", detail), str(f.path.relative_to(ctx.case_dir))
+    return Outcome("fail", detail), _where(ctx, f)
 
 
 def implicit_checks(case: dict) -> list:
