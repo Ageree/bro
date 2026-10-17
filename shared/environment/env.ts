@@ -215,6 +215,17 @@ export const env = createEnv({
         "ELEVENLABS_PROXY_URL must be an HTTP or HTTPS proxy URL"
       )
       .optional(),
+    // GPT-Live (OpenAI) for the phone bridge (scripts/phone/live), and a
+    // CONNECT proxy used only for it: OpenAI does not serve the VM's Russian
+    // address.
+    OPENAI_API_KEY: pastedKeySchema.optional(),
+    OPENAI_PROXY_URL: z
+      .url()
+      .refine(
+        (value) => ["http:", "https:"].includes(new URL(value).protocol),
+        "OPENAI_PROXY_URL must be an HTTP or HTTPS proxy URL"
+      )
+      .optional(),
     PHONE_AGENT_ID: trimmedValue.optional(),
     PHONE_MAX_ACTIVE_NUMBERS: z.coerce.number().int().positive().optional(),
     PHONE_MAX_SETUP_RUB: z.coerce.number().int().min(0).max(1000).default(600),
