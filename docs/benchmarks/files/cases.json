@@ -3161,7 +3161,8 @@
         "params": {
           "none_of_numeric": [15000.0, 22000.0],
           "none_of_cells": ["7700000024"],
-          "act_rows_only": true
+          "act_rows_only": true,
+          "skip_sheet_regex": "(?i)исключ|не\\s*вошл|не\\s*включ"
         }
       },
       {

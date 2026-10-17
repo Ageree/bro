@@ -1117,7 +1117,8 @@ cases.append({
         chk("xlsx_find_value", "Обороты: дебет 400 250,00 (наши УПД), кредит 333 850,00 (оплаты)", values=[A["turnover_debit"], A["turnover_credit"]], tol=0.01, recalc=True),
         chk("xlsx_find_value", "Сальдо конечное 116 400,00 в пользу ИП", value=A["closing_in_our_favour"], tol=0.01, recalc=True, require_formula=True),
         # issues: an explanatory note naming the decoy is correct; only numbers in rows of the act (a date and an amount) count.
-        chk("xlsx_contains", "Платежи «Тест-Поставка Плюс» не попали в строки акта (числовые ячейки строк с датой)", none_of_numeric=[15000.0, 22000.0], none_of_cells=[g.DECOY["inn"]], act_rows_only=True),
+        chk("xlsx_contains", "Платежи «Тест-Поставка Плюс» не попали в строки акта (числовые ячейки строк с датой)", none_of_numeric=[15000.0, 22000.0], none_of_cells=[g.DECOY["inn"]], act_rows_only=True,
+            skip_sheet_regex="(?i)исключ|не\\s*вошл|не\\s*включ"),
         chk("pdf_text_contains", "PDF акта: шапка, период, стороны, сальдо", regex_all=["(?i)акт сверки", "01\\.07\\.2026", "30\\.09\\.2026", "Тест-Поставка", "(?i)Образцов", "116[\\s ]?400[,.]00"]),
         chk("discrepancies", "Найдены 3 расхождения с суммами 78 900,00 / 1 800,00 / 12 000,00 и итоговая разница 92 700,00", amounts=[78900.0, 1800.0, 12000.0], total=A["difference"], where=["reply", "xlsx", "pdf"]),
     ],

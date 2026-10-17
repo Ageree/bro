@@ -209,6 +209,34 @@ class InventoryTest(OfficeTest):
         self.assertEqual(self.run_check(self.ITEM, xlsx_bytes(rows), "opis.xlsx").status, "fail")
 
 
+class ExcludedSheetTest(OfficeTest):
+    """f-1c: the decoy's payments on a sheet of excluded documents are not rows of the act."""
+
+    ITEM = {"kind": "xlsx_contains", "params": {"none_of_numeric": [15000.0], "act_rows_only": True,
+                                                "skip_sheet_regex": "(?i)исключ"}}
+
+    def book(self, act_amount):
+        import datetime as dt
+
+        import openpyxl
+
+        book = openpyxl.Workbook()
+        book.active.title = "Акт сверки"
+        book.active.append([dt.date(2026, 8, 3), "Оплата", act_amount])
+        excluded = book.create_sheet("Исключённые документы")
+        excluded.append([dt.date(2026, 8, 5), "Тест-Поставка Плюс", 15000.0])
+        out = io.BytesIO()
+        book.save(out)
+        return out.getvalue()
+
+    def test_a_sheet_of_excluded_documents_is_not_the_act(self):
+        got = self.run_check(self.ITEM, self.book(9800.0), "akt.xlsx")
+        self.assertEqual(got.status, "pass", got.detail)
+
+    def test_the_amount_in_the_act_itself_fails(self):
+        self.assertEqual(self.run_check(self.ITEM, self.book(15000.0), "akt.xlsx").status, "fail")
+
+
 class RenderNoOverflowTest(OfficeTest):
     ITEM = {"kind": "render_no_overflow", "params": {"max_words": 90, "max_word_overlap": 0.2}}
 

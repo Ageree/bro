@@ -500,7 +500,12 @@ def xlsx_contains(ctx, params, item):
     if hits:
         return failed("есть: " + ", ".join(hits))
     if params.get("none_of_numeric") or params.get("none_of_cells"):
+        # A sheet that lists what was left out («Исключённые документы») is not the act: 17.10 the decoy's payments
+        # stood there, named as excluded.
+        aside = params.get("skip_sheet_regex")
         for name, rows in sheets:
+            if aside and re.search(aside, name):
+                continue
             for r, row in enumerate(rows):
                 if params.get("act_rows_only") and not (any(_is_date(v) for v in row) and any(_number(v) for v in row)):
                     continue
