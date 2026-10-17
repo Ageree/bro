@@ -16,7 +16,8 @@ A tel is brought to +7… by the rules of `brokit ru phone`, an extension after
 its comma (8-495-000-00-01 доб. 123 → +74950000001,123); one those rules cannot
 bring for sure («00-12-34» without a code) is written as given and named in
 `warnings`. A note that is only an extension («доб. 123») on a card with one
-phone without one becomes that phone's extension. Types:
+phone without one becomes that phone's extension, and a birthday in the note
+(«ДР: 12.05») of a contact without `birthday` becomes its birthday. Types:
 cell, work, home, main (written PREF, as Android does), fax; a Russian mobile
 (+79…) without a type is CELL. `address` is a string or {street, city, region,
 postcode, country, type: home|work}; `birthday` is YYYY-MM-DD or DD.MM.YYYY,
@@ -72,6 +73,10 @@ RUSSIAN_MOBILE = re.compile(r"\+79\d{9}(?:,\d+)?")
 WRITTEN_TEL = re.compile(r"\+\d{6,15}(?:,\d{1,6})?")
 # A note that is nothing but an extension: «доб. 123», «вн.12», «ext 5».
 EXTENSION_NOTE = re.compile(r"(?i)(?:доб(?:авочный)?|вн(?:утр(?:енний)?)?|ext)\.?\s*[:.]?\s*(\d{1,6})\.?")
+# A birthday written into a note: «ДР: 12.05», «день рождения 03.11.1985».
+NOTE_BIRTHDAY = re.compile(
+    r"(?i)(?<![^\W\d_])(?:ДР|д\.\s?р\.|день\s+рождения)\s*[:\-–—]?\s*(\d{1,2}\.\d{1,2}(?:\.\d{4})?)(?!\d)\.?"
+)
 CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 
 
@@ -269,6 +274,13 @@ def write(argv):
             tels[0], keys[0] = tels[0] + "," + lone.group(1), keys[0] + "," + lone.group(1)
             warnings.append("%s: the note «%s» is the phone's extension, written after its comma" % (label, note))
             note = ""
+        born = contact.get("birthday")
+        noted = NOTE_BIRTHDAY.search(note) if not born else None
+        if noted:
+            # 17.10 the task agent took «12.05» for no birthday («BDAY needs a year») and noted «ДР: 12.05».
+            born = noted.group(1)
+            note = (note[: noted.start()] + note[noted.end() :]).strip(" ;,")
+            warnings.append("%s: the birthday %s from the note is written as the birthday" % (label, born))
         full = name or " ".join(p for p in (family, given, middle) if p)
         if not full and not org and not tels:
             raise KitError("bad_spec", "contact %d needs a name, an org or a phone" % n, SPEC_HINT)
@@ -298,8 +310,8 @@ def write(argv):
             address = address_line(contact["address"], label, warnings)
             if address:
                 card.append(address)
-        if contact.get("birthday"):
-            card.append("BDAY:" + birthday(contact["birthday"], label))
+        if born:
+            card.append("BDAY:" + birthday(born, label))
         if note:
             card.append("NOTE:" + text(note))
         if company:

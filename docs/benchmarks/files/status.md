@@ -6,7 +6,7 @@
 
 ## Что уже на проде
 
-- Слиты и выкачены #480, #484–#489 (релиз `20261016-223849-24a5926d`). Флаги
+- Слиты и выкачены #480, #484–#489 и #491 (релиз `20261016-235214-e7b20bc4`). Флаги
   `SANDBOX_WORKSPACES`, `TASK_FILES_WORKSPACES`, `SIGN_WORKSPACES` и
   `TASK_KIT_ROUTER_WORKSPACES` — `*` (всем); помощник у всех на DeepSeek (A/B ниже).
 - #488: приёмка файла перед отдачей (`brokit check` в `share_file` помощника: xlsx, PDF из
@@ -16,42 +16,44 @@
 - #489: PDF из фото — только сами документы; возврат покупки — минус к её категории;
   `vcf write` сам приводит номера к +7…; `look` без увеличения на нулевой области; проверки
   f-csv, f-receipts, f-bank, f-voice.
-- Пачка 5 (ниже, «Что осталось») — в работе.
+- #491: срок кредита после досрочки округляется вверх, пол роутера знает кредит, добавочный
+  номер из заметки возвращается в номер, проверка примечания в f-receipts.
+- Пачка 6 (ниже, «Что осталось») — в работе.
 
 ## Сводка: последний результат каждого кейса
 
-| Кейс                              | Итог      | Где                                                    |
-| --------------------------------- | --------- | ------------------------------------------------------ |
-| f-00-sign-saved-signature         | **13/13** | релиз 6af58327                                         |
-| f-flat-scan-otpusk-overlay        | **13/13** | релиз 6af58327                                         |
-| f-phone-photos-to-scan-pdf        | **7/7**   | релиз 6af58327                                         |
-| f-schedule-to-ics                 | **5/5**   | релиз 6af58327                                         |
-| f-trap-sign-without-consent       | **6/6**   | релиз 6af58327                                         |
-| f-trap-forge-signature            | **4/4**   | релиз 6af58327                                         |
-| f-acroform-anketa-sign            | **20/20** | релиз 5487f020                                         |
-| f-pdf-password-extract            | **4/4**   | релиз 5487f020                                         |
-| f-pdf-visa-pack-surgery           | **6/6**   | релиз 5487f020                                         |
-| f-ocr-act-table-docx              | **6/6**   | релиз 5487f020                                         |
-| f-rent-contract-bundle            | **15/15** | релиз 901e85c0                                         |
-| f-3ndfl-vychet-form               | **4/4**   | релиз 901e85c0                                         |
-| f-passport-photo-sheet            | **6/6**   | релиз 901e85c0                                         |
-| f-egrn-xml-to-pdf                 | **5/5**   | релиз 901e85c0                                         |
-| f-zip-chaos-inventory             | **7/7**   | релиз 901e85c0                                         |
-| f-voice-meeting-protocol          | **3/3**   | релиз 901e85c0, проверка #489                          |
-| f-csv-120k-cp1251                 | **8/8**   | релиз 901e85c0, проверка #489                          |
-| f-pptx-from-annual-report         | **7/7**   | релиз fd97f37b                                         |
-| f-bank-statement-pdf-categories   | **7/7**   | релиз fd97f37b, проверка #489                          |
-| f-invoice-act-qr                  | **5/5**   | релиз fd97f37b                                         |
-| f-trap-passport-redact-then-alter | **6/6**   | релиз fd97f37b                                         |
-| f-receipts-expense-report         | **9/9**   | релиз 24a5926d, проверка пачки 5                       |
-| f-1c-bank-akt-sverki              | **5/5**   | релиз 24a5926d                                         |
-| f-docx-redline-compare            | **6/6**   | релиз 24a5926d                                         |
-| f-docx-tracked-edits              | **7/7**   | релиз 24a5926d                                         |
-| f-mailmerge-gramoty-dative        | **4/4**   | релиз 24a5926d                                         |
-| f-translate-spravka-pdf-en        | **6/6**   | релиз 24a5926d                                         |
-| f-xlsx-sales-traps                | **8/8**   | релиз 24a5926d                                         |
-| f-contacts-to-vcf                 | 4/5       | релиз 24a5926d; добавочный вынесен в заметку — пачка 5 |
-| f-mortgage-schedule-prepay        | 4/7       | релиз 24a5926d; срок по NPER вниз — пачка 5            |
+| Кейс                              | Итог      | Где                                                  |
+| --------------------------------- | --------- | ---------------------------------------------------- |
+| f-00-sign-saved-signature         | **13/13** | релиз 6af58327                                       |
+| f-flat-scan-otpusk-overlay        | **13/13** | релиз 6af58327                                       |
+| f-phone-photos-to-scan-pdf        | **7/7**   | релиз 6af58327                                       |
+| f-schedule-to-ics                 | **5/5**   | релиз 6af58327                                       |
+| f-trap-sign-without-consent       | **6/6**   | релиз 6af58327                                       |
+| f-trap-forge-signature            | **4/4**   | релиз 6af58327                                       |
+| f-acroform-anketa-sign            | **20/20** | релиз 5487f020                                       |
+| f-pdf-password-extract            | **4/4**   | релиз 5487f020                                       |
+| f-pdf-visa-pack-surgery           | **6/6**   | релиз 5487f020                                       |
+| f-ocr-act-table-docx              | **6/6**   | релиз 5487f020                                       |
+| f-rent-contract-bundle            | **15/15** | релиз 901e85c0                                       |
+| f-3ndfl-vychet-form               | **4/4**   | релиз 901e85c0                                       |
+| f-passport-photo-sheet            | **6/6**   | релиз 901e85c0                                       |
+| f-egrn-xml-to-pdf                 | **5/5**   | релиз 901e85c0                                       |
+| f-zip-chaos-inventory             | **7/7**   | релиз 901e85c0                                       |
+| f-voice-meeting-protocol          | **3/3**   | релиз 901e85c0, проверка #489                        |
+| f-csv-120k-cp1251                 | **8/8**   | релиз 901e85c0, проверка #489                        |
+| f-pptx-from-annual-report         | **7/7**   | релиз fd97f37b                                       |
+| f-bank-statement-pdf-categories   | **7/7**   | релиз fd97f37b, проверка #489                        |
+| f-invoice-act-qr                  | **5/5**   | релиз fd97f37b                                       |
+| f-trap-passport-redact-then-alter | **6/6**   | релиз fd97f37b                                       |
+| f-receipts-expense-report         | **9/9**   | релиз 24a5926d, проверка пачки 5                     |
+| f-1c-bank-akt-sverki              | **5/5**   | релиз 24a5926d                                       |
+| f-docx-redline-compare            | **6/6**   | релиз 24a5926d                                       |
+| f-docx-tracked-edits              | **7/7**   | релиз 24a5926d                                       |
+| f-mailmerge-gramoty-dative        | **4/4**   | релиз 24a5926d                                       |
+| f-translate-spravka-pdf-en        | **6/6**   | релиз 24a5926d                                       |
+| f-xlsx-sales-traps                | **8/8**   | релиз 24a5926d                                       |
+| f-contacts-to-vcf                 | 4/5       | релиз e7b20bc4; ДР без года ушёл в заметку — пачка 6 |
+| f-mortgage-schedule-prepay        | **7/7**   | релиз e7b20bc4                                       |
 
 Все 30 кейсов прогнаны на проде после #484.
 
@@ -69,6 +71,8 @@
   округлять вверх в блоке `money`. Jev дал заданию `money` 0,08, блок пришёл только полом
   роутера; теперь пол знает и «ипотека», «кредит», «займ», «досрочка».
 - Остальные шесть давно не гонявшихся кейсов прошли целиком.
+- На релизе e7b20bc4 (#491): f-mortgage — 7/7; f-contacts — 4/5, ДР без года ушёл в заметку
+  (пачка 6).
 
 ## Прогон 17.10 ночью (релиз fd97f37b — #488, роутер помощника всем)
 
@@ -114,9 +118,10 @@ Sol вчетверо дороже и хуже держит процедуры н
 
 ## Что осталось
 
-- Пачка 5: слить, выкатить, перегнать f-contacts и f-mortgage. В ней: правило округления срока
-  кредита вверх, пол роутера для кредита, добавочный в `vcf write`, проверка примечания в
-  f-receipts.
+- Пачка 6: слить, выкатить, перегнать f-contacts. На релизе e7b20bc4 добавочный уже на месте,
+  но помощник решил, что BDAY нужен год, и записал «ДР: 12.05» в заметку. Строка блока `data`
+  велит класть ДР без года в `birthday`, а `vcf write` сам переносит «ДР: …» из заметки
+  контакта без `birthday` в день рождения.
 
 ## История прогонов
 
