@@ -1,4 +1,4 @@
-"""brokit img convert / resize / rotate / crop.
+"""brokit img convert / resize / rotate / crop / redact.
 
 Pillow with the EXIF orientation applied first, so «up» is what the person saw.
 The output format follows the extension; JPEG gets RGB on white. HEIC is not
@@ -134,18 +134,45 @@ def rotate(argv):
     return write(image, args.output, args.quality)
 
 
+def box_on(text, image, pad=0):
+    try:
+        x0, y0, x1, y1 = (round(float(v)) for v in text.split(","))
+    except ValueError:
+        raise KitError("bad_args", "--box is x0,y0,x1,y1")
+    x0, x1 = sorted((x0, x1))
+    y0, y1 = sorted((y0, y1))
+    x0, y0 = max(0, x0 - pad), max(0, y0 - pad)
+    x1, y1 = min(image.width, x1 + pad), min(image.height, y1 + pad)
+    if x1 - x0 < 1 or y1 - y0 < 1:
+        raise KitError("bad_box", "the box is outside the image (%dx%d)" % image.size)
+    return x0, y0, x1, y1
+
+
 def crop(argv):
     p = common("img crop")
     p.add_argument("--box", required=True, help="x0,y0,x1,y1 in pixels (as look shows them)")
     args = p.parse_args(argv)
     out_path(args.output, args.input)
     image = load(args.input)
-    try:
-        x0, y0, x1, y1 = (round(float(v)) for v in args.box.split(","))
-    except ValueError:
-        raise KitError("bad_args", "--box is x0,y0,x1,y1")
-    x0, x1 = sorted((max(0, x0), min(image.width, x1)))
-    y0, y1 = sorted((max(0, y0), min(image.height, y1)))
-    if x1 - x0 < 1 or y1 - y0 < 1:
-        raise KitError("bad_box", "the box is outside the image (%dx%d)" % image.size)
-    return write(image.crop((x0, y0, x1, y1)), args.output, args.quality)
+    return write(image.crop(box_on(args.box, image)), args.output, args.quality)
+
+
+def redact(argv):
+    """Solid black rectangles: a cut-out or a piece of the original put back would leak the block."""
+    from PIL import ImageDraw
+
+    p = common("img redact")
+    p.add_argument("--box", action="append", required=True, help="x0,y0,x1,y1 in pixels (as look shows them); one per block")
+    p.add_argument("--pad", type=int, default=6, help="pixels added on every side")
+    args = p.parse_args(argv)
+    out_path(args.output, args.input)
+    image = load(args.input)
+    if image.mode not in ("L", "RGB", "RGBA"):
+        image = image.convert("RGBA")
+    boxes = [box_on(text, image, max(0, args.pad)) for text in args.box]
+    draw = ImageDraw.Draw(image)
+    for x0, y0, x1, y1 in boxes:
+        draw.rectangle((x0, y0, x1 - 1, y1 - 1), fill="black")
+    result = write(image, args.output, args.quality)
+    result["boxes"] = [list(box) for box in boxes]
+    return result
