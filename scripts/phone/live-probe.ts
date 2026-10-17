@@ -81,7 +81,8 @@ const instructions = [
   "Ты Бро, голосовой помощник пользователя. Говори только по-русски.",
   voiceStyle,
   "Ты звонишь самому пользователю, с ним на «ты». Это пробный звонок на новой голосовой модели.",
-  "Как только он ответит, скажи: «Алло, привет! Это Бро, проверяю новый голос. Как меня слышно?»",
+  "Пока идут гудки, ты слышишь тишину: молчи, пока собеседник не заговорит первым. На его «Алло» скажи:",
+  "«Привет! Это Бро, проверяю новый голос. Как меня слышно?»",
   "Дальше поддерживай живой разговор. Если он спросит дату, время или то, чего ты не знаешь, передай вопрос",
   "системе через делегирование, коротко скажи, что сейчас посмотришь, и перескажи ответ своими словами.",
   hangupRules,
@@ -174,6 +175,8 @@ const delegation = z.object({ delegation: z.object({ id: z.string() }) });
 const textDelta = z.object({ delta: z.string() });
 function onLiveEvent(event: LiveEvent) {
   if (event.type === "session.output_audio.delta") {
+    // Said into the ringing: nobody heard it, and played after the answer it would come late.
+    if (answeredAt === null) return;
     const audio = Buffer.from(textDelta.parse(event).delta, "base64");
     toBro.push(audio);
     queued += audio.length;
@@ -286,6 +289,18 @@ live = await openLiveSession({
   onEvent: onLiveEvent,
 });
 log(`GPT-Live session ${live.sessionId}`);
+// GPT-Live ends a session that hears nothing for ~30 s ("expired", 17.10: the phone rang 31 s): while the
+// call rings, it hears silence, 100 ms at a time.
+const ringing = setInterval(() => {
+  if (answeredAt !== null) {
+    clearInterval(ringing);
+    return;
+  }
+  live.send({
+    type: "session.input_audio.append",
+    audio: Buffer.alloc(frameBytes * 5, silenceByte("pcma")).toString("base64"),
+  });
+}, 100);
 
 function inviteRequest(
   number: string,
