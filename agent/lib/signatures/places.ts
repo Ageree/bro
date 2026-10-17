@@ -140,6 +140,35 @@ const planPlace = ({ field, labels, mark, pages, role }: Grouped) => ({
 });
 
 /**
+ * Pages of the plan's signatures whose printed name is still empty: a form
+ * field the kit hints `name` and labels «расшифровка», unfilled. A signed
+ * form goes out with it only after the task agent writes the name (17.10:
+ * Bro told it to leave the field, and the form went out without it).
+ */
+export function unnamedSignaturePages(
+  inventory: PlaceInventory,
+  plan: SigningPlan
+) {
+  const signed = new Set(
+    plan.places
+      .filter((place) => place.role === "signature")
+      .flatMap((place) => place.pages)
+  );
+  const pages = inventory.places
+    .filter(
+      (place) =>
+        !place.hidden &&
+        place.type === "text" &&
+        place.empty &&
+        place.hint === "name" &&
+        /расшифр/u.test(foldedLabel(place.label)) &&
+        signed.has(place.page)
+    )
+    .map((place) => place.page);
+  return [...new Set(pages)].toSorted((a, b) => a - b);
+}
+
+/**
  * Which places of the PDF a signing fills, decided here over the kit's
  * inventory (`listPlaces`): the fields the person chose (`fields`), else the
  * places the task agent marked with this workspace's token in a file it
