@@ -62,7 +62,10 @@ import {
   signRequest,
 } from "@agent/lib/signatures/consent";
 import { signEnabled, signOfCaller } from "@agent/lib/signatures/pilot";
-import { choosePlaces } from "@agent/lib/signatures/places";
+import {
+  choosePlaces,
+  unnamedSignaturePages,
+} from "@agent/lib/signatures/places";
 import { signingQuestion } from "@agent/lib/signatures/question";
 import { turnKind, type TurnKind } from "@agent/lib/turn-kind/kind";
 import {
@@ -140,6 +143,8 @@ const sameTaskReply = {
     "The PDF is password-protected. Continue the SAME task (same agentId): remove the password (`brokit pdf decrypt`, the person's password if needed) and share the file again.",
   no_places:
     "No place to sign is marked. Continue the SAME task (same agentId): ask it to mark the person's own signature places (and initials, and the date beside the signature) with `brokit pdf sign-mark` and share_file the result again; then prepare with the new link.",
+  unnamed:
+    "The printed name beside the signature («расшифровка») is empty on `pages`. Have the task agent (the SAME task, same agentId; a PDF the person sent — a new task) write the signer's surname and initials there as text (Фамилия И. О.) and share_file the result; then prepare with the new link. Nothing is signed yet.",
   unreadable:
     "Could not read this PDF; continue the SAME task (same agentId) to re-save it (`brokit pdf merge FILE -o OUT`) and share it again.",
   xfa: "An XFA form cannot be signed: continue the SAME task (same agentId) to produce a flat PDF with the same content and mark places.",
@@ -154,6 +159,7 @@ const refusals = {
   file_unavailable:
     "Use the share_file link from the task report as is, or the attachment path of a PDF the person sent.",
   no_places: sameTaskReply.no_places,
+  unnamed: sameTaskReply.unnamed,
   no_signature:
     "Ask the person, in one question, for a photo of their own signature (dark pen on plain white paper) or their name for a handwriting font; save it with `signature`, then prepare again.",
   not_pdf: sameTaskReply.unreadable,
@@ -392,7 +398,7 @@ async function prepare(
       Pick<
         Extract<ReturnType<typeof choosePlaces>, { kind: "unknown_field" }>,
         "candidates" | "unknown"
-      >
+      > & { readonly pages: readonly number[] }
     > = {}
   ) => {
     logSign("prepare", status, started);
@@ -497,6 +503,8 @@ async function prepare(
     });
   }
   if (chosen.kind !== "ok") return refuse(chosen.kind);
+  const unnamed = unnamedSignaturePages(listed.inventory, chosen.plan);
+  if (unnamed.length > 0) return refuse("unnamed", { pages: unnamed });
   // The day the person named stands at confirm on any later day.
   const plan =
     input.date === undefined

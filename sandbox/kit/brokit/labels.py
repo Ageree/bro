@@ -176,8 +176,13 @@ def label_parts(words, box):
     """(label text, bounding box of the words it came from or None); see label_for."""
     x0, y0, x1, y1 = box
     height = max(y1 - y0, 8.0)
+    beside = [w for w in words if y0 - 0.5 * height <= _centre(w["box"])[1] <= y1 + 0.25 * height and w["box"][2] <= x0 + 2]
+    # A tall box (a mark drawn over two printed lines) reaches more than one line: only the line nearest
+    # its middle names it, or «Наймодатель» of the line above joined «Наниматель 01.11.2026» (17.10).
+    middle = (y0 + y1) / 2
+    line = min((_centre(w["box"])[1] for w in beside), key=lambda cy: abs(cy - middle), default=None)
     same_row = sorted(
-        (w for w in words if y0 - 0.5 * height <= _centre(w["box"])[1] <= y1 + 0.25 * height and w["box"][2] <= x0 + 2),
+        (w for w in beside if abs(_centre(w["box"])[1] - line) <= 0.5 * (w["box"][3] - w["box"][1])),
         key=lambda w: -w["box"][2],
     )
     left, edge = [], x0

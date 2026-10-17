@@ -8,6 +8,7 @@ import type { DocumentSigning } from "@db/schema/signatures";
 import type * as samples from "@db/services/signatures/samples";
 import type * as signings from "@db/services/signatures/signings";
 import type * as files from "@agent/lib/sandbox/files";
+import type { PlaceInventory } from "@agent/lib/signatures/commands";
 import type { runFreshKit } from "@agent/lib/sandbox/kit";
 import {
   ContextContainer,
@@ -129,7 +130,7 @@ const plan = {
   ],
 };
 
-const inventory = {
+const inventory: PlaceInventory = {
   ok: true,
   pages: 1,
   places: plan.places.map((place, index) => ({
@@ -710,6 +711,35 @@ describe("signing at the person's own request", () => {
       await prepareInReport(messages, { date: "18.10.2026" })
     ).toMatchObject({ status: "signed" });
     expect(stampRuns()).toHaveLength(2);
+  });
+
+  it("signs nothing while the printed name beside the signature is empty", async () => {
+    const decoding = {
+      bro: null,
+      empty: true,
+      field: "sign_decoding",
+      hidden: false,
+      hint: "name",
+      label: "(расшифровка)",
+      marked: false,
+      page: 1,
+      type: "text",
+    };
+    inventory.places.push(decoding);
+    try {
+      const messages = reported("Заполни анкету и подпиши");
+      expect(await prepareInReport(messages)).toMatchObject({
+        pages: [1],
+        status: "unnamed",
+      });
+      expect(stampRuns()).toHaveLength(0);
+      decoding.empty = false;
+      expect(await prepareInReport(messages)).toMatchObject({
+        status: "signed",
+      });
+    } finally {
+      inventory.places.pop();
+    }
   });
 
   it("signs one of two documents prepared in the same step at once", async () => {
