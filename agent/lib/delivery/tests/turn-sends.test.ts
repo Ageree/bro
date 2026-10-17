@@ -11,6 +11,7 @@ import {
   turnMessageLimit,
   turnMustEnd,
   turnOpenedByBackgroundTask,
+  turnReportsTaskCorrection,
   turnSends,
 } from "@agent/lib/delivery/turn-sends";
 import { backgroundTurnMarker } from "@shared/chat/background-turn";
@@ -2851,6 +2852,37 @@ describe("turnOpenedByBackgroundTask", () => {
     expect(turnOpenedByBackgroundTask([person, taskReport])).toBe(true);
     expect(turnOpenedByBackgroundTask([taskReport, browserReport])).toBe(false);
     expect(turnOpenedByBackgroundTask([taskReport, person])).toBe(false);
+  });
+});
+
+describe("turnReportsTaskCorrection", () => {
+  const report = (result: string) =>
+    tagged(
+      `Background task task_0998 (task) is completed.\n\nResult:\n${result}`,
+      "execution.background_task"
+    );
+
+  it("finds the change to Bro's task on the report's first line", () => {
+    const changed = report(
+      "**Расхождение с заданием (первой строкой):** конец отпуска — не 16, а 17.11.2026.\nВписано: всё."
+    );
+
+    expect(turnReportsTaskCorrection([changed])).toBe(true);
+    expect(
+      turnReportsTaskCorrection([report("Расхождение с задачей: родительный.")])
+    ).toBe(true);
+  });
+
+  it("does not take a report without one, or one that says there is none", () => {
+    expect(turnReportsTaskCorrection([report("Готово.")])).toBe(false);
+    expect(
+      turnReportsTaskCorrection([
+        report("Готово.\n\nРасхождений с REQUEST.txt нет."),
+      ])
+    ).toBe(false);
+    expect(
+      turnReportsTaskCorrection([tagged("Расхождение с задачей: нет", "user")])
+    ).toBe(false);
   });
 });
 
