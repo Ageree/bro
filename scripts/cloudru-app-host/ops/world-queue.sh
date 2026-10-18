@@ -5,8 +5,9 @@
 #
 # Prints, SAMPLES times (1) EVERY_S seconds apart (5), the graphile-worker jobs by task: how many, how many
 # are due and free, locked, waiting for a later run_at, the age of the oldest due free one, and the open
-# Postgres sessions that LISTEN (graphile's NOTIFY path; without one a job waits for the 0.5 s poll). Counts
-# and seconds only: a job's payload carries the session's events and is never read.
+# Postgres sessions that LISTEN (graphile's NOTIFY path; without one a job waits for the 0.5 s poll), and the
+# same by the queue a job is for (the world's workflow or step name, `payload->>'id'`). Counts, seconds and
+# those names only: the payload's body carries the session's events and is never read.
 source "$(dirname "$0")/db-lib.sh"
 SAMPLES=${1:-1}
 EVERY=${2:-5}
@@ -30,6 +31,17 @@ FROM graphile_worker._private_jobs j
 JOIN graphile_worker._private_tasks t ON t.id = j.task_id
 GROUP BY t.identifier
 ORDER BY jobs DESC;
+SELECT left(j.payload->>'id', 60) AS queue,
+       count(*) AS jobs,
+       count(*) FILTER (WHERE j.is_available AND j.run_at <= now()) AS due_free,
+       count(*) FILTER (WHERE j.locked_at IS NOT NULL) AS locked,
+       count(*) FILTER (WHERE j.run_at > now() AND j.run_at <= now() + interval '10 minutes') AS within_10m,
+       count(*) FILTER (WHERE j.run_at > now() + interval '10 minutes') AS later,
+       round(avg(j.attempts)::numeric, 1) AS attempts_avg
+FROM graphile_worker._private_jobs j
+GROUP BY 1
+ORDER BY jobs DESC
+LIMIT 12;
 SELECT count(*) FILTER (WHERE query ILIKE 'LISTEN%') AS listening,
        count(*) AS sessions
 FROM pg_stat_activity
