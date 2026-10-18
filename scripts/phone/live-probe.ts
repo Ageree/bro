@@ -8,10 +8,13 @@ import {
   toLinear,
   transcode,
   type Law,
-} from "./live/g711.ts";
-import { openLiveSession, type LiveEvent } from "./live/gpt-live.ts";
-import { frameBytes, frameMs, openRtp } from "./live/rtp.ts";
-import { sdpAnswer, sdpOffer } from "./live/sdp.ts";
+} from "@agent/lib/phone/live/g711";
+import {
+  openLiveSession,
+  type LiveEvent,
+} from "@agent/lib/phone/live/gpt-live";
+import { frameBytes, frameMs, openRtp } from "@agent/lib/phone/live/rtp";
+import { sdpAnswer, sdpOffer } from "@agent/lib/phone/live/sdp";
 import {
   digest,
   header,
@@ -22,7 +25,7 @@ import {
   token,
   uriOf,
   type SipMessage,
-} from "./live/sip.ts";
+} from "@agent/lib/phone/live/sip";
 
 // One test call through the bridge: Exolve's SIP leg (TCP signalling, G.711 over RTP) on this VM, the voice
 // in GPT-Live over a WebSocket. Prints the gaps between the far side's speech and Bro's, both transcripts,
@@ -72,7 +75,8 @@ const within = <T>(promise: Promise<T>, ms: number) =>
 
 const { env } = await import("@shared/environment");
 const { findSip, readSipCredentials } = await import("@shared/phone/exolve");
-const { hangupRules, voiceStyle } = await import("@shared/phone/persona");
+const { hangupRules, liveVoice, voiceStyle } =
+  await import("@shared/phone/persona");
 if (!env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not set.");
 
 // 18.10 the session did not start twice in a row, with no error: which hop hangs, the proxy or OpenAI
@@ -341,7 +345,7 @@ live = await openLiveSession({
     instructions,
     audio: {
       format: { type: "audio/pcma", rate: 8000 },
-      output: { voice: "marin" },
+      output: { voice: liveVoice },
     },
     delegation: { type: "client" },
   },

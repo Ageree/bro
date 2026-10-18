@@ -8,6 +8,12 @@ import {
 import { toolContext } from "@tests/helpers/tool-context";
 
 const services = vi.hoisted(() => ({
+  accepted: vi.fn<() => void>(),
+  liveCalls: vi.fn<() => boolean>(() => false),
+  placeLiveCall:
+    vi.fn<
+      () => Promise<{ sessionId: string; dial: () => void; cancel: () => void }>
+    >(),
   notSubmitted: vi.fn<() => void>(),
   startCall:
     vi.fn<() => Promise<{ accepted: boolean; conversationId: string }>>(),
@@ -31,7 +37,7 @@ vi.mock("@db/services/phone", () => ({
     sipId: "sip",
   }),
   readPhoneNumberRequest: vi.fn<() => void>(),
-  recordCallAccepted: vi.fn<() => void>(),
+  recordCallAccepted: services.accepted,
   recordCallNotSubmitted: services.notSubmitted,
   recordCallUncertain: vi.fn<() => void>(),
   savePhoneQuote: vi.fn<() => void>(),
@@ -45,6 +51,10 @@ vi.mock("@shared/phone/elevenlabs", () => ({
   CallNotSubmittedError: class CallNotSubmittedError extends Error {},
   requirePhoneAgentReady: async () => undefined,
   startCall: services.startCall,
+}));
+vi.mock("@agent/lib/phone/live/place", () => ({
+  liveCallsFor: services.liveCalls,
+  placeLiveCall: services.placeLiveCall,
 }));
 vi.mock("@agent/lib/phone/route", () => ({
   phoneReportRoute: () => ({
@@ -151,6 +161,9 @@ function inContext(run: () => Promise<void>) {
 const task = "Забронировать столик на двоих на 20:00.";
 
 beforeEach(() => {
+  services.accepted.mockReset();
+  services.liveCalls.mockReturnValue(false);
+  services.placeLiveCall.mockReset();
   services.startCall.mockReset();
   services.startCall.mockResolvedValue({
     accepted: true,
@@ -232,6 +245,59 @@ describe("phone-call on the person's request", () => {
         phone.dial("call-1", { target: "+79991234567", task })
       ).rejects.toThrow(/root-user message/u);
       expect(services.startCall).not.toHaveBeenCalled();
+    })
+  );
+});
+
+describe("phone-call in GPT-Live", () => {
+  it(
+    "records the call as accepted before it dials, and ElevenLabs stays out",
+    inContext(async () => {
+      const order: string[] = [];
+      services.liveCalls.mockReturnValue(true);
+      services.accepted.mockImplementation(() => {
+        order.push("accepted");
+      });
+      services.placeLiveCall.mockResolvedValue({
+        sessionId: "live_1",
+        dial: () => {
+          order.push("dial");
+        },
+        cancel: vi.fn<() => void>(),
+      });
+      const phone = await setUp([person("Набери +7 495 123-45-67")]);
+      const target = "+74951234567";
+      await phone.decide("call-1", { target, task });
+      expect(await phone.dial("call-1", { target, task })).toMatchObject({
+        state: "accepted",
+      });
+      expect(services.accepted).toHaveBeenCalledWith("local-call", "live_1");
+      expect(order).toEqual(["accepted", "dial"]);
+      expect(services.startCall).not.toHaveBeenCalled();
+    })
+  );
+
+  it(
+    "places the call through ElevenLabs when GPT-Live was not ready before dialling",
+    inContext(async () => {
+      const { LiveCallUnavailableError } =
+        await import("@agent/lib/phone/live/call");
+      services.liveCalls.mockReturnValue(true);
+      services.placeLiveCall.mockRejectedValue(
+        new LiveCallUnavailableError("GPT-Live did not start the session.")
+      );
+      const phone = await setUp([person("Набери +7 495 123-45-67")]);
+      const target = "+74951234567";
+      await phone.decide("call-1", { target, task });
+      expect(await phone.dial("call-1", { target, task })).toMatchObject({
+        state: "accepted",
+      });
+      expect(services.startCall).toHaveBeenCalledTimes(1);
+      expect(services.accepted).toHaveBeenCalledWith(
+        "local-call",
+        "conversation-1",
+        true
+      );
     })
   );
 });

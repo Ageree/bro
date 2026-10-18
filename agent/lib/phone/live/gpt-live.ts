@@ -17,7 +17,10 @@ export async function openLiveSession(options: {
   proxyUrl?: string;
   session: Record<string, z.core.util.JSONType>;
   onEvent: (event: LiveEvent) => void;
+  /** How long `session.started` may take; the socket is closed when it does not come. */
+  startTimeoutMs?: number;
 }) {
+  const startTimeoutMs = options.startTimeoutMs ?? 30_000;
   const init: ConstructorParameters<typeof WebSocket>[1] = {
     headers: { Authorization: `Bearer ${options.apiKey}` },
   };
@@ -31,12 +34,13 @@ export async function openLiveSession(options: {
   let opened = false;
   const sessionId = await new Promise<string>((resolve, reject) => {
     const timer = setTimeout(() => {
+      socket.close();
       reject(
         new Error(
-          `GPT-Live did not start the session in 30 s (${opened ? "the socket opened" : "the socket never opened"}).`
+          `GPT-Live did not start the session in ${String(startTimeoutMs / 1000)} s (${opened ? "the socket opened" : "the socket never opened"}).`
         )
       );
-    }, 30_000);
+    }, startTimeoutMs);
     socket.addEventListener("error", (event) => {
       reject(new Error(`GPT-Live connection failed: ${event.message}`));
     });
@@ -58,16 +62,24 @@ export async function openLiveSession(options: {
       );
     });
     socket.addEventListener("message", (message) => {
-      const parsed = liveEvent.safeParse(
-        JSON.parse(z.string().parse(message.data))
-      );
-      if (!parsed.success) return;
-      const session = started.safeParse(parsed.data);
-      if (session.success) {
-        clearTimeout(timer);
-        resolve(session.data.session.id);
+      // A throw in this listener would be an uncaught exception of the whole process (eve carries the calls):
+      // an event that does not parse, or a handler that fails on one, is dropped and noted.
+      try {
+        const text = z.string().safeParse(message.data);
+        if (!text.success) return;
+        const parsed = liveEvent.safeParse(JSON.parse(text.data));
+        if (!parsed.success) return;
+        const session = started.safeParse(parsed.data);
+        if (session.success) {
+          clearTimeout(timer);
+          resolve(session.data.session.id);
+        }
+        options.onEvent(parsed.data);
+      } catch (error) {
+        console.warn("[phone-live] a GPT-Live event was dropped", {
+          reason: error instanceof Error ? error.message : "unknown",
+        });
       }
-      options.onEvent(parsed.data);
     });
   });
   return {

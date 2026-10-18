@@ -185,16 +185,23 @@ export async function openSip(options: {
     options.log(`SIP connection: ${error.message}`);
   });
   socket.setKeepAlive(true, 15_000);
+  // Keyed by Via branch and CSeq method: a CANCEL shares its INVITE's branch (RFC 3261 §9.1), and its own 200
+  // must not settle the INVITE (18.10 review: a ring timeout read as an answered call).
   const waiting = new Map<
     string,
     {
       onProvisional: (message: SipMessage) => void;
       resolve: (message: SipMessage) => void;
+      reject: (error: Error) => void;
     }
   >();
   let buffer: Buffer = Buffer.alloc(0);
   const closed = new Promise<void>((resolve) => {
     socket.once("close", () => {
+      // No answer can come any more: whoever waits for one hears so, rather than waiting forever.
+      for (const entry of waiting.values())
+        entry.reject(new Error("The SIP connection closed."));
+      waiting.clear();
       resolve();
     });
   });
@@ -242,11 +249,13 @@ export async function openSip(options: {
         continue;
       }
       const branch = branchOf(message);
-      const entry = branch ? waiting.get(branch) : undefined;
+      const method = header(message, "cseq")?.split(/\s+/u)[1];
+      const key = `${branch ?? ""} ${method ?? ""}`;
+      const entry = waiting.get(key);
       if (!entry) continue;
       if (code < 200) entry.onProvisional(message);
       else {
-        waiting.delete(branch ?? "");
+        waiting.delete(key);
         entry.resolve(message);
       }
     }
@@ -255,14 +264,25 @@ export async function openSip(options: {
     localAddress: socket.localAddress ?? "0.0.0.0",
     localPort: socket.localPort ?? 0,
     closed,
-    /** Sends a request whose Via carries `branch`; resolves with its final response. */
+    /**
+     * Sends a request whose Via carries `branch`; resolves with its final response, rejects when the connection
+     * closes before one comes.
+     */
     request(
       text: string,
       branch: string,
       onProvisional: (message: SipMessage) => void = () => undefined
     ) {
-      return new Promise<SipMessage>((resolve) => {
-        waiting.set(branch, { onProvisional, resolve });
+      return new Promise<SipMessage>((resolve, reject) => {
+        if (socket.destroyed) {
+          reject(new Error("The SIP connection closed."));
+          return;
+        }
+        waiting.set(`${branch} ${text.split(" ")[0] ?? ""}`, {
+          onProvisional,
+          resolve,
+          reject,
+        });
         write(text);
       });
     },

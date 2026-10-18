@@ -1,4 +1,4 @@
-import type { Law } from "./g711.ts";
+import type { Law } from "./g711";
 
 // RFC 4566/3264 for one audio stream: we offer A-law first (GPT-Live takes it as is), μ-law second, and
 // DTMF events, whose packets the bridge drops.

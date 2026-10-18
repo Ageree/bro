@@ -34,6 +34,8 @@ import {
   savePhoneQuote,
 } from "@db/services/phone";
 import { env } from "@shared/environment";
+import { LiveCallUnavailableError } from "@agent/lib/phone/live/call";
+import { liveCallsFor, placeLiveCall } from "@agent/lib/phone/live/place";
 import { phoneReportRoute } from "@agent/lib/phone/route";
 import type { DynamicResolveContext } from "eve";
 import { turnAwaitsAnswer } from "@agent/lib/delivery/questions";
@@ -302,6 +304,41 @@ async function placeCall(
     target,
     started.id
   ).catch(() => false);
+  if (liveCallsFor(scope.workspaceId)) {
+    // GPT-Live first; when it throws, nothing reached the carrier, and ElevenLabs places the same call.
+    let live: Awaited<ReturnType<typeof placeLiveCall>> | null = null;
+    try {
+      live = await placeLiveCall({
+        callId: started.id,
+        sipId: number.sipId,
+        publicNumber: number.number,
+        target,
+        task: input.task,
+        familiar: input.familiar,
+        repeatCall,
+      });
+    } catch (error) {
+      if (!(error instanceof LiveCallUnavailableError)) throw error;
+      console.warn("[phone-live] not ready, the call goes through ElevenLabs", {
+        reason: error.message,
+      });
+    }
+    if (live) {
+      try {
+        await recordCallAccepted(started.id, live.sessionId);
+      } catch (error) {
+        live.cancel();
+        throw error;
+      }
+      live.dial();
+      return {
+        callId: started.id,
+        state: "accepted",
+        initiationAccepted: true,
+        note: "The call is being dialled; this does not prove a connection or task success. The result will be reported here.",
+      };
+    }
+  }
   try {
     const accepted = await startCall({
       phoneNumberId: number.outboundPhoneNumberId,
