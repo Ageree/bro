@@ -46,6 +46,15 @@ export async function stepContextPilot(
   });
 }
 
+/**
+ * Whether STEP_CONTEXT_WORKSPACES names a workspace by id or `*`, without a
+ * lookup: an owner's email there reads as not named.
+ */
+export function stepContextListedWorkspace(workspaceId: string) {
+  const list = env.STEP_CONTEXT_WORKSPACES ?? [];
+  return list.includes("*") || list.includes(workspaceId);
+}
+
 /** `stepContextPilot` of the session's caller, for the turn `turn`. */
 async function callerPilot(
   session: Pick<DynamicResolveContext["session"], "auth">,

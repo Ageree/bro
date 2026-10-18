@@ -336,3 +336,17 @@ describe("calls RunInfra does not serve stay on RouterAI", () => {
     expect(urls(sent)).toEqual(["routerai"]);
   });
 });
+
+describe("RunInfra's build of the model", () => {
+  it("is the one RUNINFRA_DEEPSEEK_FLASH_MODEL names", async () => {
+    vi.stubEnv("RUNINFRA_DEEPSEEK_FLASH_MODEL", "deepseek-v4-1-flash-1017");
+    const sent = network([], [streamed(runInfraStream("Да"))]);
+
+    await (
+      await modelFetch()
+    )(routerAiUrl, routerAiCall());
+
+    expect(urls(sent)).toEqual(["runinfra"]);
+    expect(sent[0]?.body).toMatchObject({ model: "deepseek-v4-1-flash-1017" });
+  });
+});

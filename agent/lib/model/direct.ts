@@ -40,6 +40,7 @@ import { dsmlToolCallsMiddleware } from "./dsml";
 import { modelEndpoint } from "./endpoint";
 import type { Prompt, PromptMessage, ToolOutput } from "./prompt";
 import { routerAiModelFetch } from "./routerai/fetch";
+import { warmCallMiddleware } from "./routerai/warm";
 import { watchedModelFetch } from "./stream-watchdog";
 import { toolImagesMiddleware } from "./tool-images";
 
@@ -1499,6 +1500,11 @@ export function directModelSelection(
      * (`toolImagesMiddleware`). Never set for Bro's own steps.
      */
     readonly toolImages?: { readonly sessionId: string };
+    /**
+     * A person's conversation (eve's session id) whose prompt RunInfra's
+     * cache keeps through a pause (`warm.ts`, PROMPT_WARM_WORKSPACES).
+     */
+    readonly warmConversation?: string;
     /** Tools this step may not call, though the turn has them. */
     readonly withheldTools?: readonly string[];
   }
@@ -1538,7 +1544,13 @@ export function directModelSelection(
       : options.toolChoice;
 
   const middleware = [
-    // Outermost: it reads the price the one below puts where eve reads it.
+    // Around every other: the call that reaches RunInfra is the
+    // conversation's, whichever middleware makes it.
+    ...(options.warmConversation
+      ? [warmCallMiddleware(options.warmConversation)]
+      : []),
+    // Outermost of the rest: it reads the price the one below puts where eve
+    // reads it.
     ...(options.compaction
       ? [compactionCallMiddleware(options.compaction.cost)]
       : []),

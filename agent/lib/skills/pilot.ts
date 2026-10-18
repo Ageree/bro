@@ -31,6 +31,11 @@ function listed(list: readonly string[], workspaceId: string) {
   return list.includes("*") || list.includes(workspaceId);
 }
 
+/** Whether SKILLS_WORKSPACES names a workspace, by id or `*`. */
+export function skillsListedWorkspace(workspaceId: string) {
+  return listed(env.SKILLS_WORKSPACES ?? [], workspaceId);
+}
+
 /**
  * Whether the workspace of this turn is in the skills pilot
  * (`SKILLS_WORKSPACES`, docs/roadmap.md item 24). The same answer for every

@@ -35,6 +35,7 @@ import {
   type RouterState,
   writeRouterState,
 } from "./state";
+import { routerAnswerAhead } from "./prefetch";
 import { routerTurnText } from "./state-string";
 import { askRouterQuestions } from "./system-one";
 
@@ -651,10 +652,13 @@ export async function routerGroupsOfStep(
   let decision: RouterDecision | undefined;
   let pending: LateDecision | undefined =
     late?.settled === undefined ? late : undefined;
+  // A channel may have asked about this turn before eve started it.
+  const answeredAhead =
+    choice.ask === "turn" ? routerAnswerAhead(text.digest) : undefined;
   if (choice.ask !== undefined) {
-    const asking = askRouterQuestions(text.state, routerWaitMs).then(
-      routerDecision
-    );
+    const asking = (
+      answeredAhead ?? askRouterQuestions(text.state, routerWaitMs)
+    ).then(routerDecision);
     if (mode === "on" && choice.ask === "turn") {
       decision = await asking;
     } else {
@@ -690,6 +694,7 @@ export async function routerGroupsOfStep(
   });
   if (step.turnId !== undefined) writeRouterState(outcome.state);
   console.info("[tool-router]", {
+    ahead: answeredAhead !== undefined,
     blockChanged: outcome.blockChanged,
     decided: outcome.decided,
     failure:

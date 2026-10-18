@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { env } from "@shared/environment";
 import { watchedModelFetch } from "../stream-watchdog";
+import { keepWarm } from "./warm";
 
 /**
  * RunInfra serves Bro's chat model ahead of RouterAI. Measured 11.10 on a
@@ -22,7 +23,7 @@ const backend = "RunInfra";
 
 /** Bro's model ids on RouterAI and the ids RunInfra serves them under. */
 const hosted: ReadonlyMap<string, string> = new Map([
-  ["deepseek/deepseek-v4.1-flash", "deepseek-v4-1-flash"],
+  ["deepseek/deepseek-v4.1-flash", env.RUNINFRA_DEEPSEEK_FLASH_MODEL],
 ]);
 
 /** How long chat calls skip RunInfra once it failed one. */
@@ -191,6 +192,62 @@ function readRunInfraAnswer(text: string, eventStream: boolean) {
   return out.join("\n");
 }
 
+const pingAnswerSchema = z.looseObject({
+  usage: z
+    .looseObject({
+      cost: z.number().optional(),
+      prompt_tokens: z.number().optional(),
+      prompt_tokens_details: z
+        .looseObject({ cached_tokens: z.number().optional() })
+        .nullish(),
+    })
+    .optional(),
+});
+
+/**
+ * Sends a conversation's last prompt again for one token, to keep it in
+ * RunInfra's cache (`warm.ts`): nothing of it reaches eve, its failure only
+ * ends the conversation's pings. Logs `[model] warm` with what it read from
+ * the cache and its cost in roubles.
+ */
+async function pingRunInfra(body: string, key: string) {
+  const started = performance.now();
+  try {
+    const response = await fetch(
+      `${env.RUNINFRA_BASE_URL.replace(/\/+$/u, "")}/chat/completions`,
+      {
+        body,
+        headers: {
+          authorization: `Bearer ${key}`,
+          "content-type": "application/json",
+        },
+        method: "POST",
+        signal: AbortSignal.timeout(60_000),
+      }
+    );
+    const text = await response.text();
+    const usage = response.ok
+      ? pingAnswerSchema.safeParse(JSON.parse(text)).data?.usage
+      : undefined;
+    console.info("[model] warm", {
+      cachedTokens: usage?.prompt_tokens_details?.cached_tokens,
+      costRub:
+        usage?.cost === undefined
+          ? undefined
+          : Math.round(usage.cost * env.USAGE_USD_RUB * 1000) / 1000,
+      inputTokens: usage?.prompt_tokens,
+      ms: Math.round(performance.now() - started),
+      status: response.status,
+    });
+    return response.ok && !failed(text);
+  } catch (error) {
+    console.warn("[model] warm failed", {
+      reason: error instanceof Error ? error.message.slice(0, 160) : "thrown",
+    });
+    return false;
+  }
+}
+
 async function askRunInfra(
   served: { readonly call: ChatCall; readonly model: string },
   init: RequestInit | undefined,
@@ -257,6 +314,16 @@ export async function withRunInfraFirst(
       downUntil = undefined;
       console.info("[model] runinfra back");
     }
+    // The same prompt for one token: `auto` asks for no tool, and the tools
+    // stay in the prompt as the next turn's step has them.
+    keepWarm(
+      () =>
+        runInfraBody(
+          { ...served.call, max_tokens: 1, stream: false, tool_choice: "auto" },
+          served.model
+        ),
+      async (ping) => pingRunInfra(ping, key)
+    );
     return outcome.answer;
   }
   downUntil = Date.now() + skipForMs;

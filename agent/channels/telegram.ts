@@ -53,6 +53,10 @@ import {
 } from "@agent/lib/outbound-media/attachments";
 import { startedByPerson } from "@agent/lib/mode";
 import {
+  askRouterAboutNext,
+  noteBroMessage,
+} from "@agent/lib/tool-router/prefetch";
+import {
   directPurchasePilot,
   forwardedMarker,
 } from "@agent/lib/payments/direct";
@@ -138,6 +142,61 @@ const typingEveryMs = 4_500;
 const typingForMs = 3 * 60_000;
 const typingChats = new Map<string, ReturnType<typeof setInterval>>();
 
+/**
+ * How long the person waits for Bro in Telegram (18.10): when their message
+ * reached this instance, by chat, so the first reply after it logs
+ * `[telegram] reply` with the milliseconds to the turn's start and to the
+ * reply on its way out, and Telegram's own send time (seconds) before it.
+ * Lives with the serving instance, like the typing timers; no chat id or
+ * text goes to the log.
+ */
+interface Inbound {
+  readonly handledMs: number;
+  readonly receivedAt: number;
+  readonly sentAgoMs: number | undefined;
+  turnStartedAt?: number;
+}
+const inbound = new Map<string, Inbound>();
+const telegramDateSchema = z.object({ date: z.number() });
+
+function noteInbound(
+  chatId: string,
+  raw: Parameters<typeof telegramDateSchema.safeParse>[0],
+  receivedAt: number
+) {
+  const sentAt = telegramDateSchema.safeParse(raw).data?.date;
+  inbound.set(chatId, {
+    handledMs: performance.now() - receivedAt,
+    receivedAt,
+    sentAgoMs:
+      sentAt === undefined
+        ? undefined
+        : Date.now() - (performance.now() - receivedAt) - sentAt * 1000,
+  });
+  if (inbound.size > maximumThrottledChats) {
+    const oldest = inbound.keys().next().value;
+    if (oldest !== undefined) inbound.delete(oldest);
+  }
+}
+
+function logReply(chatId: string, sendMs: number) {
+  const waited = inbound.get(chatId);
+  if (waited === undefined) return;
+  inbound.delete(chatId);
+  const now = performance.now();
+  console.info("[telegram] reply", {
+    at: Date.now(),
+    handledMs: Math.round(waited.handledMs),
+    replyMs: Math.round(now - waited.receivedAt),
+    sendMs: Math.round(sendMs),
+    sentAgoMs: waited.sentAgoMs,
+    turnStartMs:
+      waited.turnStartedAt === undefined
+        ? undefined
+        : Math.round(waited.turnStartedAt - waited.receivedAt),
+  });
+}
+
 function telegramBotToken() {
   const botToken = env.TELEGRAM_BOT_TOKEN;
   if (!botToken) {
@@ -184,7 +243,17 @@ export default telegramChannel({
       void context.telegram.startTyping();
       if (startedByPerson(session) && !scheduledReportFromSession(session)) {
         keepTyping(context);
+        const waiting = inbound.get(context.telegram.chatId);
+        if (waiting !== undefined) waiting.turnStartedAt ??= performance.now();
       }
+    },
+    // eve's own handler awaits the indicator. A channel's handlers run one
+    // event after another (`execution/session/event-sink.js`), so the reply's
+    // `action.result` below waited for that round trip to Telegram through
+    // tg-egress before its message went out.
+    async "actions.requested"(event, context) {
+      void context.telegram.startTyping();
+      noteBroMessage(`telegram:${context.telegram.chatId}`, event.actions);
     },
     async "turn.completed"(_event, context) {
       stopTyping(context);
@@ -275,10 +344,12 @@ export default telegramChannel({
         return;
       }
 
+      const sending = performance.now();
       await deliverText(context, session, {
         attachments,
         text: requestedText,
       });
+      logReply(context.telegram.chatId, performance.now() - sending);
       markTurnDelivered(context, event.turnId);
       await finalizeScheduledReportDelivery(session);
     },
@@ -355,6 +426,7 @@ export default telegramChannel({
     },
   },
   async onMessage(context, message) {
+    const receivedAt = performance.now();
     // Only private chats carry a single identifiable person, which is what an
     // account binding means here. Groups are dropped without a reply.
     if (message.chat.type !== "private") return null;
@@ -390,7 +462,6 @@ export default telegramChannel({
       }
       return null;
     }
-
     const auth = defaultTelegramAuth(message);
     if (!auth) return null;
     const principalId = `better-auth:${identity.userId}`;
@@ -404,6 +475,10 @@ export default telegramChannel({
       }
       return null;
     }
+    // «печатает…» at once, as eve's own `onMessage` does: the turn starts
+    // only after the context below and the world's queue (18.10). Not for a
+    // message turned away above: nobody would answer it.
+    void context.telegram.startTyping();
     // A forwarded message is someone else's words: in the direct-purchase
     // pilot it never reads as the person's request to pay
     // (`agent/lib/payments/direct.ts`).
@@ -442,6 +517,7 @@ export default telegramChannel({
         ...(await crossChannelRecap(scope, { channel: "channel:telegram" })),
         ...(await ingestShared(scope, [shared])),
       ];
+      noteInbound(context.telegram.chatId, message.raw, receivedAt);
       return {
         auth: sessionAuth,
         context: turnContext,
@@ -449,6 +525,15 @@ export default telegramChannel({
           { kind: "note", text: marker },
         ]).message,
       };
+    }
+    // A plain text: the tool router's question about it goes now, while the
+    // context below is read and the turn waits in the world's queue.
+    if (!forwarded && message.attachments.length === 0) {
+      askRouterAboutNext({
+        conversation: `telegram:${message.chat.id}`,
+        words: message.text,
+        workspaceId: scope.workspaceId,
+      });
     }
     // Photos, documents and voice notes are resolved to bytes and text here,
     // because eve's lazy resolver drops a photo the Bot API serves without an
@@ -480,6 +565,7 @@ export default telegramChannel({
           )
         : []),
     ];
+    noteInbound(context.telegram.chatId, message.raw, receivedAt);
     if (media === undefined) {
       return forwarded
         ? {

@@ -29,6 +29,9 @@ export default defineConfig({
     ],
   },
   test: {
+    // Transformed, so `tests/agent/world-recovery.test.ts` can stand in for
+    // the world's Graphile queue and run storage.
+    server: { deps: { inline: [/@workflow\/world-postgres/u] } },
     setupFiles: ["./tests/setup-env.ts"],
   },
 });

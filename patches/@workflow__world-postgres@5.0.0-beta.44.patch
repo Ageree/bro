@@ -1,0 +1,141 @@
+diff --git a/dist/index.js b/dist/index.js
+index 1bb75d5f4772ed5d5993f3a0d138444525677c81..bc12423350e4e6d9e5437853a207712d67becf8f 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -1,4 +1,4 @@
+-import { mintedSpecVersion, reenqueueActiveRuns } from '@workflow/world';
++import { getQueueTopicPrefix, mintedSpecVersion, resolveQueueNamespace, } from '@workflow/world';
+ import { Pool } from 'pg';
+ import { createClient } from './drizzle/index.js';
+ import { createQueue } from './queue.js';
+@@ -13,6 +13,56 @@ function createStorage(drizzle, runStatusListener) {
+         steps: createStepsStorage(drizzle),
+     };
+ }
++// Bro: active runs re-enqueued at start go behind new work (graphile runs
++// numerically smaller priorities first) and a few per second. The stock
++// `reenqueueActiveRuns` queued every active run due at once and was awaited
++// before eve served: on 18.10 that was 1124 parked sessions, and a person's
++// new turn waited 36–58 s behind them after each restart. Replaying a parked
++// run is a no-op, and a run's own jobs (returned by `world-unlock.sh`, a
++// hook's resume, a sleep's wake-up) still run first, so the recovery only
++// matters for a run whose enqueue was lost — it now comes within minutes.
++const RECOVERY_PRIORITY = 10;
++const RECOVERY_RUNS_PER_SECOND = 3;
++async function recoverActiveRuns(runs, enqueue, namespace, stopped) {
++    const workflowQueuePrefix = getQueueTopicPrefix('workflow', resolveQueueNamespace(namespace));
++    const startedAt = Date.now();
++    let queued = 0;
++    let cursor;
++    let hasMore = true;
++    try {
++        while (hasMore && !stopped()) {
++            const page = await runs.list({
++                status: ['pending', 'running'],
++                resolveData: 'none',
++                pagination: { cursor },
++            });
++            for (const run of page.data) {
++                if (stopped())
++                    break;
++                try {
++                    await enqueue(`${workflowQueuePrefix}${run.workflowName}`, { runId: run.runId }, {
++                        delaySeconds: Math.floor(queued / RECOVERY_RUNS_PER_SECOND),
++                        priority: RECOVERY_PRIORITY,
++                    });
++                    queued++;
++                }
++                catch (err) {
++                    console.warn(`[world-postgres] Failed to re-enqueue run ${run.runId}: ${err}`);
++                }
++            }
++            hasMore = page.hasMore;
++            cursor = page.cursor ?? undefined;
++        }
++    }
++    catch (err) {
++        console.warn(`[world-postgres] Active run recovery stopped: ${err}`);
++    }
++    console.info('[world-postgres] recovery queued', {
++        runs: queued,
++        queueMs: Date.now() - startedAt,
++        spreadSeconds: Math.floor(queued / RECOVERY_RUNS_PER_SECOND),
++    });
++}
+ function getDefaultMaxPoolSize() {
+     const parsed = parseInt(process.env.WORKFLOW_POSTGRES_MAX_POOL_SIZE || '', 10);
+     return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+@@ -42,6 +92,8 @@ export function createWorld(config = {
+     const runStatusListener = createRunStatusListener(pool);
+     const storage = createStorage(drizzle, runStatusListener);
+     const streamer = createStreamer(pool, drizzle);
++    let closed = false;
++    let recovery = Promise.resolve();
+     return {
+         specVersion: mintedSpecVersion(),
+         capabilities: {
+@@ -55,9 +107,11 @@ export function createWorld(config = {
+         }),
+         async start() {
+             await queue.start();
+-            await reenqueueActiveRuns(storage.runs, queue.queue, 'world-postgres', config.namespace);
++            recovery = recoverActiveRuns(storage.runs, queue.queue, config.namespace, () => closed);
+         },
+         async close() {
++            closed = true;
++            await recovery;
+             await queue.close();
+             await streamer.close();
+             await runStatusListener.close();
+diff --git a/dist/queue.js b/dist/queue.js
+index 97f7e36d4b1b7a174cd06ed13648e35539cea7e9..ebba2cc5b0dc4f1241a8741c9d1d4edc6d862677 100644
+--- a/dist/queue.js
++++ b/dist/queue.js
+@@ -145,8 +145,20 @@ export function createQueue(config, pool) {
+         return `${jobPrefix}flows`;
+     }
+     const createQueueHandler = localWorld.createQueueHandler;
++    // Bro: with WORKFLOW_POSTGRES_DEPLOYMENT_HOURS=N the id changes every N
++    // hours. eve hands an idle session to a fresh run when a message comes in
++    // under another deployment id than its run's (`SessionHandoff`), with the
++    // same session id, history and turn numbers; this world has no deployment
++    // affinity, so the old run still executes here. Under one constant id a
++    // session's run kept every event of its life: on 18.10 the owner's
++    // Telegram session held 3902 events and 300 MB, all read again before each
++    // turn — 11 s before the turn started. Unset, the id stays 'postgres'.
+     const getDeploymentId = async () => {
+-        return 'postgres';
++        const hours = Number(process.env.WORKFLOW_POSTGRES_DEPLOYMENT_HOURS);
++        if (!Number.isInteger(hours) || hours <= 0) {
++            return 'postgres';
++        }
++        return `postgres-${Math.floor(Date.now() / (hours * 3_600_000))}`;
+     };
+     const completedMessages = new Set();
+     const inflightMessages = new Map();
+@@ -166,7 +178,7 @@ export function createQueue(config, pool) {
+             }
+         }
+     }
+-    async function addGraphileJob({ queueId, body, messageId, attempt, idempotencyKey, headers, delaySeconds, jobKey, }) {
++    async function addGraphileJob({ queueId, body, messageId, attempt, idempotencyKey, headers, delaySeconds, jobKey, priority, }) {
+         const utils = workerUtils;
+         if (!utils) {
+             throw new Error('Postgres queue worker utils are not initialized');
+@@ -184,6 +196,7 @@ export function createQueue(config, pool) {
+         }), {
+             ...(jobKey ? { jobKey } : {}),
+             ...(runAt ? { runAt } : {}),
++            ...(priority ? { priority } : {}),
+             maxAttempts: MAX_GRAPHILE_JOB_ATTEMPTS,
+         });
+     }
+@@ -421,6 +434,8 @@ export function createQueue(config, pool) {
+             headers: opts?.headers,
+             delaySeconds: opts?.delaySeconds,
+             jobKey: opts?.idempotencyKey ?? messageId,
++            // Bro: the start's recovery queues behind new work (index.js).
++            priority: opts?.priority,
+         });
+         return { messageId };
+     };

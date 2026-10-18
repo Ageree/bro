@@ -1663,6 +1663,11 @@ class HostCliTest(unittest.TestCase):
         self.assertTrue(env["ROUTERAI_API_KEY"])
         self.assertEqual(self.host.build_env(WORKFLOW_WORLD="postgres")["MODEL_PROVIDER"], "routerai")
 
+    def test_the_build_keeps_the_operators_node_heap(self):
+        # Next's type check outgrew the default 2 GB heap: the operator raises it with NODE_OPTIONS.
+        with mock.patch.dict(os.environ, {"NODE_OPTIONS": "--max-old-space-size=4096"}):
+            self.assertEqual(self.host.build_env()["NODE_OPTIONS"], "--max-old-space-size=4096")
+
     def test_the_readme_restore_command_parses(self):
         args = self.host.parser().parse_args(
             ["ops", "bro-app-1", "db-restore.sh", "latest", "app", "--replace"])

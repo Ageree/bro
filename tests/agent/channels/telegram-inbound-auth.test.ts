@@ -165,10 +165,12 @@ describe("Telegram inbound authentication", () => {
       allowed: false,
       paywallText: "Лимит на сегодня исчерпан",
     });
-    const { context, sent } = inboundContext();
+    const { context, sent, typing } = inboundContext();
 
     await expect(onMessage(context, telegramMessage())).resolves.toBeNull();
     expect(sent).toHaveBeenCalledExactlyOnceWith("Лимит на сегодня исчерпан");
+    // Nobody answers it, so Bro is never shown typing.
+    expect(typing).not.toHaveBeenCalled();
 
     // The rest of the day is turned away without saying so again.
     capture.messageQuotaGate.mockResolvedValueOnce({
@@ -256,13 +258,16 @@ describe("Telegram inbound authentication", () => {
 function inboundContext(chatId = "4242") {
   const sent = vi.fn<(text: string) => Promise<{ id: string }>>();
   sent.mockResolvedValue({ id: "sent-1" });
+  const typing = vi.fn<() => Promise<void>>();
+  typing.mockResolvedValue(undefined);
   const context: TelegramContext = {
     telegram: telegramHandle({
       chatId,
       sendMessage: sent,
+      startTyping: typing,
     }),
   };
-  return { context, sent };
+  return { context, sent, typing };
 }
 
 // oxlint-disable-next-line anti-slop/no-unknown-parameters -- This adapter deliberately accepts a focused structural fixture.

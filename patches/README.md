@@ -131,3 +131,36 @@ in `agent/channels/eve.ts` using public `defineChannel` and `routeAuth` APIs.
 Apart from the memory recall placement, the replayed tool error, the dynamic
 tool rebind and the unanswered tool call above, no task-loop or
 prompt-placement patch is applied locally.
+
+# Workflow world patch
+
+`@workflow__world-postgres@5.0.0-beta.44.patch` changes how the Postgres
+world recovers active runs when eve starts. The stock `start()` awaited
+`reenqueueActiveRuns`, which queues every pending or running run as a job due
+at once; eve's world plugin awaits `start()` before it serves. On 18.10 that
+was 1124 parked sessions per restart, and a person's first turn after a
+deploy waited 36–58 s behind them (`ops/world-queue.sh` shows the backlog).
+The patched `start()` returns after the queue starts and queues the same runs
+in the background, with Graphile priority 10 (new work has 0, and Graphile
+runs smaller numbers first) and three per second; `close()` stops it.
+`queue()` passes an optional `priority` to `addJob`.
+`tests/agent/world-recovery.test.ts` covers both, and `vitest.config.ts`
+inlines the package so the test can stand in for Graphile and storage.
+
+The same patch lets the world's deployment id change on a clock. Unset,
+`getDeploymentId()` answers `'postgres'` as before; with
+`WORKFLOW_POSTGRES_DEPLOYMENT_HOURS=N` it answers `postgres-<N-hour period
+since the epoch>`. eve hands an idle session to a fresh run when a message
+arrives under another id than its run's (`execution/session/handoff.js`):
+same session id, history and turn numbers, and the old run parks as the
+session's anchor. Under one constant id a session's run kept every event of
+its life and read them all again before each turn: on 18.10 the owner's
+Telegram session held 3902 events and 300 MB, and its turn started 11 s after
+the message. The world has no `deploymentAffinity`, so a run of an older id
+still executes here. Never set `VERCEL_DEPLOYMENT_ID` for this: with it the
+runtime picks the Vercel world.
+
+To change it, run `pnpm patch @workflow/world-postgres@5.0.0-beta.44`, edit,
+and `pnpm patch-commit <dir>`. Drop the recovery part once the world queues
+its start-up recovery behind new work itself, and the id part once eve moves
+a session whose history grew to a fresh run on its own.

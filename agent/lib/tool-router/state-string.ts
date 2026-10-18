@@ -89,6 +89,36 @@ function lastSend(history: readonly ModelMessage[]) {
 }
 
 /**
+ * The state string the decision model gets, and its digest: Bro's last
+ * message before the turn, the person's words of the turn (without the
+ * location pilot's context lines) and their answers to `ask_question`, cleaned
+ * of secrets and long numbers. A channel that has the same words before the
+ * turn starts asks with it ahead of the turn (`prefetch.ts`).
+ */
+export function routerState(turn: {
+  readonly answers: readonly string[];
+  readonly previous: string | undefined;
+  readonly words: string;
+}) {
+  const state = [
+    ...(turn.previous === undefined
+      ? []
+      : [
+          `Предыдущее сообщение Бро: ${cleaned(turn.previous, routerStateLimits.prev)}`,
+        ]),
+    `Сообщение человека: ${headAndTail(withoutLocationLines(turn.words).trim())}`,
+    ...turn.answers.map(
+      (answer) =>
+        `Ответ человека на вопрос Бро: ${cleaned(answer, routerStateLimits.prev)}`
+    ),
+  ].join("\n");
+  return {
+    digest: createHash("sha256").update(state).digest("hex").slice(0, 32),
+    state,
+  };
+}
+
+/**
  * The turn as the tool router reads it: the person's words of the turn (its
  * own messages, without eve's context and the slots' records, and without
  * the location pilot's context lines), Bro's last message before the turn,
@@ -116,18 +146,11 @@ export function routerTurnText(messages: readonly ModelMessage[]) {
   const { answers } = answersThisTurn(
     messages.slice(history.length + input.length)
   );
-  const state = [
-    ...(previous === undefined
-      ? []
-      : [
-          `Предыдущее сообщение Бро: ${cleaned(previous.text, routerStateLimits.prev)}`,
-        ]),
-    `Сообщение человека: ${headAndTail(words)}`,
-    ...answers.map(
-      (answer) =>
-        `Ответ человека на вопрос Бро: ${cleaned(answer, routerStateLimits.prev)}`
-    ),
-  ].join("\n");
+  const { digest, state } = routerState({
+    answers,
+    previous: previous?.text,
+    words,
+  });
   const filesSent = input.some(
     (message) =>
       message.role === "user" &&
@@ -137,7 +160,7 @@ export function routerTurnText(messages: readonly ModelMessage[]) {
   const bare = words.replaceAll(mediaMarkers, " ").replaceAll(/\s+/gu, " ");
   return {
     answers,
-    digest: createHash("sha256").update(state).digest("hex").slice(0, 32),
+    digest,
     history,
     input,
     located:

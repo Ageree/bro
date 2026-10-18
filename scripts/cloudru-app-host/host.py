@@ -666,8 +666,9 @@ def build_env(**extra):
     env = {"PATH": os.environ["PATH"], "HOME": os.environ.get("HOME", "/root"), "NODE_ENV": "production",
            **STUB_ENV, "MODEL_PROVIDER": ON_THE_VM["MODEL_PROVIDER"], "ROUTERAI_API_KEY": "build-only", **extra,
            "COREPACK_ENABLE_DOWNLOAD_PROMPT": "0", "CI": "1"}
+    # NODE_OPTIONS: Next's type check outgrew Node's default 2 GB heap on the operator's machine (18.10).
     for name in ("SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY",
-                 "https_proxy", "http_proxy", "no_proxy", "COREPACK_HOME"):
+                 "https_proxy", "http_proxy", "no_proxy", "COREPACK_HOME", "NODE_OPTIONS"):
         if os.environ.get(name):
             env[name] = os.environ[name]
     return env
