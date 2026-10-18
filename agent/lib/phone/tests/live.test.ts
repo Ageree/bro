@@ -195,7 +195,7 @@ describe("a live call's result", () => {
 /** A carrier that answers a CANCEL first, then the INVITE it cancelled, as real ones do. */
 async function carrier(onInvite: (socket: Socket) => void) {
   const server = createServer((socket) => {
-    let buffer = Buffer.alloc(0);
+    let buffer: Buffer = Buffer.alloc(0);
     socket.on("data", (chunk) => {
       const taken = takeMessages(Buffer.concat([buffer, chunk]));
       buffer = taken.rest;
