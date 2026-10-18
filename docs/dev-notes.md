@@ -281,7 +281,10 @@ s3put:<ключ>`; без звонка её гоняют локально: `sip.
 - На машине с 4 GiB `pnpm build` и `pnpm build:eve` убивает физический OOM
   даже с ограничением JS heap; 4 GiB swap позволяют собрать оба. Webpack не
   запасной путь для eve 0.62: он не разбирает `using` в клиенте eve, поэтому
-  оставляйте стандартный Turbopack.
+  оставляйте стандартный Turbopack. С 18.10 проверке типов `next build` мало
+  кучи Node по умолчанию (2 ГБ, «heap out of memory» после «Running
+  TypeScript»): `host.py deploy` с `NODE_OPTIONS=--max-old-space-size=4096`
+  (`build_env` его пропускает).
 - Перед последовательным `pnpm check --concurrency=1` запустите
   `pnpm types:generate`: иначе type-aware lint не видит сгенерированные
   `PageProps` и ложно сообщает об unsafe-типах.
