@@ -8,7 +8,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  * The world's start-up recovery of active runs (patch
  * `@workflow__world-postgres@5.0.0-beta.44.patch`): eve awaits
  * `world.start()` before it serves, and the stock start queued every parked
- * session due at once, so a person's turn after a restart waited behind them.
+ * session due at once, so a person's turn after a restart waited behind them;
+ * and under its one deployment id a session's run never moved to a fresh one.
  */
 const addJob = vi.fn<WorkerUtils["addJob"]>();
 vi.mock("graphile-worker", () => ({
@@ -46,6 +47,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllEnvs();
 });
 
@@ -96,5 +98,25 @@ describe("world start-up recovery", () => {
       runAt === undefined ? 0 : Math.round((runAt.getTime() - startedAt) / 1000)
     );
     expect(delays).toEqual([0, 0, 0, 1, 1, 1, 2]);
+  });
+});
+
+describe("world deployment id", () => {
+  it("stays one id unless asked to change", async () => {
+    vi.stubEnv("WORKFLOW_POSTGRES_DEPLOYMENT_HOURS", "");
+    const world = await startedWorld();
+    await expect(world.getDeploymentId()).resolves.toBe("postgres");
+  });
+
+  it("changes every N hours, so a long session moves to a fresh run", async () => {
+    vi.stubEnv("WORKFLOW_POSTGRES_DEPLOYMENT_HOURS", "6");
+    vi.useFakeTimers({ now: new Date("2026-10-18T05:59:00Z") });
+    const world = await startedWorld();
+    const before = await world.getDeploymentId();
+    vi.setSystemTime(new Date("2026-10-18T06:01:00Z"));
+    const after = await world.getDeploymentId();
+    vi.setSystemTime(new Date("2026-10-18T11:59:00Z"));
+    expect(before).not.toBe(after);
+    await expect(world.getDeploymentId()).resolves.toBe(after);
   });
 });

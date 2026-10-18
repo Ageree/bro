@@ -88,10 +88,32 @@ index 1bb75d5f4772ed5d5993f3a0d138444525677c81..bc12423350e4e6d9e5437853a207712d
              await streamer.close();
              await runStatusListener.close();
 diff --git a/dist/queue.js b/dist/queue.js
-index 97f7e36d4b1b7a174cd06ed13648e35539cea7e9..e2a044b036dc0774748e8a86f342c0e4667608ab 100644
+index 97f7e36d4b1b7a174cd06ed13648e35539cea7e9..ebba2cc5b0dc4f1241a8741c9d1d4edc6d862677 100644
 --- a/dist/queue.js
 +++ b/dist/queue.js
-@@ -166,7 +166,7 @@ export function createQueue(config, pool) {
+@@ -145,8 +145,20 @@ export function createQueue(config, pool) {
+         return `${jobPrefix}flows`;
+     }
+     const createQueueHandler = localWorld.createQueueHandler;
++    // Bro: with WORKFLOW_POSTGRES_DEPLOYMENT_HOURS=N the id changes every N
++    // hours. eve hands an idle session to a fresh run when a message comes in
++    // under another deployment id than its run's (`SessionHandoff`), with the
++    // same session id, history and turn numbers; this world has no deployment
++    // affinity, so the old run still executes here. Under one constant id a
++    // session's run kept every event of its life: on 18.10 the owner's
++    // Telegram session held 3902 events and 300 MB, all read again before each
++    // turn — 11 s before the turn started. Unset, the id stays 'postgres'.
+     const getDeploymentId = async () => {
+-        return 'postgres';
++        const hours = Number(process.env.WORKFLOW_POSTGRES_DEPLOYMENT_HOURS);
++        if (!Number.isInteger(hours) || hours <= 0) {
++            return 'postgres';
++        }
++        return `postgres-${Math.floor(Date.now() / (hours * 3_600_000))}`;
+     };
+     const completedMessages = new Set();
+     const inflightMessages = new Map();
+@@ -166,7 +178,7 @@ export function createQueue(config, pool) {
              }
          }
      }
@@ -100,7 +122,7 @@ index 97f7e36d4b1b7a174cd06ed13648e35539cea7e9..e2a044b036dc0774748e8a86f342c0e4
          const utils = workerUtils;
          if (!utils) {
              throw new Error('Postgres queue worker utils are not initialized');
-@@ -184,6 +184,7 @@ export function createQueue(config, pool) {
+@@ -184,6 +196,7 @@ export function createQueue(config, pool) {
          }), {
              ...(jobKey ? { jobKey } : {}),
              ...(runAt ? { runAt } : {}),
@@ -108,7 +130,7 @@ index 97f7e36d4b1b7a174cd06ed13648e35539cea7e9..e2a044b036dc0774748e8a86f342c0e4
              maxAttempts: MAX_GRAPHILE_JOB_ATTEMPTS,
          });
      }
-@@ -421,6 +422,8 @@ export function createQueue(config, pool) {
+@@ -421,6 +434,8 @@ export function createQueue(config, pool) {
              headers: opts?.headers,
              delaySeconds: opts?.delaySeconds,
              jobKey: opts?.idempotencyKey ?? messageId,

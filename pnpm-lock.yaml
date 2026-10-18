@@ -5,7 +5,7 @@ settings:
   excludeLinksFromLockfile: false
 
 patchedDependencies:
-  '@workflow/world-postgres@5.0.0-beta.44': a143223ae4a27c17b1cb7959c5c6459077c350da6d7d35a67d353d432084f17f
+  '@workflow/world-postgres@5.0.0-beta.44': 379f366984c7c3dac3862c8db55461de987025d4a5cf9c5144a99cadefb426c9
   eve@0.62.0: 13461001d14622f188e7ddc61e79a572b48eee1b4e5fdcaa2268139bb7800e09
 
 importers:
@@ -62,7 +62,7 @@ importers:
         version: 2.8.0
       '@workflow/world-postgres':
         specifier: 5.0.0-beta.44
-        version: 5.0.0-beta.44(patch_hash=a143223ae4a27c17b1cb7959c5c6459077c350da6d7d35a67d353d432084f17f)(@electric-sql/pglite@0.5.8)(@neondatabase/serverless@1.1.0)(@opentelemetry/api@1.9.1)(@types/pg@8.23.1)(kysely@0.29.5)(supports-color@7.2.0)(typescript@6.0.3)
+        version: 5.0.0-beta.44(patch_hash=379f366984c7c3dac3862c8db55461de987025d4a5cf9c5144a99cadefb426c9)(@electric-sql/pglite@0.5.8)(@neondatabase/serverless@1.1.0)(@opentelemetry/api@1.9.1)(@types/pg@8.23.1)(kysely@0.29.5)(supports-color@7.2.0)(typescript@6.0.3)
       ai:
         specifier: ^7.0.107
         version: 7.0.107(zod@4.5.4)
@@ -10733,7 +10733,7 @@ snapshots:
     optionalDependencies:
       '@opentelemetry/api': 1.9.1
 
-  '@workflow/world-postgres@5.0.0-beta.44(patch_hash=a143223ae4a27c17b1cb7959c5c6459077c350da6d7d35a67d353d432084f17f)(@electric-sql/pglite@0.5.8)(@neondatabase/serverless@1.1.0)(@opentelemetry/api@1.9.1)(@types/pg@8.23.1)(kysely@0.29.5)(supports-color@7.2.0)(typescript@6.0.3)':
+  '@workflow/world-postgres@5.0.0-beta.44(patch_hash=379f366984c7c3dac3862c8db55461de987025d4a5cf9c5144a99cadefb426c9)(@electric-sql/pglite@0.5.8)(@neondatabase/serverless@1.1.0)(@opentelemetry/api@1.9.1)(@types/pg@8.23.1)(kysely@0.29.5)(supports-color@7.2.0)(typescript@6.0.3)':
     dependencies:
       '@vercel/queue': 0.5.1(@opentelemetry/api@1.9.1)
       '@workflow/errors': 5.0.0-beta.21
