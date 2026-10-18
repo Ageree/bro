@@ -1,6 +1,13 @@
 import { AlertCircleIcon, BrainIcon, LoaderCircleIcon } from "lucide-react";
 import type { EveMessage, EveMessagePart } from "eve/react";
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+} from "react";
 import { useStickToBottomContext } from "use-stick-to-bottom";
 import {
   imessageTimestamps,
@@ -186,6 +193,16 @@ function OlderHistory({
   const anchor = useRef<{ readonly row: Element; readonly top: number }>(
     undefined
   );
+  // A page that failed to load (offline, 5xx) is asked again only after the
+  // person scrolls again or taps: the same spot would retry it at once.
+  const stalled = useRef(false);
+  const load = useCallback(() => {
+    stalled.current = true;
+    void loadOlder().then((loaded) => {
+      stalled.current = !loaded;
+      return undefined;
+    });
+  }, [loadOlder]);
 
   // Mounted past the last page too: that page is what takes the button away.
   useLayoutEffect(() => {
@@ -204,11 +221,13 @@ function OlderHistory({
     const keepTopRow = () => {
       anchor.current = topRowOf(scroller, contentRef.current);
     };
-    const onScroll = () => {
+    const onScroll = (byPerson: boolean) => {
       if (isLoadingOlder) {
         keepTopRow();
         return;
       }
+      if (byPerson) stalled.current = false;
+      if (stalled.current) return;
       const fromBottom =
         scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop;
       // At the bottom is where a conversation opens: only a scroll up loads.
@@ -219,15 +238,18 @@ function OlderHistory({
         return;
       }
       keepTopRow();
-      void loadOlder();
+      load();
+    };
+    const onPersonScroll = () => {
+      onScroll(true);
     };
     // Still near the top once a page arrived: the next one follows.
-    if (hasOlder && !isLoadingOlder) onScroll();
-    scroller.addEventListener("scroll", onScroll, { passive: true });
+    if (hasOlder && !isLoadingOlder) onScroll(false);
+    scroller.addEventListener("scroll", onPersonScroll, { passive: true });
     return () => {
-      scroller.removeEventListener("scroll", onScroll);
+      scroller.removeEventListener("scroll", onPersonScroll);
     };
-  }, [contentRef, hasOlder, isLoadingOlder, loadOlder, scrollRef]);
+  }, [contentRef, hasOlder, isLoadingOlder, load, scrollRef]);
 
   if (!hasOlder) return null;
   return (
@@ -238,7 +260,7 @@ function OlderHistory({
       onClick={() => {
         const scroller = scrollRef.current;
         if (scroller) anchor.current = topRowOf(scroller, contentRef.current);
-        void loadOlder();
+        load();
       }}
       size="lg"
       type="button"

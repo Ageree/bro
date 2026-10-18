@@ -1,6 +1,6 @@
 import type { MessageStreamEvent } from "eve/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { readLatestSessionHistory } from "./session-history";
+import { readLatestSessionHistory, withOlderHistory } from "./session-history";
 
 describe("session history", () => {
   afterEach(() => {
@@ -71,6 +71,21 @@ describe("session history", () => {
     expect(history.events).toEqual(events.slice(1800));
     // One read per 128 events took ten.
     expect(fetchMock).toHaveBeenCalledTimes(5);
+  });
+
+  it("shows an older page once, though it was read twice", () => {
+    const events = Array.from({ length: 6 }, (_, index) =>
+      receivedMessage(index)
+    );
+    const latest = { endIndex: 6, events: events.slice(4), startIndex: 4 };
+    const older = { endIndex: 4, events: events.slice(2, 4), startIndex: 2 };
+
+    const once = withOlderHistory(latest, older);
+    // The second read started before the first one's page reached the state.
+    const twice = withOlderHistory(once, older);
+
+    expect(twice).toBe(once);
+    expect(twice.events).toEqual(events.slice(2));
   });
 
   it("rejects a stream response without a durable tail cursor", async () => {

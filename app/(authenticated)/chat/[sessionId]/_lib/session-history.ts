@@ -65,6 +65,23 @@ export async function readOlderSessionHistory(
   );
 }
 
+/**
+ * The history with an older page read in front of it. A page that does not
+ * end where the history starts was read for a history that has since grown
+ * back (a second read of the same range): it is dropped, not shown twice.
+ */
+export function withOlderHistory(
+  latest: SessionHistoryPage,
+  older: SessionHistoryPage
+): SessionHistoryPage {
+  if (older.endIndex !== latest.startIndex) return latest;
+  return {
+    ...latest,
+    events: [...older.events, ...latest.events],
+    startIndex: older.startIndex,
+  };
+}
+
 async function extendToMessageBoundary(
   initial: SessionHistoryPage,
   sessionId: string,
