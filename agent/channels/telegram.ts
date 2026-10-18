@@ -138,6 +138,61 @@ const typingEveryMs = 4_500;
 const typingForMs = 3 * 60_000;
 const typingChats = new Map<string, ReturnType<typeof setInterval>>();
 
+/**
+ * How long the person waits for Bro in Telegram (18.10): when their message
+ * reached this instance, by chat, so the first reply after it logs
+ * `[telegram] reply` with the milliseconds to the turn's start and to the
+ * reply on its way out, and Telegram's own send time (seconds) before it.
+ * Lives with the serving instance, like the typing timers; no chat id or
+ * text goes to the log.
+ */
+interface Inbound {
+  readonly handledMs: number;
+  readonly receivedAt: number;
+  readonly sentAgoMs: number | undefined;
+  turnStartedAt?: number;
+}
+const inbound = new Map<string, Inbound>();
+const telegramDateSchema = z.object({ date: z.number() });
+
+function noteInbound(
+  chatId: string,
+  raw: Parameters<typeof telegramDateSchema.safeParse>[0],
+  receivedAt: number
+) {
+  const sentAt = telegramDateSchema.safeParse(raw).data?.date;
+  inbound.set(chatId, {
+    handledMs: performance.now() - receivedAt,
+    receivedAt,
+    sentAgoMs:
+      sentAt === undefined
+        ? undefined
+        : Date.now() - (performance.now() - receivedAt) - sentAt * 1000,
+  });
+  if (inbound.size > maximumThrottledChats) {
+    const oldest = inbound.keys().next().value;
+    if (oldest !== undefined) inbound.delete(oldest);
+  }
+}
+
+function logReply(chatId: string, sendMs: number) {
+  const waited = inbound.get(chatId);
+  if (waited === undefined) return;
+  inbound.delete(chatId);
+  const now = performance.now();
+  console.info("[telegram] reply", {
+    at: Date.now(),
+    handledMs: Math.round(waited.handledMs),
+    replyMs: Math.round(now - waited.receivedAt),
+    sendMs: Math.round(sendMs),
+    sentAgoMs: waited.sentAgoMs,
+    turnStartMs:
+      waited.turnStartedAt === undefined
+        ? undefined
+        : Math.round(waited.turnStartedAt - waited.receivedAt),
+  });
+}
+
 function telegramBotToken() {
   const botToken = env.TELEGRAM_BOT_TOKEN;
   if (!botToken) {
@@ -184,6 +239,8 @@ export default telegramChannel({
       void context.telegram.startTyping();
       if (startedByPerson(session) && !scheduledReportFromSession(session)) {
         keepTyping(context);
+        const waiting = inbound.get(context.telegram.chatId);
+        if (waiting !== undefined) waiting.turnStartedAt ??= performance.now();
       }
     },
     async "turn.completed"(_event, context) {
@@ -275,10 +332,12 @@ export default telegramChannel({
         return;
       }
 
+      const sending = performance.now();
       await deliverText(context, session, {
         attachments,
         text: requestedText,
       });
+      logReply(context.telegram.chatId, performance.now() - sending);
       markTurnDelivered(context, event.turnId);
       await finalizeScheduledReportDelivery(session);
     },
@@ -355,6 +414,7 @@ export default telegramChannel({
     },
   },
   async onMessage(context, message) {
+    const receivedAt = performance.now();
     // Only private chats carry a single identifiable person, which is what an
     // account binding means here. Groups are dropped without a reply.
     if (message.chat.type !== "private") return null;
@@ -442,6 +502,7 @@ export default telegramChannel({
         ...(await crossChannelRecap(scope, { channel: "channel:telegram" })),
         ...(await ingestShared(scope, [shared])),
       ];
+      noteInbound(context.telegram.chatId, message.raw, receivedAt);
       return {
         auth: sessionAuth,
         context: turnContext,
@@ -480,6 +541,7 @@ export default telegramChannel({
           )
         : []),
     ];
+    noteInbound(context.telegram.chatId, message.raw, receivedAt);
     if (media === undefined) {
       return forwarded
         ? {

@@ -89,6 +89,7 @@ async function attemptModelFetch(
   // is ready: only the ceiling applies to it.
   const timers = stallTimers(controller, request?.stream === true, backend);
   timers.start();
+  const startedAt = performance.now();
   try {
     const response = await fetch(input, {
       ...init,
@@ -99,11 +100,21 @@ async function attemptModelFetch(
       release();
       return response;
     }
+    const headersMs = performance.now() - startedAt;
     timers.bytes();
     const reader = response.body.getReader();
     const events = eventLines();
     const head = await readUntilFirstEvent(reader, events, timers, []);
     timers.data();
+    const timing = callTiming({
+      attempt,
+      backend,
+      firstDataMs: performance.now() - startedAt,
+      headersMs,
+      model: request?.model,
+      startedAt,
+    });
+    for (const chunk of head) timing.read(chunk);
     return new Response(
       watchedBody({
         backend,
@@ -113,6 +124,7 @@ async function attemptModelFetch(
         reader,
         release,
         timers,
+        timing,
       }),
       {
         headers: response.headers,
@@ -248,6 +260,51 @@ async function readUntilFirstEvent(
     : readUntilFirstEvent(reader, sawEvent, timers, read);
 }
 
+/**
+ * One line per streamed model call (`[model] call`) for the reply's latency:
+ * the backend, the milliseconds to the headers, to the first `data:` event
+ * and to the end of the answer, and the tokens its last event reports — no
+ * text. A person waits on the whole call: the answer is read whole before eve
+ * gets it (`routerai/fetch.ts`).
+ */
+function callTiming(call: {
+  readonly attempt: number;
+  readonly backend: string;
+  readonly firstDataMs: number;
+  readonly headersMs: number;
+  readonly model: string | undefined;
+  readonly startedAt: number;
+}) {
+  const decoder = new TextDecoder();
+  // The usage event is the last one: the tail of the stream is enough.
+  let tail = "";
+  const tokens = (name: string) => {
+    const found = new RegExp(`"${name}":(\\d+)`, "u").exec(tail)?.[1];
+    return found === undefined ? undefined : Number(found);
+  };
+  return {
+    done() {
+      console.info("[model] call", {
+        // When the answer ended, to line the call up with the turn's other
+        // lines (the journal keeps whole seconds only).
+        at: Date.now(),
+        attempt: call.attempt,
+        backend: call.backend,
+        cachedTokens: tokens("cached_tokens"),
+        firstDataMs: Math.round(call.firstDataMs),
+        headersMs: Math.round(call.headersMs),
+        inputTokens: tokens("prompt_tokens"),
+        model: call.model,
+        outputTokens: tokens("completion_tokens"),
+        totalMs: Math.round(performance.now() - call.startedAt),
+      });
+    },
+    read(chunk: Uint8Array) {
+      tail = `${tail}${decoder.decode(chunk, { stream: true })}`.slice(-4096);
+    },
+  };
+}
+
 function watchedBody(options: {
   readonly backend: string;
   readonly controller: AbortController;
@@ -256,8 +313,9 @@ function watchedBody(options: {
   readonly reader: ReadableStreamDefaultReader<Uint8Array>;
   readonly release: () => void;
   readonly timers: StallTimers;
+  readonly timing: ReturnType<typeof callTiming>;
 }) {
-  const { backend, controller, events, head, reader, release, timers } =
+  const { backend, controller, events, head, reader, release, timers, timing } =
     options;
   const finish = () => {
     timers.stop();
@@ -273,11 +331,13 @@ function watchedBody(options: {
         const { done, value } = await reader.read();
         if (done) {
           finish();
+          timing.done();
           stream.close();
           return;
         }
         if (events(value)) timers.data();
         else timers.bytes();
+        timing.read(value);
         stream.enqueue(value);
       } catch (error) {
         finish();
