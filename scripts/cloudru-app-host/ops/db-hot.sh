@@ -4,8 +4,8 @@
 #   host.py ops NAME db-hot.sh [app|world]
 #
 # For the app database (default) or the Workflow world's, prints the statements with the most total time
-# from pg_stat_statements when the extension is there (calls, total and mean ms, rows per call; the text
-# as the extension normalizes it, constants already `$n`, cut to 160 characters), the tables by sequential
+# from pg_stat_statements when the extension is there (calls, total and mean ms, rows per call; only
+# queries, whose text the extension normalizes with constants as `$n`, cut to 160 characters), the tables by sequential
 # scans against index scans with their live rows, and the largest tables with their indexes. Statistics
 # and sizes only: no row of a table is read.
 source "$(dirname "$0")/db-lib.sh"
@@ -52,6 +52,8 @@ SELECT s.calls,
 FROM pg_stat_statements s
 JOIN pg_database d ON d.oid = s.dbid
 WHERE d.datname = current_database()
+  -- The extension leaves a utility statement's text (`SET`, `COPY`) as it came, constants and all.
+  AND s.query ~* '^\s*(select|insert|update|delete|with)\M'
 ORDER BY s.total_exec_time DESC
 LIMIT 25;
 SQL
