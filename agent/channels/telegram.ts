@@ -53,6 +53,10 @@ import {
 } from "@agent/lib/outbound-media/attachments";
 import { startedByPerson } from "@agent/lib/mode";
 import {
+  askRouterAboutNext,
+  noteBroMessage,
+} from "@agent/lib/tool-router/prefetch";
+import {
   directPurchasePilot,
   forwardedMarker,
 } from "@agent/lib/payments/direct";
@@ -247,8 +251,9 @@ export default telegramChannel({
     // event after another (`execution/session/event-sink.js`), so the reply's
     // `action.result` below waited for that round trip to Telegram through
     // tg-egress before its message went out.
-    async "actions.requested"(_event, context) {
+    async "actions.requested"(event, context) {
       void context.telegram.startTyping();
+      noteBroMessage(`telegram:${context.telegram.chatId}`, event.actions);
     },
     async "turn.completed"(_event, context) {
       stopTyping(context);
@@ -520,6 +525,15 @@ export default telegramChannel({
           { kind: "note", text: marker },
         ]).message,
       };
+    }
+    // A plain text: the tool router's question about it goes now, while the
+    // context below is read and the turn waits in the world's queue.
+    if (!forwarded && message.attachments.length === 0) {
+      askRouterAboutNext({
+        conversation: `telegram:${message.chat.id}`,
+        words: message.text,
+        workspaceId: scope.workspaceId,
+      });
     }
     // Photos, documents and voice notes are resolved to bytes and text here,
     // because eve's lazy resolver drops a photo the Bot API serves without an

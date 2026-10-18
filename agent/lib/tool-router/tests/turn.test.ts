@@ -53,6 +53,7 @@ import {
   stampRouterUse,
 } from "@agent/lib/tool-router/turn";
 import { recordTurnStarted } from "@agent/lib/compaction/record";
+import { askRouterAhead } from "@agent/lib/tool-router/prefetch";
 import { skillRecord } from "@agent/lib/skills/render";
 
 const now = Date.parse("2026-10-15T12:00:00Z");
@@ -616,6 +617,42 @@ describe("a person's step in the router's pilot", () => {
         })
       );
     });
+  });
+
+  it("takes the decision a channel asked before the turn started", async () => {
+    decisions.groups = ["calendar"];
+    askRouterAhead({
+      previous: "Готово, записал.",
+      words: "что у меня завтра?",
+    });
+    expect(decisions.asked).toBe(1);
+    const groups = await routerGroupsOfStep(
+      [
+        person("запиши к врачу"),
+        assistant(["send_message", { text: "Готово, записал." }]),
+        person("что у меня завтра?"),
+      ],
+      { sessionId: "session-1", stepIndex: 0, turnId: "turn_3" },
+      setup,
+      "on"
+    );
+    expect(decisions.asked).toBe(1);
+    expect(groups).toContain("calendar");
+  });
+
+  it("asks at the step when the channel asked about other words", async () => {
+    askRouterAhead({ previous: "Готово, записал.", words: "спасибо" });
+    await routerGroupsOfStep(
+      [
+        person("запиши к врачу"),
+        assistant(["send_message", { text: "Готово." }]),
+        person("спасибо"),
+      ],
+      { sessionId: "session-1", stepIndex: 0, turnId: "turn_4" },
+      setup,
+      "on"
+    );
+    expect(decisions.asked).toBe(2);
   });
 
   it("offers the first contact's call and Yandex in the turns after it", async () => {

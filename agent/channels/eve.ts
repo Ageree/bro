@@ -18,6 +18,10 @@ import { locationPilot } from "@db/services/location";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { taskFilesEnabled } from "@agent/lib/sandbox/pilot";
 import {
+  askRouterAboutNext,
+  noteBroMessage,
+} from "@agent/lib/tool-router/prefetch";
+import {
   accessScopeForUser,
   type AccessScope,
 } from "@shared/identity/access-scope";
@@ -100,6 +104,17 @@ const channel = eveChannel({
     // request, so a missing caller is a broken invariant, not a guest.
     if (!auth) throw new Error("An eve message arrived without a caller.");
     const scope = scopeFromPrincipal(auth);
+    // A plain text: the tool router's question about it goes now, while the
+    // context below is read and the turn waits in the world's queue.
+    const sessionId = context.eve.sessionId;
+    const text = z.string().safeParse(message).data;
+    if (sessionId !== undefined && text !== undefined) {
+      askRouterAboutNext({
+        conversation: `web:${sessionId}`,
+        words: text,
+        workspaceId: scope.workspaceId,
+      });
+    }
     // In the files pilot the model learns the files' own names, which eve's
     // staging loses (`webFileNotes`), right before the message.
     const notes = taskFilesEnabled(scope.workspaceId)
@@ -124,6 +139,9 @@ const channel = eveChannel({
     };
   },
   events: {
+    async "actions.requested"(event, _channel, session) {
+      noteBroMessage(`web:${session.session.id}`, event.actions);
+    },
     async "action.result"(event, _channel, session) {
       if (
         event.status === "completed" &&
