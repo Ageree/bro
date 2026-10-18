@@ -71,6 +71,7 @@ import { turnCostSource } from "@agent/lib/costs/turns";
 import { clockModes, localClock } from "@agent/lib/local-time";
 import { resolveModeValue } from "@agent/lib/mode";
 import { emptyTurnSelection } from "@agent/lib/model/empty-turn";
+import { promptWarmWorkspace } from "@agent/lib/model/routerai/warm";
 import { modelSelection } from "@agent/lib/model/selection";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { stepContextPilot } from "@agent/lib/step-context/pilot";
@@ -466,6 +467,12 @@ export default defineAgent({
           // The files pilot shows the model where the person's photos and
           // PDFs lie and mends the paths it miswrites.
           stagedFiles: taskFilesEnabled(scope.workspaceId) ? true : undefined,
+          // A person's conversation stays in RunInfra's prompt cache through
+          // a pause, so the reply after it does not read its prompt cold.
+          warmConversation:
+            kind === "person" && promptWarmWorkspace(scope.workspaceId)
+              ? ctx.session.id
+              : undefined,
           toolChoice:
             staleReport ||
             (pastAnswer && !reportPastAnswer) ||

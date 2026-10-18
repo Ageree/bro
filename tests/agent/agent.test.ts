@@ -7,6 +7,7 @@ import type {
 } from "@db/services/settings";
 import type * as CompactionRecord from "@agent/lib/compaction/record";
 import type * as ModelSelection from "@agent/lib/model/selection";
+import type * as Warm from "@agent/lib/model/routerai/warm";
 import type * as Provider from "@shared/model/provider";
 import type * as SkillsPilot from "@agent/lib/skills/pilot";
 import type * as RouterTurn from "@agent/lib/tool-router/turn";
@@ -24,6 +25,7 @@ const services = vi.hoisted(() => ({
   directModelActive: vi.fn<() => boolean>(),
   earlyReplyPilot: vi.fn<() => Promise<boolean>>(),
   fastReplyPilot: vi.fn<() => Promise<boolean>>(),
+  promptWarmWorkspace: vi.fn<(workspaceId: string) => boolean>(),
   earlyReplySplitPilot: vi.fn<() => Promise<boolean>>(),
   skillsLayout: vi.fn<() => "core" | "full">(),
   taskAgentPilot: vi.fn<() => Promise<boolean>>(),
@@ -69,6 +71,10 @@ vi.mock("@agent/lib/compaction/pilot", () => ({
 }));
 vi.mock("@agent/lib/delivery/pilot", () => ({
   earlyReplyPilot: services.earlyReplyPilot,
+}));
+vi.mock("@agent/lib/model/routerai/warm", async (importOriginal) => ({
+  ...(await importOriginal<typeof Warm>()),
+  promptWarmWorkspace: services.promptWarmWorkspace,
 }));
 vi.mock("@agent/lib/delivery/fast", () => ({
   earlyReplySplitPilot: services.earlyReplySplitPilot,
@@ -143,6 +149,7 @@ beforeEach(() => {
   services.compactionHeld.mockReturnValue(false);
   services.earlyReplyPilot.mockResolvedValue(false);
   services.fastReplyPilot.mockResolvedValue(false);
+  services.promptWarmWorkspace.mockReturnValue(false);
   services.earlyReplySplitPilot.mockResolvedValue(false);
   services.skillsLayout.mockReturnValue("full");
   services.routerGroupsOfStep.mockResolvedValue(["mail"]);
@@ -306,6 +313,29 @@ describe("interactive delivery enforcement", () => {
     await agent.model.events["step.started"]?.({}, interactiveContext(pending));
     expect(
       services.modelSelection.mock.lastCall?.[1]?.reasoningOff
+    ).toBeUndefined();
+  });
+
+  it("keeps a person's conversation warm in the pilot, and no worker's", async () => {
+    services.promptWarmWorkspace.mockReturnValue(true);
+
+    await agent.model.events["step.started"]?.({}, interactiveContext(pending));
+    expect(services.promptWarmWorkspace).toHaveBeenLastCalledWith(
+      "workspace-1"
+    );
+    expect(services.modelSelection.mock.lastCall?.[1]?.warmConversation).toBe(
+      "interactive-session"
+    );
+    services.isActive.mockResolvedValue(true);
+    await agent.model.events["step.started"]?.({}, scheduledWorkerContext());
+    expect(
+      services.modelSelection.mock.lastCall?.[1]?.warmConversation
+    ).toBeUndefined();
+
+    services.promptWarmWorkspace.mockReturnValue(false);
+    await agent.model.events["step.started"]?.({}, interactiveContext(pending));
+    expect(
+      services.modelSelection.mock.lastCall?.[1]?.warmConversation
     ).toBeUndefined();
   });
 

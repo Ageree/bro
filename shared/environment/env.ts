@@ -1165,6 +1165,10 @@ export const env = createEnv({
     // cache (kept per mode) holds (`agent/lib/delivery/fast.ts`). Only with
     // the direct model. Unset, every step reasons as before.
     FAST_REPLY_WORKSPACES: workspaceListSchema.optional(),
+    // Workspace ids or `*` whose conversations RunInfra's prompt cache is
+    // kept warm for: a person's last call goes again for one token after a
+    // pause (`agent/lib/model/routerai/warm.ts`). Unset, nobody's.
+    PROMPT_WARM_WORKSPACES: workspaceListSchema.optional(),
     // The pilot of flash mode for browser errands that only search: workspace
     // ids or owners' emails, or `*` for every workspace, whose errands on
     // their own browser (a VM or a sandbox of the pool) run browser-use's
@@ -1220,7 +1224,9 @@ export const env = createEnv({
     TOOL_ROUTER_FALLBACK_MODEL: trimmedValue.default("typesafe/jev-1.13"),
     // Within this many minutes of the last step with the router's block a
     // turn keeps the groups of the turn before (RunInfra's cache held a
-    // prefix 40 minutes in 7 series of 7, 15.10).
+    // prefix 40 minutes in 7 series of 7, 15.10). With PROMPT_WARM_WORKSPACES
+    // the cache lives about 165 minutes, and so must the tool block, which
+    // comes before the history.
     TOOL_ROUTER_WARM_MINUTES: z.coerce
       .number()
       .int()
