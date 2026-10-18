@@ -1,7 +1,7 @@
 import type { AdapterPostableMessage } from "chat";
 import { APIError } from "better-auth/api";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { z } from "zod";
+import * as z from "zod";
 
 const mocks = vi.hoisted(() => ({
   openDM: vi.fn<(userId: string) => Promise<string>>(),

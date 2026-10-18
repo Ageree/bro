@@ -2,7 +2,7 @@ import {
   createiMessageAdapter,
   type iMessageAdapter,
 } from "@photon-ai/chat-adapter-imessage";
-import { z } from "zod";
+import * as z from "zod";
 import { photonProjectCredentials } from "@shared/photon/credentials";
 
 // Photon has no REST send endpoint: outbound iMessage goes through the same

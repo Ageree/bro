@@ -1,4 +1,4 @@
-import { z } from "zod";
+import * as z from "zod";
 
 export const endCallToolSchema = z.object({
   type: z.literal("system"),

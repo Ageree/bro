@@ -1,5 +1,5 @@
 import creditCardType from "credit-card-type";
-import { z } from "zod";
+import * as z from "zod";
 
 export const vaultItemKinds = [
   "login",

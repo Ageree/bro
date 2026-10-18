@@ -1,7 +1,7 @@
 "use client";
 
 import { type SubmitEvent, useState } from "react";
-import { z } from "zod";
+import * as z from "zod";
 import {
   Document,
   DocumentTitle,

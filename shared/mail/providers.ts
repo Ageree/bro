@@ -1,5 +1,5 @@
 import { env } from "@shared/environment";
-import { z } from "zod";
+import * as z from "zod";
 import type { AccessScope } from "@shared/identity/access-scope";
 import type { MailAccess, MailProvider } from "./schema";
 

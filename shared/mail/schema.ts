@@ -1,4 +1,4 @@
-import { z } from "zod";
+import * as z from "zod";
 
 export const mailProviders = ["mailru", "yandex"] as const;
 export const mailProviderSchema = z.enum(mailProviders);

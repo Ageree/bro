@@ -1,4 +1,4 @@
-import { z } from "zod";
+import * as z from "zod";
 
 /**
  * What a flight watch keeps (`subscriptions`, template `flight`): Bro sets

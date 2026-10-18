@@ -1,6 +1,6 @@
 import { createHmac } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { z } from "zod";
+import * as z from "zod";
 
 vi.mock("@db/services/phone", () => ({
   acceptInboundCall: vi.fn<() => Promise<{ row: { id: string } }>>(

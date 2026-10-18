@@ -1,4 +1,4 @@
-import { z } from "zod";
+import * as z from "zod";
 
 export const maximumBrowserImageBytes = 8 * 1024 * 1024;
 

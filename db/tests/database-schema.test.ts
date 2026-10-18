@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { getTableConfig } from "drizzle-orm/pg-core";
 import { describe, expect, it } from "vitest";
-import { z } from "zod";
+import * as z from "zod";
 import {
   agentSessions,
   browserImageArtifacts,

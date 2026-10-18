@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { z } from "zod";
+import * as z from "zod";
 import { env } from "@shared/environment";
 
 const yooKassaBaseUrl = "https://api.yookassa.ru/v3/payments";

@@ -1,4 +1,4 @@
-import { z } from "zod";
+import * as z from "zod";
 import { isDeepStrictEqual } from "node:util";
 import { endCallToolSchema } from "@shared/phone/elevenlabs-tools";
 import { elevenlabsFetch } from "@shared/phone/elevenlabs-http";

@@ -1,4 +1,4 @@
-import { z } from "zod";
+import * as z from "zod";
 import { env } from "@shared/environment";
 
 /** Composio REST API v3.1, the version its docs name current. */

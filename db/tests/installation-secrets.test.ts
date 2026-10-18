@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { get, put } from "@vercel/blob";
-import { z } from "zod";
+import * as z from "zod";
 import type { InstallationSecrets } from "@db/services/installation-secrets";
 
 const mocks = vi.hoisted(() => ({

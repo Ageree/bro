@@ -1,4 +1,4 @@
-import { z } from "zod";
+import * as z from "zod";
 
 /** What the browser's worker says to the viewer over its socket. */
 const workerMessageSchema = z.discriminatedUnion("t", [

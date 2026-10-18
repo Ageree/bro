@@ -1,4 +1,4 @@
-import { z } from "zod";
+import * as z from "zod";
 import { getAuthSession } from "@db/services/auth/session";
 import { readReadyArtifact } from "@db/services/artifacts";
 import { accessScopeForUser } from "@shared/identity/access-scope";

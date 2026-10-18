@@ -1,6 +1,6 @@
 import { createHash, createHmac, hkdfSync, timingSafeEqual } from "node:crypto";
 import { and, eq, isNotNull } from "drizzle-orm";
-import { z } from "zod";
+import * as z from "zod";
 import { db, yoomoneyPayments } from "@db";
 import { getInstallationSecrets } from "@db/services/installation-secrets";
 import { applicationOrigin } from "@shared/environment/origin";

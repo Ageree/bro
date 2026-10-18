@@ -2,7 +2,7 @@
 
 import { type SubmitEvent, useState } from "react";
 import { useRouter } from "next/navigation";
-import { z } from "zod";
+import * as z from "zod";
 import { Button } from "@web/components/ui/button";
 import { DialogFooter } from "@web/components/ui/dialog";
 import { FieldGroup } from "@web/components/ui/field";

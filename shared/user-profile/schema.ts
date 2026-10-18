@@ -1,4 +1,4 @@
-import { z } from "zod";
+import * as z from "zod";
 
 const nullableText = (maximum: number) =>
   z.string().trim().min(1).max(maximum).nullable();

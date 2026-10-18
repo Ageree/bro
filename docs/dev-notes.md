@@ -192,7 +192,18 @@ s3put:<ключ>`; без звонка её гоняют локально: `sip.
   в `app/(public)/landing.module.css`: остальные страницы живут на общей
   системе (запись «Дизайн»), правка одной не должна менять другую.
 - Границы портретов в `portrait-wallpaper.tsx` измерены по alpha > 16 оригиналов
-  1254×1254; web-копии 512×512 не меняют эту систему координат SVG.
+  1254×1254; web-копии 512×512 не меняют эту систему координат SVG. Копии —
+  lossy WebP quality 90 с альфой без потерь (`alpha_quality=100`): lossless весил
+  1,7 МБ на первом экране против 0,48 МБ, разницы на скриншоте не видно.
+- zod импортируйте `import * as z from "zod"`, не `import { z }`: с `{ z }`
+  Turbopack кладёт в браузер все ~40 локалей zod (+250 КБ в общем чанке).
+  Чат (`web/components/ai-elements`) ещё на `{ z }`. react-query и
+  `TooltipProvider` — в layout кабинета и входа, не в корневом: лендингу не нужны.
+- Байты JS маршрута после `pnpm build` (Turbopack размеров не печатает): объединение
+  `entryJSFiles` из `.next/server/app/<маршрут>/page_client-reference-manifest.js`
+  и `rootMainFiles` из `.next/build-manifest.json`. Сессию в RSC берите через
+  `requestSession` (`web/auth/request-scope.ts`, `cache` на запрос): каждое
+  чтение Better Auth — два запроса к базе; `proxy.ts` читает её ещё раз отдельно.
 - Изолированное превью запускайте с `EVE_SCHEDULES=off`, но не передавайте это
   значение Vitest: тесты расписаний проверяют обычный включённый режим.
   Для `pnpm check` и прямых запусков тестов оставляйте умолчание расписаний.

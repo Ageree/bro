@@ -1,4 +1,4 @@
-import { z } from "zod";
+import * as z from "zod";
 import { authClient } from "@web/auth/client";
 
 const formValueSchema = z.string().catch("");
