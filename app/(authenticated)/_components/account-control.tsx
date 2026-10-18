@@ -1,27 +1,31 @@
 "use client";
 
-import { authClient } from "@web/auth/client";
 import { Button } from "@web/components/ui/button";
 
 /**
  * The foot of the cabinet: who is signed in, set as fine print, and the one
- * way out.
+ * way out. The layout passes the phone it already read on the server, and
+ * the Better Auth client loads only when «Выйти» is pressed: no session
+ * request after hydration, and none of its code in every cabinet page.
  */
-export function AuthenticatedAccountControl() {
-  const { data: session } = authClient.useSession();
-  if (!session?.user) return null;
-
+export function AuthenticatedAccountControl({
+  phoneNumber,
+}: {
+  readonly phoneNumber: string | undefined;
+}) {
   return (
     <div className="flex flex-wrap items-center justify-between gap-4">
       <p className="type-status text-background/70">
-        {session.user.phoneNumber ?? "В системе"}
+        {phoneNumber ?? "В системе"}
       </p>
       <Button
         className="border-background bg-transparent text-background hover:bg-background/10"
         onClick={() => {
-          void authClient.signOut().finally(() => {
-            window.location.assign("/sign-in");
-          });
+          void import("@web/auth/client")
+            .then(async ({ authClient }) => authClient.signOut())
+            .finally(() => {
+              window.location.assign("/sign-in");
+            });
         }}
         size="sm"
         type="button"
