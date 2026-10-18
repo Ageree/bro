@@ -1,5 +1,4 @@
 import type { Metadata } from "next";
-import { headers } from "next/headers";
 import Link from "next/link";
 import {
   Actions,
@@ -14,7 +13,6 @@ import {
 } from "@web/components/paper/document";
 import { Badge } from "@web/components/ui/badge";
 import { Button } from "@web/components/ui/button";
-import { getAuthSession } from "@db/services/auth/session";
 import { readMailConnection } from "@db/services/mail";
 import { mailEnabled } from "@shared/mail/providers";
 import { mailProviderNames, mailProviderSchema } from "@shared/mail/schema";
@@ -51,7 +49,7 @@ import { localMonthKey } from "@shared/calendar/local-period";
 import { artifactStorageConfigured } from "@shared/object-storage/artifacts";
 import { resolveTimeZone } from "@shared/user-profile/schema";
 import type { VaultItem } from "@shared/vault/schema";
-import { requireRequestScope } from "@web/auth/request-scope";
+import { requestSession, requireRequestScope } from "@web/auth/request-scope";
 import { ConnectedAppAction } from "./_components/connected-app-action";
 import { GoogleWorkspaceAction } from "./_components/google-workspace-action";
 import { PersonalMailAction } from "./_components/personal-mail-action";
@@ -82,7 +80,6 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
   const shownApps = cabinetAppSchema.options.filter((app) =>
     connectedAppConfigured(app)
   );
-  const requestHeaders = await headers();
   const scope = await requireRequestScope();
   const mailConnections = mailEnabled(scope)
     ? await Promise.all(
@@ -104,7 +101,7 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
     appConnections,
     memories,
   ] = await Promise.all([
-    getAuthSession(requestHeaders),
+    requestSession(),
     getGoogleWorkspaceAccess(scope).then(async (access) =>
       readGoogleWorkspaceConnection(scope.userId, access)
     ),

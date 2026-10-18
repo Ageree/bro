@@ -1,9 +1,8 @@
 import type { Metadata, Viewport } from "next";
 import { Geist, Source_Serif_4 } from "next/font/google";
-import { headers } from "next/headers";
 import { accessScopeForUser } from "@shared/identity/access-scope";
 import { applicationOrigin } from "@shared/environment/origin";
-import { getAuthSession } from "@db/services/auth/session";
+import { requestSession } from "@web/auth/request-scope";
 import "./globals.css";
 
 // Source Serif 4 carries the headings, Geist everything that is read or
@@ -40,7 +39,7 @@ export const viewport: Viewport = {
 };
 
 export default async function RootLayout({ children }: LayoutProps<"/">) {
-  const session = await getAuthSession(await headers());
+  const session = await requestSession();
   const workspaceId = session
     ? accessScopeForUser(`better-auth:${session.user.id}`).workspaceId
     : undefined;

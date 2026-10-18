@@ -1,13 +1,12 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { headers } from "next/headers";
 import { Capsule } from "@web/components/paper/capsule";
 import { SiteFooter } from "@web/components/paper/footer";
 import { LocalPhoneAuthForm } from "@app/sign-in/_components/local-form";
 import { PhoneOtpAuthForm } from "@app/sign-in/_components/otp-form";
 import { env, localPhoneAuthBypassEnabled } from "@shared/environment";
-import { getAuthSession } from "@db/services/auth/session";
+import { requestSession } from "@web/auth/request-scope";
 import { photonConfigured } from "@shared/photon/credentials";
 
 export const metadata: Metadata = { title: "Вход" };
@@ -19,7 +18,7 @@ export const metadata: Metadata = { title: "Вход" };
 export default async function SignInPage({
   searchParams,
 }: PageProps<"/sign-in">) {
-  if (await getAuthSession(await headers())) redirect("/workspace");
+  if (await requestSession()) redirect("/workspace");
 
   const callbackValue = (await searchParams).callbackUrl;
   const requestedCallback = Array.isArray(callbackValue)
