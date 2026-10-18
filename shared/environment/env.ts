@@ -859,6 +859,9 @@ export const env = createEnv({
         "RUNINFRA_BASE_URL must be an absolute https URL"
       )
       .default("https://api.runinfra.ai/v1"),
+    // The id RunInfra serves Bro's DeepSeek V4.1 Flash under: its newer build
+    // (`deepseek-v4-1-flash-1017`, 18.10) shares the old one's prompt cache.
+    RUNINFRA_DEEPSEEK_FLASH_MODEL: requiredValue.default("deepseek-v4-1-flash"),
     ROUTERAI_API_KEY: pastedKeySchema.optional(),
     // The key goes to this address with every call: https only.
     ROUTERAI_BASE_URL: requiredValue

@@ -22,7 +22,7 @@ const backend = "RunInfra";
 
 /** Bro's model ids on RouterAI and the ids RunInfra serves them under. */
 const hosted: ReadonlyMap<string, string> = new Map([
-  ["deepseek/deepseek-v4.1-flash", "deepseek-v4-1-flash"],
+  ["deepseek/deepseek-v4.1-flash", env.RUNINFRA_DEEPSEEK_FLASH_MODEL],
 ]);
 
 /** How long chat calls skip RunInfra once it failed one. */
