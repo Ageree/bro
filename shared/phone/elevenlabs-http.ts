@@ -1,5 +1,5 @@
 import { fetch, ProxyAgent, type RequestInit } from "undici";
-import { z } from "zod";
+import * as z from "zod";
 
 let proxy: { url: string; dispatcher: ProxyAgent } | undefined;
 

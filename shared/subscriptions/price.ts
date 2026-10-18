@@ -1,4 +1,4 @@
-import { z } from "zod";
+import * as z from "zod";
 
 /**
  * What a price watch keeps (`subscriptions`): the agent reads and decides

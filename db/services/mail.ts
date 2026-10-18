@@ -5,7 +5,7 @@ import {
   randomBytes,
 } from "node:crypto";
 import { and, eq, gt, lt } from "drizzle-orm";
-import { z } from "zod";
+import * as z from "zod";
 import { ImapFlow } from "imapflow";
 import { createTransport } from "nodemailer";
 import { db, mailAuthorizations, mailConnections, mailSends } from "@db";

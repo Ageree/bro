@@ -1,4 +1,4 @@
-import { z } from "zod";
+import * as z from "zod";
 
 /**
  * What a parcel watch keeps (`subscriptions`, template `parcel`): the

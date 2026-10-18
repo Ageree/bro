@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { z } from "zod";
+import * as z from "zod";
 import { readYoomoneyPaymentByLink } from "@db/services/yoomoney/card";
 import { Capsule } from "@web/components/paper/capsule";
 import { Button } from "@web/components/ui/button";

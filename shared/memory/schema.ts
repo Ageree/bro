@@ -1,4 +1,4 @@
-import { z } from "zod";
+import * as z from "zod";
 
 // A rule is a boundary the person set for Bro («без моего ок ничего не
 // оплачивай», «никогда не пиши маме»): recall shows it first, as something

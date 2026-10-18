@@ -1,4 +1,4 @@
-import { z } from "zod";
+import * as z from "zod";
 
 /**
  * How Bro addresses the person: «ты» unless they asked for «вы», and the name

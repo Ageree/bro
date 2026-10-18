@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { z } from "zod";
+import * as z from "zod";
 import {
   cancelYoomoneyAuthorization,
   finishYoomoneyAuthorization,

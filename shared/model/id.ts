@@ -1,4 +1,4 @@
-import { z } from "zod";
+import * as z from "zod";
 
 /**
  * The AI Gateway and OpenRouter both address a model as `provider/model`, so a

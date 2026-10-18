@@ -6,8 +6,17 @@ import {
   type AccessScope,
 } from "@shared/identity/access-scope";
 
+/**
+ * The signed-in session of this request, read once: the root layout, the
+ * cabinet layout and the page each ask, and every Better Auth read is two
+ * queries (the session row, then its user).
+ */
+export const requestSession = cache(async () =>
+  getAuthSession(await headers())
+);
+
 export const requireRequestScope = cache(async (): Promise<AccessScope> => {
-  const session = await getAuthSession(await headers());
+  const session = await requestSession();
   if (!session) throw new UnauthenticatedError();
   return accessScopeForUser(`better-auth:${session.user.id}`);
 });

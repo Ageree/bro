@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, gt, lt, ne, or, sql } from "drizzle-orm";
-import { z } from "zod";
+import * as z from "zod";
 import type { AccessScope } from "@shared/identity/access-scope";
 import { db, documentSignings } from "@db";
 import { ensureScope } from "@db/services/scope";

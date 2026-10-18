@@ -1,4 +1,4 @@
-import { z } from "zod";
+import * as z from "zod";
 import { getAuth } from "@db/services/auth";
 
 const authenticatedSessionSchema = z
