@@ -18,6 +18,7 @@ import type { AccessScope } from "@shared/identity/access-scope";
 import { db, vaultItems } from "@db";
 import {
   deleteEncryptedSecret,
+  listEncryptedSecretIds,
   readEncryptedSecret,
   writeEncryptedSecret,
 } from "@db/services/secrets";
@@ -73,14 +74,17 @@ export async function listVaultItems(scope: AccessScope) {
     );
 }
 
+/**
+ * The rows with whether each has a stored secret: two queries for the whole
+ * vault, not one secret lookup per item.
+ */
 export async function readVaultItems(scope: AccessScope) {
-  const records = await listVaultItems(scope);
-  return Promise.all(
-    records.map(async (record) =>
-      Object.assign({}, record, {
-        hasSecret: await hasVaultSecret(scope, record.id),
-      })
-    )
+  const [records, withSecret] = await Promise.all([
+    listVaultItems(scope),
+    listEncryptedSecretIds(scope),
+  ]);
+  return records.map((record) =>
+    Object.assign({}, record, { hasSecret: withSecret.has(record.id) })
   );
 }
 
@@ -131,10 +135,6 @@ export async function readVaultSecret(scope: AccessScope, id: string) {
   if (!encrypted) return undefined;
   const { secretEncryptionKey } = await getInstallationSecrets();
   return decryptVaultSecret(scope, id, encrypted, secretEncryptionKey);
-}
-
-async function hasVaultSecret(scope: AccessScope, id: string) {
-  return (await readEncryptedSecret(scope, id)) !== undefined;
 }
 
 async function writeVaultSecret(scope: AccessScope, id: string, value: string) {
