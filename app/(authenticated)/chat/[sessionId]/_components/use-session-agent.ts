@@ -2,14 +2,13 @@
 
 import {
   Client,
-  defaultMessageReducer,
   isCurrentTurnBoundaryEvent,
   type InputResponse,
   type MessageStreamEvent,
   type RespondTurnOptions,
   type SendTurnOptions,
 } from "eve/client";
-import type { EveMessageData, UseEveAgentStatus } from "eve/react";
+import type { UseEveAgentStatus } from "eve/react";
 import type { UserContent } from "ai";
 import {
   type Dispatch,
@@ -26,11 +25,11 @@ import {
   readOlderSessionHistory,
   type SessionHistoryPage,
 } from "../_lib/session-history";
+import { messageDataOf } from "../_lib/message-data";
 import { MessageNotSent } from "../../_lib/attachments";
 import type { ChatAgent } from "./chat-agent";
 
 const client = new Client({ host: "" });
-const messageReducer = defaultMessageReducer();
 
 export function useSessionAgent(sessionId: string): ChatAgent {
   const [history, setHistory] = useState<SessionHistoryPage>();
@@ -260,14 +259,7 @@ export function useSessionAgent(sessionId: string): ChatAgent {
   };
 
   const events = history?.events ?? emptyEvents;
-  const data = useMemo<EveMessageData>(
-    () =>
-      events.reduce(
-        (current, event) => messageReducer.reduce(current, event),
-        messageReducer.initial()
-      ),
-    [events]
-  );
+  const data = useMemo(() => messageDataOf(events), [events]);
 
   return {
     cancel: async () => await client.sessions.attach(sessionId).cancel(),
