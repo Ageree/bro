@@ -1,9 +1,11 @@
-import { and, desc, eq, ne } from "drizzle-orm";
+import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { AccessScope } from "@shared/identity/access-scope";
 import {
   chatListSchema,
+  type ChatCursor,
   type ChatSummary,
+  type ChatUsage,
   type SaveChat,
 } from "@shared/chat/schema";
 import { chats, db } from "@db";
@@ -32,17 +34,108 @@ function toChatSummary(row: z.infer<typeof chatRowSchema>): ChatSummary {
   };
 }
 
-export async function listChats(scope: AccessScope) {
-  const rows = chatRowSchema
+/** How many chats one page of «Все чаты» shows. */
+export const chatPageSize = 40;
+
+/**
+ * One page of the workspace's chats, newest first. The page continues after
+ * `cursor` by the `(updated_at, session_id)` key, so it reads only its own rows
+ * from `chats_workspace_updated_session_idx` however long the history is.
+ */
+export async function listChatsPage(scope: AccessScope, cursor?: ChatCursor) {
+  const rows = chatRowSchema.array().parse(
+    await db
+      .select()
+      .from(chats)
+      .where(
+        and(
+          eq(chats.workspaceId, scope.workspaceId),
+          cursor
+            ? sql`(${chats.updatedAt}, ${chats.sessionId}) < (${cursor.updatedAt}::timestamptz, ${cursor.sessionId})`
+            : undefined
+        )
+      )
+      .orderBy(desc(chats.updatedAt), desc(chats.sessionId))
+      .limit(chatPageSize + 1)
+  );
+  const page = chatListSchema.parse(
+    rows.slice(0, chatPageSize).map(toChatSummary)
+  );
+  const last = page.at(-1);
+  return {
+    chats: page,
+    next:
+      rows.length > chatPageSize && last
+        ? { sessionId: last.sessionId, updatedAt: last.updatedAt }
+        : null,
+  };
+}
+
+const chatTotalsSchema = z.object({
+  count: z.coerce.number().int().nonnegative(),
+  costUsd: z.coerce.number().nonnegative().nullable(),
+  inputTokens: z.coerce.number().int().nonnegative(),
+  measured: z.boolean().nullable(),
+  outputTokens: z.coerce.number().int().nonnegative(),
+  unmeasured: z.boolean().nullable(),
+});
+
+/**
+ * The number of chats and their combined usage, counted by the database. The
+ * cost is known only when every chat that spent tokens has a cost.
+ */
+export async function summarizeChats(scope: AccessScope): Promise<{
+  readonly count: number;
+  readonly usage: ChatUsage;
+}> {
+  const [row] = await db
+    .select({
+      count: sql`count(*)`,
+      costUsd: sql`sum(${chats.costUsd})`,
+      inputTokens: sql`coalesce(sum(${chats.inputTokens}), 0)`,
+      measured: sql`bool_or(${chats.costUsd} IS NOT NULL)`,
+      outputTokens: sql`coalesce(sum(${chats.outputTokens}), 0)`,
+      unmeasured: sql`bool_or(${chats.costUsd} IS NULL AND ${chats.inputTokens} + ${chats.outputTokens} > 0)`,
+    })
+    .from(chats)
+    .where(eq(chats.workspaceId, scope.workspaceId));
+  const totals = chatTotalsSchema.parse(row);
+  return {
+    count: totals.count,
+    usage: {
+      costUsd:
+        totals.measured === true && totals.unmeasured !== true
+          ? totals.costUsd
+          : null,
+      inputTokens: totals.inputTokens,
+      outputTokens: totals.outputTokens,
+    },
+  };
+}
+
+/** The newest chat of each given channel, in the order «Все чаты» lists them. */
+export async function newestChatsOfChannels(
+  scope: AccessScope,
+  channels: readonly string[]
+) {
+  return z
+    .object({ channel: z.string(), sessionId: z.string() })
     .array()
     .parse(
       await db
-        .select()
+        .selectDistinctOn([chats.channel], {
+          channel: chats.channel,
+          sessionId: chats.sessionId,
+        })
         .from(chats)
-        .where(eq(chats.workspaceId, scope.workspaceId))
-        .orderBy(desc(chats.updatedAt))
+        .where(
+          and(
+            eq(chats.workspaceId, scope.workspaceId),
+            inArray(chats.channel, [...channels])
+          )
+        )
+        .orderBy(chats.channel, desc(chats.updatedAt), desc(chats.sessionId))
     );
-  return chatListSchema.parse(rows.map(toChatSummary));
 }
 
 export async function readChat(scope: AccessScope, sessionId: string) {

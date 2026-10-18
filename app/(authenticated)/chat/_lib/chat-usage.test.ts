@@ -1,6 +1,6 @@
 import type { MessageStreamEvent } from "eve/client";
 import { describe, expect, it } from "vitest";
-import { combineChatUsage, summarizeChatUsage } from "./chat-usage";
+import { summarizeChatUsage } from "./chat-usage";
 
 describe("chat usage", () => {
   it("sums usage across model steps, and no cost unless every step has one", () => {
@@ -15,21 +15,6 @@ describe("chat usage", () => {
       summarizeChatUsage([
         completedStep("event-1", 1200, 300, 0.012),
         completedStep("event-2", 800, 200),
-      ])
-    ).toEqual({ costUsd: null, inputTokens: 2000, outputTokens: 500 });
-  });
-
-  it("combines chat summaries for the global view, without a partial cost", () => {
-    expect(
-      combineChatUsage([
-        { costUsd: 0.012, inputTokens: 1200, outputTokens: 300 },
-        { costUsd: 0.008, inputTokens: 800, outputTokens: 200 },
-      ])
-    ).toEqual({ costUsd: 0.02, inputTokens: 2000, outputTokens: 500 });
-    expect(
-      combineChatUsage([
-        { costUsd: 0.012, inputTokens: 1200, outputTokens: 300 },
-        { costUsd: null, inputTokens: 800, outputTokens: 200 },
       ])
     ).toEqual({ costUsd: null, inputTokens: 2000, outputTokens: 500 });
   });

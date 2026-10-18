@@ -285,6 +285,12 @@ s3put:<ключ>`; без звонка её гоняют локально: `sip.
   в прод, а drizzle пропускал более ранние `when`. Миграцию PR перед слиянием
   генерируйте поверх bro-next: параллельные PR сталкиваются номерами, второй
   перегенерирует свою, журнал и снимки руками не правят.
+- drizzle-kit пишет `.desc()` индекса как `DESC NULLS LAST`, а `ORDER BY … DESC`
+  по умолчанию — `NULLS FIRST`: такой индекс сортировку не обслужит. Под `desc(...)`
+  в запросе — `.desc().nullsFirst()` (`chats_workspace_updated_session_idx`).
+  «Все чаты» читают порцию по курсору `(updated_at, session_id)`, итоги — агрегатом
+  (`listChatsPage`, `summarizeChats` в `db/services/chats.ts`): не возвращайте чтение
+  всех чатов ради суммы — у владельца их больше тысячи (1,76 МБ HTML 18.10).
 - `drizzle-kit migrate` применяет пачку миграций одной транзакцией: `NOT VALID`
   у CHECK блокировку таблицы не укорачивает.
 - `pnpm build:eve` без заглушек `DATABASE_URL`/`BETTER_AUTH_*` падает
