@@ -30,32 +30,6 @@ export function summarizeChatUsage(
   };
 }
 
-export function combineChatUsage(usages: readonly ChatUsage[]): ChatUsage {
-  let costUsd = 0;
-  let hasMeasuredCost = false;
-  let hasUnmeasuredUsage = false;
-  let inputTokens = 0;
-  let outputTokens = 0;
-
-  for (const usage of usages) {
-    inputTokens += usage.inputTokens;
-    outputTokens += usage.outputTokens;
-
-    if (usage.costUsd === null) {
-      hasUnmeasuredUsage ||= usage.inputTokens + usage.outputTokens > 0;
-    } else {
-      costUsd += usage.costUsd;
-      hasMeasuredCost = true;
-    }
-  }
-
-  return {
-    costUsd: hasMeasuredCost && !hasUnmeasuredUsage ? costUsd : null,
-    inputTokens,
-    outputTokens,
-  };
-}
-
 export function formatChatUsage(usage: ChatUsage) {
   const tokens = usage.inputTokens + usage.outputTokens;
   const tokenLabel = `${new Intl.NumberFormat("ru-RU", {

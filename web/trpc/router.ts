@@ -2,7 +2,7 @@ import { TRPCError } from "@trpc/server";
 import { gateway } from "ai";
 import { z } from "zod";
 import { mintChannelLinkToken } from "@db/services/channel-identities";
-import { saveChat } from "@db/services/chats";
+import { listChatsPage, saveChat } from "@db/services/chats";
 import { replaceUserProfile } from "@db/services/user-profile";
 import {
   getGoogleWorkspaceAccess,
@@ -24,7 +24,7 @@ import {
 } from "@db/services/memory/records";
 import { listMemoryRecordHistory } from "@db/services/memory/revisions";
 import { memoryIndexSchema, memoryTextSchema } from "@shared/memory/schema";
-import { saveChatSchema } from "@shared/chat/schema";
+import { chatCursorSchema, saveChatSchema } from "@shared/chat/schema";
 import { cabinetAppSchema } from "@shared/composio/catalog";
 import {
   disconnectConnectedApp,
@@ -110,6 +110,10 @@ export const appRouter = createTRPCRouter({
       }),
   },
   chats: {
+    /** The next page of «Все чаты», after the last chat already shown. */
+    page: protectedProcedure
+      .input(z.object({ cursor: chatCursorSchema }))
+      .query(({ ctx, input }) => listChatsPage(ctx.scope, input.cursor)),
     save: protectedProcedure
       .input(saveChatSchema)
       .mutation(({ ctx, input }) => saveChat(ctx.scope, input)),

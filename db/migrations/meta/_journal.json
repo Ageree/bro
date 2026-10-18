@@ -547,6 +547,13 @@
       "when": 1792143336839,
       "tag": "0077_direct_purchase_consents",
       "breakpoints": true
+    },
+    {
+      "idx": 78,
+      "version": "7",
+      "when": 1792302375519,
+      "tag": "0078_chats_page_cursor",
+      "breakpoints": true
     }
   ]
 }

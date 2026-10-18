@@ -98,7 +98,7 @@ describe("database services", () => {
     expect(await sessions.isSessionOwned(bob, "session-alice")).toBe(false);
 
     await sessions.claimSession(alice, "session-imessage");
-    expect(await chats.listChats(alice)).toEqual([]);
+    expect((await chats.listChatsPage(alice)).chats).toEqual([]);
     expect(await chats.hasOtherConversations(alice, "session-alice")).toBe(
       false
     );
@@ -136,7 +136,7 @@ describe("database services", () => {
       outputTokens: 4,
     });
     expect(await chats.readChat(bob, "session-alice")).toBeUndefined();
-    const indexedChats = await chats.listChats(alice);
+    const { chats: indexedChats } = await chats.listChatsPage(alice);
     expect(indexedChats).toHaveLength(2);
     expect(
       indexedChats.find((chat) => chat.sessionId === "session-alice")
@@ -144,7 +144,7 @@ describe("database services", () => {
     expect(
       indexedChats.find((chat) => chat.sessionId === "session-imessage")
     ).toMatchObject({ channel: "channel:photon", title: "New chat" });
-    expect(await chats.listChats(bob)).toEqual([]);
+    expect((await chats.listChatsPage(bob)).chats).toEqual([]);
 
     await chats.saveChat(bob, {
       sessionId: "session-alice",
@@ -154,7 +154,7 @@ describe("database services", () => {
     expect(await chats.readChat(alice, "session-alice")).toEqual(aliceChat);
     expect(await chats.readChat(bob, "session-alice")).toBeUndefined();
     expect(await chats.readChat(bob, "session-unknown")).toBeUndefined();
-    expect(await chats.listChats(bob)).toEqual([]);
+    expect((await chats.listChatsPage(bob)).chats).toEqual([]);
 
     const { serializeLoginVaultPayload } = await import("@shared/vault/schema");
     await vault.saveVaultItem(alice, {

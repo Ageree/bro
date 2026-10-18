@@ -52,9 +52,10 @@ export const chats = pgTable(
       "chats_cost_usd_check",
       sql`${table.costUsd} IS NULL OR ${table.costUsd} >= 0`
     ),
-    index("chats_workspace_updated_idx").on(
+    index("chats_workspace_updated_session_idx").on(
       table.workspaceId,
-      table.updatedAt.desc().nullsFirst()
+      table.updatedAt.desc().nullsFirst(),
+      table.sessionId.desc().nullsFirst()
     ),
   ]
 );
