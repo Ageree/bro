@@ -1,6 +1,7 @@
 import { AlertCircleIcon, BrainIcon, LoaderCircleIcon } from "lucide-react";
 import type { EveMessage, EveMessagePart } from "eve/react";
-import { Fragment, useMemo } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { useStickToBottomContext } from "use-stick-to-bottom";
 import {
   imessageTimestamps,
   messageTimestamps,
@@ -24,6 +25,11 @@ import {
 import { AgentMessage } from "./message";
 import type { ChatAgent } from "../chat-agent";
 
+type ChatConversationHistory = Pick<
+  ChatAgent,
+  "hasOlder" | "isLoadingOlder" | "loadOlder"
+>;
+
 export function ChatConversation({
   agent,
   history,
@@ -35,11 +41,7 @@ export function ChatConversation({
     ChatAgent,
     "data" | "error" | "events" | "respond" | "status"
   >;
-  readonly history?: {
-    readonly hasOlder: boolean;
-    readonly isLoadingOlder: boolean;
-    readonly loadOlder: () => Promise<void>;
-  };
+  readonly history?: ChatConversationHistory;
   readonly initial?: false;
   readonly sessionId?: string;
   readonly traceView: TraceView;
@@ -88,23 +90,7 @@ export function ChatConversation({
       }
     >
       <ConversationContent className="mx-auto w-full max-w-3xl gap-6 px-4 pt-6 pb-36 sm:px-6">
-        {history?.hasOlder ? (
-          <Button
-            className="self-center"
-            disabled={history.isLoadingOlder}
-            onClick={() => void history.loadOlder()}
-            size="lg"
-            type="button"
-            variant="outline"
-          >
-            {history.isLoadingOlder ? (
-              <LoaderCircleIcon className="animate-spin" />
-            ) : null}
-            {history.isLoadingOlder
-              ? "Загружаем…"
-              : "Показать, что было раньше"}
-          </Button>
-        ) : null}
+        {history ? <OlderHistory history={history} /> : null}
         {isRestoring && messages.length === 0 ? (
           <Shimmer className="type-supporting-body self-center" duration={1}>
             Loading recent messages
@@ -180,6 +166,99 @@ export function ChatConversation({
       <ConversationScrollButton />
     </Conversation>
   );
+}
+
+// How near the top the person scrolls before earlier messages start to load.
+const olderPreloadPx = 800;
+
+/**
+ * Earlier messages load as the person scrolls up to them, and the button
+ * stays for a click. Messages read in above leave the one at the top of the
+ * view where it was, though the person scrolls on while the page loads:
+ * Safari has no scroll anchoring of its own.
+ */
+function OlderHistory({
+  history: { hasOlder, isLoadingOlder, loadOlder },
+}: {
+  readonly history: ChatConversationHistory;
+}) {
+  const { contentRef, scrollRef } = useStickToBottomContext();
+  const anchor = useRef<{ readonly row: Element; readonly top: number }>(
+    undefined
+  );
+
+  // Mounted past the last page too: that page is what takes the button away.
+  useLayoutEffect(() => {
+    const scroller = scrollRef.current;
+    const kept = anchor.current;
+    if (isLoadingOlder || !scroller || !kept) return;
+    anchor.current = undefined;
+    if (kept.row.isConnected) {
+      scroller.scrollTop += kept.row.getBoundingClientRect().top - kept.top;
+    }
+  }, [isLoadingOlder, scrollRef]);
+
+  useEffect(() => {
+    const scroller = scrollRef.current;
+    if (!scroller || (!hasOlder && !isLoadingOlder)) return undefined;
+    const keepTopRow = () => {
+      anchor.current = topRowOf(scroller, contentRef.current);
+    };
+    const onScroll = () => {
+      if (isLoadingOlder) {
+        keepTopRow();
+        return;
+      }
+      const fromBottom =
+        scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop;
+      // At the bottom is where a conversation opens: only a scroll up loads.
+      if (
+        scroller.scrollTop > olderPreloadPx ||
+        fromBottom < scroller.clientHeight / 4
+      ) {
+        return;
+      }
+      keepTopRow();
+      void loadOlder();
+    };
+    // Still near the top once a page arrived: the next one follows.
+    if (hasOlder && !isLoadingOlder) onScroll();
+    scroller.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      scroller.removeEventListener("scroll", onScroll);
+    };
+  }, [contentRef, hasOlder, isLoadingOlder, loadOlder, scrollRef]);
+
+  if (!hasOlder) return null;
+  return (
+    <Button
+      className="self-center"
+      data-older-history
+      disabled={isLoadingOlder}
+      onClick={() => {
+        const scroller = scrollRef.current;
+        if (scroller) anchor.current = topRowOf(scroller, contentRef.current);
+        void loadOlder();
+      }}
+      size="lg"
+      type="button"
+      variant="outline"
+    >
+      {isLoadingOlder ? <LoaderCircleIcon className="animate-spin" /> : null}
+      {isLoadingOlder ? "Загружаем…" : "Показать, что было раньше"}
+    </Button>
+  );
+}
+
+/** The row at the top of the view, past the button, and where it stands. */
+function topRowOf(scroller: HTMLElement, content: HTMLElement | null) {
+  const viewTop = scroller.getBoundingClientRect().top;
+  for (const row of content?.children ?? []) {
+    if (row.matches("[data-older-history]")) continue;
+    const { bottom, top } = row.getBoundingClientRect();
+    if (bottom > viewTop) return { row, top };
+  }
+  return undefined;
 }
 
 function isBackgroundTurnMessage(message: EveMessage) {
