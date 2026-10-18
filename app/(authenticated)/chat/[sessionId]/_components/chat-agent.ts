@@ -15,7 +15,8 @@ export interface ChatAgent {
   readonly events: readonly MessageStreamEvent[];
   readonly hasOlder: boolean;
   readonly isLoadingOlder: boolean;
-  readonly loadOlder: () => Promise<void>;
+  /** False when the page could not be read. */
+  readonly loadOlder: () => Promise<boolean>;
   readonly respond: <TOutput = unknown>(
     inputResponses: readonly InputResponse[],
     options?: RespondTurnOptions<TOutput>

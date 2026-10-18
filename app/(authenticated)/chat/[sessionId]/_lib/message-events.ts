@@ -37,65 +37,91 @@ export function imessageTimestamps(events: readonly MessageStreamEvent[]) {
   return timestamps;
 }
 
+interface SentMessage {
+  readonly id: string;
+  readonly parts: readonly EveMessagePart[];
+  readonly timestamp: string;
+}
+
+/**
+ * What one `action.result` sent the person, by the event: a streamed event
+ * reads the whole history again, and the same parts keep their rows drawn.
+ */
+const sentByEvent = new WeakMap<
+  MessageStreamEvent,
+  { readonly sent?: SentMessage; readonly turnMessageId: string }
+>();
+
 export function sentMessages(events: readonly MessageStreamEvent[]) {
-  const messagesByTurn = new Map<
-    string,
-    { id: string; parts: EveMessagePart[]; timestamp: string }[]
-  >();
+  const messagesByTurn = new Map<string, SentMessage[]>();
 
   for (const event of events) {
     if (event.type !== "action.result") continue;
-    const delivery = completedSendMessageOutput(event);
-    const reaction = completedReactionOutput(event);
-    const completed = delivery ?? reaction;
-    if (!completed) continue;
-
-    const turnMessageId = `${event.data.turnId}:assistant`;
-    const parts: EveMessagePart[] = [];
-    if (reaction) {
-      parts.push({
-        state: "done",
-        stepIndex: event.data.stepIndex,
-        text: reactionTextFor(reaction.output.type),
-        type: "text",
-      });
-    } else if (delivery) {
-      const { output } = delivery;
-      // Delivered text is plain and reaches the user verbatim. The chat view
-      // renders text parts as Markdown, so keep every line break as a hard break.
-      const text =
-        output.kind === "link"
-          ? output.url
-          : output.text?.replaceAll("\n", "  \n");
-      if (text) {
-        parts.push({
-          state: "done",
-          stepIndex: event.data.stepIndex,
-          text,
-          type: "text",
-        });
-      }
-      const attachments = output.kind === "message" ? output.attachments : [];
-      for (const attachment of attachments ?? []) {
-        parts.push({
-          filename: attachment.name,
-          mediaType: attachment.mimeType ?? defaultMediaType[attachment.kind],
-          stepIndex: event.data.stepIndex,
-          type: "file",
-          url: attachment.url,
-        });
-      }
+    let read = sentByEvent.get(event);
+    if (!read) {
+      read = {
+        sent: sentMessageOf(event),
+        turnMessageId: `${event.data.turnId}:assistant`,
+      };
+      sentByEvent.set(event, read);
     }
+    const { sent, turnMessageId } = read;
+    if (!sent) continue;
     const messages = messagesByTurn.get(turnMessageId) ?? [];
-    messages.push({
-      id: `${turnMessageId}:${completed.callId}`,
-      parts,
-      timestamp: event.meta.at,
-    });
+    messages.push(sent);
     messagesByTurn.set(turnMessageId, messages);
   }
 
   return messagesByTurn;
+}
+
+function sentMessageOf(event: MessageStreamEvent): SentMessage | undefined {
+  if (event.type !== "action.result") return undefined;
+  const delivery = completedSendMessageOutput(event);
+  const reaction = completedReactionOutput(event);
+  const completed = delivery ?? reaction;
+  if (!completed) return undefined;
+
+  const parts: EveMessagePart[] = [];
+  if (reaction) {
+    parts.push({
+      state: "done",
+      stepIndex: event.data.stepIndex,
+      text: reactionTextFor(reaction.output.type),
+      type: "text",
+    });
+  } else if (delivery) {
+    const { output } = delivery;
+    // Delivered text is plain and reaches the user verbatim. The chat view
+    // renders text parts as Markdown, so keep every line break as a hard break.
+    const text =
+      output.kind === "link"
+        ? output.url
+        : output.text?.replaceAll("\n", "  \n");
+    if (text) {
+      parts.push({
+        state: "done",
+        stepIndex: event.data.stepIndex,
+        text,
+        type: "text",
+      });
+    }
+    const attachments = output.kind === "message" ? output.attachments : [];
+    for (const attachment of attachments ?? []) {
+      parts.push({
+        filename: attachment.name,
+        mediaType: attachment.mimeType ?? defaultMediaType[attachment.kind],
+        stepIndex: event.data.stepIndex,
+        type: "file",
+        url: attachment.url,
+      });
+    }
+  }
+  return {
+    id: `${event.data.turnId}:assistant:${completed.callId}`,
+    parts,
+    timestamp: event.meta.at,
+  };
 }
 
 function completedReactionOutput(event: MessageStreamEvent) {

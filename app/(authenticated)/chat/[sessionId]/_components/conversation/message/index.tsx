@@ -1,13 +1,17 @@
 "use client";
 
 import type { EveMessage } from "eve/react";
-import { useState } from "react";
+import { memo, useState } from "react";
 import { Message, MessageContent } from "@web/components/ai-elements/message";
 import { cn } from "@web/components/class-names";
 import { AgentMessagePart, partKey } from "./parts";
 import type { RespondToAgentInput } from "./types";
 
-export function AgentMessage({
+/**
+ * One row of the conversation. A streamed event redraws only the rows whose
+ * message it changed: the others keep their props.
+ */
+export const AgentMessage = memo(function AgentMessage({
   canRespond,
   isStreaming,
   message,
@@ -82,7 +86,7 @@ export function AgentMessage({
       ) : null}
     </Message>
   );
-}
+});
 
 /**
  * What the person sees of a turn: what Bro sent them, and the cards and
