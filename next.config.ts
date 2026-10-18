@@ -22,6 +22,13 @@ const nextConfig: NextConfig = {
     },
   },
   serverExternalPackages: ["supermemory"],
+  turbopack: {
+    resolveAlias: {
+      // eve's client re-exports its own build of zod 4.5.4, the app's very
+      // version: in the browser it is the app's copy, not a second 340 KiB.
+      "#compiled/zod/index.js": { browser: "zod" },
+    },
+  },
   // The sign-in window shows a page of the person's own browser: no other
   // page may frame it, and its address is not sent on to anyone.
   async headers() {
