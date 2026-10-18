@@ -1,5 +1,5 @@
 import { AlertCircleIcon, BrainIcon, LoaderCircleIcon } from "lucide-react";
-import type { EveMessage } from "eve/react";
+import type { EveMessage, EveMessagePart } from "eve/react";
 import { Fragment, useMemo } from "react";
 import {
   imessageTimestamps,
@@ -125,11 +125,9 @@ export function ChatConversation({
                 canRespond={false}
                 isStreaming={false}
                 key={message.id}
-                message={{ ...message, role: "assistant" }}
-                onInputResponses={(responses) => agent.respond(responses)}
-                sentMessageParts={[
-                  { state: "done", text: notice, type: "text" },
-                ]}
+                message={notice.message}
+                onInputResponses={agent.respond}
+                sentMessageParts={notice.parts}
                 timestamp={timestamps.get(message.id)}
                 userVisibleOnly
               />
@@ -148,8 +146,8 @@ export function ChatConversation({
                     canRespond={!isBusy && agent.status !== "resuming"}
                     isStreaming={false}
                     key={delivery.id}
-                    message={{ ...message, id: delivery.id }}
-                    onInputResponses={(responses) => agent.respond(responses)}
+                    message={message}
+                    onInputResponses={agent.respond}
                     sentMessageParts={delivery.parts}
                     showInputRequests={deliveryIndex === deliveries.length - 1}
                     timestamp={delivery.timestamp}
@@ -168,7 +166,7 @@ export function ChatConversation({
               }
               key={message.id}
               message={message}
-              onInputResponses={(responses) => agent.respond(responses)}
+              onInputResponses={agent.respond}
               timestamp={timestamps.get(message.id)}
               userVisibleOnly={traceView === "imessage"}
             />
@@ -190,9 +188,32 @@ function isBackgroundTurnMessage(message: EveMessage) {
   return text?.type === "text" && isBackgroundTurnText(text.text);
 }
 
+// The row of a notice keeps its message and parts while the history grows.
+const noticeByMessage = new WeakMap<
+  EveMessage,
+  {
+    readonly message: EveMessage;
+    readonly parts: readonly EveMessagePart[];
+  } | null
+>();
+
 function backgroundNoticeOf(message: EveMessage) {
+  const known = noticeByMessage.get(message);
+  if (known !== undefined) return known ?? undefined;
   const text = message.parts.find((part) => part.type === "text");
-  return text?.type === "text" ? backgroundNoticeText(text.text) : undefined;
+  const notice =
+    text?.type === "text" ? backgroundNoticeText(text.text) : undefined;
+  const shown =
+    notice === undefined
+      ? null
+      : {
+          message: { ...message, role: "assistant" as const },
+          parts: [
+            { state: "done" as const, text: notice, type: "text" as const },
+          ],
+        };
+  noticeByMessage.set(message, shown);
+  return shown ?? undefined;
 }
 
 function toErrorMessage(cause: unknown): string {
