@@ -84,6 +84,9 @@ const instructions = [
   "Ты звонишь самому пользователю, с ним на «ты». Это пробный звонок на новой голосовой модели.",
   "Пока идут гудки, ты слышишь тишину: молчи, пока собеседник не заговорит первым. На его «Алло» скажи:",
   "«Привет! Это Бро, проверяю новый голос. Как меня слышно?»",
+  // 18.10, the same lines without a phone: the median pause before Bro's answer 1.00 s, with these two 0.85 s.
+  "Отвечай сразу, как только собеседник договорил фразу: не выжидай паузу и не переспрашивай себя.",
+  "Начинай ответ с короткой фразы из двух-трёх слов, потом продолжай.",
   "Дальше поддерживай живой разговор. Если он спросит дату, время или то, чего ты не знаешь, передай вопрос",
   "системе через делегирование, коротко скажи, что сейчас посмотришь, и перескажи ответ своими словами.",
   hangupRules,
@@ -276,17 +279,34 @@ const offer = sdpOffer({
 });
 
 // 18.10 the session did not start twice in a row, with no error: which hop hangs, the proxy or OpenAI
-// behind it, one plain request tells.
-const asked = performance.now();
-const ask: NonNullable<Parameters<typeof fetchThrough>[1]> = {
-  headers: { Authorization: `Bearer ${env.OPENAI_API_KEY}` },
-  signal: AbortSignal.timeout(15_000),
+// behind it, one plain request tells. The repeats on its open connection are the round trip every turn
+// of the call pays twice (the far side's audio up, Bro's down).
+const openAiKey = env.OPENAI_API_KEY;
+const openAiProxy = env.OPENAI_PROXY_URL
+  ? new ProxyAgent(env.OPENAI_PROXY_URL)
+  : undefined;
+const askOpenAi = async () => {
+  const init: NonNullable<Parameters<typeof fetchThrough>[1]> = {
+    headers: { Authorization: `Bearer ${openAiKey}` },
+    signal: AbortSignal.timeout(15_000),
+  };
+  if (openAiProxy) init.dispatcher = openAiProxy;
+  const asked = performance.now();
+  const answer = await fetchThrough(
+    "https://api.openai.com/v1/models/gpt-live-1",
+    init
+  );
+  await answer.arrayBuffer();
+  return {
+    status: answer.status,
+    ms: Math.round(performance.now() - asked),
+  };
 };
-if (env.OPENAI_PROXY_URL) ask.dispatcher = new ProxyAgent(env.OPENAI_PROXY_URL);
 try {
-  const models = await fetchThrough("https://api.openai.com/v1/models", ask);
+  const first = await askOpenAi();
+  const again = [await askOpenAi(), await askOpenAi(), await askOpenAi()];
   log(
-    `OpenAI answers ${String(models.status)} in ${String(Math.round(performance.now() - asked))} ms`
+    `OpenAI answers ${String(first.status)} in ${String(first.ms)} ms; again on that connection ${again.map((request) => String(request.ms)).join("/")} ms`
   );
 } catch (error) {
   log(
