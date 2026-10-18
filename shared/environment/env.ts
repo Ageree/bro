@@ -218,6 +218,9 @@ export const env = createEnv({
     // GPT-Live (OpenAI) for the phone bridge (scripts/phone/live), and a
     // CONNECT proxy used only for it: OpenAI does not serve the VM's Russian
     // address.
+    // Outbound calls in GPT-Live over Exolve SIP from this server (`agent/lib/phone/live/`); ElevenLabs
+    // stays the voice of inbound calls and the fallback when GPT-Live does not start.
+    PHONE_LIVE_WORKSPACES: workspaceListSchema.optional(),
     OPENAI_API_KEY: pastedKeySchema.optional(),
     OPENAI_PROXY_URL: z
       .url()
