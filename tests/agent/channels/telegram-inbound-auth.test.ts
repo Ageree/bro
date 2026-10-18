@@ -165,10 +165,12 @@ describe("Telegram inbound authentication", () => {
       allowed: false,
       paywallText: "Лимит на сегодня исчерпан",
     });
-    const { context, sent } = inboundContext();
+    const { context, sent, typing } = inboundContext();
 
     await expect(onMessage(context, telegramMessage())).resolves.toBeNull();
     expect(sent).toHaveBeenCalledExactlyOnceWith("Лимит на сегодня исчерпан");
+    // Nobody answers it, so Bro is never shown typing.
+    expect(typing).not.toHaveBeenCalled();
 
     // The rest of the day is turned away without saying so again.
     capture.messageQuotaGate.mockResolvedValueOnce({

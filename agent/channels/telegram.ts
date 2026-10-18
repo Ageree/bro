@@ -462,10 +462,6 @@ export default telegramChannel({
       }
       return null;
     }
-    // «печатает…» at once, as eve's own `onMessage` does: the turn starts
-    // only after the context below and the world's queue (18.10).
-    void context.telegram.startTyping();
-
     const auth = defaultTelegramAuth(message);
     if (!auth) return null;
     const principalId = `better-auth:${identity.userId}`;
@@ -479,6 +475,10 @@ export default telegramChannel({
       }
       return null;
     }
+    // «печатает…» at once, as eve's own `onMessage` does: the turn starts
+    // only after the context below and the world's queue (18.10). Not for a
+    // message turned away above: nobody would answer it.
+    void context.telegram.startTyping();
     // A forwarded message is someone else's words: in the direct-purchase
     // pilot it never reads as the person's request to pay
     // (`agent/lib/payments/direct.ts`).
