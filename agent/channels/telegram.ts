@@ -243,6 +243,13 @@ export default telegramChannel({
         if (waiting !== undefined) waiting.turnStartedAt ??= performance.now();
       }
     },
+    // eve's own handler awaits the indicator. A channel's handlers run one
+    // event after another (`execution/session/event-sink.js`), so the reply's
+    // `action.result` below waited for that round trip to Telegram through
+    // tg-egress before its message went out.
+    async "actions.requested"(_event, context) {
+      void context.telegram.startTyping();
+    },
     async "turn.completed"(_event, context) {
       stopTyping(context);
     },
@@ -450,6 +457,9 @@ export default telegramChannel({
       }
       return null;
     }
+    // «печатает…» at once, as eve's own `onMessage` does: the turn starts
+    // only after the context below and the world's queue (18.10).
+    void context.telegram.startTyping();
 
     const auth = defaultTelegramAuth(message);
     if (!auth) return null;

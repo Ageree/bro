@@ -256,13 +256,16 @@ describe("Telegram inbound authentication", () => {
 function inboundContext(chatId = "4242") {
   const sent = vi.fn<(text: string) => Promise<{ id: string }>>();
   sent.mockResolvedValue({ id: "sent-1" });
+  const typing = vi.fn<() => Promise<void>>();
+  typing.mockResolvedValue(undefined);
   const context: TelegramContext = {
     telegram: telegramHandle({
       chatId,
       sendMessage: sent,
+      startTyping: typing,
     }),
   };
-  return { context, sent };
+  return { context, sent, typing };
 }
 
 // oxlint-disable-next-line anti-slop/no-unknown-parameters -- This adapter deliberately accepts a focused structural fixture.

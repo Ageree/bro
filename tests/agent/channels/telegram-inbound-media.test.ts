@@ -195,13 +195,15 @@ describe("Telegram inbound media", () => {
   });
 
   it("leaves a text message to eve's default turn", async () => {
-    const { context } = inboundContext();
+    const { context, typing } = inboundContext();
 
     const result = await onMessage(context, telegramMessage({ text: "hi" }));
 
     expect(result?.auth?.principalId).toBe("better-auth:user-1");
     expect(result).not.toHaveProperty("message");
     expect(fetchMock).not.toHaveBeenCalled();
+    // «печатает…» goes before the turn exists, not only at its start.
+    expect(typing).toHaveBeenCalledOnce();
   });
 
   it("hands the model the photo bytes with the sniffed media type", async () => {
@@ -370,13 +372,16 @@ describe("Telegram inbound media", () => {
 function inboundContext(chatId = "4242") {
   const sent = vi.fn<(text: string) => Promise<{ id: string }>>();
   sent.mockResolvedValue({ id: "sent-1" });
+  const typing = vi.fn<() => Promise<void>>();
+  typing.mockResolvedValue(undefined);
   const context: TelegramContext = {
     telegram: telegramHandle({
       chatId,
       sendMessage: sent,
+      startTyping: typing,
     }),
   };
-  return { context, sent };
+  return { context, sent, typing };
 }
 
 // oxlint-disable-next-line anti-slop/no-unknown-parameters -- This adapter deliberately accepts a focused structural fixture.
