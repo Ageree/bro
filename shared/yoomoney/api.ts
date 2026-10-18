@@ -1,4 +1,4 @@
-import { z } from "zod";
+import * as z from "zod";
 import { env } from "@shared/environment";
 import type { AccessScope } from "@shared/identity/access-scope";
 

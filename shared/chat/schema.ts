@@ -1,4 +1,4 @@
-import { z } from "zod";
+import * as z from "zod";
 
 const chatUsageSchema = z.object({
   costUsd: z.number().nonnegative().nullable(),

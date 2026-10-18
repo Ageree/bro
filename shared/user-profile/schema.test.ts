@@ -1,4 +1,4 @@
-import { z } from "zod";
+import * as z from "zod";
 import { describe, expect, it } from "vitest";
 import {
   defaultTimeZone,

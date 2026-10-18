@@ -5,7 +5,7 @@ import {
   randomUUID,
 } from "node:crypto";
 import { and, desc, eq } from "drizzle-orm";
-import { z } from "zod";
+import * as z from "zod";
 import {
   loginAccountHint,
   parsePaymentCardSecret,

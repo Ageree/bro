@@ -1,4 +1,4 @@
-import { z } from "zod";
+import * as z from "zod";
 import { isPublicDayOff } from "./holidays";
 
 const localTimeSchema = z

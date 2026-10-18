@@ -1,4 +1,4 @@
-import { z } from "zod";
+import * as z from "zod";
 
 const replyReferenceSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("current") }),

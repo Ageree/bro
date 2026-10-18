@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { get, put } from "@vercel/blob";
-import { z } from "zod";
+import * as z from "zod";
 import {
   betterAuthSecretSchema,
   env,

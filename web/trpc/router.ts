@@ -1,6 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { gateway } from "ai";
-import { z } from "zod";
+import * as z from "zod";
 import { mintChannelLinkToken } from "@db/services/channel-identities";
 import { saveChat } from "@db/services/chats";
 import { replaceUserProfile } from "@db/services/user-profile";

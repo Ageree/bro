@@ -1,4 +1,4 @@
-import { z } from "zod";
+import * as z from "zod";
 import { isPublicSuffix } from "@shared/browser/public-suffixes";
 import { browserSubmissionKinds } from "@shared/browser/submission";
 

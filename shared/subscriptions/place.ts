@@ -1,4 +1,4 @@
-import { z } from "zod";
+import * as z from "zod";
 
 /**
  * What a place reminder keeps (`subscriptions`, template `place`): where, on

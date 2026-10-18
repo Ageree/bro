@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { fetch, ProxyAgent } from "undici";
-import { z } from "zod";
+import * as z from "zod";
 import { env } from "@shared/environment";
 
 const apiOrigin = "https://api.agentmail.to/v0";

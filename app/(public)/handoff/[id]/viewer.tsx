@@ -7,7 +7,7 @@ import type {
   PointerEvent,
   ReactNode,
 } from "react";
-import { z } from "zod";
+import * as z from "zod";
 import { Alert } from "@web/components/ui/alert";
 import { Button } from "@web/components/ui/button";
 import { Spinner } from "@web/components/ui/spinner";
