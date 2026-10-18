@@ -11,6 +11,10 @@ import {
 import { findConversation, readConversation } from "@shared/phone/elevenlabs";
 import { alertPhoneOperator } from "@agent/lib/phone/alert";
 import { deliverPhoneReports } from "@agent/lib/phone/report";
+import {
+  liveCallLostAfterMs,
+  liveConversationPrefix,
+} from "@agent/lib/phone/live/place";
 import { provisionNewWorkspacePhones } from "@db/services/phone/lifecycle";
 
 export default defineSchedule({
@@ -45,6 +49,19 @@ async function reconcile() {
         if (call.state === "planned") {
           if (Date.now() - call.createdAt.getTime() > 5 * 60_000)
             await expirePlannedPhoneCall(call.id);
+          return;
+        }
+        // A GPT-Live call writes its own result (`placeLiveCall`); one still open this late was lost with the
+        // process that carried it (a restart mid-call).
+        if (call.providerConversationId?.startsWith(liveConversationPrefix)) {
+          if (Date.now() - call.createdAt.getTime() > liveCallLostAfterMs)
+            await updatePhoneCall(call.id, {
+              state: "uncertain",
+              outcome: "live_call_lost",
+              summary:
+                "The call's voice connection on the server was lost before the call ended. What was said and whether the task was done are unknown; no redial was made.",
+              completedAt: new Date(),
+            });
           return;
         }
         const conversationId =

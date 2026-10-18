@@ -5,10 +5,12 @@ import {
   linearToUlaw,
   transcode,
   ulawToLinear,
-} from "../../phone/live/g711.ts";
-import { rtpPacket, rtpPayload } from "../../phone/live/rtp.ts";
-import { sdpAnswer } from "../../phone/live/sdp.ts";
-import { digest, header, takeMessages } from "../../phone/live/sip.ts";
+} from "@agent/lib/phone/live/g711";
+import { rtpPacket, rtpPayload } from "@agent/lib/phone/live/rtp";
+import { sdpAnswer } from "@agent/lib/phone/live/sdp";
+import { digest, header, takeMessages } from "@agent/lib/phone/live/sip";
+import { liveCallResult } from "@agent/lib/phone/live/place";
+import { spokenPhone } from "@shared/phone/persona";
 
 describe("G.711", () => {
   it("decodes every code back to itself", () => {
@@ -118,5 +120,65 @@ describe("SIP", () => {
     });
     expect(value).toContain('response="6629fae49393a05397450978507c4ef1"');
     expect(value).toContain('opaque="5ccc069c403ebaf9f0171e9517f40e41"');
+  });
+});
+
+describe("a live call's spoken number", () => {
+  it("dictates the number by its groups, zeros digit by digit", () => {
+    expect(spokenPhone("+79249098921")).toBe(
+      "плюс семь, девятьсот двадцать четыре, девятьсот девять, восемьдесят девять, двадцать один"
+    );
+    expect(spokenPhone("+74950071510")).toBe(
+      "плюс семь, четыреста девяносто пять, ноль ноль семь, пятнадцать, десять"
+    );
+  });
+});
+
+describe("a live call's result", () => {
+  const outcome = {
+    answered: false,
+    sipStatus: 486,
+    ending: "not_connected" as const,
+    talkSeconds: 0,
+    transcript: "",
+    usageSeconds: 30,
+  };
+
+  it("names why a call did not connect and claims nothing was done", () => {
+    expect(liveCallResult(outcome)).toMatchObject({
+      state: "failed",
+      outcome: "busy",
+      taskSucceeded: false,
+      costUsd: "0.0250",
+    });
+    expect(liveCallResult({ ...outcome, sipStatus: 487 }).outcome).toBe(
+      "no_answer"
+    );
+    expect(liveCallResult({ ...outcome, sipStatus: null }).outcome).toBe(
+      "not_connected"
+    );
+  });
+
+  it("hands the report a long conversation's start and its end", () => {
+    const transcript = Array.from(
+      { length: 400 },
+      (_, index) => `Собеседник: реплика ${String(index)}`
+    ).join("\n");
+    const result = liveCallResult({
+      ...outcome,
+      answered: true,
+      sipStatus: 200,
+      ending: "hung_up",
+      talkSeconds: 61.2,
+      transcript,
+    });
+    expect(result).toMatchObject({
+      state: "done",
+      taskSucceeded: null,
+      durationSeconds: 62,
+    });
+    expect(result.summary).toContain("реплика 0\n");
+    expect(result.summary).toContain("реплика 399");
+    expect(result.summary.length).toBeLessThan(6000);
   });
 });
