@@ -3,17 +3,17 @@ import type { LanguageModelMiddleware } from "ai";
 import { env } from "@shared/environment";
 
 /**
- * RunInfra keeps a prompt cached 45–90 minutes (18.10), and a person who
- * writes to Bro less often than that is answered from a cold prompt: the
- * owner's Telegram step of 62k tokens took 3.2–3.7 s uncached against
- * 1.5 s cached. So a person's conversation is kept warm: once its calls go
- * quiet for `everyMs`, its last prompt goes to RunInfra again for a single
- * token, up to `maximumPings` times, which keeps the prefix the next turn
- * reads cached for about 2 h 45 min after the person's last word. A ping of
- * 60k cached tokens costs about 0.1 ₽ (`[model] warm`). The prompts are held
- * by the serving instance (a restart drops them, as the cache is warmed
- * again by the next turn); a ping never reaches RouterAI and its failure
- * never keeps a real call off RunInfra.
+ * RunInfra keeps a prompt cached from 45 minutes to two hours or more,
+ * seemingly by its load (18.10), and a person who writes to Bro less often
+ * than that is answered from a cold prompt: the owner's Telegram step of 62k
+ * tokens took 3.2–3.7 s uncached against 1.5 s cached. So a person's
+ * conversation is kept warm: once its calls go quiet for `everyMs`, its last
+ * prompt goes to RunInfra again for a single token, up to `maximumPings`
+ * times, each read well inside the shortest life seen. A ping of 49k cached
+ * tokens cost 0.043 ₽ (`[model] warm`). The prompts are held by the serving
+ * instance (a restart drops them, as the cache is warmed again by the next
+ * turn); a ping never reaches RouterAI and its failure never keeps a real
+ * call off RunInfra.
  */
 const everyMs = 40 * 60_000;
 const maximumPings = 3;

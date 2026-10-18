@@ -1225,8 +1225,8 @@ export const env = createEnv({
     // Within this many minutes of the last step with the router's block a
     // turn keeps the groups of the turn before (RunInfra's cache held a
     // prefix 40 minutes in 7 series of 7, 15.10). With PROMPT_WARM_WORKSPACES
-    // the cache lives about 165 minutes, and so must the tool block, which
-    // comes before the history.
+    // the cache is kept for about 165 minutes, and so must the tool block be,
+    // which comes before the history.
     TOOL_ROUTER_WARM_MINUTES: z.coerce
       .number()
       .int()
