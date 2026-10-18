@@ -4,6 +4,7 @@ import { failureStatus, reportedErrorSchema } from "./errors";
 import { withFoundationModelsFallback } from "./fallback";
 import { withRunInfraFirst } from "./runinfra";
 import { noteFailedHost, routedAroundFailedHosts } from "./hosts";
+import { notePrefix } from "./prefix";
 
 const answerSchema = z
   .object({
@@ -218,6 +219,11 @@ export async function routerAiModelFetch(
   input: string | URL | Request,
   init?: RequestInit
 ): Promise<Response> {
+  const body = z.string().safeParse(init?.body).data;
+  const url = URL.parse(input instanceof Request ? input.url : input);
+  if (body !== undefined && url?.pathname.endsWith("/chat/completions")) {
+    notePrefix(body);
+  }
   return withRunInfraFirst(input, init, () =>
     withFoundationModelsFallback(input, init, async () =>
       attemptRouterAiFetch(input, init, 1)
