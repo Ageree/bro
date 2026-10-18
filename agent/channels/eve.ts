@@ -90,6 +90,18 @@ function messageWords(message: string | UserContent) {
     .join("\n");
 }
 
+/**
+ * When the person's message to a session reached this instance, so the
+ * turn's start logs how long it waited for the world's queue (`[eve] turn
+ * start`, 18.10). Lives with the serving instance; a new session's first
+ * message has no id yet and is not timed.
+ */
+const arrivals = new Map<
+  string,
+  { readonly at: number; readonly handledMs: number }
+>();
+const maximumArrivals = 500;
+
 const channel = eveChannel({
   auth: authenticate,
   // A file the person attaches may be as large as one Telegram or iMessage
@@ -99,6 +111,7 @@ const channel = eveChannel({
   // this channel opens a workspace's first conversation the same way the
   // messaging channels do.
   async onMessage(context, message) {
+    const receivedAt = performance.now();
     const auth = defaultEveAuth(context);
     // Route auth above resolves a workspace user or has already refused the
     // request, so a missing caller is a broken invariant, not a guest.
@@ -120,25 +133,42 @@ const channel = eveChannel({
     const notes = taskFilesEnabled(scope.workspaceId)
       ? webFileNotes(message)
       : [];
-    return {
-      auth,
-      context: [
-        ...(await firstContactContext(scope)),
-        ...(await crossChannelRecap(scope, {
-          channel: "channel:eve",
-          sessionId: context.eve.sessionId,
-        })),
-        // The point the chat's button just shared, or where the person last
-        // shared they were, for a message about places near them
-        // (geolocation pilot).
-        ...(locationPilot(scope)
-          ? await webLocationContext(scope, messageWords(message))
-          : []),
-        ...(notes.length > 0 ? [notes.join("\n")] : []),
-      ],
-    };
+    const turnContext = [
+      ...(await firstContactContext(scope)),
+      ...(await crossChannelRecap(scope, {
+        channel: "channel:eve",
+        sessionId: context.eve.sessionId,
+      })),
+      // The point the chat's button just shared, or where the person last
+      // shared they were, for a message about places near them
+      // (geolocation pilot).
+      ...(locationPilot(scope)
+        ? await webLocationContext(scope, messageWords(message))
+        : []),
+      ...(notes.length > 0 ? [notes.join("\n")] : []),
+    ];
+    if (sessionId !== undefined) {
+      arrivals.set(sessionId, {
+        at: receivedAt,
+        handledMs: performance.now() - receivedAt,
+      });
+      if (arrivals.size > maximumArrivals) {
+        const oldest = arrivals.keys().next().value;
+        if (oldest !== undefined) arrivals.delete(oldest);
+      }
+    }
+    return { auth, context: turnContext };
   },
   events: {
+    async "turn.started"(_event, _channel, session) {
+      const arrival = arrivals.get(session.session.id);
+      if (arrival === undefined) return;
+      arrivals.delete(session.session.id);
+      console.info("[eve] turn start", {
+        handledMs: Math.round(arrival.handledMs),
+        startMs: Math.round(performance.now() - arrival.at),
+      });
+    },
     async "actions.requested"(event, _channel, session) {
       noteBroMessage(`web:${session.session.id}`, event.actions);
     },

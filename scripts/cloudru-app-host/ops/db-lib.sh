@@ -74,6 +74,7 @@ database_url() {
     app) echo "${DATABASE_URL_UNPOOLED:-${DATABASE_URL:-}}" ;;
     check) echo "${BACKUP_CHECK_DATABASE_URL:-}" ;;
     neon) echo "${NEON_DATABASE_URL:-}" ;;
+    world) echo "${WORKFLOW_POSTGRES_URL:-}" ;;
     db:*)
       name=${1#db:}
       [[ " $DB_NAMES " == *" $name "* ]] || die "db:$name: only db:<one of $DB_NAMES>"
@@ -83,7 +84,7 @@ database_url() {
 p = u.urlsplit(os.environ["BASE_URL"])
 print(u.urlunsplit(p._replace(path="/" + os.environ["DB_NAME"])))'
       ;;
-    *) die "a database: app, check, neon or db:<name>" ;;
+    *) die "a database: app, check, neon, world or db:<name>" ;;
   esac
 }
 
