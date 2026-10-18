@@ -2,6 +2,11 @@ import { Client, type MessageStreamEvent } from "eve/client";
 import { z } from "zod";
 
 const eventsPerRead = 128;
+// eve streams a read from its cursor to the session's tail and has no end
+// cursor, so every read back costs the whole rest of the session: a run of
+// reads doubles its size, and a turn of many events takes a few reads, not
+// one per 128 events.
+const maxEventsPerRead = 2048;
 const messagesPerPage = 4;
 const tailIndexHeader = "x-eve-stream-tail-index";
 const client = new Client({ host: "" });
@@ -66,13 +71,20 @@ async function extendToMessageBoundary(
   signal?: AbortSignal
 ) {
   let page = initial;
+  let chunk = eventsPerRead;
 
   while (
     page.startIndex > 0 &&
     receivedMessageCount(page.events) < messagesPerPage
   ) {
     /* oxlint-disable-next-line eslint/no-await-in-loop -- Each backward read starts at the cursor returned by the preceding read. */
-    const older = await readEventChunk(sessionId, page.startIndex, signal);
+    const older = await readEventChunk(
+      sessionId,
+      page.startIndex,
+      chunk,
+      signal
+    );
+    chunk = Math.min(chunk * 2, maxEventsPerRead);
     page = {
       endIndex: page.endIndex,
       events: [...older.events, ...page.events],
@@ -96,9 +108,10 @@ async function extendToMessageBoundary(
 async function readEventChunk(
   sessionId: string,
   before: number,
+  size: number,
   signal?: AbortSignal
 ): Promise<SessionHistoryPage> {
-  const startIndex = Math.max(0, before - eventsPerRead);
+  const startIndex = Math.max(0, before - size);
   const eventLimit = before - startIndex;
   const session = client.sessions.attach(sessionId, {
     streamIndex: startIndex,

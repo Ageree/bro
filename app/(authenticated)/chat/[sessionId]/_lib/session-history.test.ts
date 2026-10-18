@@ -33,6 +33,46 @@ describe("session history", () => {
     });
   });
 
+  it("reads back through long turns in a few growing reads", async () => {
+    // Ten turns of a received message and 299 streamed deltas each.
+    const events = Array.from({ length: 3000 }, (_, index) =>
+      index % 300 === 0 ? receivedMessage(index) : appendedDelta(index)
+    );
+    const fetchMock = vi.fn<
+      (input: string | URL | Request) => Promise<Response>
+    >((input) => {
+      const url = new URL(
+        input instanceof Request ? input.url : input.toString(),
+        "http://localhost"
+      );
+      const asked = Number(url.searchParams.get("startIndex"));
+      const start = asked < 0 ? events.length + asked : asked;
+      // eve streams from the cursor to the tail.
+      return Promise.resolve(
+        new Response(
+          events
+            .slice(start)
+            .map((event) => JSON.stringify(event))
+            .join("\n"),
+          {
+            headers: {
+              "x-eve-stream-tail-index": String(events.length - 1),
+              "x-eve-stream-version": "25",
+            },
+          }
+        )
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const history = await readLatestSessionHistory("long-turns");
+
+    expect(history.startIndex).toBe(1800);
+    expect(history.events).toEqual(events.slice(1800));
+    // One read per 128 events took ten.
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+  });
+
   it("rejects a stream response without a durable tail cursor", async () => {
     vi.stubGlobal(
       "fetch",
@@ -57,5 +97,21 @@ function receivedMessage(index: number): MessageStreamEvent {
       id: `event_${String(index)}`,
     },
     type: "message.received",
+  };
+}
+
+function appendedDelta(index: number): MessageStreamEvent {
+  return {
+    data: {
+      messageDelta: "слово ",
+      sequence: index,
+      stepIndex: 0,
+      turnId: `turn_${String(index - (index % 300))}`,
+    },
+    meta: {
+      at: new Date(index * 1000).toISOString(),
+      id: `event_${String(index)}`,
+    },
+    type: "message.appended",
   };
 }
