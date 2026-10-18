@@ -62,16 +62,24 @@ export async function openLiveSession(options: {
       );
     });
     socket.addEventListener("message", (message) => {
-      const parsed = liveEvent.safeParse(
-        JSON.parse(z.string().parse(message.data))
-      );
-      if (!parsed.success) return;
-      const session = started.safeParse(parsed.data);
-      if (session.success) {
-        clearTimeout(timer);
-        resolve(session.data.session.id);
+      // A throw in this listener would be an uncaught exception of the whole process (eve carries the calls):
+      // an event that does not parse, or a handler that fails on one, is dropped and noted.
+      try {
+        const text = z.string().safeParse(message.data);
+        if (!text.success) return;
+        const parsed = liveEvent.safeParse(JSON.parse(text.data));
+        if (!parsed.success) return;
+        const session = started.safeParse(parsed.data);
+        if (session.success) {
+          clearTimeout(timer);
+          resolve(session.data.session.id);
+        }
+        options.onEvent(parsed.data);
+      } catch (error) {
+        console.warn("[phone-live] a GPT-Live event was dropped", {
+          reason: error instanceof Error ? error.message : "unknown",
+        });
       }
-      options.onEvent(parsed.data);
     });
   });
   return {

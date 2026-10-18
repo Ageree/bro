@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 import {
   alawToLinear,
   linearToAlaw,
@@ -8,7 +9,15 @@ import {
 } from "@agent/lib/phone/live/g711";
 import { rtpPacket, rtpPayload } from "@agent/lib/phone/live/rtp";
 import { sdpAnswer } from "@agent/lib/phone/live/sdp";
-import { digest, header, takeMessages } from "@agent/lib/phone/live/sip";
+import { createServer, type Socket } from "node:net";
+import {
+  digest,
+  header,
+  openSip,
+  render,
+  status,
+  takeMessages,
+} from "@agent/lib/phone/live/sip";
 import { liveCallResult } from "@agent/lib/phone/live/place";
 import { spokenPhone } from "@shared/phone/persona";
 
@@ -180,5 +189,85 @@ describe("a live call's result", () => {
     expect(result.summary).toContain("реплика 0\n");
     expect(result.summary).toContain("реплика 399");
     expect(result.summary.length).toBeLessThan(6000);
+  });
+});
+
+/** A carrier that answers a CANCEL first, then the INVITE it cancelled, as real ones do. */
+async function carrier(onInvite: (socket: Socket) => void) {
+  const server = createServer((socket) => {
+    let buffer = Buffer.alloc(0);
+    socket.on("data", (chunk) => {
+      const taken = takeMessages(Buffer.concat([buffer, chunk]));
+      buffer = taken.rest;
+      for (const message of taken.messages) {
+        const method = message.startLine.split(" ")[0];
+        const copied = ["via", "from", "to", "call-id", "cseq"].map(
+          (name): [string, string] => [name, header(message, name) ?? ""]
+        );
+        if (method === "INVITE") onInvite(socket);
+        if (method === "CANCEL") {
+          socket.write(render("SIP/2.0 200 OK", copied));
+          const cseq = (header(message, "cseq") ?? "").replace(
+            "CANCEL",
+            "INVITE"
+          );
+          socket.write(
+            render("SIP/2.0 487 Request Terminated", [
+              ...copied.filter(([name]) => name !== "cseq"),
+              ["cseq", cseq],
+            ])
+          );
+        }
+      }
+    });
+  });
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  return {
+    server,
+    port: z.object({ port: z.number() }).parse(server.address()).port,
+  };
+}
+
+const request = (method: string, branch: string) =>
+  render(`${method} sip:79990000000@127.0.0.1 SIP/2.0`, [
+    ["Via", `SIP/2.0/TCP 127.0.0.1:5060;branch=${branch}`],
+    ["From", "<sip:bro@127.0.0.1>;tag=a"],
+    ["To", "<sip:79990000000@127.0.0.1>"],
+    ["Call-ID", "call@bro"],
+    ["CSeq", `1 ${method}`],
+  ]);
+
+describe("the SIP connection", () => {
+  it("does not take the CANCEL's own 200 for the cancelled call's answer", async () => {
+    const { server, port } = await carrier(() => undefined);
+    const sip = await openSip({
+      host: "127.0.0.1",
+      port,
+      log: () => undefined,
+      onRequest: () => undefined,
+    });
+    const answer = sip.request(request("INVITE", "z9hG4bKone"), "z9hG4bKone");
+    sip.send(request("CANCEL", "z9hG4bKone"));
+    expect(status(await answer)).toBe(487);
+    sip.close();
+    server.close();
+  });
+
+  it("gives up waiting for an answer when the connection closes", async () => {
+    const { server, port } = await carrier((socket) => {
+      socket.destroy();
+    });
+    const sip = await openSip({
+      host: "127.0.0.1",
+      port,
+      log: () => undefined,
+      onRequest: () => undefined,
+    });
+    await expect(
+      sip.request(request("INVITE", "z9hG4bKtwo"), "z9hG4bKtwo")
+    ).rejects.toThrow(/closed/u);
+    server.close();
   });
 });

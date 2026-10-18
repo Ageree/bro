@@ -64,7 +64,7 @@ function say(event: string, extra: Record<string, string | number> = {}) {
 const textDelta = z.object({ delta: z.string() });
 const transcriptDelta = z.object({
   delta: z.string(),
-  start_ms: z.number().optional(),
+  start_ms: z.number().nullish(),
 });
 const delegation = z.object({ delegation: z.object({ id: z.string() }) });
 const usage = z.object({ usage: z.object({ seconds: z.number() }) });
@@ -105,7 +105,9 @@ export async function dialLive(input: {
   let live: Awaited<ReturnType<typeof openLiveSession>> | null = null;
 
   const note = (who: "Бро" | "Собеседник", event: LiveEvent) => {
-    const piece = transcriptDelta.parse(event);
+    const parsed = transcriptDelta.safeParse(event);
+    if (!parsed.success) return;
+    const piece = parsed.data;
     fragments.push({
       who,
       at: piece.start_ms ?? fragments.at(-1)?.at ?? 0,
@@ -227,8 +229,9 @@ export async function dialLive(input: {
     const onLiveEvent = (event: LiveEvent) => {
       if (event.type === "session.output_audio.delta") {
         // Said into the ringing: nobody heard it, and played after the answer it would come late.
-        if (answeredAt === null) return;
-        const audio = Buffer.from(textDelta.parse(event).delta, "base64");
+        const parsed = textDelta.safeParse(event);
+        if (answeredAt === null || !parsed.success) return;
+        const audio = Buffer.from(parsed.data.delta, "base64");
         toBro.push(audio);
         queued += audio.length;
       } else if (event.type === "session.output_transcript.delta") {
@@ -240,7 +243,9 @@ export async function dialLive(input: {
         if (parsed.success) usageSeconds = parsed.data.usage.seconds;
       } else if (event.type === "session.delegation.created") {
         // The call has no tools: the voice hears so, rather than waiting on an answer that never comes.
-        const id = delegation.parse(event).delegation.id;
+        const parsed = delegation.safeParse(event);
+        if (!parsed.success) return;
+        const id = parsed.data.delegation.id;
         live?.send({
           type: "session.commentary.append",
           event_id: `none_${id}`,
@@ -323,8 +328,8 @@ export async function dialLive(input: {
         let auth: [string, string] | undefined;
         for (let round = 0; round < 3; round += 1) {
           const branch = `z9hG4bK${token()}`;
-          const ringDeadline = setTimeout(() => {
-            // No answer in time: CANCEL shares the INVITE's branch and CSeq number (RFC 3261 §9.1).
+          // CANCEL shares the INVITE's branch and CSeq number (RFC 3261 §9.1).
+          const cancel = () => {
             sip.send(
               render(`CANCEL sip:${number}@${domain} SIP/2.0`, [
                 ["Via", via(branch)],
@@ -335,7 +340,8 @@ export async function dialLive(input: {
                 ["CSeq", `${String(cseq)} CANCEL`],
               ])
             );
-          }, input.ringSeconds * 1000);
+          };
+          const ringDeadline = setTimeout(cancel, input.ringSeconds * 1000);
           const request = render(
             `INVITE sip:${number}@${domain} SIP/2.0`,
             [
@@ -353,11 +359,36 @@ export async function dialLive(input: {
             ],
             offer
           );
-          // oxlint-disable-next-line eslint/no-await-in-loop -- Each round answers the previous challenge.
-          const response = await sip.request(request, branch, (provisional) => {
+          const pending = sip.request(request, branch, (provisional) => {
             if (provisional.body) startMedia(provisional);
           });
+          // The voice gone while it rings: the person must not pick up into silence. No final answer even
+          // after CANCEL (Timer B, 32 s): the attempt is over.
+          // oxlint-disable-next-line eslint/no-await-in-loop -- Each round answers the previous challenge.
+          const first = await Promise.race([
+            pending,
+            session.closed.then(() => "voice_closed" as const),
+            new Promise<"timeout">((resolve) => {
+              setTimeout(
+                () => {
+                  resolve("timeout");
+                },
+                input.ringSeconds * 1000 + 32_000
+              );
+            }),
+          ]);
           clearTimeout(ringDeadline);
+          if (first === "timeout") return null;
+          if (first === "voice_closed") {
+            cancel();
+            // oxlint-disable-next-line eslint/no-await-in-loop -- The last answer, if any, before giving up.
+            await within(
+              pending.catch(() => null),
+              5000
+            );
+            return null;
+          }
+          const response = first;
           const code = status(response) ?? 0;
           if (code >= 200 && code < 300) return response;
           // ACK of a non-2xx final response: the INVITE's own branch and CSeq number (RFC 3261 §17.1.1.3).
@@ -474,13 +505,15 @@ export async function dialLive(input: {
           const branch = `z9hG4bK${token()}`;
           // oxlint-disable-next-line eslint/no-await-in-loop -- A challenged BYE is sent once more with credentials.
           const bye = await within(
-            sip.request(
-              render(`BYE ${target} SIP/2.0`, [
-                ...dialogHeaders(branch, "BYE"),
-                ...(auth ? [auth] : []),
-              ]),
-              branch
-            ),
+            sip
+              .request(
+                render(`BYE ${target} SIP/2.0`, [
+                  ...dialogHeaders(branch, "BYE"),
+                  ...(auth ? [auth] : []),
+                ]),
+                branch
+              )
+              .catch(() => null),
             5000
           );
           auth =

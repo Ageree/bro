@@ -72,7 +72,10 @@ export async function placeLiveCall(input: {
     proxyUrl: env.OPENAI_PROXY_URL,
   });
   return {
-    sessionId: call.sessionId,
+    // The reconciler tells live calls by this prefix; GPT-Live's own ids carry it, but nothing promises so.
+    sessionId: call.sessionId.startsWith(liveConversationPrefix)
+      ? call.sessionId
+      : `${liveConversationPrefix}${call.sessionId}`,
     /** Dials in the background; the call row gets its result when the call is over. */
     dial() {
       void call
