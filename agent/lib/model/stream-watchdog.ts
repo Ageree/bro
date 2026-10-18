@@ -112,6 +112,13 @@ async function attemptModelFetch(
       firstDataMs: performance.now() - startedAt,
       headersMs,
       model: request?.model,
+      reasoning:
+        request?.reasoning_effort ??
+        (request?.reasoning === undefined
+          ? undefined
+          : request.reasoning.enabled === false
+            ? "none"
+            : "on"),
       startedAt,
     });
     for (const chunk of head) timing.read(chunk);
@@ -211,10 +218,13 @@ function resendable(init: RequestInit | undefined) {
 
 const modelRequestSchema = z.object({
   model: z.string().optional(),
+  // RunInfra's field, and OpenRouter's (RouterAI's) object.
+  reasoning: z.looseObject({ enabled: z.boolean().optional() }).optional(),
+  reasoning_effort: z.string().optional(),
   stream: z.boolean().optional(),
 });
 
-/** What the call asked for: the model, and whether it streams. */
+/** What the call asked for: the model, whether it streams and reasons. */
 function modelRequest(init: RequestInit | undefined) {
   const body = z.string().safeParse(init?.body);
   if (!body.success) return undefined;
@@ -273,6 +283,7 @@ function callTiming(call: {
   readonly firstDataMs: number;
   readonly headersMs: number;
   readonly model: string | undefined;
+  readonly reasoning: string | undefined;
   readonly startedAt: number;
 }) {
   const decoder = new TextDecoder();
@@ -296,6 +307,8 @@ function callTiming(call: {
         inputTokens: tokens("prompt_tokens"),
         model: call.model,
         outputTokens: tokens("completion_tokens"),
+        reasoning: call.reasoning,
+        reasoningTokens: tokens("reasoning_tokens"),
         totalMs: Math.round(performance.now() - call.startedAt),
       });
     },
