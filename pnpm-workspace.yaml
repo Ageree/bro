@@ -20,4 +20,5 @@ allowBuilds:
   protobufjs: false
   sharp: true
 patchedDependencies:
+  '@workflow/world-postgres@5.0.0-beta.44': patches/@workflow__world-postgres@5.0.0-beta.44.patch
   eve@0.62.0: patches/eve@0.62.0.patch
