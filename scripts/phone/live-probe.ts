@@ -1,4 +1,5 @@
 import { parseArgs } from "node:util";
+import { ProxyAgent, fetch as fetchThrough } from "undici";
 import { z } from "zod";
 import { registerApplicationModuleResolution } from "../lib/module-resolution.ts";
 import {
@@ -273,6 +274,25 @@ const offer = sdpOffer({
   port: rtp.port,
   sessionId: Date.now(),
 });
+
+// 18.10 the session did not start twice in a row, with no error: which hop hangs, the proxy or OpenAI
+// behind it, one plain request tells.
+const asked = performance.now();
+const ask: NonNullable<Parameters<typeof fetchThrough>[1]> = {
+  headers: { Authorization: `Bearer ${env.OPENAI_API_KEY}` },
+  signal: AbortSignal.timeout(15_000),
+};
+if (env.OPENAI_PROXY_URL) ask.dispatcher = new ProxyAgent(env.OPENAI_PROXY_URL);
+try {
+  const models = await fetchThrough("https://api.openai.com/v1/models", ask);
+  log(
+    `OpenAI answers ${String(models.status)} in ${String(Math.round(performance.now() - asked))} ms`
+  );
+} catch (error) {
+  log(
+    `OpenAI did not answer: ${error instanceof Error ? `${error.message} (${String(error.cause)})` : "?"}`
+  );
+}
 
 live = await openLiveSession({
   apiKey: env.OPENAI_API_KEY,
