@@ -12,6 +12,24 @@ type ToolResultOutput = Extract<
 >["output"];
 
 describe("iMessage event projection", () => {
+  it("keeps a sent message's parts as the history grows", () => {
+    const sent = toolResult("send_message", {
+      kind: "message",
+      text: "Готово",
+    });
+    const history = [sent];
+    const grown = [
+      ...history,
+      completedMessage("Internal", "2026-09-01T12:00:03.000Z"),
+    ];
+
+    const [before] = sentMessages(history).get("turn-1:assistant") ?? [];
+    const [after] = sentMessages(grown).get("turn-1:assistant") ?? [];
+
+    // The same parts keep the row of the sent message from being drawn again.
+    expect(after?.parts).toBe(before?.parts);
+  });
+
   it("projects only successful send_message results", () => {
     const events = [
       completedMessage("Internal terminal output", "2026-09-01T12:00:00.000Z"),
