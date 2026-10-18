@@ -1,32 +1,38 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import {
-  combineChatUsage,
-  formatChatUsage,
-} from "@app/(authenticated)/chat/_lib/chat-usage";
+import type { AccessScope } from "@shared/identity/access-scope";
+import { formatChatUsage } from "@app/(authenticated)/chat/_lib/chat-usage";
 import {
   Actions,
   Document,
   DocumentTitle,
 } from "@web/components/paper/document";
 import { Button } from "@web/components/ui/button";
-import { listChats } from "@db/services/chats";
+import {
+  listChatsPage,
+  newestChatsOfChannels,
+  summarizeChats,
+} from "@db/services/chats";
 import { requireRequestScope } from "@web/auth/request-scope";
+import { ChatRow } from "./_components/chat-row";
+import { MoreChats } from "./_components/more-chats";
 
 export const metadata: Metadata = { title: "Все чаты" };
 
 export const dynamic = "force-dynamic";
 
 /**
- * Paper: each chat is a plate row — its title on the left, the date on the
- * right, the thread Bro is actually talking in named in words. The empty
- * state is one plate that points at the new chat.
+ * Paper: each chat is a plate row (`ChatRow`). The page renders the first
+ * page of chats and the totals the database counted; `MoreChats` loads the
+ * rest by cursor. The empty state is one plate that points at the new chat.
  */
 export default async function AllChatsPage() {
   const scope = await requireRequestScope();
-  const chats = await listChats(scope);
-  const totalUsage = combineChatUsage(chats.map((chat) => chat.usage));
-  const mainThreads = mainThreadLabels(chats);
+  const [{ chats, next }, totals, mainThreads] = await Promise.all([
+    listChatsPage(scope),
+    summarizeChats(scope),
+    mainThreadLabels(scope),
+  ]);
 
   return (
     <Document>
@@ -34,9 +40,9 @@ export default async function AllChatsPage() {
       <p className="type-fine text-muted-foreground">
         Все разговоры с Bro — в браузере, в iMessage и в Telegram.
       </p>
-      {chats.length > 0 ? (
+      {totals.count > 0 ? (
         <p className="type-fine text-muted-foreground">
-          {chatCount(chats.length)} · Расход — {formatChatUsage(totalUsage)}
+          {chatCount(totals.count)} · Расход — {formatChatUsage(totals.usage)}
         </p>
       ) : null}
       <Actions>
@@ -50,35 +56,18 @@ export default async function AllChatsPage() {
       </Actions>
 
       {chats.length > 0 ? (
-        <ul className="mt-6 flex list-none flex-col gap-3">
-          {chats.map((chat) => {
-            const channel = mainThreads.get(chat.sessionId);
-            return (
-              <li key={chat.sessionId}>
-                <Link
-                  className="flex min-h-11 items-baseline justify-between gap-4 rounded-3xl border-2 border-foreground bg-card px-5 py-3.5 transition-colors outline-none hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50"
-                  href={`/chat/${encodeURIComponent(chat.sessionId)}`}
-                >
-                  <span className="min-w-0 flex-1">
-                    <span className="type-row block truncate">
-                      {channel ?? chat.title}
-                    </span>
-                    <span className="type-status block text-muted-foreground">
-                      {channel ? "Главная ветка · " : ""}
-                      {formatChatUsage(chat.usage)}
-                    </span>
-                  </span>
-                  <time
-                    className="type-status shrink-0 text-muted-foreground"
-                    dateTime={chat.updatedAt}
-                  >
-                    {formatChatDate(chat.updatedAt)}
-                  </time>
-                </Link>
-              </li>
-            );
-          })}
-        </ul>
+        <>
+          <ul className="mt-6 flex list-none flex-col gap-3">
+            {chats.map((chat) => (
+              <ChatRow
+                chat={chat}
+                key={chat.sessionId}
+                mainThread={mainThreads[chat.sessionId]}
+              />
+            ))}
+          </ul>
+          {next ? <MoreChats cursor={next} mainThreads={mainThreads} /> : null}
+        </>
       ) : (
         <section
           aria-label="Пока пусто"
@@ -100,16 +89,17 @@ const conversationChannelLabels = new Map([
   ["channel:telegram", "Telegram"],
 ]);
 
-function mainThreadLabels(chats: Awaited<ReturnType<typeof listChats>>) {
-  const labels = new Map<string, string>();
-  const claimed = new Set<string>();
-  for (const chat of chats) {
-    const label = conversationChannelLabels.get(chat.channel ?? "");
-    if (!label || claimed.has(label)) continue;
-    claimed.add(label);
-    labels.set(chat.sessionId, label);
-  }
-  return labels;
+/** The person's ongoing thread of each conversation channel, by session. */
+async function mainThreadLabels(scope: AccessScope) {
+  const newest = await newestChatsOfChannels(scope, [
+    ...conversationChannelLabels.keys(),
+  ]);
+  return Object.fromEntries(
+    newest.flatMap(({ channel, sessionId }) => {
+      const label = conversationChannelLabels.get(channel);
+      return label ? [[sessionId, label]] : [];
+    })
+  );
 }
 
 function chatCount(count: number) {
@@ -122,12 +112,4 @@ function chatCount(count: number) {
         ? "разговора"
         : "разговоров";
   return `${count.toLocaleString("ru-RU")} ${noun}`;
-}
-
-function formatChatDate(value: string) {
-  return new Intl.DateTimeFormat("ru-RU", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  }).format(new Date(value));
 }

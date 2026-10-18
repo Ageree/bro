@@ -1,0 +1,2 @@
+DROP INDEX "chats_workspace_updated_idx";--> statement-breakpoint
+CREATE INDEX "chats_workspace_updated_session_idx" ON "chats" USING btree ("workspace_id","updated_at" DESC NULLS FIRST,"session_id" DESC NULLS FIRST);
