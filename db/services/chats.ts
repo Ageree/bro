@@ -43,23 +43,21 @@ export const chatPageSize = 40;
  * from `chats_workspace_updated_session_idx` however long the history is.
  */
 export async function listChatsPage(scope: AccessScope, cursor?: ChatCursor) {
-  const rows = chatRowSchema
-    .array()
-    .parse(
-      await db
-        .select()
-        .from(chats)
-        .where(
-          and(
-            eq(chats.workspaceId, scope.workspaceId),
-            cursor
-              ? sql`(${chats.updatedAt}, ${chats.sessionId}) < (${cursor.updatedAt}::timestamptz, ${cursor.sessionId})`
-              : undefined
-          )
+  const rows = chatRowSchema.array().parse(
+    await db
+      .select()
+      .from(chats)
+      .where(
+        and(
+          eq(chats.workspaceId, scope.workspaceId),
+          cursor
+            ? sql`(${chats.updatedAt}, ${chats.sessionId}) < (${cursor.updatedAt}::timestamptz, ${cursor.sessionId})`
+            : undefined
         )
-        .orderBy(desc(chats.updatedAt), desc(chats.sessionId))
-        .limit(chatPageSize + 1)
-    );
+      )
+      .orderBy(desc(chats.updatedAt), desc(chats.sessionId))
+      .limit(chatPageSize + 1)
+  );
   const page = chatListSchema.parse(
     rows.slice(0, chatPageSize).map(toChatSummary)
   );

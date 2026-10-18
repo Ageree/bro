@@ -42,15 +42,16 @@ export function MoreChats({
 
   useEffect(() => {
     const target = end.current;
-    if (!target || !next || failed) return;
     const observer = new IntersectionObserver(
       (entries) => {
         if (entries.some((entry) => entry.isIntersecting)) void load();
       },
       { rootMargin: "0px 0px 100% 0px" }
     );
-    observer.observe(target);
-    return () => observer.disconnect();
+    if (target && next && !failed) observer.observe(target);
+    return () => {
+      observer.disconnect();
+    };
   }, [failed, load, next]);
 
   return (

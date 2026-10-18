@@ -3,6 +3,9 @@ import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import * as Database from "@db";
+import type { ChatCursor } from "@shared/chat/schema";
+import type { AccessScope } from "@shared/identity/access-scope";
+import * as chats from "@db/services/chats";
 import * as schema from "../schema";
 
 const client = new PGlite();
@@ -17,16 +20,25 @@ beforeAll(async () => {
 
 afterAll(() => client.close());
 
+// Every three chats share one moment: the cursor must not skip or repeat them.
+function at(index: number) {
+  return new Date(Date.UTC(2026, 9, 1) - Math.floor(index / 3) * 60_000);
+}
+
+async function readAllPages(
+  scope: AccessScope,
+  cursor?: ChatCursor
+): Promise<Awaited<ReturnType<typeof chats.listChatsPage>>[]> {
+  const page = await chats.listChatsPage(scope, cursor);
+  return page.next ? [page, ...(await readAllPages(scope, page.next))] : [page];
+}
+
 it("pages «Все чаты» by cursor and counts the totals of every chat", async () => {
-  const chats = await import("@db/services/chats");
   const alice = { userId: "alice", workspaceId: "workspace:alice" };
   await database
     .insert(schema.workspaces)
     .values([{ id: alice.workspaceId }, { id: "workspace:bob" }]);
 
-  // Every three chats share one moment: the cursor must not skip or repeat them.
-  const at = (index: number) =>
-    new Date(Date.UTC(2026, 9, 1) - Math.floor(index / 3) * 60_000);
   const total = chats.chatPageSize * 2 + 5;
   await database.insert(schema.chats).values([
     ...Array.from({ length: total }, (_, index) => ({
@@ -41,7 +53,7 @@ it("pages «Все чаты» by cursor and counts the totals of every chat", as
       inputTokens: index === 7 ? 0 : 10,
       outputTokens: 2,
       sessionId: `chat-${String(index).padStart(3, "0")}`,
-      title: `Чат ${index}`,
+      title: `Чат ${String(index)}`,
       updatedAt: at(index),
       workspaceId: alice.workspaceId,
     })),
@@ -55,15 +67,15 @@ it("pages «Все чаты» by cursor and counts the totals of every chat", as
     },
   ]);
 
-  const seen: string[] = [];
-  let page = await chats.listChatsPage(alice);
-  seen.push(...page.chats.map((chat) => chat.sessionId));
-  while (page.next) {
-    expect(page.chats).toHaveLength(chats.chatPageSize);
-    page = await chats.listChatsPage(alice, page.next);
-    seen.push(...page.chats.map((chat) => chat.sessionId));
-  }
-  expect(page.chats).toHaveLength(5);
+  const pages = await readAllPages(alice);
+  const seen = pages.flatMap((page) =>
+    page.chats.map((chat) => chat.sessionId)
+  );
+  expect(pages.map((page) => page.chats.length)).toEqual([
+    chats.chatPageSize,
+    chats.chatPageSize,
+    5,
+  ]);
   // Newest first; within one moment, by session id descending.
   expect(seen.slice(0, 3)).toEqual(["chat-002", "chat-001", "chat-000"]);
   expect(new Set(seen).size).toBe(total);
@@ -90,7 +102,6 @@ it("pages «Все чаты» by cursor and counts the totals of every chat", as
 });
 
 it("prices the totals only when every chat that spent tokens has a cost", async () => {
-  const chats = await import("@db/services/chats");
   const scope = { userId: "u", workspaceId: "w" };
   expect(await chats.summarizeChats(scope)).toEqual({
     count: 0,
