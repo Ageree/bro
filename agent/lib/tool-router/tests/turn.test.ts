@@ -1,5 +1,13 @@
 import type { JSONValue, ModelMessage } from "ai";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+  vi,
+} from "vitest";
 
 /** eve's durable state, as one session's in-memory store. */
 const stores = vi.hoisted(() => new Map<string, unknown>());
@@ -638,6 +646,50 @@ describe("a person's step in the router's pilot", () => {
     );
     expect(decisions.asked).toBe(1);
     expect(groups).toContain("calendar");
+  });
+
+  it("asks ahead only for a workspace whose step asks the router", async () => {
+    // The environment is read once, when its module loads.
+    const askedAhead = async (pilots: Readonly<Record<string, string>>) => {
+      for (const [name, value] of Object.entries(pilots)) {
+        vi.stubEnv(name, value);
+      }
+      vi.resetModules();
+      const prefetch = await import("@agent/lib/tool-router/prefetch");
+      prefetch.noteBroMessage("chat-ahead", [
+        { input: { text: "Записал на пятницу." }, toolName: "send_message" },
+      ]);
+      const asked = decisions.asked;
+      prefetch.askRouterAboutNext({
+        conversation: "chat-ahead",
+        words: "а что в субботу?",
+        workspaceId: "workspace-1",
+      });
+      return decisions.asked > asked;
+    };
+    const everyone = {
+      MODEL_PROVIDER: "routerai",
+      ROUTERAI_API_KEY: "routerai-test-key",
+      SKILLS_WORKSPACES: "*",
+      STEP_CONTEXT_WORKSPACES: "*",
+      TOOL_ROUTER_WORKSPACES: "*",
+    };
+    onTestFinished(() => {
+      // tests/setup-env.ts leaves them unset; `vi.unstubAllEnvs()` would
+      // drop its stubs too.
+      for (const name of Object.keys(everyone)) vi.stubEnv(name, "");
+      vi.resetModules();
+    });
+    expect(await askedAhead(everyone)).toBe(true);
+    expect(
+      await askedAhead({ ...everyone, SKILLS_WORKSPACES: "workspace-owner" })
+    ).toBe(false);
+    expect(
+      await askedAhead({
+        ...everyone,
+        STEP_CONTEXT_WORKSPACES: "owner@example.com",
+      })
+    ).toBe(false);
   });
 
   it("asks at the step when the channel asked about other words", async () => {

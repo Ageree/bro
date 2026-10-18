@@ -1,6 +1,5 @@
 import { z } from "zod";
-import { directModelActive } from "@shared/model/provider";
-import { toolRouterListedWorkspace } from "./pilot";
+import { toolRouterAsksWorkspace } from "./pilot";
 import { routerState } from "./state-string";
 import { askRouterQuestions, type RouterAnswer } from "./system-one";
 
@@ -84,9 +83,7 @@ export function askRouterAboutNext(turn: {
 }) {
   const previous = lastSent.get(turn.conversation);
   if (previous === undefined || turn.words.trim() === "") return;
-  if (!directModelActive() || !toolRouterListedWorkspace(turn.workspaceId)) {
-    return;
-  }
+  if (!toolRouterAsksWorkspace(turn.workspaceId)) return;
   askRouterAhead({ previous, words: turn.words });
 }
 

@@ -1,6 +1,7 @@
 import type { DynamicResolveContext } from "eve";
 import { z } from "zod";
-import { skillsLayout } from "@agent/lib/skills/pilot";
+import { skillsLayout, skillsListedWorkspace } from "@agent/lib/skills/pilot";
+import { stepContextListedWorkspace } from "@agent/lib/step-context/pilot";
 import type { TurnKind } from "@agent/lib/turn-kind/kind";
 import { env } from "@shared/environment";
 import { directModelActive } from "@shared/model/provider";
@@ -35,6 +36,23 @@ export function toolRouterListed(context: RouterContext) {
     .min(1)
     .safeParse(caller.attributes.workspaceId).data;
   return workspaceId !== undefined && toolRouterListedWorkspace(workspaceId);
+}
+
+/**
+ * Whether a person's step of this workspace would ask the router, as far as
+ * the environment tells without a lookup: the router's pilot, the skills
+ * pilot whose core the step reads (`toolRouterEligible`) and the
+ * cache-friendly step (`stepContextPilot`, in `agent/agent.ts`). A channel
+ * asks ahead only then: with SKILLS_WORKSPACES rolled back to the owner,
+ * everyone's words still went to Jev, and no step took the answer.
+ */
+export function toolRouterAsksWorkspace(workspaceId: string) {
+  return (
+    directModelActive() &&
+    toolRouterListedWorkspace(workspaceId) &&
+    skillsListedWorkspace(workspaceId) &&
+    stepContextListedWorkspace(workspaceId)
+  );
 }
 
 /**
