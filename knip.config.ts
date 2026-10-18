@@ -29,6 +29,8 @@ export default {
     "scripts/cloudru-app-host/blob-to-s3.ts",
     // Measures the main agent's step context by hand (`docs/agent-costs.md`).
     "scripts/costs/step-context.ts",
+    // Times the web chat's turns against the live site, run by hand.
+    "scripts/bench/latency.ts",
     // Bundled into a release by scripts/cloudru-app-host/host.py and run on the VM.
     "scripts/cloudru-app-host/ops/migrate.ts",
     "scripts/cloudru-app-host/ops/agent-mail.ts",
@@ -51,9 +53,6 @@ export default {
     "vercel",
     // Bundles ops/migrate.ts for the Cloud.ru VM (scripts/cloudru-app-host/host.py).
     "esbuild",
-    // Named, not imported: agent/agent.ts gives eve the package name of the
-    // Workflow world, and eve bundles it.
-    "@workflow/world-postgres",
   ],
   ignoreIssues: {
     // Eve AI Elements and shadcn registry primitives intentionally expose
