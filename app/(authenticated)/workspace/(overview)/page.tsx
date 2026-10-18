@@ -81,16 +81,14 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
     connectedAppConfigured(app)
   );
   const scope = await requireRequestScope();
-  const mailConnections = mailEnabled(scope)
-    ? await Promise.all(
-        mailProviderSchema.options.map((provider) =>
-          readMailConnection(scope, provider)
-        )
-      )
-    : [];
   const telegramConfigured = telegramLinkConfigured();
+  // Every read starts at once. This month's spending needs the time zone and
+  // the limit, so it follows those two alone, not the whole batch.
+  const profileRead = readUserProfile(scope);
+  const spendLimitRead = readSpendLimit(scope);
   const [
     session,
+    mailConnections,
     googleWorkspace,
     workspaceModel,
     telegramIdentity,
@@ -98,19 +96,35 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
     profile,
     vaultItems,
     spendLimit,
+    [spendEntries, standingEntries],
     appConnections,
     memories,
   ] = await Promise.all([
     requestSession(),
+    mailEnabled(scope)
+      ? Promise.all(
+          mailProviderSchema.options.map((provider) =>
+            readMailConnection(scope, provider)
+          )
+        )
+      : [],
     getGoogleWorkspaceAccess(scope).then(async (access) =>
       readGoogleWorkspaceConnection(scope.userId, access)
     ),
     getWorkspaceModelId(scope),
     telegramConfigured ? readChannelIdentity(scope, "telegram") : undefined,
     readBillingState(scope),
-    readUserProfile(scope),
+    profileRead,
     readVaultItems(scope),
-    readSpendLimit(scope),
+    spendLimitRead,
+    Promise.all([profileRead, spendLimitRead]).then(async ([read, limit]) => {
+      if (!limit) return [[], []];
+      const month = localMonthKey(new Date(), resolveTimeZone(read.timezone));
+      return Promise.all([
+        listSpendEntries(scope, month),
+        listSpendEntries(scope, month, { source: "standing" }),
+      ]);
+    }),
     Promise.all(
       shownApps.map(async (app) => ({
         app,
@@ -136,13 +150,6 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
   const imageStorageReady = artifactStorageConfigured();
   const browserReady = env.BROWSER_USE_API_KEY !== undefined;
   const timeZone = resolveTimeZone(profile.timezone);
-  const spendMonth = localMonthKey(new Date(), timeZone);
-  const [spendEntries, standingEntries] = spendLimit
-    ? await Promise.all([
-        listSpendEntries(scope, spendMonth),
-        listSpendEntries(scope, spendMonth, { source: "standing" }),
-      ])
-    : [[], []];
   const when = new Intl.DateTimeFormat("ru-RU", {
     dateStyle: "long",
     timeStyle: "short",
