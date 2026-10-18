@@ -187,6 +187,20 @@ s3put:<ключ>`; без звонка её гоняют локально: `sip.
   на `/workspace`). Лендинг грузит Source Serif 4 и Geist отдельно, со своими
   токенами в `landing.module.css`; остальные страницы берут их из корневого
   `app/layout.tsx`.
+- Бандл страниц чата (18.10): `streamdown` и его плагины (Shiki, KaTeX, Mermaid)
+  грузятся лениво (`web/components/ai-elements/streamdown.tsx`) — в коде чата из
+  `streamdown` только `import type`, иначе парсер вернётся в первую загрузку.
+  Копию zod из клиента eve (`#compiled/zod/index.js`, та же 4.5.4) в браузере
+  подменяет алиас `turbopack.resolveAlias` в `next.config.ts`: после обновления
+  eve сверьте версию его zod с zod приложения. JS маршрутов — после `pnpm build` в
+  `.next/diagnostics/route-bundle-stats.json`; по пакетам — анализатор
+  `next experimental-analyze --output` (`.next/diagnostics/analyze`: 4 байта
+  длины + JSON; после записи процесс висит — убейте). Ленивый `LazyMotion`
+  ничего не дал: `motion/react` целиком остаётся в первом чанке.
+- Поток сессии eve отдаёт чтение от `startIndex` до хвоста, конца у чтения нет:
+  каждое чтение истории назад стоит всего остатка разговора, поэтому
+  `_lib/session-history.ts` удваивает порции (128 → 2048). Короче не станет без
+  курсора конца в eve.
 - Публичный лендинг использует Source Serif 4 как кириллическую замену Fraunces
   (в исходном шрифте Hilos нет русских букв). Его шрифты и токены изолированы
   в `app/(public)/landing.module.css`: остальные страницы живут на общей

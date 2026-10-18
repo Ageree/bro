@@ -9,10 +9,6 @@ import {
   TooltipTrigger,
 } from "@web/components/ui/tooltip";
 import { cn } from "@web/components/class-names";
-import { cjk } from "@streamdown/cjk";
-import { code } from "@streamdown/code";
-import { math } from "@streamdown/math";
-import { mermaid } from "@streamdown/mermaid";
 import type { UIMessage } from "ai";
 import { ChevronLeftIcon, ChevronRightIcon, FileIcon } from "lucide-react";
 import type { ComponentProps, HTMLAttributes, ReactElement } from "react";
@@ -26,9 +22,10 @@ import {
   useMemo,
   useState,
 } from "react";
-import { Streamdown, type Components } from "streamdown";
+import type { Components } from "streamdown";
 import { z } from "zod";
 import { isBrowserImageArtifactUrl } from "@shared/browser/artifact";
+import { LazyStreamdown } from "./streamdown";
 
 export type MessageProps = HTMLAttributes<HTMLDivElement> & {
   from: UIMessage["role"];
@@ -321,9 +318,8 @@ export const MessageBranchPage = ({
   );
 };
 
-export type MessageResponseProps = ComponentProps<typeof Streamdown>;
+export type MessageResponseProps = ComponentProps<typeof LazyStreamdown>;
 
-const streamdownPlugins = { cjk, code, math, mermaid };
 const streamdownComponents: Components = { img: ArtifactMessageImage };
 
 export function ArtifactMessageImage({
@@ -409,7 +405,7 @@ export const MessageResponse = ({
   mode,
   ...props
 }: MessageResponseProps) => (
-  <Streamdown
+  <LazyStreamdown
     className={cn(
       "size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
       className
@@ -418,7 +414,6 @@ export const MessageResponse = ({
     isAnimating={isAnimating}
     linkSafety={streamdownLinkSafety}
     mode={mode ?? (isAnimating ? "streaming" : "static")}
-    plugins={streamdownPlugins}
     {...props}
   />
 );

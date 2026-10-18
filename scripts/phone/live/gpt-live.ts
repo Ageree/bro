@@ -28,12 +28,17 @@ export async function openLiveSession(options: {
       resolve();
     });
   });
+  let opened = false;
   const sessionId = await new Promise<string>((resolve, reject) => {
     const timer = setTimeout(() => {
-      reject(new Error("GPT-Live did not start the session in 30 s."));
+      reject(
+        new Error(
+          `GPT-Live did not start the session in 30 s (${opened ? "the socket opened" : "the socket never opened"}).`
+        )
+      );
     }, 30_000);
-    socket.addEventListener("error", () => {
-      reject(new Error("GPT-Live connection failed."));
+    socket.addEventListener("error", (event) => {
+      reject(new Error(`GPT-Live connection failed: ${event.message}`));
     });
     socket.addEventListener("close", (event) => {
       reject(
@@ -43,6 +48,7 @@ export async function openLiveSession(options: {
       );
     });
     socket.addEventListener("open", () => {
+      opened = true;
       socket.send(
         JSON.stringify({
           type: "session.start",
