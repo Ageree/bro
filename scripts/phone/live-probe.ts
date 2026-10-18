@@ -28,13 +28,16 @@ import {
 // in GPT-Live over a WebSocket. Prints the gaps between the far side's speech and Bro's, both transcripts,
 // and PUTs a stereo WAV (left: the far side, right: Bro) to the signed URL it is given.
 //   ops/phone-live-probe.sh +7DESTINATION +7BRO_NUMBER [s3put:KEY] [MAX_TALK_SECONDS]
+//   ops/phone-live-probe.sh check
 
 registerApplicationModuleResolution();
 
 const phone = z.string().regex(/^\+7\d{10}$/u);
 const { positionals } = parseArgs({ allowPositionals: true });
-const destination = phone.parse(positionals[0]);
-const callerNumber = phone.parse(positionals[1]);
+// `check` places no call: it only times the path to OpenAI and a GPT-Live session start.
+const checkOnly = positionals[0] === "check";
+const destination = checkOnly ? "" : phone.parse(positionals[0]);
+const callerNumber = checkOnly ? "" : phone.parse(positionals[1]);
 const recordUrl = positionals[2]?.startsWith("https://")
   ? positionals[2]
   : undefined;
@@ -71,6 +74,58 @@ const { env } = await import("@shared/environment");
 const { findSip, readSipCredentials } = await import("@shared/phone/exolve");
 const { hangupRules, voiceStyle } = await import("@shared/phone/persona");
 if (!env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not set.");
+
+// 18.10 the session did not start twice in a row, with no error: which hop hangs, the proxy or OpenAI
+// behind it, one plain request tells. The repeats on its open connection are the round trip every turn
+// of the call pays twice (the far side's audio up, Bro's down).
+const openAiKey = env.OPENAI_API_KEY;
+const openAiProxy = env.OPENAI_PROXY_URL
+  ? new ProxyAgent(env.OPENAI_PROXY_URL)
+  : undefined;
+const askOpenAi = async () => {
+  const init: NonNullable<Parameters<typeof fetchThrough>[1]> = {
+    headers: { Authorization: `Bearer ${openAiKey}` },
+    signal: AbortSignal.timeout(15_000),
+  };
+  if (openAiProxy) init.dispatcher = openAiProxy;
+  const asked = performance.now();
+  const answer = await fetchThrough(
+    "https://api.openai.com/v1/models/gpt-live-1",
+    init
+  );
+  await answer.arrayBuffer();
+  return {
+    status: answer.status,
+    ms: Math.round(performance.now() - asked),
+  };
+};
+try {
+  const first = await askOpenAi();
+  const again = [await askOpenAi(), await askOpenAi(), await askOpenAi()];
+  log(
+    `OpenAI answers ${String(first.status)} in ${String(first.ms)} ms; again on that connection ${again.map((request) => String(request.ms)).join("/")} ms`
+  );
+} catch (error) {
+  log(
+    `OpenAI did not answer: ${error instanceof Error ? `${error.message} (${String(error.cause)})` : "?"}`
+  );
+}
+
+if (checkOnly) {
+  // No call: how long GPT-Live takes to start a session over this path.
+  const opening = performance.now();
+  const session = await openLiveSession({
+    apiKey: openAiKey,
+    proxyUrl: env.OPENAI_PROXY_URL,
+    session: { model: "gpt-live-1" },
+    onEvent: () => undefined,
+  });
+  log(
+    `GPT-Live started ${session.sessionId} in ${String(Math.round(performance.now() - opening))} ms`
+  );
+  session.close();
+  process.exit(0);
+}
 
 const sipId = (await findSip(callerNumber.slice(1)))?.sipId;
 if (!sipId) throw new Error("No Exolve SIP ID carries the caller number.");
@@ -277,42 +332,6 @@ const offer = sdpOffer({
   port: rtp.port,
   sessionId: Date.now(),
 });
-
-// 18.10 the session did not start twice in a row, with no error: which hop hangs, the proxy or OpenAI
-// behind it, one plain request tells. The repeats on its open connection are the round trip every turn
-// of the call pays twice (the far side's audio up, Bro's down).
-const openAiKey = env.OPENAI_API_KEY;
-const openAiProxy = env.OPENAI_PROXY_URL
-  ? new ProxyAgent(env.OPENAI_PROXY_URL)
-  : undefined;
-const askOpenAi = async () => {
-  const init: NonNullable<Parameters<typeof fetchThrough>[1]> = {
-    headers: { Authorization: `Bearer ${openAiKey}` },
-    signal: AbortSignal.timeout(15_000),
-  };
-  if (openAiProxy) init.dispatcher = openAiProxy;
-  const asked = performance.now();
-  const answer = await fetchThrough(
-    "https://api.openai.com/v1/models/gpt-live-1",
-    init
-  );
-  await answer.arrayBuffer();
-  return {
-    status: answer.status,
-    ms: Math.round(performance.now() - asked),
-  };
-};
-try {
-  const first = await askOpenAi();
-  const again = [await askOpenAi(), await askOpenAi(), await askOpenAi()];
-  log(
-    `OpenAI answers ${String(first.status)} in ${String(first.ms)} ms; again on that connection ${again.map((request) => String(request.ms)).join("/")} ms`
-  );
-} catch (error) {
-  log(
-    `OpenAI did not answer: ${error instanceof Error ? `${error.message} (${String(error.cause)})` : "?"}`
-  );
-}
 
 live = await openLiveSession({
   apiKey: env.OPENAI_API_KEY,
