@@ -30,3 +30,16 @@
 | telegram — кэш быстрых продолжений   | claude/speed3-telegram | session_01RPqKEgmkwcpz5YXZQFDhKd | работает  |
 | report — отчёт браузера без ожидания | claude/speed3-report   | session_01QiD8qcp2rMMr5Jjde3b23d | работает  |
 | yandex — операции Яндекса на чтение  | claude/speed3-yandex   | session_016WY6aWFvwMVs6829fYeytd | работает  |
+
+## Ход работы
+
+- 19:42 Сессия этапа 2 закончила замер #521: «Вреда нет», вторая пара — 32 с вместо 38 с
+  (16 с ждал картинки, 15 с — до опроса очереди). Нашла: с 19:15 в 3 из 5 отчётов
+  картинка теряется (`ETIMEDOUT` за 0,3 с) — передано в «report».
+- 19:48 Слит #522 (yandex: проба Афиши с сервера, без смены поведения). 19:58 выкачен
+  релиз `20261019-194811-b905f367`, здоров (`recovery queued` 19:58:32, 1475 прогонов).
+- 20:05 Слит #523 (report: `net-latency.sh` меряет S3 по IPv4/IPv6). Выкат — в 20:29, на
+  стыке окон yandex/report.
+- Черновики: #524 (telegram: записка памяти рвёт префикс; флаг
+  `STABLE_MEMORY_WORKSPACES`), #525 (report: повтор S3 PUT при `ETIMEDOUT`, тайминги
+  картинок, флаг `BROWSER_REPORT_FAST_WORKSPACES`).
