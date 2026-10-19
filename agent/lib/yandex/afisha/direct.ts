@@ -41,6 +41,38 @@ const responseSchema = z.object({
 });
 
 /**
+ * The page's public search request as the server sends it: no cookie, no
+ * redirect followed, the same wait as the call. The operator's probe
+ * (`ops/yandex-probe.ts`) sends this very request to see how Afisha answers
+ * the server's address.
+ */
+export async function afishaSearchRequest(args: {
+  city: string;
+  limit: number;
+  query: string;
+}) {
+  return fetch(
+    `https://afisha.yandex.ru/api/graphql?city=${encodeURIComponent(args.city)}&version=604.1.0&query_name=BroSearch`,
+    {
+      body: JSON.stringify({
+        operationName: "BroSearch",
+        query: afishaSearchGraphql,
+        variables: { docs: args.limit, text: args.query },
+      }),
+      headers: {
+        "content-type": "application/json",
+        "user-agent":
+          "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+        "x-force-cors-preflight": "1",
+      },
+      method: "POST",
+      redirect: "error",
+      signal: AbortSignal.timeout(directBudgetMs),
+    }
+  );
+}
+
+/**
  * Afisha search with no browser: the same public GraphQL request the page
  * makes, asked from the server. It needs no sign-in, so no cookie is sent.
  * Any refusal (a captcha page, an error, a slow answer, an answer of another
@@ -56,25 +88,7 @@ export async function afishaSearchDirect(
   if (!parsed.success) return undefined;
   const args = parsed.data;
   try {
-    const response = await fetch(
-      `https://afisha.yandex.ru/api/graphql?city=${encodeURIComponent(args.city)}&version=604.1.0&query_name=BroSearch`,
-      {
-        body: JSON.stringify({
-          operationName: "BroSearch",
-          query: afishaSearchGraphql,
-          variables: { docs: args.limit, text: args.query },
-        }),
-        headers: {
-          "content-type": "application/json",
-          "user-agent":
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
-          "x-force-cors-preflight": "1",
-        },
-        method: "POST",
-        redirect: "error",
-        signal: AbortSignal.timeout(directBudgetMs),
-      }
-    );
+    const response = await afishaSearchRequest(args);
     // A refusal of the server (blocked, throttled, a captcha page instead of
     // JSON, a timeout) leaves it alone for a while; an answer that is only
     // not what this request needed (a city it does not know) is this call's
