@@ -25,8 +25,31 @@ import { callConversationOf } from "./warm";
  */
 const conversations = new Map<
   string,
-  { readonly hashes: readonly string[]; readonly tools: string }
+  {
+    readonly hashes: readonly string[];
+    readonly kinds: readonly (string | undefined)[];
+    readonly tools: string;
+  }
 >();
+
+/**
+ * Bro's own records, told by the fixed words they open with (19.10): a
+ * keyed memory record whose text changed leaves its old place in the history
+ * (eve keeps only the latest), and the break is there. Only the label
+ * reaches the log, never the text.
+ */
+const recordKinds = [
+  ["# Durable user memory", "profile"],
+  ["No query-specific profile memories", "profile-note"],
+  ["Saved preferences for this request", "preferences-note"],
+  ["Workstream memory:", "workstreams"],
+  ["Personal Info profile", "personal-info"],
+  ["bro-skill", "skill"],
+] as const;
+
+function kindOf(text: string) {
+  return recordKinds.find(([opening]) => text.includes(opening))?.[1];
+}
 const maximumConversations = 200;
 
 const callSchema = z.object({
@@ -48,10 +71,11 @@ export function notePrefix(body: string) {
     const texts = call.messages.map((message) => JSON.stringify(message));
     const hashes = texts.map((text) => hashOf(text));
     const lengths = texts.map((text) => text.length);
+    const kinds = texts.map((text) => kindOf(text));
     const tools = hashOf(JSON.stringify(call.tools ?? []));
     const before = conversations.get(sessionId);
     conversations.delete(sessionId);
-    conversations.set(sessionId, { hashes, tools });
+    conversations.set(sessionId, { hashes, kinds, tools });
     if (conversations.size > maximumConversations) {
       const oldest = conversations.keys().next().value;
       if (oldest !== undefined) conversations.delete(oldest);
@@ -69,6 +93,12 @@ export function notePrefix(body: string) {
     console.info("[model] prefix", {
       brokeAt,
       brokeRole: call.messages[brokeAt]?.role,
+      // The previous call's message at the break: Bro's record by its kind,
+      // and whether this call left it out rather than changed what follows.
+      brokeKind: before.kinds[brokeAt],
+      dropped:
+        brokeAt < before.hashes.length &&
+        !hashes.includes(before.hashes[brokeAt] ?? ""),
       // The share of this call's messages, by characters, before the break.
       keptShare: total === 0 ? 1 : Math.round((kept / total) * 100) / 100,
       messages: hashes.length,
