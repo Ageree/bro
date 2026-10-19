@@ -324,9 +324,10 @@ export async function settleBrowserRun(
     ? false
     : await persistProfileCookies(claimed.id, run.sessionId);
   timing.mark("release");
-  if (released && isBrowserVmId(claimed.profileId ?? "")) {
-    await hurryQueued(claimed);
-  }
+  // The run is over either way: a page kept for the person holds its site's
+  // account, not the browser (19.10: three runs of four ended on a question,
+  // and the errand queued behind each waited out its minute).
+  if (isBrowserVmId(claimed.profileId ?? "")) await hurryQueued(claimed);
   // On a browser VM, the page waits for the person's reply that long.
   if (keepsPage(parsed.needs)) await keepBrowserVmForPersonStep(claimed.id);
   await recordRunSignIns(claimed, {
@@ -387,9 +388,9 @@ function settleTiming() {
 }
 
 /**
- * The browser of the run is free again: an errand of its workspace queued
- * behind it as busy starts now, not at the end of its minute. A failure
- * leaves it to its minute, as before.
+ * The run on the workspace's own browser ended: an errand queued behind it
+ * as busy starts now, not at the end of its minute. A failure leaves it to
+ * its minute, as before.
  */
 async function hurryQueued(row: Pick<BrowserRunRow, "id" | "workspaceId">) {
   try {

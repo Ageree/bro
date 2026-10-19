@@ -797,14 +797,21 @@ describe("settling a browser run", () => {
     );
   });
 
-  it("leaves the queue alone while the run's browser is not released", async () => {
+  // 19.10: three runs of four ended on a question, keeping their page.
+  it("lets the queue go on when the run keeps its page for the person", async () => {
     const vmRow = { ...row, profileId: "vm:workspace:user-1:p1" };
     readBrowserRun.mockResolvedValue(vmRow);
     claimBrowserRunCompletion
       .mockReset()
       .mockResolvedValueOnce({ ...vmRow, completedAt: new Date() });
-    // A follow-up of the errand is still running in the browser.
-    stopBrowserUseSessionBrowsers.mockResolvedValueOnce("running");
+    readBrowserUseRun.mockResolvedValue({
+      error: null,
+      id: runId,
+      result: "RESULT: нашёл два чайника\nNEEDS: decision",
+      sessionId: "session-1",
+      status: "completed",
+      task: "Найди чайник",
+    });
     const { settleBrowserRun } =
       await import("@agent/lib/browser-use/completion");
     const { send, to } = delivery();
@@ -812,7 +819,11 @@ describe("settling a browser run", () => {
     await settleBrowserRun({ to }, runId);
 
     expect(send).toHaveBeenCalledOnce();
-    expect(hurryQueuedBrowserRuns).not.toHaveBeenCalled();
+    expect(stopBrowserUseSessionBrowsers).not.toHaveBeenCalled();
+    expect(hurryQueuedBrowserRuns).toHaveBeenCalledExactlyOnceWith(
+      vmRow.workspaceId,
+      expect.any(Date)
+    );
   });
 
   // Ozon turned away every exit of a comparison of three shops (14.10), and
