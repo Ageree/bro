@@ -202,12 +202,30 @@ async function probeDirect(spec: {
   return { answers };
 }
 
+/**
+ * A request to Object Storage, tried three times: from the VM a connection
+ * to it now and then times out before it opens (ETIMEDOUT in Node's
+ * connection to several addresses), and one such loses the whole probe.
+ */
+async function storageFetch(url: string, init?: RequestInit) {
+  const attempt = async (left: number): Promise<Response> => {
+    try {
+      return await fetch(url, init);
+    } catch (error) {
+      if (left <= 1) throw error;
+      await sleep(1000);
+      return attempt(left - 1);
+    }
+  };
+  return attempt(3);
+}
+
 async function main() {
   const [specUrl, resultUrl] = process.argv.slice(2);
   if (!specUrl || !resultUrl) {
     throw new Error("Usage: yandex-probe.sh SPEC_GET_URL RESULT_PUT_URL");
   }
-  const spec = specSchema.parse(await (await fetch(specUrl)).json());
+  const spec = specSchema.parse(await (await storageFetch(specUrl)).json());
   let result: unknown;
   if ("direct" in spec) {
     result = await probeDirect(spec);
@@ -219,7 +237,7 @@ async function main() {
     result = await probePage(spec.workspace, spec);
   }
   const body = JSON.stringify(result);
-  const put = await fetch(resultUrl, { body, method: "PUT" });
+  const put = await storageFetch(resultUrl, { body, method: "PUT" });
   console.log(
     JSON.stringify({ bytes: body.length, stored: put.ok, status: put.status })
   );
