@@ -286,7 +286,8 @@ describe("capturing the pictures a browser run leaves behind", () => {
     const capturing = images.captureBrowserRunImages(row(), run, {
       pageWithinCap: true,
     });
-    await vi.advanceTimersByTimeAsync(images.reportPageWaitMs);
+    // The pilot waits two seconds for the page.
+    await vi.advanceTimersByTimeAsync(2000);
 
     await expect(capturing).resolves.toEqual([]);
   });
@@ -312,7 +313,7 @@ describe("capturing the pictures a browser run leaves behind", () => {
       .finally(() => {
         done = true;
       });
-    await vi.advanceTimersByTimeAsync(images.reportPageWaitMs * 2);
+    await vi.advanceTimersByTimeAsync(4000);
     expect(done).toBe(false);
     vi.useRealTimers();
     late.resolve(undefined);

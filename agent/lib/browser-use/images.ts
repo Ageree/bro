@@ -149,7 +149,7 @@ function labelFromStem(stem: string) {
  * its download and store took 1.3–19.1 s, 7.6 s at the median, all of it
  * before the report turn started.
  */
-export const reportPageWaitMs = 2000;
+const reportPageWaitMs = 2000;
 
 export async function captureBrowserRunImages(
   row: BrowserRunRow,
