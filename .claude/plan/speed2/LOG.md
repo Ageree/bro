@@ -24,10 +24,10 @@
 
 | Единица | Ветка | Сессия | Состояние |
 |---|---|---|---|
-| cache — кэш первого шага | claude/speed2-cache | — | запущена 19.10 |
-| tools — медленные инструменты | claude/speed2-tools | — | запущена 19.10 |
-| media — фото, голос, PDF | claude/speed2-media | — | запущена 19.10 |
-| browser — поручение браузеру | claude/speed2-browser | — | запущена 19.10 |
+| cache — кэш первого шага | claude/speed2-cache | session_012jTCdEpgdEbdZqgXQkfW9w | запущена 19.10 |
+| tools — медленные инструменты | claude/speed2-tools | session_01VowM2VB8b79mtvvQYLxPga | запущена 19.10 |
+| media — фото, голос, PDF | claude/speed2-media | session_01ND3QFVfwzKE77ACrL4gqbx | запущена 19.10 |
+| browser — поручение браузеру | claude/speed2-browser | session_014vyocNaPPvfYmDVJ9gPsCE | запущена 19.10 |
 
 ## Очередь (после первых результатов)
 
