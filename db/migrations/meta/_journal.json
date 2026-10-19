@@ -568,6 +568,13 @@
       "when": 1792444325912,
       "tag": "0080_proactive_location_signal",
       "breakpoints": true
+    },
+    {
+      "idx": 81,
+      "version": "7",
+      "when": 1792449309571,
+      "tag": "0081_yoomoney_onboarding",
+      "breakpoints": true
     }
   ]
 }
