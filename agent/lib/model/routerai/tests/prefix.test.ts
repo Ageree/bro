@@ -72,7 +72,11 @@ describe("where a call's cached prefix broke", () => {
       call([
         system,
         opening,
-        { content: "No query-specific profile memories are active. Saved preferences for this request: «без свинины».", role: "user" },
+        {
+          content:
+            "No query-specific profile memories are active. Saved preferences for this request: «без свинины».",
+          role: "user",
+        },
         { content: "что на ужин?", role: "user" },
       ])
     );

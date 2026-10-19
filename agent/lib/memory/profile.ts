@@ -1,6 +1,7 @@
 import {
   defineMemoryProvider,
   type MemoryCompactionCompletedContext,
+  type MemoryRecallResult,
   type MemoryTurnStartedContext,
 } from "eve/memory";
 import type { MemoryDocumentBackend } from "eve/memory/file";
@@ -505,7 +506,7 @@ export function createProfileMemoryProvider(
 async function recallProfile(
   context: MemoryTurnStartedContext | MemoryCompactionCompletedContext,
   legacyBackend: MemoryDocumentBackend
-) {
+): Promise<MemoryRecallResult> {
   const current = context.session.auth.current;
   if (current?.principalType !== "user") return null;
   const scope = scopeFromPrincipal(current);

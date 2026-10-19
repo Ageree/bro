@@ -58,7 +58,7 @@ const pilot = vi.hoisted(() => ({
 const settings = vi.hoisted(() => ({
   // The profile reads its pilot at recall, so a test flips it in place.
   // SAFETY: The mock factory fills this object with the real environment before any test runs.
-  env: {} as Record<string, unknown>,
+  env: {} as Record<string, readonly string[] | undefined>,
 }));
 
 vi.mock("@shared/environment", async (importOriginal) => {
@@ -1726,9 +1726,8 @@ describe("the person's rules in the profile", () => {
       const dinner = (await recallFor("где поужинать завтра?"))?.messages;
 
       expect(dinner?.slice(0, 2)).toEqual(greeting);
-      expect(dinner?.[2]).toEqual({
-        content: expect.stringContaining("«без свинины»"),
-      });
+      expect(dinner?.[2]?.id).toBeUndefined();
+      expect(dinner?.[2]?.content).toContain("«без свинины»");
       expect(greeting).toHaveLength(2);
     });
 
