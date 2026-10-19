@@ -28,6 +28,7 @@ import { isBrowserVmId } from "@agent/lib/browser-vm/ids";
 import { agencyPilot } from "@agent/lib/agency/pilot";
 import { wakeAgencyForOutcome } from "@agent/lib/proactive/follow-up";
 import { keepBrowserVmForPersonStep } from "@agent/lib/browser-vm/idle";
+import { reportFastPilot } from "@agent/lib/browser-vm/pilot";
 import { recordBrowserUseRunCost } from "@agent/lib/costs/browser";
 import {
   blockedSitesRetry,
@@ -564,7 +565,12 @@ async function safeBrowserRunImages(
   run: Awaited<ReturnType<typeof readBrowserUseRun>>
 ) {
   try {
-    return await captureBrowserRunImages(row, run);
+    return await captureBrowserRunImages(row, run, {
+      pageWithinCap: await reportFastPilot({
+        userId: row.createdByUserId,
+        workspaceId: row.workspaceId,
+      }),
+    });
   } catch (error) {
     console.warn("[browser-use] run images could not be captured", {
       cause: error,
