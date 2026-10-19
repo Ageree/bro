@@ -40,7 +40,7 @@ export const edaOrdersOperation = defineYandexOperation({
     limit: z.number().int().min(1).max(20).default(10),
   }),
   id: "food.eda_orders",
-  origin: "https://eda.yandex.ru/",
+  origin: "https://eda.yandex.ru/robots.txt",
   result: z.object({ hasMore: z.boolean(), orders: z.array(edaOrder) }),
   run: `async function (args) {
   const headers = {

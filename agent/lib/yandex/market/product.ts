@@ -42,7 +42,7 @@ export const marketProductOperation = defineYandexOperation({
   access: "read",
   args: z.object({ url: marketCardUrl }),
   id: "market.product",
-  origin: "https://market.yandex.ru/",
+  origin: "https://market.yandex.ru/robots.txt",
   result: z.object({
     available: z.boolean(),
     brand: z.string().nullable(),

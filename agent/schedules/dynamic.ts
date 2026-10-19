@@ -219,6 +219,7 @@ async function executeScheduledRun(
     if (status === "dead_letter") {
       await dispatchRecoverableReport(delivery, {
         carriesEvent: false,
+        carriesMove: false,
         conversationChannel: claim.job.conversationChannel,
         jobId: claim.job.id,
         jobKind: claim.job.kind,
@@ -252,6 +253,7 @@ async function dispatchRecoverableReport(
   // An urgent report at night goes alone; the held ones wait for the morning.
   return dispatchScheduledReport(delivery, report.runId, {
     absorbHeld: timing === "day",
+    moved: report.carriesMove,
   });
 }
 

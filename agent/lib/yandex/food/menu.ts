@@ -49,7 +49,7 @@ export const edaMenuOperation = defineYandexOperation({
     slug: z.string().min(1).max(200),
   }),
   id: "food.eda_menu",
-  origin: "https://eda.yandex.ru/",
+  origin: "https://eda.yandex.ru/robots.txt",
   result: menuAnswer,
   run: `async function (args) {
   const headers = {

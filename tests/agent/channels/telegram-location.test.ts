@@ -4,6 +4,7 @@ import { z } from "zod";
 import type * as EnvModule from "@shared/environment";
 import type { findChannelIdentity } from "@db/services/channel-identities";
 import type * as LocationService from "@db/services/location";
+import type { noticeLiveMove } from "@agent/lib/location/watch";
 import { accessScopeForUser } from "@shared/identity/access-scope";
 
 /**
@@ -21,6 +22,7 @@ const capture = vi.hoisted(() => ({
   evaluate: vi.fn<typeof LocationService.evaluatePlaceReminders>(),
   findIdentity: vi.fn<typeof findChannelIdentity>(),
   insert: vi.fn<typeof LocationService.insertPoint>(),
+  notice: vi.fn<typeof noticeLiveMove>(),
   pilot: vi.fn<typeof LocationService.locationPilot>(),
   recent: vi.fn<typeof LocationService.recentLiveWrite>(),
 }));
@@ -34,6 +36,9 @@ vi.mock("@shared/environment", async (importOriginal) => {
 });
 vi.mock("@db/services/channel-identities", () => ({
   findChannelIdentity: capture.findIdentity,
+}));
+vi.mock("@agent/lib/location/watch", () => ({
+  noticeLiveMove: capture.notice,
 }));
 vi.mock("@db/services/location", () => ({
   evaluatePlaceReminders: capture.evaluate,
@@ -137,6 +142,7 @@ beforeEach(() => {
     recordedAt: new Date((editedAt - 600) * 1000),
   });
   capture.evaluate.mockResolvedValue([]);
+  capture.notice.mockResolvedValue("off");
   capture.insert.mockImplementation(async () => ({
     accuracyM: 12,
     address: null,
@@ -160,6 +166,7 @@ afterEach(() => {
     capture.evaluate,
     capture.findIdentity,
     capture.insert,
+    capture.notice,
     capture.pilot,
     capture.recent,
   ]) {
@@ -234,6 +241,13 @@ describe("the live location route", () => {
         source: "telegram_live",
       })
     );
+    // The stored point is read for a move worth Bro's own check.
+    expect(capture.notice).toHaveBeenCalledWith(
+      alice,
+      `${String(chatId)}:77`,
+      new Date(editedAt * 1000),
+      expect.any(Date)
+    );
   });
 
   it("skips old edits, and stores and runs at their own pace", async () => {
@@ -252,6 +266,8 @@ describe("the live location route", () => {
     expect(
       (await post(edit({ editDate: editedAt + 30 }), withSecret)).body
     ).toEqual({ evaluated: false, hits: 0, stored: false });
+    // A point not stored is no move to read.
+    expect(capture.notice).not.toHaveBeenCalled();
     // 100 m away: stored though the minute has not passed.
     expect(
       (await post(edit({ editDate: editedAt + 40, lat: 55.751 }), withSecret))

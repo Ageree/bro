@@ -33,6 +33,7 @@ import type {
   syncFlightWatches,
 } from "@db/services/subscriptions";
 import type { readUserProfile } from "@db/services/user-profile";
+import type { liveMoveLines } from "@agent/lib/location/watch";
 import { emptyUserProfile } from "@shared/user-profile/schema";
 
 const proactive = vi.hoisted(() => ({
@@ -64,6 +65,7 @@ const agentMail = vi.hoisted(() => ({
   check: vi.fn<typeof agentMailCheck>(),
 }));
 const profile = vi.hoisted(() => vi.fn<typeof readUserProfile>());
+const moves = vi.hoisted(() => vi.fn<typeof liveMoveLines>());
 const flights = vi.hoisted(() => ({
   drive: vi.fn<typeof flightModule.measureDrive>(),
   list: vi.fn<typeof listFlightWatches>(() => Promise.resolve([])),
@@ -119,6 +121,7 @@ vi.mock("@agent/lib/subscriptions/flight", async (importOriginal) => ({
   ...(await importOriginal<typeof flightModule>()),
   measureDrive: flights.drive,
 }));
+vi.mock("@agent/lib/location/watch", () => ({ liveMoveLines: moves }));
 vi.mock("@agent/channels/scheduled-run", () => ({
   default: { channel: "scheduled-run" },
 }));
@@ -837,6 +840,51 @@ describe("proactive schedule", () => {
       claim.run.leaseToken,
       "worker-session"
     );
+  });
+
+  it("dispatches a move of the live location with what code read of it, and route_time", async () => {
+    proactive.listSignals.mockResolvedValue([
+      {
+        dedupeKey: "4242:77#arrive@1",
+        itemId: "4242:77",
+        source: "location",
+        threadId: null,
+      },
+    ]);
+    moves.mockResolvedValue(["Геопозиция: последняя точка — «Тверская, 7»."]);
+    jobs.claimRuns.mockResolvedValue([proactiveClaim()]);
+    // Even in the agency pilot a move's run only reads and writes to the
+    // person: no mail or calls about where they are.
+    agency.pilot.mockReturnValue(true);
+    const send = vi
+      .fn<ReturnType<ScheduleToFn>["send"]>()
+      .mockResolvedValue(workerSession());
+
+    await runSchedule(vi.fn<ScheduleToFn>(() => ({ send })));
+
+    expect(moves).toHaveBeenCalledWith(
+      { userId: "better-auth:alice", workspaceId: "workspace:alice" },
+      expect.objectContaining({ itemId: "4242:77" }),
+      "Europe/Moscow"
+    );
+    expect(send.mock.calls[0]?.[0]).toContain(
+      "Геопозиция: последняя точка — «Тверская, 7»."
+    );
+    expect(send.mock.calls[0]?.[1].auth).toMatchObject({
+      attributes: {
+        scheduledRunKind: "proactive",
+        scheduledRunLocation: "true",
+      },
+    });
+  });
+
+  it("checks the due watches and dispatches runs every minute, and prunes every five", async () => {
+    vi.setSystemTime(new Date("2026-09-23T12:03:00.000Z"));
+    proactive.claimWatches.mockResolvedValue([]);
+    await runSchedule(vi.fn<ScheduleToFn>());
+    expect(proactive.prune).not.toHaveBeenCalled();
+    expect(proactive.claimWatches).toHaveBeenCalledOnce();
+    expect(jobs.claimRuns).toHaveBeenCalledOnce();
   });
 
   it("dispatches a run of the agency pilot as agentic, with the agentic prompt", async () => {

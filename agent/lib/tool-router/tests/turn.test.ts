@@ -637,6 +637,18 @@ describe("a person's step in the router's pilot", () => {
       "on"
     );
     expect(reminder).toContain("places");
+    // Sharing or following their location is about their place too (19.10).
+    const following = await routerGroupsOfStep(
+      [
+        person(
+          "И ты типо можешь в реальном времени смотреть за моим местом положения?"
+        ),
+      ],
+      { sessionId: "session-4", stepIndex: 0 },
+      setup,
+      "on"
+    );
+    expect(following).toContain("places");
   });
 
   it("keeps the whole set in shadow, and logs what on would have narrowed", async () => {

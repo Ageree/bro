@@ -23,6 +23,7 @@ import {
   stepStartedEventSchema,
 } from "@agent/lib/turn-kind/step";
 import {
+  followsLiveLocation,
   forgetLocation,
   labelPoint,
   latestPosition,
@@ -71,6 +72,19 @@ function locationScope(context: ToolContext) {
 const askForPoint =
   "Ask the person to send their location: in Telegram the paperclip, then «Геопозиция»; in iMessage «Отправить мою геопозицию». Nothing else knows where they are.";
 
+/**
+ * The same ask where Bro follows a live location (`locationWatchPilot`):
+ * a live share, not a single point — while it goes, Bro writes first when
+ * a move matters (`agent/lib/location/watch.ts`).
+ */
+const askForLiveShare =
+  "Ask the person to share a live location: in Telegram the paperclip, then «Геопозиция», then «Транслировать геопозицию» (until they stop it, or for 8 hours) — while it goes, Bro sees where they are and writes first when it matters; in iMessage there is none, only «Отправить мою геопозицию». Nothing else knows where they are.";
+
+/** How Bro asks for a location in this workspace. */
+function askFor(watching: boolean) {
+  return watching ? askForLiveShare : askForPoint;
+}
+
 const nowInputSchema = z
   .object({
     ask: z
@@ -95,7 +109,7 @@ const nowInputSchema = z
  * keyboard button (`locationButton`, `agent/channels/telegram.ts`), with
  * its own line; elsewhere the model says how to send one.
  */
-function askForLocation(context: ToolContext) {
+function askForLocation(context: ToolContext, watching: boolean) {
   const caller = context.session.auth.current ?? context.session.auth.initiator;
   const channel = z
     .string()
@@ -106,22 +120,24 @@ function askForLocation(context: ToolContext) {
       reply:
         channel === "eve"
           ? "Ask the person to press the pin button by the message field in this chat: it sends their location."
-          : askForPoint,
+          : askFor(watching),
     };
   }
   return {
     asked: true,
     locationButton: true,
-    reply:
-      "The person now sees a button «📍 Отправить геопозицию» under the chat, with a line saying it sends where they are: do not explain how to send a location; say in a few words what you will do once it comes, or nothing more if that is clear.",
+    reply: watching
+      ? "The person now sees a button «📍 Отправить геопозицию» under the chat, which sends a single point. In one phrase ask them rather to share a live location (the paperclip, «Геопозиция», «Транслировать геопозицию»): then Bro follows where they are and writes first when it matters; the button is for a single point. Say in a few words what you will do once it comes."
+      : "The person now sees a button «📍 Отправить геопозицию» under the chat, with a line saying it sends where they are: do not explain how to send a location; say in a few words what you will do once it comes, or nothing more if that is clear.",
   };
 }
 
 async function locationNow(
   input: z.output<typeof nowInputSchema>,
-  context: ToolContext
+  context: ToolContext,
+  watching: boolean
 ) {
-  if (input.ask === true) return askForLocation(context);
+  if (input.ask === true) return askForLocation(context, watching);
   const scope = locationScope(context);
   const label = given(input.label);
   const now = new Date();
@@ -135,7 +151,7 @@ async function locationNow(
       known: false,
       reply:
         label === undefined
-          ? `Bro has no location the person shared. ${askForPoint}`
+          ? `Bro has no location the person shared. ${askFor(watching)}`
           : `No point the person named «${label}». Say so; ask them to send their location there next time and name it.`,
     };
   }
@@ -168,7 +184,7 @@ async function locationNow(
       point.kind === "place"
         ? `This is a place the person sent (${localTime}), not where they are.`
         : ageMs > staleMs
-          ? `This point is from ${localTime}: say where they were then, not where they are now. ${askForPoint}`
+          ? `This point is from ${localTime}: say where they were then, not where they are now. ${askFor(watching)}`
           : point.source === "telegram_venue"
             ? `The person marked this place at ${localTime}: they are probably there.`
             : `The person shared this at ${localTime}.`,
@@ -519,6 +535,7 @@ export default defineDynamic({
         personsTurn: turn.said !== null,
         said: [...(turn.said ?? []), ...turn.answers],
       };
+      const watching = await followsLiveLocation(scopeFromPrincipal(auth));
       return {
         location_edit: defineTool({
           availableInSubagents: false,
@@ -540,11 +557,12 @@ export default defineDynamic({
         }),
         location_now: defineTool({
           availableInSubagents: false,
-          description:
-            "Where the person is, by the location they shared themselves (a point or a place in Telegram, a location card in iMessage): address, accuracy, when; with `label`, the latest point they named so («парковка»). For «где я», «где я припарковался», «что рядом», «сколько идти отсюда», food or a taxi «сюда». A point older than an hour is where they were, not where they are; with none, ask them to send their location — `ask: true` shows them a button for it in Telegram.",
+          description: watching
+            ? "Where the person is, by the location they shared themselves (a point, a place or a live location in Telegram, a location card in iMessage): address, accuracy, when; with `label`, the latest point they named so («парковка»). For «где я», «где я припарковался», «что рядом», «сколько идти отсюда», food or a taxi «сюда». A point older than an hour is where they were, not where they are; with none, ask them to share their location — `ask: true` shows them a button for it in Telegram. While they share a live location in Telegram, Bro follows it by itself: when they stop somewhere new or leave, it looks at their calendar and memory and writes first if that matters (late for an event, arrived where they have something to do), never at night. To be followed so, they share a live location («Транслировать геопозицию»), not a single point; stopping the share stops it."
+            : "Where the person is, by the location they shared themselves (a point or a place in Telegram, a location card in iMessage): address, accuracy, when; with `label`, the latest point they named so («парковка»). For «где я», «где я припарковался», «что рядом», «сколько идти отсюда», food or a taxi «сюда». A point older than an hour is where they were, not where they are; with none, ask them to send their location — `ask: true` shows them a button for it in Telegram.",
           inputSchema: nowInputSchema,
           async execute(input, toolContext) {
-            return locationNow(input, toolContext);
+            return locationNow(input, toolContext, watching);
           },
         }),
       };

@@ -1234,6 +1234,9 @@ export async function listRecoverableScheduledReports(
         // Whether a proactive run was handed an event: a flight is the one
         // thing Bro's own check may wake the person for (`proactiveReportTiming`).
         carriesEvent: sql<boolean>`EXISTS (SELECT 1 FROM ${proactiveSignals} WHERE ${proactiveSignals.runId} = ${scheduledAgentRuns.id} AND ${proactiveSignals.source} = 'calendar')`,
+        // Whether it was handed a move of the person's live location: news
+        // of the moment, never held for the morning.
+        carriesMove: sql<boolean>`EXISTS (SELECT 1 FROM ${proactiveSignals} WHERE ${proactiveSignals.runId} = ${scheduledAgentRuns.id} AND ${proactiveSignals.source} = 'location')`,
         conversationChannel: scheduledAgentJobs.conversationChannel,
         createdByUserId: scheduledAgentJobs.createdByUserId,
         jobKind: scheduledAgentJobs.kind,
@@ -1296,6 +1299,7 @@ export async function listRecoverableScheduledReports(
     return reports.map(
       ({
         carriesEvent,
+        carriesMove,
         conversationChannel,
         createdByUserId,
         jobKind,
@@ -1303,6 +1307,7 @@ export async function listRecoverableScheduledReports(
         workspaceId,
       }) => ({
         carriesEvent,
+        carriesMove,
         conversationChannel,
         jobId: run.jobId,
         jobKind,

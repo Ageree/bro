@@ -40,6 +40,26 @@ describe("market.orders", () => {
       status: "completed",
     });
   });
+
+  it("reads the page once more when it came without the list's widget", async () => {
+    let reads = 0;
+    const { data, requests } = await okData(
+      marketOrdersOperation,
+      { status: "completed" },
+      (request) => {
+        if (request.path !== "/my/orders?filter=COMPLETED") return undefined;
+        reads += 1;
+        return {
+          body:
+            reads === 1
+              ? `<html><body>${signedInState}</body></html>`
+              : fixturePage("orders.json"),
+        };
+      }
+    );
+    expect(requests).toHaveLength(2);
+    expect(data).toMatchObject({ count: 3, status: "completed" });
+  });
 });
 
 describe("market.order", () => {

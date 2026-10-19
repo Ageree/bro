@@ -49,7 +49,9 @@ const placeReminders = [
 /**
  * The person's words of where they are or will be, of a reminder bound to
  * a place, or of their reminders at places (`placeReminders`): the decision model gave no group to «напомни купить хлеб,
- * когда приду на Тверскую 7» (15.10). Only words that clearly mean the
+ * когда приду на Тверскую 7» (15.10). Sharing or following their location
+ * too: «я включил трансляцию геопозиции», «можешь следить за моим
+ * местоположением». Only words that clearly mean the
  * person's own place: «рядом с текстом», «ближайший понедельник» and «когда
  * буду свободен» are none of it.
  */
@@ -60,6 +62,8 @@ const ownPlace = stems(
   String.raw`где\s+я\s+был[аи]?(\s*\?|\s+(вчера|сегодня|утром|дн[её]м|вечером|ночью|в\s+\d|час\p{L}*\s+назад)(?!\p{L}))`,
   String.raw`где\s+я\s*\?|где\s+(сейчас\s+)?нахожусь|где\s+моя\s+машин`,
   String.raw`рядом\s+со\s+мной|поблизости|неподал[её]ку|недалеко\s+от\s+меня`,
+  String.raw`(трансл\p{L}+|след\p{L}*\s+за|отслежива\p{L}*|смотре\p{L}*\s+за|наблюда\p{L}*\s+за)\s+(мо\p{L}+\s+|сво\p{L}+\s+)?(геопозици|геолокаци|местоположени|мест\p{L}*\s+положени|перемещени)`,
+  String.raw`(share|track|follow)\s+my\s+(live\s+)?location|live\s+location`,
   String.raw`where\s+am\s+i(\s+(now|right\s+now))?\s*(\?|$)|where\s+did\s+i\s+park|where\s+i\s+parked|(near|close\s+to)\s+me(?!\p{L})|(?<!the\s+)nearby`
 );
 

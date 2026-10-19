@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  followsLiveLocation,
   liveSharingSeen,
   recordShared,
   sharedBefore,
@@ -61,10 +62,16 @@ async function ingestOne(
 ) {
   try {
     const { hits, row } = await recordShared(scope, point, { via: "message" });
+    // Where Bro follows a live share, a single Telegram point too asks
+    // whether one was ever seen (`sharedLine`).
+    const watching = await followsLiveLocation(scope);
+    const asksLive =
+      (point.liveKey ?? null) !== null ||
+      (watching && point.kind === "position" && point.source === "telegram");
     const [address, firstEver, liveSeen] = await Promise.all([
       row ? pointAddress(scope, row) : (point.address ?? null),
       row ? sharedBefore(scope, row.id).then((before) => !before) : false,
-      (point.liveKey ?? null) === null ? false : liveSharingSeen(scope),
+      asksLive ? liveSharingSeen(scope) : false,
     ]);
     console.info("[location] shared", {
       hits: hits.length,
@@ -74,7 +81,12 @@ async function ingestOne(
       workspaceId: scope.workspaceId,
     });
     return [
-      sharedLine(noted(point, address), { firstEver, liveSeen, timeZone }),
+      sharedLine(noted(point, address), {
+        firstEver,
+        liveSeen,
+        timeZone,
+        watching,
+      }),
       ...hits.map(hitLine),
     ];
   } catch (error) {

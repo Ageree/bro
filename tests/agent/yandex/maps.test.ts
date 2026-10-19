@@ -3,7 +3,7 @@ import { mapsOrgOperation } from "@agent/lib/yandex/maps/org";
 import { mapsSearchOperation } from "@agent/lib/yandex/maps/search";
 import { type FakeResponse, dataOf, fixture, runInPage } from "./page";
 
-const origin = "https://yandex.ru/maps/";
+const origin = "https://yandex.ru/robots.txt";
 const scripts = [
   '{"config":{"csrfToken":"abc0123:1790000000","sessionId":"s1-BAL"}}',
 ];
@@ -110,7 +110,7 @@ describe("maps.search", () => {
     );
   });
 
-  it("answers the sign-in wall, and a page without its session, as such", async () => {
+  it("answers the sign-in wall as such", async () => {
     const signedOut = await mapsPage([
       ["/maps/api/search", { body: {}, status: 401 }],
     ]);
@@ -121,14 +121,35 @@ describe("maps.search", () => {
         signedOut.page
       )
     ).toEqual({ status: "signed_out" });
-    const noSession = await mapsPage([], ["{}"]);
-    expect(
-      await runInPage(
-        mapsSearchOperation.run,
-        mapsSearchOperation.args.parse({ query: "x" }),
-        noSession.page
-      )
-    ).toEqual({ data: { error: "no_session" }, status: "ok" });
+  });
+
+  it("asks with a session of its own on a page without one and takes the token the API gives", async () => {
+    const { page, requests } = await mapsPage(
+      [
+        [
+          "/maps/api/search",
+          [
+            { body: await fixture("maps/csrf-retry.json") },
+            { body: await fixture("maps/search.json") },
+          ],
+        ],
+      ],
+      ["{}"]
+    );
+    const answer = await runInPage(
+      mapsSearchOperation.run,
+      mapsSearchOperation.args.parse({ query: "пиццерия" }),
+      page
+    );
+    expect(answer).toMatchObject({ status: "ok" });
+    expect(requests).toHaveLength(2);
+    expect(requests[0]?.searchParams.get("csrfToken")).toBe("");
+    const session = requests[0]?.searchParams.get("sessionId");
+    expect(session).toMatch(/^\d+_\d+$/u);
+    expect(requests[1]?.searchParams.get("sessionId")).toBe(session);
+    expect(requests[1]?.searchParams.get("csrfToken")).toBe(
+      "0000000000000000000000000000000000000000:1790000000"
+    );
   });
 });
 

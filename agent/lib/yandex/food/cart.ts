@@ -16,7 +16,7 @@ export const edaCartOperation = defineYandexOperation({
     lon: z.number().min(-180).max(180),
   }),
   id: "food.eda_cart",
-  origin: "https://eda.yandex.ru/",
+  origin: "https://eda.yandex.ru/robots.txt",
   result: z.object({ carts: z.number().int().min(0) }),
   run: `async function (args) {
   const headers = {
