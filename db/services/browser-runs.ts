@@ -597,6 +597,45 @@ function queuedAndDue(now: Date) {
 }
 
 /**
+ * The longest a queued errand is parked (`maximumQueueRetryMs` in
+ * `agent/lib/browser-use/queue.ts`). A claim moves `retry_at` a lease away
+ * (`retryClaimLeaseMs`, longer), so a row whose `retry_at` lies no further
+ * than this past its `updated_at` was parked, not taken by a poller.
+ */
+const longestQueuePark = "5 minutes";
+
+/**
+ * The workspace's own browser was just released: its errands parked behind
+ * it fall due now, rather than when the busy answer's minute
+ * (`busyRetryMs`) runs out, and the poller's live watch starts the first
+ * within seconds (19.10: the browser stood free 26–44 s while one waited).
+ * A row a poller is starting keeps its claim — its `retry_at` is a lease,
+ * further out than any park — and one waiting for a sign-in keeps waiting
+ * for it. Answers how many were moved.
+ */
+export async function hurryQueuedBrowserRuns(workspaceId: string, now: Date) {
+  const rows = await db
+    .update(browserRuns)
+    .set({ retryAt: now, updatedAt: now })
+    .where(
+      and(
+        eq(browserRuns.workspaceId, workspaceId),
+        onOwnBrowser(),
+        eq(browserRuns.status, "queued"),
+        isNull(browserRuns.retriedAsRunId),
+        isNull(browserRuns.waitsForAccount),
+        gt(browserRuns.retryAt, now),
+        lte(
+          browserRuns.retryAt,
+          sql`${browserRuns.updatedAt} + interval '${sql.raw(longestQueuePark)}'`
+        )
+      )
+    )
+    .returning({ id: browserRuns.id });
+  return rows.length;
+}
+
+/**
  * How many errands wait for a browser. One that waits for its own
  * workspace's sign-in elsewhere (`waits_for_account`) is not waiting for a
  * browser and holds nobody else's start back. Nor does an errand on a

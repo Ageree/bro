@@ -1034,6 +1034,74 @@ describe("browsers kept for a sign-in", () => {
     );
   }, 20_000);
 
+  it("brings forward only the errands parked behind the workspace's freed browser", async () => {
+    const browserRuns = await browserRunsDatabase();
+    const now = new Date();
+    const inAMinute = new Date(now.getTime() + 60_000);
+    const vm = `vm:${alice.workspaceId}:p1`;
+    const parked = await browserRuns.createQueuedBrowserRun(alice, {
+      ...conversation(),
+      createdAt: new Date(now.getTime() - 60_000),
+      pendingTask: "Найди чайник",
+      profileId: vm,
+      retryAt: inAMinute,
+      sessionId: null,
+    });
+    // A poller is starting this one: its claim is a lease, not a park.
+    const starting = await browserRuns.createQueuedBrowserRun(alice, {
+      ...conversation(),
+      createdAt: new Date(now.getTime() - 2 * 60_000),
+      pendingTask: "Найди сеансы",
+      profileId: vm,
+      retryAt: new Date(now.getTime() - 1000),
+      sessionId: null,
+    });
+    expect(
+      (await browserRuns.claimNextQueuedBrowserRun(now, { vmOnly: true }))?.id
+    ).toBe(starting.id);
+    const signingIn = await browserRuns.createQueuedBrowserRun(alice, {
+      ...conversation(),
+      pendingTask: "Найди заказ",
+      profileId: vm,
+      retryAt: inAMinute,
+      sessionId: null,
+    });
+    await browserRuns.parkQueuedBrowserRun(signingIn.id, inAMinute, {
+      waitsForAccount: "ozon.ru",
+    });
+    const otherWorkspace = await browserRuns.createQueuedBrowserRun(bob, {
+      ...conversation(),
+      pendingTask: "Найди билеты",
+      profileId: `vm:${bob.workspaceId}:p1`,
+      retryAt: inAMinute,
+      sessionId: null,
+    });
+    const onBrowserUse = await browserRuns.createQueuedBrowserRun(alice, {
+      ...conversation(),
+      pendingTask: "Найди отель",
+      profileId: "profile-alice",
+      retryAt: inAMinute,
+      sessionId: null,
+    });
+
+    expect(
+      await browserRuns.hurryQueuedBrowserRuns(alice.workspaceId, now)
+    ).toBe(1);
+
+    const retryAt = async (id: string) =>
+      (await browserRuns.readBrowserRun(id))?.retryAt?.getTime();
+    expect(await retryAt(parked.id)).toBe(now.getTime());
+    expect(await retryAt(starting.id)).toBeGreaterThan(
+      now.getTime() + 5 * 60_000
+    );
+    expect(await retryAt(signingIn.id)).toBe(inAMinute.getTime());
+    expect(await retryAt(onBrowserUse.id)).toBe(inAMinute.getTime());
+    expect(await retryAt(otherWorkspace.id)).toBe(inAMinute.getTime());
+    expect(
+      (await browserRuns.claimNextQueuedBrowserRun(now, { vmOnly: true }))?.id
+    ).toBe(parked.id);
+  }, 20_000);
+
   it("lists every browser profile the workspace's errands ran on", async () => {
     const browserRuns = await browserRunsDatabase();
     await browserRuns.createBrowserRun(alice, {

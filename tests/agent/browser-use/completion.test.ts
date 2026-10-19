@@ -97,6 +97,12 @@ const claimBrowserRunBrowser = vi.hoisted(() =>
     Promise.resolve(true)
   )
 );
+// Errands queued behind a freed browser of the workspace's own.
+const hurryQueuedBrowserRuns = vi.hoisted(() =>
+  vi.fn<(workspaceId: string, now: Date) => Promise<number>>(() =>
+    Promise.resolve(1)
+  )
+);
 const unclaimBrowserRunBrowser = vi.hoisted(() =>
   vi.fn<(runId: string, claimedAt: Date) => Promise<void>>(() =>
     Promise.resolve()
@@ -220,6 +226,7 @@ vi.mock("@db/services/browser-runs", () => ({
   claimBrowserRunBrowser,
   claimBrowserRunCompletion,
   finishWalledBrowserRun: vi.fn<() => Promise<void>>(() => Promise.resolve()),
+  hurryQueuedBrowserRuns,
   parkBrowserRunForRetry,
   claimBrowserRunReport,
   finishBrowserRunReport,
@@ -767,6 +774,45 @@ describe("settling a browser run", () => {
       "session-1",
       runId
     );
+  });
+
+  // 19.10: an errand queued behind a busy browser waited out its minute
+  // while the browser stood free.
+  it("lets the errands queued behind a run start once its own browser is released", async () => {
+    const vmRow = { ...row, profileId: "vm:workspace:user-1:p1" };
+    readBrowserRun.mockResolvedValue(vmRow);
+    claimBrowserRunCompletion
+      .mockReset()
+      .mockResolvedValueOnce({ ...vmRow, completedAt: new Date() });
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    expect(send).toHaveBeenCalledOnce();
+    expect(hurryQueuedBrowserRuns).toHaveBeenCalledExactlyOnceWith(
+      vmRow.workspaceId,
+      expect.any(Date)
+    );
+  });
+
+  it("leaves the queue alone while the run's browser is not released", async () => {
+    const vmRow = { ...row, profileId: "vm:workspace:user-1:p1" };
+    readBrowserRun.mockResolvedValue(vmRow);
+    claimBrowserRunCompletion
+      .mockReset()
+      .mockResolvedValueOnce({ ...vmRow, completedAt: new Date() });
+    // A follow-up of the errand is still running in the browser.
+    stopBrowserUseSessionBrowsers.mockResolvedValueOnce("running");
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    expect(send).toHaveBeenCalledOnce();
+    expect(hurryQueuedBrowserRuns).not.toHaveBeenCalled();
   });
 
   // Ozon turned away every exit of a comparison of three shops (14.10), and

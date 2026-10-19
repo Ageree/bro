@@ -32,6 +32,7 @@ export default {
     // Time the web chat's turns and voice transcription against the live
     // services, run by hand.
     "scripts/bench/latency.ts",
+    "scripts/bench/errand-latency.ts",
     "scripts/bench/transcription.ts",
     // Bundled into a release by scripts/cloudru-app-host/host.py and run on the VM.
     "scripts/cloudru-app-host/ops/migrate.ts",
