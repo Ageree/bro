@@ -36,10 +36,14 @@ TURNS="WITH person AS (
          (SELECT (u.units->>'inputTokens')::bigint FROM usage_costs u
           WHERE u.idempotency_key = 'step:' || p.session_id || ':' || p.turn_id || ':0') AS first_input,
          (SELECT COALESCE((u.units->>'cachedInputTokens')::bigint, 0) FROM usage_costs u
-          WHERE u.idempotency_key = 'step:' || p.session_id || ':' || p.turn_id || ':0') AS first_cached
+          WHERE u.idempotency_key = 'step:' || p.session_id || ':' || p.turn_id || ':0') AS first_cached,
+         (SELECT max(q.ended_at) FROM turn_log q
+          WHERE q.session_id = p.session_id AND q.started_at < p.started_at) AS previous_end
   FROM person p
 ), measured AS (
   SELECT channel, started_at, steps, first_input, first_cached,
+         previous_end IS NULL AS opening,
+         extract(epoch FROM started_at - previous_end) / 60 AS pause_min,
          1000 * extract(epoch FROM replied_at - heard_at) AS heard_ms,
          1000 * extract(epoch FROM replied_at - started_at) AS start_ms,
          replied_at IS NULL AS no_reply
@@ -94,6 +98,29 @@ SELECT channel,
        count(*) AS turns,
        round(percentile_cont(0.5) WITHIN GROUP (ORDER BY heard_ms)) AS heard_p50,
        round(percentile_cont(0.9) WITHIN GROUP (ORDER BY heard_ms)) AS heard_p90,
+       round(percentile_cont(0.5) WITHIN GROUP (ORDER BY first_input)::numeric / 1000, 1) AS first_input_k
+FROM measured
+GROUP BY 1, 2
+ORDER BY 1, 2;
+
+\echo
+\echo By the place of the turn in its session: a new chat caches only the instructions and tools, a later turn
+\echo the history too unless the pause outlived the cache or the prefix changed (RunInfra drops the whole
+\echo prompt when the tool block changes)
+$TURNS
+SELECT channel,
+       CASE WHEN opening THEN 'first turn'
+            WHEN pause_min < 5 THEN 'after <5 min'
+            WHEN pause_min < 40 THEN 'after 5-40 min'
+            WHEN pause_min < 120 THEN 'after 40-120 min'
+            ELSE 'after >2 h' END AS place,
+       count(*) AS turns,
+       count(*) FILTER (WHERE first_cached < 0.3 * first_input) AS cache_0_30,
+       count(*) FILTER (WHERE first_cached >= 0.3 * first_input AND first_cached < 0.7 * first_input) AS cache_30_70,
+       count(*) FILTER (WHERE first_cached >= 0.7 * first_input AND first_cached < 0.9 * first_input) AS cache_70_90,
+       count(*) FILTER (WHERE first_cached >= 0.9 * first_input) AS cache_90_100,
+       round(100.0 * sum(first_cached) / NULLIF(sum(first_input), 0), 1) AS first_cache_pct,
+       round(percentile_cont(0.5) WITHIN GROUP (ORDER BY heard_ms)) AS heard_p50,
        round(percentile_cont(0.5) WITHIN GROUP (ORDER BY first_input)::numeric / 1000, 1) AS first_input_k
 FROM measured
 GROUP BY 1, 2

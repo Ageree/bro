@@ -20,6 +20,16 @@ export function toolRouterListedWorkspace(workspaceId: string) {
 }
 
 /**
+ * Whether TOOL_ROUTER_WHOLE_WORKSPACES names a workspace, by id or `*`: a
+ * conversation whose set of groups would grow gets every group at once
+ * (`chooseRouterGroups`).
+ */
+export function toolRouterWholeOnGrowth(workspaceId: string) {
+  const list = env.TOOL_ROUTER_WHOLE_WORKSPACES ?? [];
+  return list.includes("*") || list.includes(workspaceId);
+}
+
+/**
  * Whether the workspace of this turn is in the pilot of the tool router
  * (TOOL_ROUTER_WORKSPACES, workspace ids or `*`): a pure read of the
  * environment, as `skillsPilot`, so a tool's resolver asks it at every step

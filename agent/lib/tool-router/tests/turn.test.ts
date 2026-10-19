@@ -82,6 +82,7 @@ function inputs(overrides: Partial<RouterInputs> = {}): RouterInputs {
     step: { sessionId: "session-1", stepIndex: 0, turnId: "turn_2" },
     triggered: [],
     warmMs: 60 * 60_000,
+    wholeOnGrowth: false,
     withPrev: true,
     ...overrides,
   };
@@ -205,6 +206,38 @@ describe("the router's choice of a turn's groups", () => {
     expect(warm.finish(decided(["mail"])).groups).toEqual(["yandex", "mail"]);
     const cold = chooseRouterGroups(inputs({ state: after(["yandex"], 61) }));
     expect(cold.finish(decided(["mail"])).groups).toEqual(["mail"]);
+  });
+
+  it("in the pilot of the whole block, grows a warm set once, to every group", () => {
+    const grown = chooseRouterGroups(
+      inputs({ state: after(["yandex"], 59), wholeOnGrowth: true })
+    ).finish(decided(["mail"]));
+    expect(grown.groups).toEqual([...routerGroups]);
+    expect(grown.grownWhole).toBe(true);
+    expect(grown.state.carried).toEqual([...routerGroups]);
+    // A set the block already covers stays as it is.
+    const kept = chooseRouterGroups(
+      inputs({ state: after(["yandex", "mail"], 30), wholeOnGrowth: true })
+    ).finish(decided(["mail"]));
+    expect(kept.groups).toEqual(["yandex", "mail"]);
+    expect(kept.grownWhole).toBe(false);
+    // Past the warm window the set starts afresh, as without the pilot.
+    const cold = chooseRouterGroups(
+      inputs({ state: after(["yandex"], 61), wholeOnGrowth: true })
+    ).finish(decided(["mail"]));
+    expect(cold.groups).toEqual(["mail"]);
+    // A group `open_tools` opens mid-turn grows the turn's block whole too.
+    const step = { sessionId: "session-1", stepIndex: 1, turnId: "turn_2" };
+    const opened = chooseRouterGroups(
+      inputs({
+        digest: "digest-1",
+        opened: ["phone"],
+        state: after(["yandex"], 0, { turnId: "turn_2" }),
+        step,
+        wholeOnGrowth: true,
+      })
+    ).finish(undefined);
+    expect(opened.groups).toEqual([...routerGroups]);
   });
 
   it("forgets a group used longer ago than the recent window", () => {

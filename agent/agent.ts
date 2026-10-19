@@ -90,6 +90,7 @@ import {
   toolRouterEligible,
   toolRouterListed,
   toolRouterMode,
+  toolRouterWholeOnGrowth,
 } from "@agent/lib/tool-router/pilot";
 import {
   routerGroupsOfStep,
@@ -336,7 +337,8 @@ export default defineAgent({
                         ctx.messages,
                         step,
                         skillSetup(ctx),
-                        routerMode
+                        routerMode,
+                        toolRouterWholeOnGrowth(scope.workspaceId)
                       )
                     : undefined
                 )
