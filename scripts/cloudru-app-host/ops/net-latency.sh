@@ -7,6 +7,10 @@
 # seconds to the address, to TCP, to TLS and to the first byte of a GET that carries no key (an answer
 # such as 401 or 404 is expected and still timed). The cost of the TLS setup is what a turn pays when a
 # connection to the host was not kept open since the last call.
+#
+# Then the object store of S3_ENDPOINT (the app's env), over IPv4 and over IPv6 apart: it has both
+# addresses, and Node gives one 250 ms before it races the next (19.10: every report screenshot's
+# upload failed «AggregateError [ETIMEDOUT]» in 0.3 s). The bucket's root without a key answers 403.
 set -euo pipefail
 TRIES=${1:-3}
 [[ "$TRIES" =~ ^[0-9]+$ && "$TRIES" -ge 1 && "$TRIES" -le 10 ]] || {
@@ -21,3 +25,14 @@ for url in https://api.runinfra.ai/v1/models https://routerai.ru/api/v1/models h
       "$url" || echo "$url failed"
   done
 done
+if [[ -n "${S3_ENDPOINT:-}" ]]; then
+  # Only the origin: the name is printed as «s3», never the endpoint.
+  origin=$(printf '%s' "$S3_ENDPOINT" | sed -E 's#^(https://[^/]+).*#\1#')
+  for family in 4 6; do
+    for ((i = 1; i <= TRIES; i++)); do
+      curl -s -o /dev/null --max-time 15 "-$family" \
+        -w "$(printf '%-44s' "s3 ipv$family") %{time_namelookup} %{time_connect} %{time_appconnect} %{time_starttransfer} %{http_code}\n" \
+        "$origin/" || echo "s3 ipv$family failed (curl $?)"
+    done
+  done
+fi
