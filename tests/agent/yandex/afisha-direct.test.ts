@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as z from "zod";
 import { afishaSearchDirect } from "@agent/lib/yandex/afisha/direct";
 import { afishaSearchOperation } from "@agent/lib/yandex/afisha/search";
 import { dataOf, fixture, runInPage } from "./page";
@@ -32,6 +33,38 @@ describe("afisha.search without a browser", () => {
     );
     // A public request: no cookie goes with it.
     expect(fetchSpy.mock.calls[0]?.[1]?.headers).not.toHaveProperty("cookie");
+  });
+
+  it("takes an event without a date preview text, as the page does", async () => {
+    vi.setSystemTime(Date.now() + 60 * 60_000);
+    const body = z
+      .object({
+        data: z.object({
+          search: z.object({
+            groups: z.array(
+              z.object({
+                documents: z.array(
+                  z.object({ object: z.record(z.string(), z.json()) })
+                ),
+              })
+            ),
+          }),
+        }),
+      })
+      .parse(await fixture("afisha/search.json"));
+    const first = body.data.search.groups[0]?.documents[0];
+    if (first) first.object.datePreview = { text: null };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(async () => Response.json(body))
+    );
+    const direct = await afishaSearchDirect(args);
+    const page = await runInPage(afishaSearchOperation.run, args, {
+      origin: "https://afisha.yandex.ru/robots.txt",
+      respond: () => ({ body }),
+    });
+    expect(direct).toBeDefined();
+    expect(direct).toEqual(dataOf(page));
   });
 
   it("gives way to the browser on a refusal and leaves the server alone for ten minutes", async () => {

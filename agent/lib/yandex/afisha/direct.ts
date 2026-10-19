@@ -19,7 +19,10 @@ const responseSchema = z.object({
               z.object({
                 object: z.object({
                   __typename: z.string(),
-                  datePreview: z.object({ text: z.string() }).nullish(),
+                  // Afisha answers `text: null` for some events (19.10); the page takes it as no date.
+                  datePreview: z
+                    .object({ text: z.string().nullish() })
+                    .nullish(),
                   id: z.string().optional(),
                   minPrice: z.object({ value: z.number() }).nullish(),
                   placeTitle: z.string().nullish(),
