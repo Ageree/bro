@@ -27,7 +27,7 @@ export const afishaTicketsOperation = defineYandexOperation({
     offset: z.number().int().min(0).max(1000).default(0),
   }),
   id: "afisha.tickets",
-  origin: "https://afisha.yandex.ru/moscow",
+  origin: "https://afisha.yandex.ru/robots.txt",
   result: z.union([
     z.object({ orders: z.array(order).max(20), total: z.number().nullable() }),
     z.object({ error: z.string() }),

@@ -18,7 +18,7 @@ export const marketOrdersOperation = defineYandexOperation({
     status: z.enum(["active", "completed"]).optional(),
   }),
   id: "market.orders",
-  origin: "https://market.yandex.ru/",
+  origin: "https://market.yandex.ru/robots.txt",
   result: z.object({
     count: z.number().int(),
     orders: z.array(
@@ -86,7 +86,7 @@ export const marketOrderOperation = defineYandexOperation({
   access: "read",
   args: z.object({ orderId }),
   id: "market.order",
-  origin: "https://market.yandex.ru/",
+  origin: "https://market.yandex.ru/robots.txt",
   result: z.object({
     created: z.string().nullable(),
     delivery: z.array(z.string()),
