@@ -150,7 +150,7 @@ async function errand(text: string) {
               if (
                 reportTurn !== undefined &&
                 turn >= reportTurn &&
-                !bookkeeping.test(event.data.message)
+                !bookkeeping.test(event.data.message ?? "")
               ) {
                 marks.result ??= at;
                 marks.resultAsText ??= at;
