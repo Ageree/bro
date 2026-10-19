@@ -18,7 +18,10 @@ import {
   forwardedMessage,
 } from "@agent/lib/payments/direct";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
-import { telegramConversationIdSchema } from "@agent/lib/telegram-conversation";
+import {
+  conversationOf,
+  resumedYoomoneyOnboardingId,
+} from "@agent/lib/yoomoney/onboarding";
 import {
   type StepIdentity,
   stepIdentity,
@@ -33,6 +36,7 @@ import {
   readYoomoneyConnection,
   withYoomoneyToken,
 } from "@db/services/yoomoney/connection";
+import { readYoomoneyOnboardingResume } from "@db/services/yoomoney/onboarding";
 import {
   claimYoomoneyPayment,
   createYoomoneyPayment,
@@ -149,26 +153,6 @@ function recipient(to: string) {
  * its page, at the bank, read back by the tick — is told there
  * (`agent/lib/yoomoney/notice.ts`). Nothing when the chat has no address.
  */
-function conversationOf(context: ToolContext) {
-  const attributes = context.session.auth.current?.attributes;
-  const channel = z
-    .enum(["eve", "photon", "telegram"])
-    .safeParse(attributes?.conversationChannel).data;
-  const conversationId =
-    channel === "eve"
-      ? context.session.id
-      : channel === "photon"
-        ? z
-            .string()
-            .startsWith("imessage:")
-            .safeParse(attributes?.conversationId).data
-        : telegramConversationIdSchema.safeParse(attributes?.conversationId)
-            .data;
-  return channel === undefined || conversationId === undefined
-    ? { conversationChannel: null, conversationId: null }
-    : { conversationChannel: channel, conversationId };
-}
-
 type Conversation = ReturnType<typeof conversationOf>;
 
 type Payment = NonNullable<Awaited<ReturnType<typeof readYoomoneyPayment>>>;
@@ -712,6 +696,19 @@ async function status(scope: AccessScope, paymentId: string) {
   return currentResult(payment);
 }
 
+/**
+ * The turn Bro's tick opens once the person connected the wallet from this
+ * chat (`agent/lib/yoomoney/onboarding.ts`): it may find and prepare what
+ * they asked to pay before connecting — the question, never the payment.
+ */
+async function resumedFor(scope: AccessScope, context: ToolContext) {
+  const id = resumedYoomoneyOnboardingId(context.session.auth.current);
+  return (
+    id !== undefined &&
+    (await readYoomoneyOnboardingResume(scope, id)) !== undefined
+  );
+}
+
 async function callYoomoneyPay(
   scope: AccessScope,
   rootSessionId: string,
@@ -720,11 +717,15 @@ async function callYoomoneyPay(
   words: PersonWords,
   step: StepIdentity
 ) {
-  if (!startedByPerson(context) || words.said === null) {
+  const personsTurn = startedByPerson(context) && words.said !== null;
+  if (
+    !personsTurn &&
+    (input.action === "confirm" || !(await resumedFor(scope, context)))
+  ) {
     return { kind: "refused" as const, reply: notThePerson };
   }
   const turn: DirectTurn = {
-    personTurn: true,
+    personTurn: personsTurn,
     said: words.said,
     step,
     compacted: words.compacted === true,

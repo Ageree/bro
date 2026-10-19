@@ -5,11 +5,15 @@ import type {
   readYoomoneyConnection,
   withYoomoneyToken,
 } from "@db/services/yoomoney/connection";
+import type { startYoomoneyOnboarding } from "@db/services/yoomoney/onboarding";
+import type * as Onboarding from "@agent/lib/yoomoney/onboarding";
 import type * as Api from "@shared/yoomoney/api";
 
 const services = vi.hoisted(() => ({
+  button: vi.fn<typeof Onboarding.sendYoomoneyConnectButton>(),
   connection: vi.fn<typeof readYoomoneyConnection>(),
   enabled: vi.fn<typeof Api.yoomoneyEnabled>(),
+  onboarding: vi.fn<typeof startYoomoneyOnboarding>(),
   withToken: vi.fn<typeof withYoomoneyToken>(),
 }));
 
@@ -18,6 +22,13 @@ vi.mock("@db/services/yoomoney/connection", () => ({
   readYoomoneyConnection: services.connection,
   withYoomoneyToken: services.withToken,
 }));
+vi.mock("@db/services/yoomoney/onboarding", () => ({
+  startYoomoneyOnboarding: services.onboarding,
+}));
+vi.mock("@agent/lib/yoomoney/onboarding", async (importOriginal) => ({
+  ...(await importOriginal<typeof Onboarding>()),
+  sendYoomoneyConnectButton: services.button,
+}));
 vi.mock("@shared/yoomoney/api", async (importOriginal) => ({
   ...(await importOriginal<typeof Api>()),
   yoomoneyEnabled: services.enabled,
@@ -25,9 +36,21 @@ vi.mock("@shared/yoomoney/api", async (importOriginal) => ({
 
 import yoomoneyTools from "@agent/tools/yoomoney";
 
-function caller(authenticator: string) {
+const telegramChat = {
+  conversationChannel: "telegram",
+  conversationId: "4242::",
+  workspaceId: "workspace:alice",
+};
+
+function caller(
+  authenticator: string,
+  attributes: Readonly<Record<string, string>> = {
+    conversationChannel: "eve",
+    workspaceId: "workspace:alice",
+  }
+) {
   return {
-    attributes: { conversationChannel: "eve", workspaceId: "workspace:alice" },
+    attributes,
     authenticator,
     principalId: "alice",
     principalType: "user" as const,
@@ -52,7 +75,10 @@ const refuse = (): never => {
   throw new Error("Not used.");
 };
 
-function callContext(authenticator: string): ToolContext {
+function callContext(
+  authenticator: string,
+  attributes?: Readonly<Record<string, string>>
+): ToolContext {
   return {
     abortSignal: new AbortController().signal,
     callId: "call-1",
@@ -61,7 +87,7 @@ function callContext(authenticator: string): ToolContext {
     getToken: refuse,
     requireAuth: refuse,
     session: {
-      auth: { current: caller(authenticator), initiator: null },
+      auth: { current: caller(authenticator, attributes), initiator: null },
       id: "session-1",
       turn: { id: "turn-1", sequence: 1 },
     },
@@ -73,6 +99,11 @@ beforeEach(() => {
   vi.clearAllMocks();
   services.enabled.mockReturnValue(true);
   services.connection.mockResolvedValue({ state: "disconnected" });
+  services.onboarding.mockResolvedValue({
+    id: "0f9f7a5e-5c1d-4f0b-9a52-2b6f0d3c1e12",
+    url: "https://example.com/yoomoney/0f9f7a5e-5c1d-4f0b-9a52-2b6f0d3c1e12?t=x",
+  });
+  services.button.mockResolvedValue();
 });
 
 describe("the YooMoney tool", () => {
@@ -92,7 +123,7 @@ describe("the YooMoney tool", () => {
     expect(services.withToken).not.toHaveBeenCalled();
   });
 
-  it("offers the connect link while the wallet is not connected", async () => {
+  it("offers the onboarding page while the wallet is not connected", async () => {
     const found = await tool();
     if (!found) throw new Error("Expected yoomoney.");
     services.withToken.mockResolvedValue({ connected: false });
@@ -103,8 +134,55 @@ describe("the YooMoney tool", () => {
       await found.execute({ action: "connect" }, callContext("authjs"))
     ).toMatchObject({
       status: "authorize",
+      url: "https://example.com/yoomoney/0f9f7a5e-5c1d-4f0b-9a52-2b6f0d3c1e12?t=x",
+    });
+    expect(services.onboarding).toHaveBeenCalledWith(
+      { userId: "alice", workspaceId: "workspace:alice" },
+      { conversationChannel: "eve", conversationId: "session-1" }
+    );
+    expect(services.button).not.toHaveBeenCalled();
+  });
+
+  it("puts a button to the page in a Telegram chat instead of a link", async () => {
+    const found = await tool();
+    if (!found) throw new Error("Expected yoomoney.");
+    const result = await found.execute(
+      { action: "connect" },
+      callContext("telegram-webhook", telegramChat)
+    );
+    expect(result).toMatchObject({ status: "authorize", sent: "button" });
+    expect(result).not.toHaveProperty("url");
+    expect(services.button).toHaveBeenCalledWith(
+      "4242::",
+      "https://example.com/yoomoney/0f9f7a5e-5c1d-4f0b-9a52-2b6f0d3c1e12?t=x",
+      false
+    );
+    // A button Telegram did not take leaves the link.
+    services.button.mockRejectedValue(new Error("Telegram is down."));
+    expect(
+      await found.execute(
+        { action: "connect" },
+        callContext("telegram-webhook", telegramChat)
+      )
+    ).toMatchObject({
+      status: "authorize",
+      url: "https://example.com/yoomoney/0f9f7a5e-5c1d-4f0b-9a52-2b6f0d3c1e12?t=x",
+    });
+  });
+
+  it("gives the cabinet's link where the chat cannot be told again", async () => {
+    const found = await tool();
+    if (!found) throw new Error("Expected yoomoney.");
+    expect(
+      await found.execute(
+        { action: "connect" },
+        callContext("authjs", { workspaceId: "workspace:alice" })
+      )
+    ).toMatchObject({
+      status: "authorize",
       url: "https://example.com/api/yoomoney/connect",
     });
+    expect(services.onboarding).not.toHaveBeenCalled();
   });
 
   it("offers the consent page again to a connected wallet only on reconnect", async () => {
@@ -118,11 +196,12 @@ describe("the YooMoney tool", () => {
     expect(
       await found.execute({ action: "connect" }, callContext("authjs"))
     ).toMatchObject({ status: "connected" });
+    expect(services.onboarding).not.toHaveBeenCalled();
     expect(
       await found.execute({ action: "reconnect" }, callContext("authjs"))
     ).toMatchObject({
       status: "authorize",
-      url: "https://example.com/api/yoomoney/connect",
+      url: "https://example.com/yoomoney/0f9f7a5e-5c1d-4f0b-9a52-2b6f0d3c1e12?t=x",
     });
   });
 });

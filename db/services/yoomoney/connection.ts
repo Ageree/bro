@@ -60,7 +60,8 @@ export async function readYoomoneyConnection(scope: AccessScope) {
  */
 export async function startYoomoneyAuthorization(
   scope: AccessScope,
-  origin: string
+  origin: string,
+  onboardingId: string | null = null
 ) {
   if (!yoomoneyEnabled(scope))
     throw new Error("Подключение ЮMoney пока недоступно.");
@@ -75,14 +76,16 @@ export async function startYoomoneyAuthorization(
     stateHash: stateHash(state),
     redirectUri,
     expiresAt: new Date(Date.now() + authorizationLifetimeMs),
+    onboardingId,
   });
   return yoomoneyAuthorizeUrl(redirectWithState(redirectUri, state));
 }
 
 /**
  * The code YooMoney sent back for this person's state, for a token, then
- * the wallet's number: the first call under the token, which proves it.
- * The state is spent first, so a code is tried once.
+ * the wallet's number and linked cards: the first call under the token,
+ * which proves it. The state is spent first, so a code is tried once; the
+ * onboarding it was started on, if any, comes back with the wallet.
  */
 export async function finishYoomoneyAuthorization(
   scope: AccessScope,
@@ -111,7 +114,7 @@ export async function finishYoomoneyAuthorization(
     redirectWithState(attempt.redirectUri, state)
   );
   try {
-    const { account } = await readYoomoneyAccount(token);
+    const { account, cards } = await readYoomoneyAccount(token);
     const encryptedToken = await encryptToken(scope, token);
     const [previous] = await db
       .select({ encryptedToken: yoomoneyConnections.encryptedToken })
@@ -141,7 +144,7 @@ export async function finishYoomoneyAuthorization(
       );
       if (old !== undefined && old !== token) await revokeYoomoneyToken(old);
     }
-    return connection;
+    return { ...connection, cards, onboardingId: attempt.onboardingId };
   } catch (error) {
     await revokeYoomoneyToken(token);
     throw error;

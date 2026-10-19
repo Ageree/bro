@@ -43,9 +43,55 @@ export const yoomoneyConnections = pgTable(
 );
 
 /**
+ * Connecting the wallet from a chat (`db/services/yoomoney/onboarding.ts`):
+ * the page Bro's link or button opens (`/yoomoney/<id>`), for 30 minutes.
+ * The page is the person's once they prove it — the cabinet's session, or
+ * Telegram's signed data of the chat's own user — and the device that did
+ * keeps a cookie whose hash is `deviceHash`, which also stands for the
+ * session at YooMoney's callback. `connectedAt` is the consent given here,
+ * `readyAt` the page finished (a card linked, or skipped), `resumedAt` Bro
+ * told in the chat the link was asked for in, where it carries on.
+ */
+export const yoomoneyOnboardings = pgTable(
+  "yoomoney_onboardings",
+  {
+    id: uuid("id").primaryKey(),
+    workspaceId: text("workspace_id").notNull(),
+    userId: text("user_id").notNull(),
+    conversationChannel: text("conversation_channel", {
+      enum: ["eve", "photon", "telegram"],
+    }).notNull(),
+    conversationId: text("conversation_id").notNull(),
+    deviceHash: text("device_hash"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    connectedAt: timestamp("connected_at", { withTimezone: true }),
+    readyAt: timestamp("ready_at", { withTimezone: true }),
+    resumedAt: timestamp("resumed_at", { withTimezone: true }),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.workspaceId, table.userId],
+      foreignColumns: [
+        workspaceMemberships.workspaceId,
+        workspaceMemberships.userId,
+      ],
+    }).onDelete("cascade"),
+    check(
+      "yoomoney_onboardings_conversation_channel_check",
+      sql`${table.conversationChannel} IN ('eve', 'photon', 'telegram')`
+    ),
+  ]
+);
+
+/**
  * A started consent: the hash of the state its Redirect URI carries, for
  * 15 minutes. YooMoney has no `state` of OAuth: the state rides in the
  * Redirect URI's query, which YooMoney keeps and the token request repeats.
+ * One started on an onboarding's page names it: its device stands for the
+ * cabinet's session at the callback.
  */
 export const yoomoneyAuthorizations = pgTable(
   "yoomoney_authorizations",
@@ -55,6 +101,10 @@ export const yoomoneyAuthorizations = pgTable(
     userId: text("user_id").notNull(),
     redirectUri: text("redirect_uri").notNull(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    onboardingId: uuid("onboarding_id").references(
+      () => yoomoneyOnboardings.id,
+      { onDelete: "cascade" }
+    ),
   },
   (table) => [
     foreignKey({

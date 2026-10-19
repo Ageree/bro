@@ -452,8 +452,14 @@ yes to a question with its exact total. Register an app at
 `<origin>/api/yoomoney/callback` and "verify authenticity" (`client_secret`)
 on, then set `YOOMONEY_CLIENT_ID`, `YOOMONEY_CLIENT_SECRET` and the pilot
 `YOOMONEY_WORKSPACES` (workspace ids or `*`). The wallet API has no test
-mode: `request-payment` checks a payment without charging it. The person
-opens the link Bro sends in a browser signed in to the cabinet; Bro asks for
+mode: `request-payment` checks a payment without charging it. The first time
+a payment needs the wallet, Bro sends a link (in Telegram, a button that opens
+it as a Mini App) to `/yoomoney/<id>`: three steps on one page — sign in to
+YooMoney or open a wallet there, allow Bro to pay, link a card — and once the
+person is through, Bro carries on in the chat by itself, up to the question
+with the payment's total. The page acts only for a device that proved it is
+the person's (the cabinet's session, or Telegram's signed launch data of the
+chat's user), and YooMoney's callback checks that device too. Bro asks for
 `account-info operation-history payment-p2p.limit(1,50000)
 payment-shop.limit(1,50000) money-source("wallet","card")`. A service the balance cannot cover, or one
 YooMoney takes from a card only, is paid from the wallet's linked card; when

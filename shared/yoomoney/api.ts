@@ -116,9 +116,16 @@ const accountSchema = z.object({
       hold: amountSchema.optional(),
     })
     .optional(),
+  cards_linked: z
+    .array(z.object({ pan_fragment: z.string() }))
+    .optional()
+    .catch(undefined),
 });
 
-/** The wallet's number and balance (`account-info`). */
+/**
+ * The wallet's number and balance (`account-info`), and the cards linked to
+ * it as the person sees them («••9999»): absent when none is.
+ */
 export async function readYoomoneyAccount(token: string) {
   const parsed = accountSchema.safeParse(
     await yoomoneyRequest("/api/account-info", { token })
@@ -133,6 +140,9 @@ export async function readYoomoneyAccount(token: string) {
     available: account.balance_details?.available,
     blocked: account.balance_details?.blocked,
     hold: account.balance_details?.hold,
+    cards: (account.cards_linked ?? []).map(
+      ({ pan_fragment }) => `••${pan_fragment.replaceAll(/\D/gu, "").slice(-4)}`
+    ),
   };
 }
 

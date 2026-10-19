@@ -53,6 +53,18 @@ const nextConfig: NextConfig = {
         ],
         source: "/pay/:path*",
       },
+      {
+        // Telegram Web shows a Mini App in a frame of its own; no other
+        // site may frame the page. Its forms carry the origin, as /pay's.
+        headers: [
+          {
+            key: "Content-Security-Policy",
+            value: "frame-ancestors https://web.telegram.org",
+          },
+          { key: "Referrer-Policy", value: "strict-origin" },
+        ],
+        source: "/yoomoney/:path*",
+      },
     ];
   },
 };
