@@ -42,6 +42,7 @@ import {
 } from "@agent/lib/memory/profile";
 import { withApprovalCard } from "@shared/chat/approval-card";
 import { memoryContentSchema } from "@shared/memory/schema";
+import type * as EnvModule from "@shared/environment";
 import { fakeComposio } from "@tests/helpers/composio";
 import type { crossChannelPilot } from "@agent/lib/conversation/pilot";
 import { afterForgetting } from "@agent/lib/privacy/removal";
@@ -53,6 +54,18 @@ import {
 const pilot = vi.hoisted(() => ({
   crossChannelPilot: vi.fn<typeof crossChannelPilot>(),
 }));
+
+const settings = vi.hoisted(() => ({
+  // The profile reads its pilot at recall, so a test flips it in place.
+  // SAFETY: The mock factory fills this object with the real environment before any test runs.
+  env: {} as Record<string, unknown>,
+}));
+
+vi.mock("@shared/environment", async (importOriginal) => {
+  const original = await importOriginal<typeof EnvModule>();
+  Object.assign(settings.env, original.env);
+  return { ...original, env: settings.env };
+});
 
 vi.mock("@agent/lib/conversation/pilot", () => ({
   crossChannelPilot: pilot.crossChannelPilot,
@@ -71,6 +84,7 @@ beforeAll(async () => {
 }, 20_000);
 
 beforeEach(async () => {
+  delete settings.env.STABLE_MEMORY_WORKSPACES;
   pilot.crossChannelPilot.mockResolvedValue(false);
   await database.delete(schema.workspaces);
 });
@@ -1686,6 +1700,36 @@ describe("the person's rules in the profile", () => {
         ({ id }) => id === "profile-relevant-memory"
       )?.content;
       expect(note).toContain("«Нижняя полка», «место у прохода».");
+    });
+
+    // 19.10, prod: a dinner question after a greeting changed the keyed note,
+    // eve left its old copy out of the prompt, and the step read 0 of 49k
+    // tokens from the cache.
+    it("keeps the keyed note the same from request to request in the pilot", async () => {
+      settings.env.STABLE_MEMORY_WORKSPACES = ["*"];
+      for (const { content } of saved) {
+        // oxlint-disable-next-line eslint/no-await-in-loop -- indexes follow the order of saving
+        await saveMemory(alice, "scope-a", content, `save:${content.text}`, {
+          sessionId: "other-session",
+          turnId: "turn",
+        });
+      }
+      const recall = profileMemory.provider.recall["turn.started"];
+      const recallFor = (text: string) =>
+        recall({
+          ...profileToolsContext("web-session"),
+          operationId: `recall:${text}`,
+          turn: { id: "turn", input: [tagged("user", text)], sequence: 1 },
+        });
+
+      const greeting = (await recallFor("привет, как дела?"))?.messages;
+      const dinner = (await recallFor("где поужинать завтра?"))?.messages;
+
+      expect(dinner?.slice(0, 2)).toEqual(greeting);
+      expect(dinner?.[2]).toEqual({
+        content: expect.stringContaining("«без свинины»"),
+      });
+      expect(greeting).toHaveLength(2);
     });
 
     it("applies the diet to a dinner pick, and only the diet", () => {

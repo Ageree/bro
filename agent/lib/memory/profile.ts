@@ -18,6 +18,7 @@ import {
   eraseConversationLines,
   eraseLocationHistory,
 } from "@agent/lib/conversation/erase";
+import { env } from "@shared/environment";
 import { locationPilot } from "@db/services/location";
 import { crossChannelPilot } from "@agent/lib/conversation/pilot";
 import {
@@ -524,18 +525,49 @@ async function recallProfile(
     records,
     requestText(context.turn?.input ?? [])
   );
+  const profile = {
+    content: renderProfile(records),
+    id: "file-memory-document",
+  };
+  if (stableMemoryPilot(scope.workspaceId)) {
+    return {
+      messages: [
+        profile,
+        { content: semanticRecallNote, id: "profile-relevant-memory" },
+        ...(forRequest === undefined ? [] : [{ content: forRequest }]),
+      ],
+    };
+  }
   return {
     messages: [
-      { id: "file-memory-document", content: renderProfile(records) },
+      profile,
       {
         id: "profile-relevant-memory",
         content: [
-          "No query-specific profile memories are active. Use profile__semantic_find with a short, non-sensitive topical query when deeper recall is needed.",
+          semanticRecallNote,
           ...(forRequest === undefined ? [] : [forRequest]),
         ].join("\n"),
       },
     ],
   };
+}
+
+const semanticRecallNote =
+  "No query-specific profile memories are active. Use profile__semantic_find with a short, non-sensitive topical query when deeper recall is needed.";
+
+/**
+ * Whether the note of preferences for the request keeps the cached prompt
+ * (STABLE_MEMORY_WORKSPACES, id or `*`; 19.10). eve keeps only the latest
+ * record of an id in the prompt (`projectMemoryHistory`): the keyed note
+ * changed with the request's topic, its new text went to the end and the old
+ * one left its place in the history, so every later message read cold — a
+ * dinner question after a greeting read 0 of 49k tokens from the cache on
+ * prod. In the pilot the keyed note never changes, and the preferences go as
+ * a record of their own turn without an id: appended, never replaced.
+ */
+function stableMemoryPilot(workspaceId: string) {
+  const list = env.STABLE_MEMORY_WORKSPACES ?? [];
+  return list.includes("*") || list.includes(workspaceId);
 }
 
 const taggedMessageSchema = z.object({ kind: z.string() });
