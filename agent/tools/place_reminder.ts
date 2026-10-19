@@ -24,6 +24,7 @@ import {
   stepStartedEventSchema,
 } from "@agent/lib/turn-kind/step";
 import {
+  followsLiveLocation,
   latestPosition,
   latestSharedPoint,
   liveSharingSeen,
@@ -453,7 +454,7 @@ async function createReminder(
     },
     now
   );
-  const [timeZone, delivery, liveSeen] = await Promise.all([
+  const [timeZone, delivery, liveSeen, watching] = await Promise.all([
     readWorkspaceTimeZone(owner.scope),
     scheduleDelivery({
       ...owner.conversation,
@@ -461,6 +462,7 @@ async function createReminder(
       workspaceId: owner.scope.workspaceId,
     }),
     liveSharingSeen(owner.scope),
+    followsLiveLocation(owner.scope),
   ]);
   const where =
     place.address === null
@@ -474,7 +476,9 @@ async function createReminder(
         : "";
   const condition = liveSeen
     ? "It works while they share a live location in Telegram («Транслировать геопозицию»), or when they send a point there."
-    : `Bro does not follow them all the time: tell them to send their location when they are there (${askForPoint}), and Bro reminds them then.${on === "leave" ? " A leave is noticed only from a Telegram point sent already outside; suggest a time-based reminder instead if that suits better." : ""}`;
+    : watching
+      ? "It works while they share a live location in Telegram: ask them to turn it on when they head out (the paperclip, «Геопозиция», «Транслировать геопозицию»), or to send their location when they are there."
+      : `Bro does not follow them all the time: tell them to send their location when they are there (${askForPoint}), and Bro reminds them then.${on === "leave" ? " A leave is noticed only from a Telegram point sent already outside; suggest a time-based reminder instead if that suits better." : ""}`;
   return {
     created: true,
     id: subscription.id,

@@ -55,6 +55,26 @@ describe("the context lines of a shared location", () => {
     expect(line).toContain("хранит 90 дней");
   });
 
+  it("say Bro follows a live share where it does, and ask for one instead of a single point", () => {
+    const watching = { ...options, watching: true };
+    const first = sharedLine({ ...base, liveKey: "4242:77" }, watching);
+    expect(first).toContain("напишет первым");
+    expect(first).toContain("первая трансляция");
+    expect(first).not.toContain("только эту первую точку");
+    expect(
+      sharedLine(
+        { ...base, liveKey: "4242:77" },
+        { ...watching, liveSeen: true }
+      )
+    ).not.toContain("первая трансляция");
+    expect(sharedLine(base, watching)).toContain("«Транслировать геопозицию»");
+    // Someone who shares live already is not asked again.
+    expect(sharedLine(base, { ...watching, liveSeen: true })).not.toContain(
+      "Транслировать"
+    );
+    expect(sharedLine(base, options)).not.toContain("Транслировать");
+  });
+
   it("quote a fired reminder's words as data", () => {
     expect(
       hitLine({ label: "дом", on: "arrive", text: "забрать посылку" })

@@ -728,6 +728,38 @@ describe("route_time", () => {
     expect(await names("scheduled-result")).toEqual([]);
   });
 
+  it("is offered to Bro's own check only for a move of the live location", async () => {
+    const tools = (await import("@agent/tools/route_time")).default;
+    const resolve = tools.events["turn.started"];
+    if (!resolve) throw new Error("route_time resolves per turn.");
+    const check = (location: boolean) => {
+      const worker = {
+        ...principal,
+        attributes: {
+          ...principal.attributes,
+          scheduledRunId: "00000000-0000-4000-8000-000000000001",
+          scheduledRunKind: "proactive",
+          scheduledRunLeaseToken: "00000000-0000-4000-8000-000000000002",
+          ...(location && { scheduledRunLocation: "true" }),
+        },
+        authenticator: "scheduled-worker",
+      };
+      const context = resolveContext("scheduled-worker", "proactive");
+      return {
+        ...context,
+        session: {
+          ...context.session,
+          auth: { current: worker, initiator: worker },
+        },
+      };
+    };
+    const names = async (location: boolean) =>
+      Object.keys((await resolve({}, check(location))) ?? {});
+
+    expect(await names(true)).toEqual(["route_time"]);
+    expect(await names(false)).toEqual([]);
+  });
+
   it("is offered to the agentic worker in its pilot only", async () => {
     // The pilot is read from the environment when the module loads.
     vi.resetModules();

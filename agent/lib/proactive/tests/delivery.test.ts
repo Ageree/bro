@@ -37,6 +37,7 @@ const midnight = new Date("2026-09-23T21:10:00.000Z");
 
 const report = {
   carriesEvent: false,
+  carriesMove: false,
   runId: "00000000-0000-4000-8000-000000000002",
   // Queued by a check that ran in the evening, before the night.
   scheduledFor: new Date("2026-09-23T18:55:00.000Z"),
@@ -106,5 +107,23 @@ describe("proactive report timing", () => {
       "lease",
       afternoon
     );
+  });
+
+  it("drops a live location's report that finished at night rather than hold it", async () => {
+    // «You will be late» read in the morning is wrong, not late news.
+    const claim = { job: {}, run: { reportLeaseToken: "lease" } };
+    // SAFETY: proactiveReportTiming reads only the claimed run's lease token.
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- A partial claim stands in for the full row.
+    reports.claim.mockResolvedValue(claim as never);
+    const moved = { ...report, carriesMove: true };
+
+    expect(await proactiveReportTiming(moved, midnight)).toBe("held");
+    expect(reports.defer).not.toHaveBeenCalled();
+    expect(reports.drop).toHaveBeenCalledExactlyOnceWith(
+      report.runId,
+      "lease",
+      midnight
+    );
+    expect(await proactiveReportTiming(moved, afternoon)).toBe("day");
   });
 });

@@ -2,6 +2,7 @@ import { defineDynamic, defineTool } from "eve/tools";
 import { skillsLayout } from "@agent/lib/skills/pilot";
 import { z } from "zod";
 import { resolveModeValue } from "@agent/lib/mode";
+import { scheduledRunIdentity } from "@agent/lib/schedules/identity";
 import {
   findPlaces,
   type LookupBudget,
@@ -864,7 +865,8 @@ export default defineDynamic({
   events: {
     // A person's question, a digest they scheduled and the agentic worker's
     // walks; Bro's own mail checks and report turns never send an address
-    // anywhere.
+    // anywhere. A check handed a move of the person's live location
+    // (`agent/lib/location/watch.ts`) measures the way from where they are.
     "turn.started": (_event, context) =>
       resolveModeValue(context, {
         interactive: {
@@ -872,6 +874,9 @@ export default defineDynamic({
             skillsLayout(context) === "core" ? shortRouteTime : routeTime,
         },
         "agentic-worker": { route_time: routeTime },
+        ...(scheduledRunIdentity(context.session.auth)?.location === true && {
+          "proactive-worker": { route_time: routeTime },
+        }),
         "scheduled-worker": { route_time: routeTime },
       }),
   },

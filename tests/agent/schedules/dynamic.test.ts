@@ -173,6 +173,7 @@ describe("dynamic schedule dispatch", () => {
     report.run.reportLeaseExpiresAt = new Date("2026-09-24T06:05:00.000Z");
     const held = {
       carriesEvent: false,
+      carriesMove: false,
       conversationChannel: "photon" as const,
       jobId: report.job.id,
       jobKind: "proactive" as const,
@@ -228,6 +229,7 @@ describe("dynamic schedule dispatch", () => {
     services.listReports.mockResolvedValue([
       {
         carriesEvent: false,
+        carriesMove: false,
         conversationChannel: "photon",
         jobId: report.job.id,
         jobKind: "subscription",
@@ -267,6 +269,7 @@ describe("dynamic schedule dispatch", () => {
     services.listReports.mockResolvedValue([
       {
         carriesEvent: false,
+        carriesMove: false,
         conversationChannel: "eve",
         jobId: report.job.id,
         jobKind: "task",
@@ -418,6 +421,26 @@ describe("scheduled report delivery", () => {
     expect(prompt).toContain("Send one short message only if");
     expect(prompt).toContain("shown as a draft for them to approve");
     expect(prompt).not.toContain("Original task:");
+    expect(prompt).toContain("check of the person's mail and calendar");
+  });
+
+  it("frames the report of a live location's move as a look at where the person is", async () => {
+    const report = scheduledReport();
+    report.job.kind = "proactive";
+    services.claimReports.mockResolvedValue(report);
+    const send = vi
+      .fn<ReturnType<ScheduleToFn>["send"]>()
+      .mockResolvedValue(workerSession("main-session"));
+
+    await dispatchScheduledReport(
+      { to: vi.fn<ScheduleToFn>(() => ({ send })) },
+      report.run.id,
+      { moved: true }
+    );
+
+    const prompt = send.mock.calls[0]?.[0];
+    expect(prompt).toContain("by the live location they share in Telegram");
+    expect(prompt).not.toContain("check of the person's mail and calendar");
   });
 
   it("starts no report turn for a worker that handed nothing over", async () => {

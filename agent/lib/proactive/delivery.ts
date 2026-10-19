@@ -21,7 +21,8 @@ const morningHoldMs = 10 * 60_000;
 /**
  * When a finished proactive run may write:
  * - `held`: not now. The person turned proactive messages off after the run
- *   started (the report is dropped), or is asleep (held for the morning).
+ *   started (the report is dropped), or is asleep (held for the morning; a
+ *   live location's move is news of its moment and is dropped instead).
  * - `night`: now, alone, during the night: the worker marked it as unable to
  *   wait, and the run could have carried such news — a night check's own
  *   run, or one handed a calendar event (a flight). A day run over ordinary
@@ -32,6 +33,7 @@ const morningHoldMs = 10 * 60_000;
 export async function proactiveReportTiming(
   report: {
     readonly carriesEvent: boolean;
+    readonly carriesMove: boolean;
     readonly runId: string;
     readonly scheduledFor: Date;
     readonly scope: AccessScope;
@@ -43,24 +45,27 @@ export async function proactiveReportTiming(
     readProactiveMessages(report.scope),
     readWorkspaceTimeZone(report.scope),
   ]);
-  if (!enabled) {
-    const claimed = await claimScheduledReport(report.runId, now);
-    const leaseToken = claimed?.run.reportLeaseToken;
-    if (leaseToken) {
-      await dropScheduledReport(report.runId, leaseToken, now);
-    }
-    return "held";
-  }
+  if (!enabled) return drop(report.runId, now);
   const quietUntil = quietHoursEnd(now, timeZone);
   if (!quietUntil) return "day";
   const mayWake =
     report.carriesEvent ||
     quietHoursEnd(report.scheduledFor, timeZone) !== undefined;
   if (report.timeSensitive && mayWake) return "night";
+  // «You will be late» read in the morning is wrong, not late news.
+  if (report.carriesMove) return drop(report.runId, now);
   await deferScheduledReport(
     report.runId,
     new Date(quietUntil.getTime() + morningHoldMs),
     now
   );
   return "held";
+}
+
+/** Ends a report that is to reach nobody now. */
+async function drop(runId: string, now: Date) {
+  const claimed = await claimScheduledReport(runId, now);
+  const leaseToken = claimed?.run.reportLeaseToken;
+  if (leaseToken) await dropScheduledReport(runId, leaseToken, now);
+  return "held" as const;
 }
