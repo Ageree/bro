@@ -1179,6 +1179,11 @@ export const env = createEnv({
     // to RunInfra, which takes no picture (`agent/lib/staged-files/prompt.ts`;
     // only with the files pilot). Unset, nobody's.
     EARLIER_PHOTOS_WORKSPACES: workspaceListSchema.optional(),
+    // Workspace ids or `*` whose note of preferences for the request is a
+    // record of its own turn, appended rather than replacing the keyed one,
+    // so the cached prompt holds across turns (`agent/lib/memory/profile.ts`).
+    // Unset, nobody's.
+    STABLE_MEMORY_WORKSPACES: workspaceListSchema.optional(),
     // The pilot of flash mode for browser errands that only search: workspace
     // ids or owners' emails, or `*` for every workspace, whose errands on
     // their own browser (a VM or a sandbox of the pool) run browser-use's

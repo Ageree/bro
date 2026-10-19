@@ -39,12 +39,28 @@ const requestSchema = z.object({
     })
     .optional(),
   cards: cardsSchema,
+  // Where the person does in the wallet what YooMoney wants first: an
+  // identification or an offer (`ext_action_required`), unblocking
+  // (`account_blocked`). Only YooMoney's own pages.
+  ext_action_uri: z.string().optional(),
+  account_unblock_uri: z.string().optional(),
 });
+
+/** A page of YooMoney's own to send the person to, or nothing. */
+function walletPage(uri: string | undefined) {
+  const url = URL.parse(uri ?? "");
+  return url?.protocol === "https:" &&
+    (url.hostname === "yoomoney.ru" || url.hostname.endsWith(".yoomoney.ru"))
+    ? url.toString()
+    : undefined;
+}
 
 /**
  * Checks a payment: `ready` with its `request_id`, the exact sum, the
- * wallet's balance and the linked card the person let Bro pay with, or
- * `refused` with YooMoney's reason.
+ * wallet's balance, whether YooMoney lets it be paid from the balance at
+ * all and the linked card the person let Bro pay with, or `refused` with
+ * YooMoney's reason and, when YooMoney names one, the page in the wallet
+ * where the person can lift it.
  */
 export async function requestYoomoneyPayment(
   token: string,
@@ -73,7 +89,11 @@ export async function requestYoomoneyPayment(
       contractAmount: answer.contract_amount !== undefined,
       walletAllowed: answer.money_source?.wallet?.allowed,
     });
-    return { kind: "refused" as const, error };
+    return {
+      kind: "refused" as const,
+      error,
+      link: walletPage(answer.ext_action_uri ?? answer.account_unblock_uri),
+    };
   };
   // `hold_for_pickup`: the recipient has no wallet, and the money would
   // wait for one. Bro sends money only to a wallet that exists.
@@ -84,8 +104,6 @@ export async function requestYoomoneyPayment(
     answer.contract_amount === undefined
   )
     return refused(answer.error ?? "unknown");
-  if (answer.money_source?.wallet?.allowed === false)
-    return refused("wallet_not_allowed");
   // What paying from a linked card would take; no card's details.
   const cards = answer.money_source?.cards ?? answer.cards;
   console.info("[yoomoney] request-payment ready", {
@@ -102,6 +120,9 @@ export async function requestYoomoneyPayment(
     kind: "ready" as const,
     requestId: answer.request_id,
     amountMinor: Math.round(answer.contract_amount * 100),
+    // False when YooMoney takes this payment from a card only: the
+    // service's own rule, not the balance being short.
+    walletAllowed: answer.money_source?.wallet?.allowed !== false,
     contract: answer.contract,
     balanceMinor:
       answer.balance === undefined
@@ -298,7 +319,8 @@ const refusals = new Map(
     hold_for_pickup:
       "У получателя нет кошелька ЮMoney: перевод ждал бы, пока он его заведёт. Нужен номер, телефон или почта кошелька.",
     illegal_param_csc: "Банк не принял CVV карты.",
-    limit_exceeded: "Превышен лимит операций кошелька.",
+    limit_exceeded:
+      "Превышен лимит: кошелёк пускает Бро платить только в пределах суммы, разрешённой при подключении (по правилам ЮMoney, если её не меняли, — 3 000 ₽ в сутки), или сработал лимит самого ЮMoney. Лимит для Бро меняется переподключением кошелька: сумму можно указать на странице ЮMoney.",
     money_source_not_available:
       "Этот платёж нельзя оплатить привязанной картой: ЮMoney принимает её только за услуги.",
     not_connected:
@@ -309,7 +331,7 @@ const refusals = new Map(
     payee_not_found:
       "Получатель не найден: у этого номера, телефона или почты нет кошелька ЮMoney.",
     wallet_not_allowed:
-      "Этот платёж нельзя оплатить с баланса кошелька: на нём не хватает денег, или получатель не принимает оплату кошельком.",
+      "ЮMoney не принимает этот платёж с баланса кошелька, а привязанной карты, с которой Бро может его оплатить, нет (переводы на другие кошельки ЮMoney картой не оплачивает).",
   })
 );
 

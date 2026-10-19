@@ -78,6 +78,10 @@ export const yoomoneyAuthorizations = pgTable(
  * per conversation) pays one payment only. A payment with `cardId` is paid
  * from the wallet's linked card (`db/services/yoomoney/card.ts`): after the
  * yes in the chat, or on its own page when YooMoney wants the card's CVV.
+ * A payment that settles where Bro did not see it (its page, the bank, the
+ * tick that reads payments in flight back) is told in the conversation it
+ * was asked in (`conversationChannel`, `conversationId`); `outcomeToldAt`
+ * says the person has heard how it went, from Bro or that notice.
  */
 export const yoomoneyPayments = pgTable(
   "yoomoney_payments",
@@ -117,12 +121,18 @@ export const yoomoneyPayments = pgTable(
     paymentId: text("payment_id"),
     error: text("error"),
     callId: text("call_id"),
+    // Where the person asked for it; null on payments made before it was kept.
+    conversationChannel: text("conversation_channel", {
+      enum: ["eve", "photon", "telegram"],
+    }),
+    conversationId: text("conversation_id"),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
     submittedAt: timestamp("submitted_at", { withTimezone: true }),
     settledAt: timestamp("settled_at", { withTimezone: true }),
+    outcomeToldAt: timestamp("outcome_told_at", { withTimezone: true }),
   },
   (table) => [
     foreignKey({
@@ -151,6 +161,10 @@ export const yoomoneyPayments = pgTable(
     check(
       "yoomoney_payments_amount_check",
       sql`${table.amountMinor} BETWEEN 0 AND 9007199254740991`
+    ),
+    check(
+      "yoomoney_payments_conversation_channel_check",
+      sql`${table.conversationChannel} IN ('eve', 'photon', 'telegram')`
     ),
   ]
 );

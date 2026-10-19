@@ -57,6 +57,39 @@ describe("where a call's cached prefix broke", () => {
     );
   });
 
+  // 19.10: the keyed note of preferences changed with the request's topic,
+  // and eve left its old copy out of the next turn's prompt.
+  it("names the memory record a turn left out", () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const note = {
+      content: "No query-specific profile memories are active.",
+      role: "user",
+    };
+    const opening = { content: "привет", role: "user" };
+    noteIn("wrun_d", call([system, note, opening]));
+    noteIn(
+      "wrun_d",
+      call([
+        system,
+        opening,
+        {
+          content:
+            "No query-specific profile memories are active. Saved preferences for this request: «без свинины».",
+          role: "user",
+        },
+        { content: "что на ужин?", role: "user" },
+      ])
+    );
+    expect(info).toHaveBeenCalledWith(
+      "[model] prefix",
+      expect.objectContaining({
+        brokeAt: 1,
+        brokeKind: "profile-note",
+        dropped: true,
+      })
+    );
+  });
+
   it("never compares two sessions that open alike", () => {
     const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
     noteIn(
