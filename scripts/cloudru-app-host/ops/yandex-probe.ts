@@ -5,6 +5,7 @@ import {
   createBrowserVmBrowser,
   stopBrowserVmBrowser,
 } from "@agent/lib/browser-vm/runs";
+import { afishaSearchRequest } from "@agent/lib/yandex/afisha/direct";
 import { isYandexHost } from "@agent/lib/yandex/operations";
 import { findYandexOperation } from "@agent/lib/yandex/registry";
 import { runYandexOperation } from "@agent/lib/yandex/transport";
@@ -19,11 +20,24 @@ import { runYandexOperation } from "@agent/lib/yandex/transport";
  * `{workspace, op, args}` runs a registered operation as the tool does;
  * `{workspace, page, steps, waitMs}` opens a Yandex page with every fetch and
  * XHR of the page recorded (method, URL, bodies), runs each step — an
- * expression awaited in the page — and waits. The result goes to the PUT
- * URL, never to the job's log: it holds the person's data.
+ * expression awaited in the page — and waits; `{direct: "afisha.search",
+ * args, times, pauseMs}` sends Afisha's search from this server with no
+ * browser, as YANDEX_DIRECT does, and keeps of each answer only its status,
+ * time, type and the number of events. The result goes to the PUT URL,
+ * never to the job's log: it holds the person's data.
  */
 
 const specSchema = z.union([
+  z.strictObject({
+    args: z.strictObject({
+      city: z.string().min(1).max(50).default("moscow"),
+      limit: z.number().int().min(1).max(10).default(10),
+      query: z.string().min(1).max(200),
+    }),
+    direct: z.literal("afisha.search"),
+    pauseMs: z.number().int().min(0).max(60_000).default(3000),
+    times: z.number().int().min(1).max(20).default(5),
+  }),
   z.strictObject({
     args: z.json().default({}),
     op: z.string().min(1),
@@ -124,6 +138,70 @@ async function probePage(
   }
 }
 
+const afishaAnswerSchema = z.object({
+  data: z.object({
+    search: z.object({
+      groups: z.array(z.object({ documents: z.array(z.unknown()) })),
+    }),
+  }),
+});
+
+/** One direct request: its status, time and shape, never its body. */
+async function probeDirectOnce(args: {
+  city: string;
+  limit: number;
+  query: string;
+}) {
+  const began = Date.now();
+  try {
+    const response = await afishaSearchRequest(args);
+    const type = response.headers.get("content-type");
+    const text = await response.text();
+    const ms = Date.now() - began;
+    let events: number | null = null;
+    try {
+      const answer = afishaAnswerSchema.safeParse(JSON.parse(text));
+      if (answer.success) {
+        events = answer.data.data.search.groups.reduce(
+          (sum, group) => sum + group.documents.length,
+          0
+        );
+      }
+    } catch {
+      events = null;
+    }
+    return { bytes: text.length, events, ms, status: response.status, type };
+  } catch (error) {
+    return {
+      error: error instanceof Error ? error.name : "unknown",
+      ms: Date.now() - began,
+    };
+  }
+}
+
+async function probeDirect(spec: {
+  args: { city: string; limit: number; query: string };
+  pauseMs: number;
+  times: number;
+}) {
+  // One after another: the pause between them is part of the probe.
+  const answers = await Array.from({ length: spec.times }).reduce(
+    async (done: Promise<object[]>, _, index) => {
+      const before = await done;
+      if (index > 0) await sleep(spec.pauseMs);
+      return [
+        ...before,
+        {
+          at: new Date().toISOString(),
+          ...(await probeDirectOnce(spec.args)),
+        },
+      ];
+    },
+    Promise.resolve([])
+  );
+  return { answers };
+}
+
 async function main() {
   const [specUrl, resultUrl] = process.argv.slice(2);
   if (!specUrl || !resultUrl) {
@@ -131,7 +209,9 @@ async function main() {
   }
   const spec = specSchema.parse(await (await fetch(specUrl)).json());
   let result: unknown;
-  if ("op" in spec) {
+  if ("direct" in spec) {
+    result = await probeDirect(spec);
+  } else if ("op" in spec) {
     const operation = findYandexOperation(spec.op);
     if (!operation) throw new Error(`No operation ${spec.op}.`);
     result = await runYandexOperation(spec.workspace, operation, spec.args);
