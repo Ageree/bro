@@ -31,6 +31,7 @@ export default {
     "scripts/costs/step-context.ts",
     // Times the web chat's turns against the live site, run by hand.
     "scripts/bench/latency.ts",
+    "scripts/bench/errand-latency.ts",
     // Bundled into a release by scripts/cloudru-app-host/host.py and run on the VM.
     "scripts/cloudru-app-host/ops/migrate.ts",
     "scripts/cloudru-app-host/ops/agent-mail.ts",

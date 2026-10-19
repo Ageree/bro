@@ -5,6 +5,7 @@ import {
   claimBrowserRunReport,
   finishWalledBrowserRun,
   holdBrowserRunReportForTurn,
+  hurryQueuedBrowserRuns,
   parkBrowserRunForRetry,
   readBrowserRun,
   releaseBrowserRunReport,
@@ -301,6 +302,7 @@ export async function settleBrowserRun(
   // Neither needs the other, and both come before the report: the order row
   // so «где мой заказ» finds it, the images so the report can attach them. A
   // run that lost to an anti-bot check has nothing to show.
+  const timing = settleTiming();
   const [images, spend] = await Promise.all([
     parsed.needs === "captcha" ? [] : safeBrowserRunImages(claimed, run),
     safeBrowserRunSpend(
@@ -313,6 +315,7 @@ export async function settleBrowserRun(
     ),
     recordBrowserRunOrder(claimed, order),
   ]);
+  timing.mark("images");
   // A run waiting on the person keeps its page for them (`keepsPage`); a
   // finished one closes the browser now, which is what keeps its sign-ins.
   // The idle stop in the poller closes a kept page later, before the cloud
@@ -320,6 +323,10 @@ export async function settleBrowserRun(
   const released = keepsPage(parsed.needs)
     ? false
     : await persistProfileCookies(claimed.id, run.sessionId);
+  timing.mark("release");
+  if (released && isBrowserVmId(claimed.profileId ?? "")) {
+    await hurryQueued(claimed);
+  }
   // On a browser VM, the page waits for the person's reply that long.
   if (keepsPage(parsed.needs)) await keepBrowserVmForPersonStep(claimed.id);
   await recordRunSignIns(claimed, {
@@ -342,6 +349,7 @@ export async function settleBrowserRun(
           claimed.site,
           signUp
         );
+  timing.mark("records");
   await reportBrowserRun(
     delivery,
     claimed.id,
@@ -351,7 +359,53 @@ export async function settleBrowserRun(
       { ...reportFacts, images, signUp: signUpLine, spend }
     )
   );
+  timing.mark("report");
+  console.info("[browser-use] settle timing", {
+    ...timing.spent,
+    images: images.length,
+    runId,
+  });
   return { kind: "settled" as const };
+}
+
+/**
+ * How long each part of a settle took after its claim, in milliseconds:
+ * the person waits for all of it before the report turn starts (19.10:
+ * 12–18 s between «run settled» and «report delivery» on production).
+ */
+function settleTiming() {
+  let last = performance.now();
+  const spent: Record<string, number> = {};
+  return {
+    mark(phase: string) {
+      const at = performance.now();
+      spent[`${phase}Ms`] = Math.round(at - last);
+      last = at;
+    },
+    spent,
+  };
+}
+
+/**
+ * The browser of the run is free again: an errand of its workspace queued
+ * behind it as busy starts now, not at the end of its minute. A failure
+ * leaves it to its minute, as before.
+ */
+async function hurryQueued(row: Pick<BrowserRunRow, "id" | "workspaceId">) {
+  try {
+    const moved = await hurryQueuedBrowserRuns(row.workspaceId, new Date());
+    if (moved > 0) {
+      console.info("[browser-use] queued errands hurried", {
+        moved,
+        runId: row.id,
+      });
+    }
+  } catch (error) {
+    console.warn("[browser-use] queued errands could not be hurried", {
+      cause: error,
+      runId: row.id,
+    });
+  }
 }
 
 /**
