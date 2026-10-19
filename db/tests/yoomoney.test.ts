@@ -93,7 +93,7 @@ describe("the YooMoney wallet connection", () => {
       "https://yoomoney.ru/oauth/authorize"
     );
     expect(page.searchParams.get("scope")).toBe(
-      'account-info operation-history payment-p2p payment-shop money-source("wallet","card")'
+      'account-info operation-history payment-p2p.limit(1,50000) payment-shop.limit(1,50000) money-source("wallet","card")'
     );
     const state = stateOf(consent);
     const requests = wallet(consenting);
@@ -175,6 +175,46 @@ describe("the YooMoney wallet connection", () => {
     });
     expect(await yoomoney.readYoomoneyConnection(alice)).toEqual({
       state: "disconnected",
+    });
+  });
+
+  it("takes a consent anew while connected, ending the old token only once the new one is granted", async () => {
+    const yoomoney = await service();
+    wallet(consenting);
+    await yoomoney.finishYoomoneyAuthorization(
+      alice,
+      "code-1",
+      stateOf(await yoomoney.startYoomoneyAuthorization(alice, origin))
+    );
+
+    // YooMoney gives no token for the second consent: the first stays.
+    const refused = stateOf(
+      await yoomoney.startYoomoneyAuthorization(alice, origin)
+    );
+    wallet({ "/oauth/token": () => Response.json({ access_token: "" }) });
+    await expect(
+      yoomoney.finishYoomoneyAuthorization(alice, "code-2", refused)
+    ).rejects.toThrow("ЮMoney");
+    expect(
+      await yoomoney.withYoomoneyToken(alice, async (stored) => stored)
+    ).toEqual({ connected: true, result: "token-1" });
+
+    const granted = stateOf(
+      await yoomoney.startYoomoneyAuthorization(alice, origin)
+    );
+    const requests = wallet({
+      ...consenting,
+      "/oauth/token": () => Response.json({ access_token: "token-2" }),
+    });
+    expect(
+      await yoomoney.finishYoomoneyAuthorization(alice, "code-3", granted)
+    ).toEqual({ account: "4100111222333" });
+    expect(
+      await yoomoney.withYoomoneyToken(alice, async (stored) => stored)
+    ).toEqual({ connected: true, result: "token-2" });
+    expect(requests.at(-1)).toMatchObject({
+      path: "/api/revoke",
+      authorization: "Bearer token-1",
     });
   });
 });

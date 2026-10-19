@@ -52,7 +52,12 @@ export async function readYoomoneyConnection(scope: AccessScope) {
     : { state: "disconnected" as const };
 }
 
-/** The consent page for this person; the state lives 15 minutes. */
+/**
+ * The consent page for this person; the state lives 15 minutes. A
+ * connected wallet may be consented to anew — to raise the limit on
+ * Bro's payments, or grant rights Bro asks for since: its access stays
+ * until the new one is granted.
+ */
 export async function startYoomoneyAuthorization(
   scope: AccessScope,
   origin: string
@@ -60,8 +65,6 @@ export async function startYoomoneyAuthorization(
   if (!yoomoneyEnabled(scope))
     throw new Error("Подключение ЮMoney пока недоступно.");
   await ensureScope(scope);
-  if ((await readYoomoneyConnection(scope)).state === "connected")
-    throw new Error("Кошелёк уже подключён: сначала отключи его.");
   const state = randomBytes(32).toString("base64url");
   const redirectUri = new URL("/api/yoomoney/callback", origin).toString();
   await db
@@ -109,18 +112,35 @@ export async function finishYoomoneyAuthorization(
   );
   try {
     const { account } = await readYoomoneyAccount(token);
+    const encryptedToken = await encryptToken(scope, token);
+    const [previous] = await db
+      .select({ encryptedToken: yoomoneyConnections.encryptedToken })
+      .from(yoomoneyConnections)
+      .where(eq(yoomoneyConnections.workspaceId, scope.workspaceId))
+      .limit(1);
+    // A consent anew replaces the wallet's access: the new token, its
+    // rights and limit; the old token is ended at YooMoney.
     const [connection] = await db
       .insert(yoomoneyConnections)
-      .values({
-        ...scope,
-        account,
-        scope: yoomoneyScope,
-        encryptedToken: await encryptToken(scope, token),
+      .values({ ...scope, account, scope: yoomoneyScope, encryptedToken })
+      .onConflictDoUpdate({
+        target: yoomoneyConnections.workspaceId,
+        set: {
+          userId: scope.userId,
+          account,
+          scope: yoomoneyScope,
+          encryptedToken,
+          createdAt: new Date(),
+        },
       })
-      .onConflictDoNothing({ target: yoomoneyConnections.workspaceId })
       .returning({ account: yoomoneyConnections.account });
-    if (!connection)
-      throw new Error("Кошелёк уже подключён: сначала отключи его.");
+    if (!connection) throw new Error("The wallet could not be stored.");
+    if (previous) {
+      const old = await decryptToken(scope, previous.encryptedToken).catch(
+        () => undefined
+      );
+      if (old !== undefined && old !== token) await revokeYoomoneyToken(old);
+    }
     return connection;
   } catch (error) {
     await revokeYoomoneyToken(token);

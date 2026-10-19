@@ -3,6 +3,7 @@ import type * as ai from "ai";
 import type { ModelMessage } from "ai";
 import type { DynamicResolveContext, ToolContext } from "eve/tools";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import * as z from "zod";
 import type { yoomoneyPayments } from "@db/schema/yoomoney";
 import type * as Card from "@db/services/yoomoney/card";
 import type * as connection from "@db/services/yoomoney/connection";
@@ -497,6 +498,30 @@ describe("wallet payments", () => {
       state: "refused",
       error: "not_in_history",
     });
+  });
+
+  it("offers to raise Bro's limit when YooMoney refuses a payment over it", async () => {
+    services.fill.mockResolvedValue({
+      kind: "ready",
+      title: "МегаФон (Россия)",
+      params: { pattern_id: "337", topped_up_phone: "9261234567" },
+      shown: [{ label: "Телефон", value: "9261234567" }],
+    });
+    services.request.mockResolvedValue({
+      kind: "refused",
+      error: "limit_exceeded",
+      link: undefined,
+    });
+    const result = await call(answered("положи 5000 рублей"), {
+      action: "prepare",
+      kind: "service",
+      serviceId: "337",
+      fields: [{ name: "topped_up_phone", value: "9261234567" }],
+    });
+    expect(result).toMatchObject({ kind: "refused" });
+    expect(z.object({ reply: z.string() }).parse(result).reply).toContain(
+      "reconnect"
+    );
   });
 
   it("sends the person YooMoney's page when the wallet wants something done first", async () => {
