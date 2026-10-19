@@ -2067,6 +2067,12 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   иначе одобрение вело ко второй карточке, входу.
 - 403 insufficient scopes — тоже старый грант: `withGoogleAuth` зовёт
   `requireAuth`; квота — 429 и 403 `rateLimitExceeded` (`client.ts`).
+- Каждый вызов Google — круг через прокси Composio (~1 с с VM), плюс поиск аккаунта
+  (`GET /connected_accounts`) в `ctx.getToken`: eve кэширует токен лишь на шаг.
+  `gmail-search` (19.10: p50 4,2 с) читал 10 писем пачками по 5 после списка — три
+  круга; теперь до 10 чтений на аккаунт сразу, общий лимит процесса (`accountRead`
+  в `gmail.ts`): 25 разом Gmail отвергал «Too many concurrent requests». Свой кэш
+  аккаунта в обход `ctx.getToken` не заводите: принципала выбирает eve.
 - Чтения Gmail и Диска считаются за ход (`turn-reads.ts`); параллельные вызовы
   одного шага счёт не видит. Оба файла — в `agent/lib/google-workspace/`.
 - Черновик удаляет только `gmail-delete-draft` (`drafts.delete`, мимо Корзины) и

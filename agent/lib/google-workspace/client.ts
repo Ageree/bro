@@ -269,6 +269,8 @@ export function googleClient(
     return response;
   }
   return {
+    /** The Composio account the calls go out through. */
+    connectedAccountId,
     /** A JSON call, its answer checked against `schema`. */
     async json<Schema extends z.ZodType>(
       schema: Schema,
