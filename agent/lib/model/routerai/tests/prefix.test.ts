@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { notePrefix } from "../prefix";
 
-const marked = vi.hoisted((): { session?: string } => ({}));
+// The session `warmCallMiddleware` would mark the call with.
+const marked = vi.hoisted(() => new Map<"session", string>());
 
 vi.mock("../warm", () => ({
-  callConversationOf: () => marked.session,
+  callConversationOf: () => marked.get("session"),
 }));
 
 function call(
@@ -15,7 +16,8 @@ function call(
 }
 
 function noteIn(session: string | undefined, body: string) {
-  marked.session = session;
+  if (session === undefined) marked.delete("session");
+  else marked.set("session", session);
   notePrefix(body);
 }
 
@@ -26,7 +28,7 @@ const preamble = { content: "Профиль и правила.", role: "user" };
 describe("where a call's cached prefix broke", () => {
   afterEach(() => {
     vi.restoreAllMocks();
-    marked.session = undefined;
+    marked.clear();
   });
 
   it("names the first message that differs from the session's last call", () => {
