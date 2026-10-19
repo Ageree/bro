@@ -39,6 +39,14 @@ export async function proxy(request: NextRequest) {
     // press of «Оплатить» on the page pays (db/services/yoomoney/card.ts).
     pathname.startsWith("/pay/") ||
     pathname.startsWith("/api/yoomoney/pay/") ||
+    // Connecting the wallet from a chat, opened in Telegram as much as in a
+    // browser signed in: the link opens the page, and the page acts only
+    // for a device that proved it is the person's — the cabinet's session
+    // or Telegram's signed data — which YooMoney's callback then checks
+    // too (db/services/yoomoney/onboarding.ts).
+    pathname.startsWith("/yoomoney/") ||
+    pathname.startsWith("/api/yoomoney/onboarding/") ||
+    pathname === "/api/yoomoney/callback" ||
     pathname.startsWith("/eve/v1/sandbox-files/") ||
     pathname === "/eve/v1/dev/schedules/dynamic"
   ) {

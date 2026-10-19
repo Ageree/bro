@@ -7,6 +7,8 @@ import * as z from "zod";
 import type { yoomoneyPayments } from "@db/schema/yoomoney";
 import type * as Card from "@db/services/yoomoney/card";
 import type * as connection from "@db/services/yoomoney/connection";
+import type * as ResumeTurn from "@agent/lib/yoomoney/onboarding";
+import type * as Onboarding from "@db/services/yoomoney/onboarding";
 import type * as stored from "@db/services/yoomoney/payments";
 import type * as Api from "@shared/yoomoney/api";
 import type * as Payments from "@shared/yoomoney/payments";
@@ -28,6 +30,8 @@ const services = vi.hoisted(() => ({
   read: vi.fn<typeof stored.readYoomoneyPayment>(),
   renew: vi.fn<typeof stored.renewYoomoneyPayment>(),
   request: vi.fn<typeof Payments.requestYoomoneyPayment>(),
+  resume: vi.fn<typeof Onboarding.readYoomoneyOnboardingResume>(),
+  opened: vi.fn<typeof ResumeTurn.openedByYoomoneyResume>(),
   settle: vi.fn<typeof stored.settleYoomoneyPayment>(),
   withToken: vi.fn<typeof connection.withYoomoneyToken>(),
 }));
@@ -53,6 +57,13 @@ vi.mock("@shared/yoomoney/showcase", async (original) => ({
   ...(await original<typeof Showcase>()),
   fillYoomoneyService: services.fill,
 }));
+vi.mock("@db/services/yoomoney/onboarding", () => ({
+  readYoomoneyOnboardingResume: services.resume,
+}));
+vi.mock("@agent/lib/yoomoney/onboarding", async (original) => ({
+  ...(await original<typeof ResumeTurn>()),
+  openedByYoomoneyResume: services.opened,
+}));
 vi.mock("@db/services/yoomoney/connection", () => ({
   readYoomoneyConnection: services.connection,
   withYoomoneyToken: services.withToken,
@@ -76,6 +87,7 @@ vi.mock("@db/services/settings", () => ({
 }));
 
 import payTools from "@agent/tools/yoomoney_pay";
+import { backgroundTurnMarker } from "@shared/chat/background-turn";
 import { YoomoneyError } from "@shared/yoomoney/api";
 
 const scope = { userId: "alice", workspaceId: "workspace:alice" };
@@ -186,17 +198,21 @@ async function call(
         serviceId: string;
         fields: { name: string; value: string }[];
       }
-    | { action: "prepare"; kind: "transfer"; to: string; amountRub: number }
+    | { action: "prepare"; kind: "transfer"; to: string; amountRub: number },
+  current: ToolContext["session"]["auth"]["current"] = caller
 ) {
   const context: DynamicResolveContext = {
     channel: { kind: "channel:eve", metadata: {} },
     messages,
     model: null,
-    session: { auth: { current: caller, initiator: null }, id: "session-1" },
+    session: { auth: { current, initiator: null }, id: "session-1" },
   };
   const tools = await payTools.events["step.started"]?.({}, context);
   if (!tools || !("yoomoney_pay" in tools)) throw new Error("Expected tool.");
-  return tools.yoomoney_pay.execute(input, callContext);
+  return tools.yoomoney_pay.execute(input, {
+    ...callContext,
+    session: { ...callContext.session, auth: { current, initiator: null } },
+  });
 }
 
 beforeEach(() => {
@@ -263,6 +279,69 @@ describe("wallet payments", () => {
     expect(services.settle.mock.calls[0]?.[1]).toMatchObject({
       from: ["submitting"],
       state: "paid",
+    });
+  });
+
+  it("prepare, never pay, in the turn Bro opens once the wallet was connected from the chat", async () => {
+    services.fill.mockResolvedValue({
+      kind: "ready",
+      title: "МегаФон (Россия)",
+      params: { pattern_id: "337", topped_up_phone: "9261234567" },
+      shown: [{ label: "Телефон", value: "9261234567" }],
+    });
+    services.create.mockImplementation(async (_scope, input) =>
+      row({ ...input, state: "quoted" })
+    );
+    services.request.mockResolvedValue({
+      kind: "ready",
+      requestId: "request-1",
+      amountMinor: 10_000,
+      walletAllowed: true,
+      contract: undefined,
+      balanceMinor: 50_000,
+      card: undefined,
+    });
+    const resumed = {
+      ...caller,
+      attributes: { ...caller.attributes, yoomoneyOnboardingId: "onb-1" },
+      authenticator: "yoomoney-connected",
+    };
+    const messages: ModelMessage[] = [
+      { role: "user", content: "Положи 100 рублей на МегаФон 9261234567" },
+      { role: "assistant", content: "Подключи ЮMoney — это минута." },
+      {
+        role: "user",
+        content: `${backgroundTurnMarker}\n\nThe person has just connected their YooMoney wallet.`,
+      },
+    ];
+    const prepare = {
+      action: "prepare" as const,
+      kind: "service" as const,
+      serviceId: "337",
+      fields: [{ name: "topped_up_phone", value: "9261234567" }],
+    };
+    services.resume.mockResolvedValue({ id: "onb-1" });
+    services.opened.mockReturnValue(true);
+    const quoted = z
+      .object({ kind: z.literal("quoted"), confirmationQuestion: z.string() })
+      .parse(await call(messages, prepare, resumed));
+    expect(quoted.confirmationQuestion).toContain("Оплачиваю?");
+    expect(services.resume).toHaveBeenCalledWith(scope, "onb-1");
+    expect(
+      await call(messages, { action: "confirm", paymentId }, resumed)
+    ).toMatchObject({ kind: "refused" });
+    expect(services.claim).not.toHaveBeenCalled();
+    // A later turn eve delivers under the kept caller (a task's report)
+    // was not opened by the tick's message: it prepares nothing.
+    services.opened.mockReturnValue(false);
+    expect(await call(messages, prepare, resumed)).toMatchObject({
+      kind: "refused",
+    });
+    services.opened.mockReturnValue(true);
+    // An onboarding that is not this person's, or told long ago, opens nothing.
+    services.resume.mockResolvedValue(undefined);
+    expect(await call(messages, prepare, resumed)).toMatchObject({
+      kind: "refused",
     });
   });
 

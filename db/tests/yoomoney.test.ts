@@ -104,7 +104,7 @@ describe("the YooMoney wallet connection", () => {
     ).rejects.toThrow("истекла");
     expect(
       await yoomoney.finishYoomoneyAuthorization(alice, "code-1", state)
-    ).toEqual({ account: "4100111222333" });
+    ).toEqual({ account: "4100111222333", cards: [], onboardingId: null });
     await expect(
       yoomoney.finishYoomoneyAuthorization(alice, "code-1", state)
     ).rejects.toThrow("истекла");
@@ -208,7 +208,7 @@ describe("the YooMoney wallet connection", () => {
     });
     expect(
       await yoomoney.finishYoomoneyAuthorization(alice, "code-3", granted)
-    ).toEqual({ account: "4100111222333" });
+    ).toEqual({ account: "4100111222333", cards: [], onboardingId: null });
     expect(
       await yoomoney.withYoomoneyToken(alice, async (stored) => stored)
     ).toEqual({ connected: true, result: "token-2" });
@@ -216,6 +216,205 @@ describe("the YooMoney wallet connection", () => {
       path: "/api/revoke",
       authorization: "Bearer token-1",
     });
+  });
+});
+
+describe("connecting the wallet from a chat", () => {
+  const telegramChat = {
+    conversationChannel: "telegram" as const,
+    conversationId: "4242::",
+  };
+
+  it("opens its page only for the person's device, and the consent started there for that device only", async () => {
+    const yoomoney = await service();
+    const onboarding = await import("@db/services/yoomoney/onboarding");
+    const webChat = {
+      conversationChannel: "eve" as const,
+      conversationId: "session-1",
+    };
+    const first = await onboarding.startYoomoneyOnboarding(alice, webChat);
+    // A second ask in the same chat gives the same page, one from another
+    // chat a new one, and the earlier page stops opening.
+    expect((await onboarding.startYoomoneyOnboarding(alice, webChat)).id).toBe(
+      first.id
+    );
+    const started = await onboarding.startYoomoneyOnboarding(
+      alice,
+      telegramChat
+    );
+    const link = new URL(started.url);
+    const token = link.searchParams.get("t") ?? "";
+    expect(link.pathname).toBe(`/yoomoney/${started.id}`);
+    // Only the latest link opens the page, and only with its own token.
+    expect(
+      await onboarding.readYoomoneyOnboardingByLink(
+        first.id,
+        new URL(first.url).searchParams.get("t") ?? ""
+      )
+    ).toBeUndefined();
+    expect(
+      await onboarding.readYoomoneyOnboardingByLink(started.id, "forged")
+    ).toBeUndefined();
+    const page = await onboarding.readYoomoneyOnboardingByLink(
+      started.id,
+      token
+    );
+    if (!page) throw new Error("Expected the page.");
+
+    // Bob's session, or another Telegram user, does not take Alice's page.
+    expect(
+      await onboarding.claimYoomoneyOnboardingDevice(page, {
+        kind: "session",
+        userId: "bob",
+      })
+    ).toBeUndefined();
+    expect(
+      await onboarding.claimYoomoneyOnboardingDevice(page, {
+        kind: "telegram",
+        telegramUserId: "999",
+      })
+    ).toBeUndefined();
+    const device = await onboarding.claimYoomoneyOnboardingDevice(page, {
+      kind: "telegram",
+      telegramUserId: "4242",
+    });
+    if (device === undefined) throw new Error("Expected the device.");
+    const taken = await onboarding.readYoomoneyOnboardingByLink(
+      started.id,
+      token
+    );
+    if (!taken) throw new Error("Expected the page.");
+    expect(onboarding.onYoomoneyOnboardingDevice(taken, device)).toBe(true);
+    expect(onboarding.onYoomoneyOnboardingDevice(taken, "another")).toBe(false);
+    // A second press, or Alice's session on another device, gets the same
+    // cookie: it never shuts out a consent under way.
+    expect(
+      await onboarding.claimYoomoneyOnboardingDevice(taken, {
+        kind: "session",
+        userId: "alice",
+      })
+    ).toBe(device);
+
+    const state = stateOf(
+      await onboarding.startYoomoneyOnboardingConsent(taken, origin)
+    );
+    expect(
+      await onboarding.yoomoneyOnboardingOfState(state, "another")
+    ).toEqual({ id: started.id, scope: undefined });
+    const owner = await onboarding.yoomoneyOnboardingOfState(state, device);
+    expect(owner).toEqual({ id: started.id, scope: alice });
+    wallet({
+      ...consenting,
+      "/api/account-info": () =>
+        Response.json({
+          account: "4100111222333",
+          balance: 0,
+          currency: "643",
+          account_status: "named",
+          account_type: "personal",
+          cards_linked: [{ pan_fragment: "510000******9999", type: "VISA" }],
+        }),
+    });
+    expect(
+      await yoomoney.finishYoomoneyAuthorization(alice, "code-1", state)
+    ).toEqual({
+      account: "4100111222333",
+      cards: ["••9999"],
+      onboardingId: started.id,
+    });
+  });
+
+  it("tells the chat once the page is through, or left on the card step, and only once", async () => {
+    await service();
+    const onboarding = await import("@db/services/yoomoney/onboarding");
+    const withCard = await onboarding.startYoomoneyOnboarding(
+      alice,
+      telegramChat
+    );
+    const withoutCard = await onboarding.startYoomoneyOnboarding(bob, {
+      conversationChannel: "eve",
+      conversationId: "session-bob",
+    });
+    await onboarding.markYoomoneyOnboardingConnected(withCard.id, {
+      cards: ["••9999"],
+    });
+    await onboarding.markYoomoneyOnboardingConnected(withoutCard.id, {
+      cards: [],
+    });
+
+    const now = new Date();
+    const told = await onboarding.claimYoomoneyOnboardingResumes(now);
+    expect(told.map(({ id }) => id)).toEqual([withCard.id]);
+    expect(await onboarding.claimYoomoneyOnboardingResumes(now)).toEqual([]);
+    expect(
+      await onboarding.readYoomoneyOnboardingResume(alice, withCard.id)
+    ).toEqual({ id: withCard.id });
+    expect(
+      await onboarding.readYoomoneyOnboardingResume(bob, withCard.id)
+    ).toBeUndefined();
+
+    // A send that failed goes to the next tick.
+    await onboarding.releaseYoomoneyOnboardingResume(withCard.id, now);
+    expect(
+      (await onboarding.claimYoomoneyOnboardingResumes(now)).map(({ id }) => id)
+    ).toEqual([withCard.id]);
+
+    // The page left on the card step is told after ten minutes; one that
+    // finishes is told at once.
+    const later = new Date(now.getTime() + 11 * 60_000);
+    expect(
+      (await onboarding.claimYoomoneyOnboardingResumes(later)).map(
+        ({ id }) => id
+      )
+    ).toEqual([withoutCard.id]);
+  });
+
+  it("finishes the card step once a card is linked to the wallet", async () => {
+    const yoomoney = await service();
+    const onboarding = await import("@db/services/yoomoney/onboarding");
+    const started = await onboarding.startYoomoneyOnboarding(
+      alice,
+      telegramChat
+    );
+    wallet(consenting);
+    const state = stateOf(
+      await yoomoney.startYoomoneyAuthorization(alice, origin)
+    );
+    await yoomoney.finishYoomoneyAuthorization(alice, "code-1", state);
+    await onboarding.markYoomoneyOnboardingConnected(started.id, { cards: [] });
+    const page = await onboarding.readYoomoneyOnboardingByLink(
+      started.id,
+      new URL(started.url).searchParams.get("t") ?? ""
+    );
+    if (!page) throw new Error("Expected the page.");
+
+    expect(await onboarding.checkYoomoneyOnboardingCard(page)).toEqual({
+      connected: true,
+      cards: [],
+    });
+    expect(await onboarding.claimYoomoneyOnboardingResumes(new Date())).toEqual(
+      []
+    );
+    wallet({
+      "/api/account-info": () =>
+        Response.json({
+          account: "4100111222333",
+          balance: 0,
+          currency: "643",
+          account_status: "named",
+          account_type: "personal",
+          cards_linked: [{ pan_fragment: "220000******4310" }],
+        }),
+    });
+    expect(await onboarding.checkYoomoneyOnboardingCard(page)).toEqual({
+      connected: true,
+      cards: ["••4310"],
+    });
+    expect(
+      (await onboarding.claimYoomoneyOnboardingResumes(new Date())).map(
+        ({ id }) => id
+      )
+    ).toEqual([started.id]);
   });
 });
 

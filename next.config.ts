@@ -18,6 +18,9 @@ const nextConfig: NextConfig = {
         // A card payment's link carries its secret in the query.
         /\/pay\/[^/?]+(?:\?|$)/u,
         /\/api\/yoomoney\/pay\//u,
+        // The onboarding page's link, and sign-in on the way back to it.
+        /\/yoomoney\/[^/?]+(?:\?|$)/u,
+        /callbackUrl=%2F(?:api%2F)?yoomoney%2F/u,
       ],
     },
   },
@@ -52,6 +55,18 @@ const nextConfig: NextConfig = {
           { key: "X-Frame-Options", value: "DENY" },
         ],
         source: "/pay/:path*",
+      },
+      {
+        // Telegram Web shows a Mini App in a frame of its own; no other
+        // site may frame the page. Its forms carry the origin, as /pay's.
+        headers: [
+          {
+            key: "Content-Security-Policy",
+            value: "frame-ancestors https://web.telegram.org",
+          },
+          { key: "Referrer-Policy", value: "strict-origin" },
+        ],
+        source: "/yoomoney/:path*",
       },
     ];
   },
