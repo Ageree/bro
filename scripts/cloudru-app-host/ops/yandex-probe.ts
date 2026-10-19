@@ -23,8 +23,9 @@ import { runYandexOperation } from "@agent/lib/yandex/transport";
  * expression awaited in the page — and waits; `{direct: "afisha.search",
  * args, times, pauseMs}` sends Afisha's search from this server with no
  * browser, as YANDEX_DIRECT does, and keeps of each answer only its status,
- * time, type and the number of events. The result goes to the PUT URL,
- * never to the job's log: it holds the person's data.
+ * time, type and the number of events (printed to the job's log too). Any
+ * other result goes to the PUT URL, never to the job's log: it holds the
+ * person's data.
  */
 
 const specSchema = z.union([
@@ -229,6 +230,9 @@ async function main() {
   let result: unknown;
   if ("direct" in spec) {
     result = await probeDirect(spec);
+    // Statuses and times only, no one's data: the job's log keeps them even
+    // when the result cannot be stored.
+    console.log(JSON.stringify(result));
   } else if ("op" in spec) {
     const operation = findYandexOperation(spec.op);
     if (!operation) throw new Error(`No operation ${spec.op}.`);
