@@ -110,6 +110,13 @@ const notConnected = {
 const uncertainReply =
   "YooMoney did not say how this payment went: it may have gone through. Never pay it again or prepare a replacement. It is checked with YooMoney and the wallet's history automatically, and how it went comes to this chat by itself; if the person asks before, check it with status.";
 
+/**
+ * What Bro does after YooMoney refused for the limit the person granted it
+ * at connect: offers to raise it, by consenting anew.
+ */
+const limitReply =
+  "Nothing was paid: the payment is over the limit the wallet granted Bro (or YooMoney's own). Tell the person, offer to raise Bro's limit — call yoomoney with action reconnect and send its link — and once they have allowed it on YooMoney's page, prepare the payment again and ask again.";
+
 /** «1 234,50 ₽». */
 function rub(amountMinor: number) {
   const whole = Math.floor(amountMinor / 100).toLocaleString("ru-RU");
@@ -269,7 +276,9 @@ function paymentResult(payment: Payment) {
         kind: "refused" as const,
         reason: yoomoneyRefusal(payment.error ?? ""),
         reply:
-          "Nothing was paid. Tell the person the reason in plain words. Another attempt needs a fresh prepare and their yes.",
+          payment.error === "limit_exceeded"
+            ? limitReply
+            : "Nothing was paid. Tell the person the reason in plain words. Another attempt needs a fresh prepare and their yes.",
       };
     case "unknown":
       return { ...base, kind: "unknown" as const, reply: uncertainReply };
@@ -344,6 +353,12 @@ async function payAndSettle(
 
 /** A refusal from YooMoney's check, with the wallet's page to lift it. */
 function refusal({ error, link }: { error: string; link?: string }) {
+  if (error === "limit_exceeded")
+    return {
+      kind: "refused" as const,
+      reason: yoomoneyRefusal(error),
+      reply: limitReply,
+    };
   return link === undefined
     ? {
         kind: "refused" as const,

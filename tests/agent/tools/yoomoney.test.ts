@@ -106,4 +106,23 @@ describe("the YooMoney tool", () => {
       url: "https://example.com/api/yoomoney/connect",
     });
   });
+
+  it("offers the consent page again to a connected wallet only on reconnect", async () => {
+    const found = await tool();
+    if (!found) throw new Error("Expected yoomoney.");
+    services.connection.mockResolvedValue({
+      state: "connected",
+      account: "4100111222333",
+      connectedAt: new Date(),
+    });
+    expect(
+      await found.execute({ action: "connect" }, callContext("authjs"))
+    ).toMatchObject({ status: "connected" });
+    expect(
+      await found.execute({ action: "reconnect" }, callContext("authjs"))
+    ).toMatchObject({
+      status: "authorize",
+      url: "https://example.com/api/yoomoney/connect",
+    });
+  });
 });

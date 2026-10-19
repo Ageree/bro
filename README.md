@@ -454,14 +454,16 @@ on, then set `YOOMONEY_CLIENT_ID`, `YOOMONEY_CLIENT_SECRET` and the pilot
 `YOOMONEY_WORKSPACES` (workspace ids or `*`). The wallet API has no test
 mode: `request-payment` checks a payment without charging it. The person
 opens the link Bro sends in a browser signed in to the cabinet; Bro asks for
-`account-info operation-history payment-p2p payment-shop
-money-source("wallet","card")`. A service the balance cannot cover, or one
+`account-info operation-history payment-p2p.limit(1,50000)
+payment-shop.limit(1,50000) money-source("wallet","card")`. A service the balance cannot cover, or one
 YooMoney takes from a card only, is paid from the wallet's linked card; when
 YooMoney wants its CVV, on a page Bro links to. A minute's tick reads back the
 payments in flight nobody asks about (a card payment whose person never came
 back from the bank, an answer that was lost) and tells the chat how each one
-went. With no `.limit()` in the scope, YooMoney's default is 3,000 ₽ a day for
-Bro, which the person can change on the consent page.
+went. Without the `.limit()` YooMoney's default is 3,000 ₽ a day; Bro asks for
+50,000 ₽, which the person can change on the consent page. A payment refused
+for the limit gets a link to consent anew (the tool's `reconnect`): the
+current access stays until the new one is granted.
 
 ## Local development
 

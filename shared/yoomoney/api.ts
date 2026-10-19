@@ -13,15 +13,22 @@ import type { AccessScope } from "@shared/identity/access-scope";
 export const yoomoneyOrigin = "https://yoomoney.ru";
 
 /**
+ * The most Bro may pay from the wallet in a day, as it asks for it: the
+ * person sees it on the consent page and may change it there. Without it
+ * YooMoney's default is 3 000 ₽ a day (`limit(1,3000)`, protocol-rights),
+ * less than one utility bill.
+ */
+const dailyLimitRub = 50_000;
+
+/**
  * What Bro asks for: the balance and the history, transfers to other
  * wallets (`payment-p2p`) and payments to the services of YooMoney's
- * catalogue (`payment-shop`), from the balance or a card linked to the
- * wallet (`money-source`; YooMoney pays only services with a card). Bro
- * pays from the balance only so far. Every payment still waits for the
- * person's yes to its exact total.
+ * catalogue (`payment-shop`), each up to `dailyLimitRub` a day, from the
+ * balance or a card linked to the wallet (`money-source`; YooMoney pays
+ * only services with a card). Every payment still waits for the person's
+ * yes to its exact total.
  */
-export const yoomoneyScope =
-  'account-info operation-history payment-p2p payment-shop money-source("wallet","card")';
+export const yoomoneyScope = `account-info operation-history payment-p2p.limit(1,${String(dailyLimitRub)}) payment-shop.limit(1,${String(dailyLimitRub)}) money-source("wallet","card")`;
 
 export function yoomoneyConfigured() {
   return Boolean(env.YOOMONEY_CLIENT_ID && env.YOOMONEY_CLIENT_SECRET);
