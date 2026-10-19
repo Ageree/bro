@@ -199,6 +199,8 @@ describe("wallet payments", () => {
         cardLabel: null,
         cscRequired: null,
         confirmationQuestion: `Платёж ${id}. Оплачиваю?`,
+        conversationChannel: null,
+        conversationId: null,
         expiresAt: new Date(Date.now() + 60_000),
       });
     const first = await quoted("6f0e3c1a-1111-4a8b-9c0d-000000000001");
@@ -271,6 +273,8 @@ describe("a payment from the wallet's linked card", () => {
       cardLabel: "••4310",
       cscRequired: true,
       confirmationQuestion: `Платёж ${id}.`,
+      conversationChannel: null,
+      conversationId: null,
       expiresAt: new Date(Date.now() + 60_000),
     });
     const token = new URL(await card.yoomoneyPayLink(id)).searchParams.get("t");
@@ -368,6 +372,8 @@ describe("a payment from the wallet's linked card", () => {
       cardLabel: "••4310",
       cscRequired: true,
       confirmationQuestion: `Платёж ${id}.`,
+      conversationChannel: null,
+      conversationId: null,
       expiresAt: new Date(Date.now() + 60_000),
     });
     const token = new URL(await card.yoomoneyPayLink(id)).searchParams.get("t");
@@ -396,6 +402,133 @@ describe("a payment from the wallet's linked card", () => {
       bankUri: null,
       bankParams: null,
     });
+  });
+});
+
+describe("a payment nobody asks about", () => {
+  it("is read back after the person had their time at the bank, and its outcome is told once", async () => {
+    const yoomoney = await service();
+    const state = stateOf(
+      await yoomoney.startYoomoneyAuthorization(alice, origin)
+    );
+    wallet(consenting);
+    await yoomoney.finishYoomoneyAuthorization(alice, "code-1", state);
+    const payments = await import("@db/services/yoomoney/payments");
+    const card = await import("@db/services/yoomoney/card");
+    const settle = await import("@db/services/yoomoney/settle");
+    const id = "6f0e3c1a-1111-4a8b-9c0d-000000000005";
+    await payments.createYoomoneyPayment(alice, {
+      id,
+      rootSessionId: "session-1",
+      kind: "service",
+      account: "4100111222333",
+      title: "МегаФон (Россия)",
+      requestParams: { pattern_id: "337" },
+      shown: [],
+      requestId: "request-5",
+      amountMinor: 1000,
+      test: false,
+      cardId: "card-1",
+      cardLabel: "••4310",
+      cscRequired: true,
+      confirmationQuestion: `Платёж ${id}.`,
+      conversationChannel: "telegram",
+      conversationId: "42::",
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    const token = new URL(await card.yoomoneyPayLink(id)).searchParams.get("t");
+    if (token === null) throw new Error("Expected the link's secret.");
+    wallet({
+      ...consenting,
+      "/api/process-payment": () =>
+        Response.json({
+          status: "ext_auth_required",
+          acs_uri: "https://bank.example/3ds",
+          acs_params: { MD: "md-5" },
+        }),
+    });
+    await card.payYoomoneyByCard(id, token, "123");
+
+    // The bank never sent the person back (15.10). While they may still be
+    // there, nothing asks YooMoney about the payment.
+    const early = wallet({});
+    await settle.readBackYoomoneyPayments(new Date());
+    expect(early).toEqual([]);
+    expect(await payments.readYoomoneyPayment(alice, { id })).toMatchObject({
+      state: "pending",
+    });
+
+    const later = new Date(Date.now() + 11 * 60_000);
+    const readBack = wallet({
+      ...consenting,
+      "/api/process-payment": () =>
+        Response.json({ status: "success", payment_id: "payment-5" }),
+    });
+    await settle.readBackYoomoneyPayments(later);
+    expect(
+      new URLSearchParams(
+        readBack.find(({ path }) => path === "/api/process-payment")?.body
+      ).toString()
+    ).toBe("request_id=request-5");
+    expect(await payments.readYoomoneyPayment(alice, { id })).toMatchObject({
+      state: "paid",
+      paymentId: "payment-5",
+    });
+
+    const told = await payments.claimYoomoneyOutcomeNotices(later);
+    expect(told.map((payment) => [payment.id, payment.conversationId])).toEqual(
+      [[id, "42::"]]
+    );
+    expect(await payments.claimYoomoneyOutcomeNotices(later)).toEqual([]);
+    // A notice that did not land is taken again.
+    await payments.releaseYoomoneyOutcomeNotice(id, later);
+    expect(await payments.claimYoomoneyOutcomeNotices(later)).toHaveLength(1);
+  });
+
+  it("is not told again when Bro told it", async () => {
+    await service();
+    const payments = await import("@db/services/yoomoney/payments");
+    const id = "6f0e3c1a-1111-4a8b-9c0d-000000000006";
+    await payments.createYoomoneyPayment(alice, {
+      id,
+      rootSessionId: "session-1",
+      kind: "service",
+      account: "4100111222333",
+      title: "МегаФон (Россия)",
+      requestParams: { pattern_id: "337" },
+      shown: [],
+      requestId: "request-6",
+      amountMinor: 1000,
+      test: false,
+      cardId: null,
+      cardLabel: null,
+      cscRequired: null,
+      confirmationQuestion: `Платёж ${id}. Оплачиваю?`,
+      conversationChannel: "eve",
+      conversationId: "session-1",
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    expect(
+      await payments.claimYoomoneyPayment(alice, {
+        id,
+        rootSessionId: "session-1",
+        confirmationQuestion: `Платёж ${id}. Оплачиваю?`,
+        callId: "call-1",
+        consentHash: "yes-6",
+      })
+    ).toMatchObject({ kind: "claimed" });
+    expect(
+      await payments.settleYoomoneyPayment(alice, {
+        id,
+        from: ["submitting"],
+        state: "paid",
+        paymentId: "payment-6",
+      })
+    ).toMatchObject({ state: "paid" });
+    await payments.markYoomoneyOutcomeTold(alice, { id });
+    expect(
+      await payments.claimYoomoneyOutcomeNotices(new Date(Date.now() + 60_000))
+    ).toEqual([]);
   });
 });
 

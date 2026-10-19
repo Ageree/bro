@@ -76,6 +76,7 @@ vi.mock("@db/services/memory/records", () => ({
 vi.mock("@db/services/yoomoney/payments", () => ({
   claimYoomoneyPayment: services.walletClaim,
   createYoomoneyPayment: vi.fn<typeof stored.createYoomoneyPayment>(),
+  markYoomoneyOutcomeTold: vi.fn<typeof stored.markYoomoneyOutcomeTold>(),
   readYoomoneyPayment: services.walletRead,
   renewYoomoneyPayment: vi.fn<typeof stored.renewYoomoneyPayment>(),
   settleYoomoneyPayment: services.walletSettle,
@@ -217,10 +218,13 @@ function payment(
     paymentId: null,
     error: null,
     callId: null,
+    conversationChannel: null,
+    conversationId: null,
     expiresAt: new Date(Date.now() + 60_000),
     createdAt: new Date(),
     submittedAt: null,
     settledAt: null,
+    outcomeToldAt: null,
     ...overrides,
   };
 }

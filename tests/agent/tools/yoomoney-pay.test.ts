@@ -15,6 +15,7 @@ const services = vi.hoisted(() => ({
   claim: vi.fn<typeof stored.claimYoomoneyPayment>(),
   connection: vi.fn<typeof connection.readYoomoneyConnection>(),
   create: vi.fn<typeof stored.createYoomoneyPayment>(),
+  told: vi.fn<typeof stored.markYoomoneyOutcomeTold>(),
   enabled: vi.fn<typeof Api.yoomoneyEnabled>(),
   fill: vi.fn<typeof Showcase.fillYoomoneyService>(),
   history: vi.fn<typeof Payments.findYoomoneyPayment>(),
@@ -33,6 +34,7 @@ const services = vi.hoisted(() => ({
 vi.mock("@db/services/yoomoney/payments", () => ({
   claimYoomoneyPayment: services.claim,
   createYoomoneyPayment: services.create,
+  markYoomoneyOutcomeTold: services.told,
   readYoomoneyPayment: services.read,
   renewYoomoneyPayment: services.renew,
   settleYoomoneyPayment: services.settle,
@@ -106,10 +108,13 @@ function row(
     paymentId: null,
     error: null,
     callId: null,
+    conversationChannel: null,
+    conversationId: null,
     expiresAt: new Date(Date.now() + 60_000),
     createdAt: new Date(),
     submittedAt: null,
     settledAt: null,
+    outcomeToldAt: null,
     ...overrides,
   };
 }
@@ -180,6 +185,7 @@ async function call(
         serviceId: string;
         fields: { name: string; value: string }[];
       }
+    | { action: "prepare"; kind: "transfer"; to: string; amountRub: number }
 ) {
   const context: DynamicResolveContext = {
     channel: { kind: "channel:eve", metadata: {} },
@@ -273,6 +279,7 @@ describe("wallet payments", () => {
       kind: "ready",
       requestId: "request-1",
       amountMinor: 10_000,
+      walletAllowed: true,
       contract: undefined,
       balanceMinor: 100,
       card: { id: "card-1", label: "••4310", cscRequired: false },
@@ -339,6 +346,7 @@ describe("wallet payments", () => {
       kind: "ready" as const,
       requestId: "request-1",
       amountMinor: 10_000,
+      walletAllowed: true,
       contract: undefined,
       card: { id: "card-1", label: "••4310", cscRequired: true },
     };
@@ -375,6 +383,83 @@ describe("wallet payments", () => {
     ).toMatchObject({ kind: "pay_link" });
     expect(services.claim).not.toHaveBeenCalled();
     expect(services.process).not.toHaveBeenCalled();
+  });
+
+  it("puts a service YooMoney takes from a card only on the linked card, and refuses a transfer the balance cannot pay", async () => {
+    services.fill.mockResolvedValue({
+      kind: "ready",
+      title: "МегаФон (Россия)",
+      params: { pattern_id: "337", topped_up_phone: "9261234567" },
+      shown: [{ label: "Телефон", value: "9261234567" }],
+    });
+    services.create.mockImplementation(async (_scope, input) =>
+      row({ ...input, state: "quoted" })
+    );
+    services.request.mockResolvedValue({
+      kind: "ready",
+      requestId: "request-1",
+      amountMinor: 10_000,
+      walletAllowed: false,
+      contract: undefined,
+      // The balance would cover it: YooMoney still wants a card.
+      balanceMinor: 20_000,
+      card: { id: "card-1", label: "••4310", cscRequired: false },
+    });
+    expect(
+      await call(answered("положи 100 рублей"), {
+        action: "prepare",
+        kind: "service",
+        serviceId: "337",
+        fields: [{ name: "topped_up_phone", value: "9261234567" }],
+      })
+    ).toMatchObject({ kind: "quoted" });
+    expect(services.create.mock.calls[0]?.[1]).toMatchObject({
+      cardId: "card-1",
+      // Where the person asked: the outcome is told there.
+      conversationChannel: "eve",
+      conversationId: "session-1",
+    });
+
+    services.create.mockClear();
+    expect(
+      await call(answered("переведи 100 рублей"), {
+        action: "prepare",
+        kind: "transfer",
+        to: "4100111222333444",
+        amountRub: 100,
+      })
+    ).toMatchObject({ kind: "refused" });
+    expect(services.create).not.toHaveBeenCalled();
+  });
+
+  it("sends the person YooMoney's page when the wallet wants something done first", async () => {
+    services.fill.mockResolvedValue({
+      kind: "ready",
+      title: "МегаФон (Россия)",
+      params: { pattern_id: "337", topped_up_phone: "9261234567" },
+      shown: [{ label: "Телефон", value: "9261234567" }],
+    });
+    services.request.mockResolvedValue({
+      kind: "refused",
+      error: "ext_action_required",
+      link: "https://yoomoney.ru/id/identification",
+    });
+    expect(
+      await call(answered("положи 100 рублей"), {
+        action: "prepare",
+        kind: "service",
+        serviceId: "337",
+        fields: [{ name: "topped_up_phone", value: "9261234567" }],
+      })
+    ).toMatchObject({
+      kind: "refused",
+      link: "https://yoomoney.ru/id/identification",
+    });
+  });
+
+  it("marks the outcome it tells, so no notice tells it again", async () => {
+    await call(answered("да"), { action: "confirm", paymentId });
+    expect(services.told).toHaveBeenCalledWith(scope, { id: paymentId });
   });
 
   it("reads a card call YooMoney may never have taken from the history alone", async () => {
