@@ -49,7 +49,7 @@ export const marketCartOperation = defineYandexOperation({
   access: "read",
   args: z.object({}),
   id: "market.cart",
-  origin: "https://market.yandex.ru/",
+  origin: "https://market.yandex.ru/robots.txt",
   result: z.object({
     count: z.number().int(),
     items: z.array(

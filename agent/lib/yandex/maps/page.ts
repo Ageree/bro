@@ -1,9 +1,12 @@
 /**
- * The page's own session for Yandex Maps, as JavaScript source for the
- * operations' `run` functions: `csrfToken` and `sessionId` from the page's
- * JSON context (or from its HTML), and `mapsCall(path, params)`, a GET to
- * `/maps/api/*` with the request signed by `s`. A stale token comes back as
- * a new one without `data`; the call is then made once more with it.
+ * The session for Yandex Maps' API, as JavaScript source for the operations'
+ * `run` functions: `csrfToken` and `sessionId` from the page's JSON context
+ * when the page has one, otherwise an empty token and a session id of its
+ * own; and `mapsCall(path, params)`, a GET to `/maps/api/*` with the request
+ * signed by `s`. A stale or empty token comes back as a new one without
+ * `data`; the call is then made once more with it. The API takes a session
+ * of the call's own: the operations run on a light page of yandex.ru and do
+ * not load `/maps/` (8.9 MB, and for the pool browser often a captcha page).
  */
 export const mapsPage = `
 const mapsSign = (text) => {
@@ -11,15 +14,14 @@ const mapsSign = (text) => {
   for (const b of new TextEncoder().encode(text)) h = (((h << 5) + h) ^ b) >>> 0;
   return h;
 };
-const mapsContext = async () => {
+const mapsContext = () => {
   const found = [...document.scripts]
     .map((s) => (s.type === "application/json" ? s.textContent : ""))
     .find((t) => t.includes('"csrfToken"'));
-  const text = found || (await (await fetch("/maps/")).text());
-  const csrf = text.match(/"csrfToken":"([^"]+)"/);
-  const session = text.match(/"sessionId":"([^"]+)"/);
-  if (!csrf || !session) return null;
-  return { csrfToken: csrf[1], sessionId: session[1] };
+  const csrf = found && found.match(/"csrfToken":"([^"]+)"/);
+  const session = found && found.match(/"sessionId":"([^"]+)"/);
+  if (csrf && session) return { csrfToken: csrf[1], sessionId: session[1] };
+  return { csrfToken: "", sessionId: Date.now() + "_" + Math.floor(Math.random() * 1e6) };
 };
 const mapsCall = async (session, path, params) => {
   const attempt = async () => {
