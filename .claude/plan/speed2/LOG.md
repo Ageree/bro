@@ -15,19 +15,19 @@
   - tools — 250 ₽;
   - media — 200 ₽;
   - browser — 400 ₽.
-  Баланс на старте 19.10: RouterAI — 3 275 ₽, Selectel — 8 517 ₽.
+    Баланс на старте 19.10: RouterAI — 3 275 ₽, Selectel — 8 517 ₽.
 - Cookie владельца для замеров лежит в операторском состоянии
   (`bench/owner-cookies.txt`, зашифровано) и действует примерно до 25.10. После этапа
   выйти из этой сессии Better Auth, чтобы токен умер.
 
 ## Единицы
 
-| Единица | Ветка | Сессия | Состояние |
-|---|---|---|---|
-| cache — кэш первого шага | claude/speed2-cache | session_012jTCdEpgdEbdZqgXQkfW9w | запущена 19.10 |
-| tools — медленные инструменты | claude/speed2-tools | session_01VowM2VB8b79mtvvQYLxPga | запущена 19.10 |
-| media — фото, голос, PDF | claude/speed2-media | session_01ND3QFVfwzKE77ACrL4gqbx | запущена 19.10 |
-| browser — поручение браузеру | claude/speed2-browser | session_014vyocNaPPvfYmDVJ9gPsCE | запущена 19.10 |
+| Единица                       | Ветка                 | Сессия                           | Состояние      |
+| ----------------------------- | --------------------- | -------------------------------- | -------------- |
+| cache — кэш первого шага      | claude/speed2-cache   | session_012jTCdEpgdEbdZqgXQkfW9w | запущена 19.10 |
+| tools — медленные инструменты | claude/speed2-tools   | session_01VowM2VB8b79mtvvQYLxPga | запущена 19.10 |
+| media — фото, голос, PDF      | claude/speed2-media   | session_01ND3QFVfwzKE77ACrL4gqbx | запущена 19.10 |
+| browser — поручение браузеру  | claude/speed2-browser | session_014vyocNaPPvfYmDVJ9gPsCE | запущена 19.10 |
 
 ## Очередь (после первых результатов)
 
