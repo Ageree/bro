@@ -236,9 +236,14 @@ describe("the geolocation tools", () => {
       callContext("authjs", "telegram")
     );
     expect(asked).toMatchObject({ asked: true, locationButton: true });
-    expect(asked.reply).toContain("«Транслировать геопозицию»");
-    const none = await set.location_now.execute({}, callContext());
-    expect(none.reply).toContain("share a live location");
+    expect(asked).toHaveProperty(
+      "reply",
+      expect.stringContaining("«Транслировать геопозицию»")
+    );
+    expect(await set.location_now.execute({}, callContext())).toHaveProperty(
+      "reply",
+      expect.stringContaining("share a live location")
+    );
   });
 
   it("name a fresh point only in the person's words, in their turn", async () => {
