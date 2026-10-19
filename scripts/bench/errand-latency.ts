@@ -58,6 +58,8 @@ const gapMs = Number(flags["gap-s"]) * 1000;
 const timeoutMs = Number(flags["timeout-s"]) * 1000;
 
 const reportPattern = /^Browser run (\S+) finished\./mu;
+/** What a turn's own text says when `send_message` already answered. */
+const bookkeeping = /^\s*(?:DELIVERY_COMPLETE|<eve-empty-delivery\/>)?\s*$/u;
 
 const sendSchema = z.object({
   input: z.object({ text: z.string() }),
@@ -142,6 +144,18 @@ async function errand(text: string) {
               }
               break;
             }
+            case "message.completed":
+              // A report turn may answer in plain text instead of
+              // `send_message`: the web chat shows it all the same.
+              if (
+                reportTurn !== undefined &&
+                turn >= reportTurn &&
+                !bookkeeping.test(event.data.message)
+              ) {
+                marks.result ??= at;
+                marks.resultAsText ??= at;
+              }
+              break;
             case "session.waiting":
               // Done once the person read the result, or when the first
               // turn ended without an errand: Bro answered another way.
