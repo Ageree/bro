@@ -18,7 +18,7 @@ const rub = (amountMinor: number) =>
  * how much and from where, and for a refusal YooMoney's reason. Code's own
  * words: the model may never call a payment paid that YooMoney did not.
  */
-export function yoomoneyOutcomeNotice(
+function yoomoneyOutcomeNotice(
   payment: Pick<
     Settled,
     "state" | "title" | "shown" | "amountMinor" | "cardLabel" | "error"

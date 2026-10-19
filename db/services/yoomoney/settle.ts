@@ -167,7 +167,13 @@ export async function payYoomoneyAndSettle(
     const walletGone =
       error instanceof YoomoneyError &&
       (error.code === "revoked" || error.code === "scope");
-    if (!walletGone) settlement = { state: "unknown" };
+    // A lost read of a payment YooMoney took changes nothing: as `unknown`
+    // a card payment would only be looked up in the history, never asked
+    // about again, and its page would drop the bank's form.
+    if (!walletGone)
+      settlement = {
+        state: readBack && payment.state === "pending" ? "pending" : "unknown",
+      };
     else if (!readBack)
       settlement = { state: "refused", error: "not_connected" };
   }

@@ -307,9 +307,9 @@ const noticeRetryMs = 60 * 60_000;
 /**
  * Settled payments whose outcome nobody told the person — paid or refused
  * on their page, at the bank, or by the tick — taken once for a notice in
- * the conversation they were asked in. Only a payment sent in the last day,
- * and settled half a minute ago or more: Bro's own confirm or status call
- * marks what it tells the moment it settles it.
+ * the conversation they were asked in. Only a payment once sent, settled in
+ * the last day and half a minute ago or more: Bro's own confirm or status
+ * call marks what it tells the moment it settles it.
  */
 export async function claimYoomoneyOutcomeNotices(now: Date, limit = 10) {
   const due = await db
@@ -321,7 +321,8 @@ export async function claimYoomoneyOutcomeNotices(now: Date, limit = 10) {
         isNull(yoomoneyPayments.outcomeToldAt),
         isNotNull(yoomoneyPayments.conversationChannel),
         isNotNull(yoomoneyPayments.conversationId),
-        gt(yoomoneyPayments.submittedAt, new Date(now.getTime() - 86_400_000)),
+        isNotNull(yoomoneyPayments.submittedAt),
+        gt(yoomoneyPayments.settledAt, new Date(now.getTime() - 86_400_000)),
         lt(yoomoneyPayments.settledAt, new Date(now.getTime() - 30_000))
       )
     )

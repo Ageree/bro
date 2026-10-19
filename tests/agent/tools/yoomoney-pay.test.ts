@@ -429,7 +429,74 @@ describe("wallet payments", () => {
         amountRub: 100,
       })
     ).toMatchObject({ kind: "refused" });
+    // Refused for the wallet, not for a recipient it could not read.
+    expect(services.request).toHaveBeenCalledTimes(2);
     expect(services.create).not.toHaveBeenCalled();
+  });
+
+  it("does not pay a wallet payment YooMoney no longer takes from the balance on its yes", async () => {
+    services.read.mockResolvedValue(
+      row({ expiresAt: new Date(Date.now() - 1000) })
+    );
+    services.request.mockResolvedValue({
+      kind: "ready",
+      requestId: "request-2",
+      amountMinor: 10_000,
+      walletAllowed: false,
+      contract: undefined,
+      balanceMinor: 20_000,
+      card: { id: "card-1", label: "••4310", cscRequired: false },
+    });
+    expect(
+      await call(answered("да"), { action: "confirm", paymentId })
+    ).toMatchObject({ kind: "changed" });
+    expect(services.claim).not.toHaveBeenCalled();
+    expect(services.process).not.toHaveBeenCalled();
+  });
+
+  it("keeps a card payment at the bank pending when a read of it is lost", async () => {
+    services.read.mockResolvedValue(
+      row({
+        state: "pending",
+        cardId: "card-1",
+        cardLabel: "••4310",
+        bankUri: "https://bank.example/3ds",
+        bankParams: { MD: "md-1" },
+      })
+    );
+    services.process.mockRejectedValue(new YoomoneyError("unavailable"));
+    await call(answered("ну что там?"), { action: "status", paymentId });
+    expect(services.settle.mock.calls[0]?.[1]).toMatchObject({
+      from: ["pending"],
+      state: "pending",
+    });
+  });
+
+  it("gives a person who has not used the bank's form an hour before the history says unpaid", async () => {
+    const sent = (minutesAgo: number) =>
+      row({
+        state: "pending",
+        cardId: "card-1",
+        cardLabel: "••4310",
+        bankUri: "https://bank.example/3ds",
+        bankParams: { MD: "md-1" },
+        submittedAt: new Date(Date.now() - minutesAgo * 60_000),
+      });
+    services.process.mockResolvedValue({
+      kind: "refused",
+      error: "illegal_params",
+    });
+    services.read.mockResolvedValue(sent(40));
+    await call(answered("ну что там?"), { action: "status", paymentId });
+    expect(services.settle.mock.calls[0]?.[1]).toMatchObject({
+      state: "pending",
+    });
+    services.read.mockResolvedValue(sent(70));
+    await call(answered("ну что там?"), { action: "status", paymentId });
+    expect(services.settle.mock.calls[1]?.[1]).toMatchObject({
+      state: "refused",
+      error: "not_in_history",
+    });
   });
 
   it("sends the person YooMoney's page when the wallet wants something done first", async () => {

@@ -2,7 +2,11 @@ import type { AttachSessionFn, Session } from "eve/channels";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { yoomoneyPayments } from "@db/schema/yoomoney";
 import type * as stored from "@db/services/yoomoney/payments";
-import { backgroundNoticeMessage } from "@shared/chat/background-turn";
+import { z } from "zod";
+import {
+  backgroundNoticeMessage,
+  backgroundNoticeText,
+} from "@shared/chat/background-turn";
 
 const claim = vi.hoisted(() =>
   vi.fn<typeof stored.claimYoomoneyOutcomeNotices>()
@@ -77,19 +81,19 @@ describe("the outcome of a wallet payment Bro did not see settle", () => {
     });
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     vi.spyOn(console, "info").mockImplementation(() => undefined);
-    const { tellYoomoneyOutcomes, yoomoneyOutcomeNotice } =
-      await import("@agent/lib/yoomoney/notice");
+    const { tellYoomoneyOutcomes } = await import("@agent/lib/yoomoney/notice");
     const now = new Date();
 
     await tellYoomoneyOutcomes({}, now);
 
-    const text = yoomoneyOutcomeNotice(settled({}));
+    const messages = z
+      .array(z.object({ chat_id: z.string(), text: z.string() }))
+      .parse(sent);
+    expect(messages.map((message) => message.chat_id)).toEqual(["42", "43"]);
+    const text = messages[0]?.text ?? "";
     expect(text).toContain("Оплатил через ЮMoney");
+    expect(text).toContain("100,00");
     expect(text).toContain("с карты ••4310");
-    expect(sent).toEqual([
-      { chat_id: "42", text },
-      { chat_id: "43", text },
-    ]);
     expect(release.mock.calls).toEqual([["payment-2", now]]);
   });
 
@@ -117,14 +121,12 @@ describe("the outcome of a wallet payment Bro did not see settle", () => {
       send,
     }));
     vi.spyOn(console, "info").mockImplementation(() => undefined);
-    const { tellYoomoneyOutcomes, yoomoneyOutcomeNotice } =
-      await import("@agent/lib/yoomoney/notice");
+    const { tellYoomoneyOutcomes } = await import("@agent/lib/yoomoney/notice");
 
     await tellYoomoneyOutcomes({ attachSession }, new Date());
 
-    const text = yoomoneyOutcomeNotice(
-      settled({ state: "refused", error: "not_in_history" })
-    );
+    const text =
+      backgroundNoticeText(z.string().parse(send.mock.calls[0]?.[0])) ?? "";
     expect(text).toContain("не прошёл");
     expect(text).toContain("Деньги не списаны");
     expect(attachSession).toHaveBeenCalledWith("web-session-1");

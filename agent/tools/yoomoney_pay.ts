@@ -584,8 +584,13 @@ async function confirm(
     );
     if (!checked.connected) return notConnected;
     if (checked.result.kind === "refused") return refusal(checked.result);
-    if (payment.cardId === null && !checked.result.walletAllowed)
-      return refusal({ error: "wallet_not_allowed" });
+    if (payment.cardId === null && !checked.result.walletAllowed) {
+      return {
+        kind: "changed" as const,
+        reply:
+          "Nothing was paid: YooMoney no longer takes this payment from the wallet's balance. Prepare it again — a linked card may pay it — and ask the person again.",
+      };
+    }
     if (
       checked.result.amountMinor !== payment.amountMinor ||
       (payment.cardId !== null && checked.result.card?.id !== payment.cardId)
