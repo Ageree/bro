@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { modelEndpoint } from "./endpoint";
+import { callConversationOf } from "./routerai/warm";
 
 /**
  * Direct model calls (OpenRouter or RouterAI) that go silent are cut short. Nothing bounded a model call
@@ -275,7 +276,8 @@ async function readUntilFirstEvent(
  * the backend, the milliseconds to the headers, to the first `data:` event
  * and to the end of the answer, and the tokens its last event reports — no
  * text. A person waits on the whole call: the answer is read whole before eve
- * gets it (`routerai/fetch.ts`).
+ * gets it (`routerai/fetch.ts`). A person's call names its session, as its
+ * `[tools]` and `[model] prefix` lines do.
  */
 function callTiming(call: {
   readonly attempt: number;
@@ -287,6 +289,7 @@ function callTiming(call: {
   readonly startedAt: number;
 }) {
   const decoder = new TextDecoder();
+  const sessionId = callConversationOf();
   // The usage event is the last one: the tail of the stream is enough.
   let tail = "";
   const tokens = (name: string) => {
@@ -309,6 +312,7 @@ function callTiming(call: {
         outputTokens: tokens("completion_tokens"),
         reasoning: call.reasoning,
         reasoningTokens: tokens("reasoning_tokens"),
+        sessionId,
         totalMs: Math.round(performance.now() - call.startedAt),
       });
     },

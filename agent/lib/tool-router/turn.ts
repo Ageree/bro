@@ -90,6 +90,12 @@ export interface RouterInputs {
   /** The skills the turn's words and Bro's last message want. */
   readonly triggered: readonly SkillName[];
   readonly warmMs: number;
+  /**
+   * TOOL_ROUTER_WHOLE_WORKSPACES: a set that would grow past the block of
+   * this turn, or of the turn before within the warm window, opens every
+   * group instead.
+   */
+  readonly wholeOnGrowth: boolean;
   /** Bro wrote to the person before this turn. */
   readonly withPrev: boolean;
 }
@@ -112,6 +118,8 @@ interface RouterOutcome {
   readonly blockChanged: boolean;
   readonly decided: readonly RouterGroup[] | undefined;
   readonly groups: readonly RouterGroup[];
+  /** The set would have grown and opened every group instead (`wholeOnGrowth`). */
+  readonly grownWhole: boolean;
   /** Groups of the triggered skills the decision left out of the set. */
   readonly narrowed: readonly RouterGroup[];
   readonly reason: RouterReason;
@@ -223,6 +231,20 @@ export function chooseRouterGroups(inputs: RouterInputs): RouterChoice {
       ? state.turnGroups
       : null);
   const previousBlock = turnSet ?? state.turnGroups;
+  // The block RunInfra holds cached for this conversation, when a new one
+  // would cost a cold read: this turn's, or the last turn's within the warm
+  // window (past it the set starts afresh anyway).
+  const cachedBlock = turnSet ?? (warm ? state.turnGroups : null);
+  // RunInfra reads the whole prompt cold after any change of the tool block,
+  // and often the step after it as well (19.10): a set that grows at every
+  // new topic of a conversation pays that again each time. In the pilot it
+  // grows once, to every group, which is also the set a failed decision
+  // opens.
+  const grownWhole = (groups: readonly RouterGroup[]) =>
+    inputs.wholeOnGrowth &&
+    cachedBlock !== null &&
+    cachedBlock.length > 0 &&
+    groups.some((group) => !cachedBlock.includes(group));
 
   const outcome = (
     groups: Iterable<RouterGroup>,
@@ -235,11 +257,14 @@ export function chooseRouterGroups(inputs: RouterInputs): RouterChoice {
       readonly newTurn: boolean;
     }
   ): RouterOutcome => {
-    const ordered = orderedGroups(groups);
+    const chosen = orderedGroups(groups);
+    const whole = grownWhole(chosen);
+    const ordered = whole ? orderedGroups(everyGroup) : chosen;
     return {
       blockChanged: !sameSet(previousBlock, ordered),
       decided: details.decided,
       groups: ordered,
+      grownWhole: whole,
       narrowed: orderedGroups(details.dropped ?? []).filter(
         (group) => !ordered.includes(group)
       ),
@@ -249,7 +274,9 @@ export function chooseRouterGroups(inputs: RouterInputs): RouterChoice {
         ...state,
         called: details.newTurn ? [] : state.called,
         carried: details.carried
-          ? orderedGroups(details.carried)
+          ? whole
+            ? ordered
+            : orderedGroups(details.carried)
           : state.carried,
         failedOpen: details.failedOpen,
         lastStepAt: new Date(now).toISOString(),
@@ -604,7 +631,8 @@ export async function routerGroupsOfStep(
   messages: readonly ModelMessage[],
   step: StepIdentity,
   setup: SkillSetup,
-  mode: "on" | "shadow"
+  mode: "on" | "shadow",
+  wholeOnGrowth = false
 ): Promise<readonly RouterGroup[]> {
   const started = Date.now();
   const state = readRouterState();
@@ -647,6 +675,7 @@ export async function routerGroupsOfStep(
     step,
     triggered,
     warmMs: env.TOOL_ROUTER_WARM_MINUTES * 60_000,
+    wholeOnGrowth,
     withPrev: text.withPrev,
   });
   let decision: RouterDecision | undefined;
@@ -702,6 +731,7 @@ export async function routerGroupsOfStep(
         ? decision.failure
         : undefined,
     groups: outcome.groups,
+    grownWhole: outcome.grownWhole ? true : undefined,
     inputTokens:
       decision !== undefined && "groups" in decision
         ? decision.inputTokens

@@ -26,6 +26,15 @@ const callConversation = new AsyncLocalStorage<string>();
 const held = new Map<string, ReturnType<typeof setTimeout>>();
 
 /**
+ * The session whose model call this is, when `warmCallMiddleware` marked
+ * it: the `[model] call` and `[model] prefix` lines name it, so a call is
+ * lined up with its session's `[tools]` line and its previous call.
+ */
+export function callConversationOf() {
+  return callConversation.getStore();
+}
+
+/**
  * Whether PROMPT_WARM_WORKSPACES names a workspace by id or `*`: a pure read
  * of the environment, so every step can ask it.
  */

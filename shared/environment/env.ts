@@ -1210,6 +1210,17 @@ export const env = createEnv({
     // shadow: decide and log, hide nothing; on: a person's turn sees the
     // core and the chosen groups.
     TOOL_ROUTER_MODE: z.enum(["shadow", "on"]).default("shadow"),
+    // The tool router's whole block on growth: workspace ids or `*`. Once a
+    // conversation's set would grow (a new group by the decision, a skill's
+    // words or `open_tools`), every group opens, so the block changes once
+    // in the warm window instead of at each new topic: RunInfra reads the
+    // whole prompt cold after any change of the block (19.10).
+    TOOL_ROUTER_WHOLE_WORKSPACES: workspaceListSchema
+      .refine(
+        (entries) => entries.every((entry) => !entry.includes("@")),
+        "TOOL_ROUTER_WHOLE_WORKSPACES takes workspace ids or *, not emails"
+      )
+      .optional(),
     // TypeSafe's System One API (api.typesafe.ai), which alone serves Jev
     // 1.14, and a CONNECT proxy used only for it, with TLS checked.
     TYPESAFE_API_KEY: pastedKeySchema.optional(),
