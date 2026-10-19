@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { env } from "@shared/environment";
 import type { Prompt, PromptMessage } from "@agent/lib/model/prompt";
 import { namedAttachmentPaths } from "@agent/lib/sandbox/inbox";
 import { annotationSchema, annotationsFor } from "./annotations";
@@ -16,6 +17,12 @@ import { pdfFacts } from "./pdf";
  * PDF of an earlier turn goes as its line alone, one of this turn keeps its
  * part and reuses the parse of the step before (`annotations.ts`), and an
  * encrypted one never goes.
+ *
+ * A photo of an earlier turn goes as its line alone only in the pilot
+ * EARLIER_PHOTOS_WORKSPACES (`earlierPhotos`): RunInfra takes no picture, so
+ * a call that carries one goes to RouterAI (`routerai/runinfra.ts`), and a
+ * photo kept in the history sent every later step of the conversation there,
+ * 2–4 s slower to the first token (19.10).
  */
 
 type UserPart = Extract<PromptMessage, { role: "user" }>["content"][number];
@@ -26,6 +33,8 @@ const bigImageLine =
   /^Attached file (\/workspace\/attachments\/[\da-f]{16}\/[\w.-]+) \((image\/[\w.+-]+)\)$/u;
 const bigImageNote = " — картинка больше 3 МБ: ты её не видишь";
 const encryptedNote = " — PDF зашифрован: ты его не видишь";
+const earlierPhotoNote =
+  " — фото из прошлого сообщения: сейчас ты его не видишь, о нём — твой прежний ответ; нужна новая деталь с него — поручи помощнику посмотреть этот файл";
 
 /** The PDFs' facts by path: the hash in the path names the bytes. */
 const factsByPath = new Map<string, ReturnType<typeof pdfFacts>>();
@@ -40,6 +49,15 @@ const maximumUnreadable = 500;
 const ownAnnotationsSchema = z.object({
   openrouter: z.object({ annotations: z.array(annotationSchema) }),
 });
+
+/**
+ * Whether EARLIER_PHOTOS_WORKSPACES names the workspace by id or `*`: a pure
+ * read of the environment, so every step can ask it.
+ */
+export function earlierPhotosPilot(workspaceId: string) {
+  const list = env.EARLIER_PHOTOS_WORKSPACES ?? [];
+  return list.includes("*") || list.includes(workspaceId);
+}
 
 /** Whether `value` is a path eve's staging made. */
 export function isStagedPath(value: string | undefined): value is string {
@@ -148,15 +166,18 @@ function pdfParts(
 }
 
 /**
- * The prompt with each staged file's path line, the PDFs of earlier turns,
- * the encrypted ones and those a call failed on (`markUnreadablePdfs`) as
+ * The prompt with each staged file's path line, the PDFs of earlier turns
+ * (and their photos with `earlierPhotos`), the encrypted ones and those a call failed on (`markUnreadablePdfs`) as
  * lines alone, eve's line of a photo too large to
  * inline saying the model does not see it, and the parse of this turn's
  * PDFs on the assistant message after them; the same prompt when nothing
  * changes. Within a turn every step gets the same transform; the next turn
  * turns this turn's PDFs into lines, one cache miss at the boundary.
  */
-export function withStagedFiles(prompt: Prompt) {
+export function withStagedFiles(
+  prompt: Prompt,
+  options: { readonly earlierPhotos?: boolean } = {}
+) {
   const cut = currentTurnStart(prompt);
   const pdfs = { annotated: 0, current: 0, earlier: 0, encrypted: 0 };
   /** This turn's PDFs kept inline, by the index of their message. */
@@ -171,6 +192,18 @@ export function withStagedFiles(prompt: Prompt) {
       }
       if (!isStagedPath(part.filename)) return [part];
       const path = part.filename;
+      if (
+        options.earlierPhotos === true &&
+        index < cut &&
+        part.mediaType.startsWith("image/")
+      ) {
+        return [
+          {
+            text: `${attachedLine(path, part.mediaType).text}${earlierPhotoNote}`,
+            type: "text",
+          },
+        ];
+      }
       if (part.mediaType !== "application/pdf" || part.data.type !== "data") {
         return [part, attachedLine(path, part.mediaType)];
       }

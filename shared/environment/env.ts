@@ -927,12 +927,14 @@ export const env = createEnv({
     WEB_SEARCH_INSTANT: z.enum(["on", "off"]).default("on"),
     // Voice notes go to RouterAI's `/audio/transcriptions`; the fallback
     // model takes over when the first one rejects the clip, and the language
-    // is an ISO 639-1 hint, `auto` lets the model guess.
+    // is an ISO 639-1 hint, `auto` lets the model guess. RouterAI dropped
+    // Qwen3-ASR-Flash (19.10: 503 «No available providers»), and every voice
+    // note waited for that refusal before Whisper answered it.
     ROUTERAI_STT_FALLBACK_MODEL: trimmedValue.default(
-      "openai/whisper-large-v3-turbo"
+      "openai/gpt-4o-transcribe"
     ),
     ROUTERAI_STT_LANGUAGE: trimmedValue.default("ru"),
-    ROUTERAI_STT_MODEL: trimmedValue.default("qwen/qwen3-asr-flash-2026-02-10"),
+    ROUTERAI_STT_MODEL: trimmedValue.default("openai/whisper-large-v3-turbo"),
     // Object Storage of any S3-compatible provider (Selectel, say): the four
     // go together or not at all. With them Bro signs for this endpoint with
     // this plain access key, in BROWSER_STATE_BUCKET; without them it uses
@@ -1172,6 +1174,11 @@ export const env = createEnv({
     // kept warm for: a person's last call goes again for one token after a
     // pause (`agent/lib/model/routerai/warm.ts`). Unset, nobody's.
     PROMPT_WARM_WORKSPACES: workspaceListSchema.optional(),
+    // Workspace ids or `*` whose photos of earlier turns reach the model as
+    // their path lines, not pictures, so the conversation's later steps go
+    // to RunInfra, which takes no picture (`agent/lib/staged-files/prompt.ts`;
+    // only with the files pilot). Unset, nobody's.
+    EARLIER_PHOTOS_WORKSPACES: workspaceListSchema.optional(),
     // The pilot of flash mode for browser errands that only search: workspace
     // ids or owners' emails, or `*` for every workspace, whose errands on
     // their own browser (a VM or a sandbox of the pool) run browser-use's

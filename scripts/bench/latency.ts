@@ -2,6 +2,7 @@ import { Client, type MessageStreamEvent } from "eve/client";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { benchEnv } from "../env/bench.ts";
+import { registerApplicationModuleResolution } from "../lib/module-resolution.ts";
 import { defaultCookieFile, readCookieHeader } from "./cookies.ts";
 import { signedInSession } from "./sign-in.ts";
 
@@ -11,8 +12,10 @@ import { signedInSession } from "./sign-in.ts";
  * session, so later runs read a warm cache as a long Telegram chat does,
  * and prints a JSON line per run with the milliseconds from the POST to
  * each turn boundary: the server's own `meta.at` (`at`) and the moment the
- * event reached this machine (`got`). Reads nothing but the session it
- * opens; `--session` continues one.
+ * event reached this machine (`got`), and the POST's epoch milliseconds
+ * (`started`) to find the turn in eve's journal. Reads nothing but the session it
+ * opens; `--session` continues one. `--file` attaches a photo or PDF to
+ * every run's message as the web composer sends it (`media.ts`).
  *
  *   node --experimental-strip-types scripts/bench/latency.ts \
  *     --cookie-file ~/.bro-bench/cookies.txt --runs 5 --text "привет, как дела?"
@@ -21,6 +24,7 @@ import { signedInSession } from "./sign-in.ts";
 const { values: flags } = parseArgs({
   options: {
     "cookie-file": { type: "string" },
+    file: { multiple: true, type: "string" },
     "gap-s": { default: "20", type: "string" },
     host: { type: "string" },
     runs: { default: "3", type: "string" },
@@ -43,6 +47,11 @@ const client = new Client({
   // A redirect here is the sign-in page; never follow it with the cookie.
   redirect: "manual",
 });
+
+const files = (flags.file ?? []).map((path) => ({ path: resolve(path) }));
+// The media helpers load application modules through the tsconfig aliases.
+registerApplicationModuleResolution();
+const { messageContent } = await import("./media.ts");
 
 const texts = flags.text ?? ["привет! как дела?"];
 const runs = Number(flags.runs);
@@ -81,16 +90,18 @@ const ends = new Set([
 
 for (let run = 0; run < runs; run += 1) {
   const text = texts[run % texts.length] ?? "";
+  // oxlint-disable-next-line eslint/no-await-in-loop -- read before the clock starts
+  const message = await messageContent(text, files, []);
   const started = Date.now();
   let response;
   if (session === undefined) {
     // oxlint-disable-next-line eslint/no-await-in-loop -- the runs go one after another, in one session
-    const opened = await client.sessions.create({ message: text });
+    const opened = await client.sessions.create({ message });
     session = opened.session;
     response = opened.response;
   } else {
     // oxlint-disable-next-line eslint/no-await-in-loop -- the runs go one after another, in one session
-    response = await session.send(text);
+    response = await session.send(message);
   }
   const marks: { at: number; got: number; what: string }[] = [];
   let step = -1;
@@ -107,7 +118,9 @@ for (let run = 0; run < runs; run += 1) {
     }
     if (ends.has(event.type)) break;
   }
-  console.log(JSON.stringify({ marks, run, sessionId: response.sessionId }));
+  console.log(
+    JSON.stringify({ marks, run, sessionId: response.sessionId, started })
+  );
   if (run < runs - 1) {
     // oxlint-disable-next-line eslint/no-await-in-loop -- the gap between runs
     await new Promise((done) => setTimeout(done, gapMs));

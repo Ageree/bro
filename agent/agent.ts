@@ -79,6 +79,7 @@ import { skillSetup, skillsLayout, skillsPilot } from "@agent/lib/skills/pilot";
 import { offeredSkills, turnOfferedSkills } from "@agent/lib/skills/tools";
 import { readWorkspaceTimeZone } from "@db/services/user-profile";
 import { taskAgentPilot, taskFilesEnabled } from "@agent/lib/sandbox/pilot";
+import { earlierPhotosPilot } from "@agent/lib/staged-files/prompt";
 import { signEnabled } from "@agent/lib/signatures/pilot";
 import { browserNoticeTurn, turnKind } from "@agent/lib/turn-kind/kind";
 import {
@@ -469,6 +470,11 @@ export default defineAgent({
           // The files pilot shows the model where the person's photos and
           // PDFs lie and mends the paths it miswrites.
           stagedFiles: taskFilesEnabled(scope.workspaceId) ? true : undefined,
+          // The pilot of earlier photos as their lines: a conversation with a
+          // photo in it goes back to RunInfra after the photo's turn.
+          earlierPhotos: earlierPhotosPilot(scope.workspaceId)
+            ? true
+            : undefined,
           // A person's conversation stays in RunInfra's prompt cache through
           // a pause, so the reply after it does not read its prompt cold.
           warmConversation:

@@ -13,6 +13,10 @@ function stubHost(answers: Partial<Record<Kind, Answer[]>>) {
   const calls: { readonly kind: Kind; readonly url: string }[] = [];
   vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
     const path = new URL(url).pathname;
+    // The read `load`'s `create` makes so the step opens its sandbox.
+    if (init.method === "GET" && path.endsWith("/files")) {
+      return Response.json({ error: "not_found" }, { status: 404 });
+    }
     const kind: Kind =
       init.method === "PUT" && !path.endsWith("/files")
         ? "open"
@@ -67,14 +71,18 @@ async function load() {
       import("@agent/hooks/sandbox-release"),
       import("@agent/subagents/task/hooks/sandbox-release"),
     ]);
-    const create = async (sessionKey: string, sessionId: string) =>
-      await backend.cloudRuSandbox().create({
+    // A step that uses its sandbox: the backend opens it at the first call.
+    const create = async (sessionKey: string, sessionId: string) => {
+      const handle = await backend.cloudRuSandbox().create({
         existingMetadata: { sandboxId: "old", workspaceId: "personal:abc" },
         runtimeContext: { appRoot: "/app" },
         sessionKey,
         tags: { agent: "bro", channel: "telegram", sessionId },
         templateKey: null,
       });
+      await handle.session.readBinaryFile({ path: "/workspace/opened" });
+      return handle;
+    };
     const turnEnds = async (
       hook: typeof ownHook.default,
       sessionId: string,

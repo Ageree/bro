@@ -36,6 +36,15 @@ function pdfPart(path: string, bytes = plainPdf) {
   } as const;
 }
 
+function photo(path: string) {
+  return {
+    data: { data: new Uint8Array([1, 2, 3]), type: "data" },
+    filename: path,
+    mediaType: "image/png",
+    type: "file",
+  } as const;
+}
+
 const answer = {
   content: [{ text: "Готово.", type: "text" }],
   role: "assistant",
@@ -92,6 +101,26 @@ describe("withStagedFiles", () => {
     const [text] = texts(prompt[0]);
     expect(text?.startsWith(line)).toBe(true);
     expect(text?.length).toBeGreaterThan(line.length);
+  });
+
+  it("turns an earlier turn's photo into its line in the pilot only", () => {
+    const earlier = staged(3, "poster.png");
+    const current = staged(4, "receipt.jpg");
+    const prompt: Prompt = [
+      person({ text: "что на афише?", type: "text" }, photo(earlier)),
+      answer,
+      person({ text: "а на чеке?", type: "text" }, photo(current)),
+    ];
+
+    const piloted = withStagedFiles(prompt, { earlierPhotos: true }).prompt;
+    expect(files(piloted[0])).toEqual([]);
+    expect(texts(piloted[0]).join("\n")).toContain(
+      `Attached file ${earlier} (image/png) — фото из прошлого сообщения`
+    );
+    expect(files(piloted[2])).toEqual([current]);
+
+    const plain = withStagedFiles(prompt).prompt;
+    expect(files(plain[0])).toEqual([earlier]);
   });
 
   it("leaves a prompt without staged files as it is", () => {
