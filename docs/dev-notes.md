@@ -1157,8 +1157,8 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   RunInfra в начало не переносит (запись о шаблоне DeepSeek ниже — про DeepInfra). Поэтому
   рост набора роутером на новой теме разговора — холодный шаг 0 и обычно шаг 1: чат из 10
   ходов на проде — рост в 3 ходах и раз через `open_tools`, шаг 2,5–3,3 с против 1,5–1,9.
-  `TOOL_ROUTER_WHOLE_WORKSPACES` (id или `*`) на первом росте в тёплом окне открывает все
-  группы (как при сбое роутера). До 19.10 `[model] prefix` сравнивал разные сессии (ключ —
+  `TOOL_ROUTER_WHOLE_WORKSPACES` (id или `*`; с 19.10 в проде `*`, владелец — сразу всем) на
+  первом росте в тёплом окне открывает все группы (как при сбое роутера). До 19.10 `[model] prefix` сравнивал разные сессии (ключ —
   первое не-system сообщение, у всех чатов одно): `toolsChanged` и `brokeAt` старых логов —
   шум; теперь ключ — сессия, и `sessionId` есть в `[model] call`. Разбивка кэша первого шага
   по месту хода в чате — последняя таблица `reply-latency.sh`.
@@ -1798,10 +1798,12 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   быстрее deepinfra (вызов browser-use — медиана 2,2 с против 5,6 с), но
   дороже вдвое; без `require_parameters` его вызовы шли без ошибок
   (`docs/browser-speed.md`).
-- Пилот `BROWSER_FAST_WORKSPACES` (05.10): DeepSeek worker на Together без
-  `requireParameters`, `llmTimeoutSeconds` 25 (worker ≥ 2026-10-05.6), flash
-  для поиска (`agent/lib/browser-vm/pilot.ts`, `docs/browser-speed.md`, раздел
-  7). Флейвор хоста (`BROWSER_HOST_FLAVOR`) действует лишь на новый хост.
+- Пилот `BROWSER_FAST_WORKSPACES` (05.10; с 19.10 в проде `*`, владелец — сразу всем):
+  DeepSeek worker на Together без `requireParameters`, `llmTimeoutSeconds` 25 (worker
+  ≥ 2026-10-05.6), flash для поиска — `FLASH_SEARCH` с ним не нужен
+  (`agent/lib/browser-vm/pilot.ts`, `docs/browser-speed.md`, раздел 7). По
+  `browser-runs.sh` 08–19.10: шаг 6,0 с против 12,2 с без пилота, запуск p50 153 с
+  против 299 с, +3,7 ₽ за поручение. Флейвор хоста (`BROWSER_HOST_FLAVOR`) действует лишь на новый хост.
   Сменить его прогретому хосту — удалить VM хоста через Compute API, не
   трогая адрес: пул сам уберёт запись и адрес и создаст новый (на Cloud.ru, где
   пул жил до 10.10; на Selectel хост постоянный).
@@ -2334,7 +2336,8 @@ timing`. Поручение, вставшее в очередь «браузер
   RunInfra (`runinfra.ts`). Картинка где угодно в истории — тоже: фото из
   прошлого хода уводило в RouterAI каждый шаг чата, а через 7 минут тишины такой
   вызов RouterAI шёл 6–15 с даже с кэшем (19.10, замер `latency.ts --file`).
-  Пилот `EARLIER_PHOTOS_WORKSPACES` (id или `*`, нужен пилот файлов) шлёт фото
+  Пилот `EARLIER_PHOTOS_WORKSPACES` (id или `*`, нужен пилот файлов; с 19.10 в проде `*`,
+  владелец — сразу всем) шлёт фото
   прошлых ходов строкой с путём, как PDF (`withStagedFiles`): ход после хода с
   фото снова идёт в RunInfra; вопрос о детали старого фото — через помощника.
 - Голосовые (19.10): `qwen/qwen3-asr-flash-2026-02-10` у RouterAI снят (503 «No
