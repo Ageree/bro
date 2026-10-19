@@ -144,11 +144,11 @@ export default async function Page(props: PageProps<"/yoomoney/[id]">) {
     onboarding,
     (await cookies()).get(yoomoneyOnboardingCookie)?.value
   );
-  // A web chat or iMessage proves the person by the cabinet's session.
-  if (!telegram && !onDevice && !(await requestSession())) {
-    const back = `/yoomoney/${id}?t=${encodeURIComponent(query.t)}`;
-    redirect(`/sign-in?callbackUrl=${encodeURIComponent(back)}`);
-  }
+  // A web chat or iMessage proves the person by the cabinet's session; in
+  // Telegram the button's signed data does, or — the page opened some other
+  // way — the session too.
+  const signIn = `/sign-in?callbackUrl=${encodeURIComponent(`/yoomoney/${id}?t=${encodeURIComponent(query.t)}`)}`;
+  if (!telegram && !onDevice && !(await requestSession())) redirect(signIn);
   const notices = new Map(
     Object.entries({
       declined:
@@ -158,7 +158,7 @@ export default async function Page(props: PageProps<"/yoomoney/[id]">) {
       no_card:
         "Карты пока не видно. Если только что привязал — подожди минуту и проверь снова.",
       who: telegram
-        ? "Открой эту страницу кнопкой «Подключить ЮMoney» из чата с Бро в Telegram — так мы знаем, что это ты."
+        ? "Открой эту страницу кнопкой «Подключить ЮMoney» из чата с Бро в Telegram — так мы знаем, что это ты. Или войди в кабинет Бро."
         : "Войди в кабинет Бро с номером, с которого пишешь Бро, и открой ссылку снова.",
     })
   );
@@ -216,6 +216,11 @@ export default async function Page(props: PageProps<"/yoomoney/[id]">) {
         )}
         {notice !== undefined && (
           <p className="type-body text-destructive">{notice}</p>
+        )}
+        {telegram && query.e === "who" && (
+          <a className="type-body underline" href={signIn}>
+            Войти в кабинет Бро
+          </a>
         )}
         <div className="flex flex-col gap-3">
           {done === 0 && (

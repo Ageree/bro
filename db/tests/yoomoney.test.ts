@@ -286,6 +286,14 @@ describe("connecting the wallet from a chat", () => {
     if (!taken) throw new Error("Expected the page.");
     expect(onboarding.onYoomoneyOnboardingDevice(taken, device)).toBe(true);
     expect(onboarding.onYoomoneyOnboardingDevice(taken, "another")).toBe(false);
+    // A second press, or Alice's session on another device, gets the same
+    // cookie: it never shuts out a consent under way.
+    expect(
+      await onboarding.claimYoomoneyOnboardingDevice(taken, {
+        kind: "session",
+        userId: "alice",
+      })
+    ).toBe(device);
 
     const state = stateOf(
       await onboarding.startYoomoneyOnboardingConsent(taken, origin)

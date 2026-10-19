@@ -70,7 +70,9 @@ export async function POST(
     )
   ) {
     const userId = await sessionUser();
-    const telegramUserId = telegramWebAppUser(form.data.initData ?? "");
+    const telegramUserId = telegramWebAppUser(form.data.initData ?? "", {
+      notBefore: onboarding.createdAt,
+    });
     claimed =
       userId === undefined
         ? undefined

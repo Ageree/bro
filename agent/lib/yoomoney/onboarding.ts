@@ -1,9 +1,11 @@
 import type { AttachSessionFn } from "eve/channels";
 import type { ScheduleToFn } from "eve/schedules";
 import type { ToolContext } from "eve/tools";
+import type { ModelMessage } from "ai";
 import { z } from "zod";
 import photon from "@agent/channels/photon";
 import telegram from "@agent/channels/telegram";
+import { startsTurn } from "@agent/lib/delivery/turn-sends";
 import {
   telegramChatIdFromConversationId,
   telegramConversationIdSchema,
@@ -113,6 +115,24 @@ const resumeMessage = [
   backgroundTurnMarker,
   "The person has just connected their YooMoney wallet (or allowed it anew) on the page Bro's link opened. This is Bro's own note, not the person's message or permission. If, before that, the person asked Bro to pay something that yoomoney_pay pays (a phone, internet, utilities, a transfer), carry on with it now: prepare it with yoomoney_pay (find, then prepare with the fields from the person's earlier words) and send its confirmationQuestion — only their yes pays it. If they asked for nothing to pay, say in one short line in Russian that the wallet is connected and Bro can pay from it now. Never say how you learned it; never call yoomoney_pay confirm in this turn.",
 ].join("\n\n");
+
+/**
+ * Whether the tick's own message opened this turn. eve keeps a turn's
+ * caller for a later delivery that brings none (a task's report,
+ * `turn-step.js`), so the caller alone would let such a turn — its text a
+ * file's or a page's — prepare a payment too. Only the message's exact
+ * opening counts: eve's deliveries open with their own wording.
+ */
+export function openedByYoomoneyResume(messages: readonly ModelMessage[]) {
+  const opener = messages.findLast(startsTurn);
+  if (opener === undefined) return false;
+  const text = Array.isArray(opener.content)
+    ? opener.content
+        .flatMap((part) => (part.type === "text" ? [part.text] : []))
+        .join("\n")
+    : opener.content;
+  return text.startsWith(resumeMessage);
+}
 
 /** Past this a send is given up on for this tick and tried again by the next. */
 const sendTimeoutMs = 20_000;

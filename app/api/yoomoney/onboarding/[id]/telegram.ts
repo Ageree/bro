@@ -7,15 +7,25 @@ const maxAgeMs = 24 * 60 * 60_000;
 
 const userSchema = z.object({ id: z.number().int().positive() });
 
+/** Telegram's clock and this server's may differ by this much. */
+const skewMs = 60_000;
+
 /**
  * The Telegram user a Mini App was opened by, when Telegram signed its
  * launch data (`Telegram.WebApp.initData`) with Bro's bot token
  * (core.telegram.org/bots/webapps, «Validating data»): the string of every
  * other field as `key=value`, sorted by key and joined by newlines, under
  * HMAC-SHA256 keyed by HMAC-SHA256 of the token keyed by «WebAppData».
- * Only Bro's own button opens the page with it.
+ * Only Bro's own button opens the page with it, so data signed before the
+ * page was made (`notBefore`) is someone else's launch.
  */
-export function telegramWebAppUser(initData: string, now = Date.now()) {
+export function telegramWebAppUser(
+  initData: string,
+  {
+    notBefore,
+    now = Date.now(),
+  }: { readonly notBefore: Date; readonly now?: number }
+) {
   const token = env.TELEGRAM_BOT_TOKEN;
   if (!token || initData.length === 0 || initData.length > 8192) {
     return undefined;
@@ -34,7 +44,13 @@ export function telegramWebAppUser(initData: string, now = Date.now()) {
   const b = Buffer.from(expected);
   if (a.length !== b.length || !timingSafeEqual(a, b)) return undefined;
   const signedAt = Number(fields.get("auth_date")) * 1000;
-  if (!Number.isFinite(signedAt) || now - signedAt > maxAgeMs) return undefined;
+  if (
+    !Number.isFinite(signedAt) ||
+    now - signedAt > maxAgeMs ||
+    signedAt < notBefore.getTime() - skewMs
+  ) {
+    return undefined;
+  }
   const user = fields.get("user");
   if (user === null) return undefined;
   try {

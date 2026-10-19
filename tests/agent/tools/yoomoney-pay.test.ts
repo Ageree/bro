@@ -7,6 +7,7 @@ import * as z from "zod";
 import type { yoomoneyPayments } from "@db/schema/yoomoney";
 import type * as Card from "@db/services/yoomoney/card";
 import type * as connection from "@db/services/yoomoney/connection";
+import type * as ResumeTurn from "@agent/lib/yoomoney/onboarding";
 import type * as Onboarding from "@db/services/yoomoney/onboarding";
 import type * as stored from "@db/services/yoomoney/payments";
 import type * as Api from "@shared/yoomoney/api";
@@ -30,6 +31,7 @@ const services = vi.hoisted(() => ({
   renew: vi.fn<typeof stored.renewYoomoneyPayment>(),
   request: vi.fn<typeof Payments.requestYoomoneyPayment>(),
   resume: vi.fn<typeof Onboarding.readYoomoneyOnboardingResume>(),
+  opened: vi.fn<typeof ResumeTurn.openedByYoomoneyResume>(),
   settle: vi.fn<typeof stored.settleYoomoneyPayment>(),
   withToken: vi.fn<typeof connection.withYoomoneyToken>(),
 }));
@@ -57,6 +59,10 @@ vi.mock("@shared/yoomoney/showcase", async (original) => ({
 }));
 vi.mock("@db/services/yoomoney/onboarding", () => ({
   readYoomoneyOnboardingResume: services.resume,
+}));
+vi.mock("@agent/lib/yoomoney/onboarding", async (original) => ({
+  ...(await original<typeof ResumeTurn>()),
+  openedByYoomoneyResume: services.opened,
 }));
 vi.mock("@db/services/yoomoney/connection", () => ({
   readYoomoneyConnection: services.connection,
@@ -315,6 +321,7 @@ describe("wallet payments", () => {
       fields: [{ name: "topped_up_phone", value: "9261234567" }],
     };
     services.resume.mockResolvedValue({ id: "onb-1" });
+    services.opened.mockReturnValue(true);
     const quoted = z
       .object({ kind: z.literal("quoted"), confirmationQuestion: z.string() })
       .parse(await call(messages, prepare, resumed));
@@ -324,6 +331,13 @@ describe("wallet payments", () => {
       await call(messages, { action: "confirm", paymentId }, resumed)
     ).toMatchObject({ kind: "refused" });
     expect(services.claim).not.toHaveBeenCalled();
+    // A later turn eve delivers under the kept caller (a task's report)
+    // was not opened by the tick's message: it prepares nothing.
+    services.opened.mockReturnValue(false);
+    expect(await call(messages, prepare, resumed)).toMatchObject({
+      kind: "refused",
+    });
+    services.opened.mockReturnValue(true);
     // An onboarding that is not this person's, or told long ago, opens nothing.
     services.resume.mockResolvedValue(undefined);
     expect(await call(messages, prepare, resumed)).toMatchObject({

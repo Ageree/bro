@@ -2,7 +2,6 @@ import {
   createHash,
   createHmac,
   hkdfSync,
-  randomBytes,
   randomUUID,
   timingSafeEqual,
 } from "node:crypto";
@@ -43,19 +42,22 @@ export const yoomoneyOnboardingCookie = "bro_yoomoney";
 const hash = (value: string) =>
   createHash("sha256").update(value).digest("hex");
 
-async function linkToken(id: string) {
+/** An HMAC of the page's id under the installation's key, one per use. */
+async function keyed(use: "link" | "device", id: string) {
   const { secretEncryptionKey } = await getInstallationSecrets();
   const key = Buffer.from(
     hkdfSync(
       "sha256",
       Buffer.from(secretEncryptionKey, "base64"),
       Buffer.alloc(0),
-      "bro-yoomoney-onboarding-link",
+      `bro-yoomoney-onboarding-${use}`,
       32
     )
   );
   return createHmac("sha256", key).update(id).digest("base64url");
 }
+
+const linkToken = (id: string) => keyed("link", id);
 
 const sameText = (given: string, expected: string) => {
   const a = Buffer.from(given);
@@ -72,9 +74,9 @@ export async function yoomoneyOnboardingLink(id: string) {
 
 /**
  * The page for this person, asked for in this chat: the one already open
- * here for a while yet, so a second ask does not cut short a consent under
- * way; otherwise a new one, and an earlier page of the workspace left
- * unconnected stops opening.
+ * here, for another half hour, so a second ask does not cut short a consent
+ * under way; otherwise a new one, and an earlier page of the workspace left
+ * unconnected in another chat stops opening.
  */
 export async function startYoomoneyOnboarding(
   scope: AccessScope,
@@ -92,11 +94,17 @@ export async function startYoomoneyOnboarding(
         eq(yoomoneyOnboardings.conversationChannel, chat.conversationChannel),
         eq(yoomoneyOnboardings.conversationId, chat.conversationId),
         isNull(yoomoneyOnboardings.connectedAt),
-        gt(yoomoneyOnboardings.expiresAt, new Date(now.getTime() + 10 * 60_000))
+        gt(yoomoneyOnboardings.expiresAt, now)
       )
     )
     .limit(1);
-  if (open) return { id: open.id, url: await yoomoneyOnboardingLink(open.id) };
+  if (open) {
+    await db
+      .update(yoomoneyOnboardings)
+      .set({ expiresAt: new Date(now.getTime() + lifetimeMs) })
+      .where(eq(yoomoneyOnboardings.id, open.id));
+    return { id: open.id, url: await yoomoneyOnboardingLink(open.id) };
+  }
   await db
     .delete(yoomoneyOnboardings)
     .where(
@@ -161,8 +169,9 @@ const telegramUserOf = (conversationId: string) =>
 /**
  * Takes the page for this device once it proves it is the person's: the
  * cabinet's session of the same person, or Telegram's signed data of the
- * user the chat is with. A new device that proves it takes the page over.
- * The cookie's value to set, or undefined: not proved.
+ * user the chat is with. Every device that proves it gets the same cookie,
+ * so a second press, or the person's other device, never shuts out a
+ * consent under way. The cookie's value to set, or undefined: not proved.
  */
 export async function claimYoomoneyOnboardingDevice(
   onboarding: Onboarding,
@@ -176,7 +185,7 @@ export async function claimYoomoneyOnboardingDevice(
       : onboarding.conversationChannel === "telegram" &&
         telegramUserOf(onboarding.conversationId) === proof.telegramUserId;
   if (!proved) return undefined;
-  const secret = randomBytes(32).toString("base64url");
+  const secret = await keyed("device", onboarding.id);
   await db
     .update(yoomoneyOnboardings)
     .set({ deviceHash: hash(secret) })

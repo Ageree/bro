@@ -20,6 +20,7 @@ import {
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import {
   conversationOf,
+  openedByYoomoneyResume,
   resumedYoomoneyOnboardingId,
 } from "@agent/lib/yoomoney/onboarding";
 import {
@@ -700,10 +701,16 @@ async function status(scope: AccessScope, paymentId: string) {
  * The turn Bro's tick opens once the person connected the wallet from this
  * chat (`agent/lib/yoomoney/onboarding.ts`): it may find and prepare what
  * they asked to pay before connecting — the question, never the payment.
+ * Only that turn, opened by the tick's message, under its caller.
  */
-async function resumedFor(scope: AccessScope, context: ToolContext) {
+async function resumedFor(
+  scope: AccessScope,
+  context: ToolContext,
+  resumeOpened: boolean
+) {
   const id = resumedYoomoneyOnboardingId(context.session.auth.current);
   return (
+    resumeOpened &&
     id !== undefined &&
     (await readYoomoneyOnboardingResume(scope, id)) !== undefined
   );
@@ -715,12 +722,14 @@ async function callYoomoneyPay(
   input: z.output<typeof inputSchema>,
   context: ToolContext,
   words: PersonWords,
-  step: StepIdentity
+  step: StepIdentity,
+  resumeOpened: boolean
 ) {
   const personsTurn = startedByPerson(context) && words.said !== null;
   if (
     !personsTurn &&
-    (input.action === "confirm" || !(await resumedFor(scope, context)))
+    (input.action === "confirm" ||
+      !(await resumedFor(scope, context, resumeOpened)))
   ) {
     return { kind: "refused" as const, reply: notThePerson };
   }
@@ -819,6 +828,7 @@ export default defineDynamic({
         rootSessionId
       );
       const words = personWordsThisTurn(context.messages, step);
+      const resumeOpened = openedByYoomoneyResume(context.messages);
       return {
         yoomoney_pay: defineTool({
           availableInSubagents: false,
@@ -846,7 +856,8 @@ export default defineDynamic({
               input,
               toolContext,
               words,
-              step
+              step,
+              resumeOpened
             );
           },
         }),

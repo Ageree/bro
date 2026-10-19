@@ -18,6 +18,9 @@ const nextConfig: NextConfig = {
         // A card payment's link carries its secret in the query.
         /\/pay\/[^/?]+(?:\?|$)/u,
         /\/api\/yoomoney\/pay\//u,
+        // The onboarding page's link, and sign-in on the way back to it.
+        /\/yoomoney\/[^/?]+(?:\?|$)/u,
+        /callbackUrl=%2F(?:api%2F)?yoomoney%2F/u,
       ],
     },
   },

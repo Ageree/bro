@@ -543,7 +543,8 @@ yoomoney-payments.sh WORKSPACE_ID`. При нехватке баланса `requ
   callback ЮMoney: иначе пересланная чужому ссылка подключила бы его кошелёк к этому Бро. Поэтому в
   web.telegram.org (Mini App в iframe, cookie Lax не ходит) подключение не пройдёт — только приложения.
   Тик пишет в чат ходом `yoomoney-connected`: в нём `yoomoney_pay` может `find`/`prepare`, но не
-  `confirm`. Адреса «привязать карту» у ЮMoney не нашли (не 404 только `/main`, `/settings`): страница
+  `confirm`, и лишь если ход открыло само сообщение тика: eve держит caller и для следующей доставки
+  без `auth` (отчёт помощника), её текст — файла (`openedByYoomoneyResume`). Адреса «привязать карту» у ЮMoney не нашли (не 404 только `/main`, `/settings`): страница
   проверяет `cards_linked` из `account-info`, а шаг карты через 10 мин считается пропущенным.
 - Ops-адрес `host.py` — IP из кэша `<VM>.json` в `BRO_APP_HOST_DIR`, а не из DNS: 15.10 IP VM
   сменился, кэш из `state restore` остался старым, и `logs`/`deploy` рвались «Connection reset
