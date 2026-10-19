@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { pointAddressNow } from "@agent/lib/location/address";
+import type { nearbyPlace } from "@agent/lib/routes/openstreetmap";
 import type * as LocationService from "@db/services/location";
 import type * as ProactiveService from "@db/services/proactive";
 import type * as UserProfileService from "@db/services/user-profile";
@@ -32,10 +34,12 @@ vi.mock("@db/services/user-profile", () => ({
   readWorkspaceTimeZone: capture.timeZone,
 }));
 vi.mock("@agent/lib/location/address", () => ({
-  pointAddressNow: vi.fn(async () => "Тверская улица, 7, Москва"),
+  pointAddressNow: vi.fn<typeof pointAddressNow>(
+    async () => "Тверская улица, 7, Москва"
+  ),
 }));
 vi.mock("@agent/lib/routes/openstreetmap", () => ({
-  nearbyPlace: vi.fn(async () => ({ name: "Кофемания" })),
+  nearbyPlace: vi.fn<typeof nearbyPlace>(async () => ({ name: "Кофемания" })),
 }));
 
 /** Noon in Moscow: not the person's night. */
@@ -202,16 +206,14 @@ describe("following a live share", () => {
     await expect(
       noticeLiveMove(alice, "share-a", minutesIn(32), minutesIn(32))
     ).resolves.toBe("arrive:queued");
-    expect(capture.queue).toHaveBeenCalledWith(
-      expect.objectContaining({
-        perDay: 12,
-        signal: expect.objectContaining({
-          dedupeKey: `share-a#arrive@${String(stopped.start.getTime())}`,
-          source: "location",
-        }),
-        workspaceId: alice.workspaceId,
-      })
-    );
+    expect(capture.queue.mock.calls[0]?.[0]).toMatchObject({
+      perDay: 12,
+      signal: {
+        dedupeKey: `share-a#arrive@${String(stopped.start.getTime())}`,
+        source: "location",
+      },
+      workspaceId: alice.workspaceId,
+    });
     await expect(
       noticeLiveMove(alice, "share-a", minutesIn(32.5), minutesIn(32.5))
     ).resolves.toBe("throttled");
