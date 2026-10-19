@@ -148,11 +148,57 @@ export const gmailComposeSchema = z
 export type GmailCompose = z.infer<typeof gmailComposeSchema>;
 
 /**
- * Metadata reads a search keeps in flight at once. Gmail limits concurrent
- * requests per user, and 25 parallel reads from one search were enough to
- * draw «Too many concurrent requests» on their own.
+ * Message reads Bro keeps in flight at once for one connected account, over
+ * all the searches of this process. Gmail limits concurrent requests per
+ * user, and 25 parallel reads from one search were enough to draw «Too many
+ * concurrent requests» on their own. Each read is a round trip through
+ * Composio's proxy (~1 s from the VM), and with 5 a search of the default 10
+ * waited for two waves of them after the list (19.10: gmail-search p50
+ * 4,3 s); with 10 it is one wave, and two searches of one step together stay
+ * at the 10 they had before.
  */
-const searchReadConcurrency = 5;
+const accountReadConcurrency = 10;
+
+const accountReads = new Map<
+  string,
+  { active: number; waiting: (() => void)[] }
+>();
+
+/**
+ * Runs `read` once fewer than {@link accountReadConcurrency} message reads of
+ * the account are in flight: the next waiting read starts as soon as any one
+ * ends, not when a whole batch has.
+ */
+async function accountRead<T>(account: string, read: () => Promise<T>) {
+  const slots = accountReads.get(account) ?? { active: 0, waiting: [] };
+  accountReads.set(account, slots);
+  if (slots.active >= accountReadConcurrency) {
+    await new Promise<void>((resolve) => slots.waiting.push(resolve));
+  } else {
+    slots.active += 1;
+  }
+  try {
+    return await read();
+  } finally {
+    const next = slots.waiting.shift();
+    if (next) next();
+    else {
+      slots.active -= 1;
+      if (slots.active === 0) accountReads.delete(account);
+    }
+  }
+}
+
+/** Reads every message of `ids` within the account's limit, in order. */
+function readMessages<T>(
+  google: GoogleClient,
+  ids: readonly string[],
+  read: (id: string) => Promise<T>
+) {
+  return Promise.all(
+    ids.map((id) => accountRead(google.connectedAccountId, () => read(id)))
+  );
+}
 
 function messageUrl(id: string, query?: Parameters<typeof googleUrl>[2]) {
   return googleUrl(gmailApi, `/messages/${encodeURIComponent(id)}`, query);
@@ -210,29 +256,22 @@ export async function searchGmail(
       }),
     });
     const ids = (listed.messages ?? []).map(({ id }) => id);
-    const messages = [];
-    for (let start = 0; start < ids.length; start += searchReadConcurrency) {
-      // oxlint-disable-next-line eslint/no-await-in-loop -- Batches bound the requests in flight.
-      const batch = await Promise.all(
-        ids.slice(start, start + searchReadConcurrency).map((id) =>
-          google.json(gmailMessageSchema, {
-            url: messageUrl(id, {
-              format: "metadata",
-              metadataHeaders: [
-                "From",
-                "To",
-                "Cc",
-                "Subject",
-                "Date",
-                "Message-ID",
-              ],
-            }),
-          })
-        )
-      );
-      messages.push(...batch.map(minimizeMessage));
-    }
-    return messages;
+    const messages = await readMessages(google, ids, (id) =>
+      google.json(gmailMessageSchema, {
+        url: messageUrl(id, {
+          format: "metadata",
+          metadataHeaders: [
+            "From",
+            "To",
+            "Cc",
+            "Subject",
+            "Date",
+            "Message-ID",
+          ],
+        }),
+      })
+    );
+    return messages.map(minimizeMessage);
   });
 }
 
@@ -1292,32 +1331,21 @@ export async function readGmailLetters(
     url: googleUrl(gmailApi, "/messages", { maxResults, q: query }),
   });
   const ids = (listed.messages ?? []).map(({ id }) => id);
-  const letters = [];
-  for (let start = 0; start < ids.length; start += searchReadConcurrency) {
-    // oxlint-disable-next-line eslint/no-await-in-loop -- Batches bound the requests in flight.
-    const batch = await Promise.all(
-      ids.slice(start, start + searchReadConcurrency).map((id) =>
-        google.json(gmailMessageSchema, {
-          url: messageUrl(id, { format: "full" }),
-        })
-      )
-    );
-    letters.push(
-      ...batch.map((message) => ({
-        authenticationResults: (message.payload?.headers ?? [])
-          .filter(
-            (item) => item.name.toLowerCase() === "authentication-results"
-          )
-          .map((item) => item.value),
-        from: header(message.payload, "From"),
-        html: htmlOf(message.payload),
-        id: message.id ?? null,
-        receivedAt: Number(message.internalDate ?? Number.NaN),
-        subject: header(message.payload, "Subject"),
-        text: plainText(message.payload),
-        to: header(message.payload, "To"),
-      }))
-    );
-  }
-  return letters;
+  const messages = await readMessages(google, ids, (id) =>
+    google.json(gmailMessageSchema, {
+      url: messageUrl(id, { format: "full" }),
+    })
+  );
+  return messages.map((message) => ({
+    authenticationResults: (message.payload?.headers ?? [])
+      .filter((item) => item.name.toLowerCase() === "authentication-results")
+      .map((item) => item.value),
+    from: header(message.payload, "From"),
+    html: htmlOf(message.payload),
+    id: message.id ?? null,
+    receivedAt: Number(message.internalDate ?? Number.NaN),
+    subject: header(message.payload, "Subject"),
+    text: plainText(message.payload),
+    to: header(message.payload, "To"),
+  }));
 }
