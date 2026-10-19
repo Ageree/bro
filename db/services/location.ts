@@ -61,6 +61,19 @@ export function locationPilot(scope: Pick<AccessScope, "workspaceId">) {
   );
 }
 
+/**
+ * Whether Bro follows the workspace's live location (`LOCATION_WATCH_WORKSPACES`,
+ * `agent/lib/location/watch.ts`): only within geolocation's own pilot.
+ */
+export function locationWatchPilot(scope: Pick<AccessScope, "workspaceId">) {
+  return (
+    locationPilot(scope) &&
+    (env.LOCATION_WATCH_WORKSPACES ?? []).some(
+      (entry) => entry === "*" || entry === scope.workspaceId
+    )
+  );
+}
+
 type NewPoint = Omit<
   typeof locationPoints.$inferInsert,
   "createdAt" | "id" | "workspaceId"
@@ -186,6 +199,71 @@ export async function recentLiveWrite(scope: AccessScope, liveKey: string) {
     .orderBy(desc(locationPoints.recordedAt))
     .limit(1);
   return point;
+}
+
+/**
+ * One Telegram live share's track recorded since `since`, oldest first: the
+ * latest `limit` points, for where the person stopped and went on it
+ * (`agent/lib/location/watch.ts`).
+ */
+export async function readShareTrack(
+  scope: AccessScope,
+  liveKey: string,
+  range: { readonly limit: number; readonly since: Date }
+) {
+  const rows = await db
+    .select()
+    .from(locationPoints)
+    .where(
+      and(
+        eq(locationPoints.workspaceId, scope.workspaceId),
+        eq(locationPoints.liveKey, liveKey),
+        eq(locationPoints.kind, "position"),
+        gte(locationPoints.recordedAt, range.since)
+      )
+    )
+    .orderBy(desc(locationPoints.recordedAt))
+    .limit(range.limit);
+  return rows.toReversed();
+}
+
+/**
+ * The person's own name for a place within `radiusM` of a point («дом»,
+ * «офис»), from their named positions, the nearest first; undefined when
+ * they named none there.
+ */
+export async function labelNear(
+  scope: AccessScope,
+  point: { readonly lat: number; readonly lon: number },
+  radiusM: number
+) {
+  const latSpan = radiusM / 111_000;
+  const lonSpan =
+    latSpan / Math.max(0.1, Math.cos((point.lat * Math.PI) / 180));
+  const rows = await db
+    .select({
+      label: locationPoints.label,
+      lat: locationPoints.lat,
+      lon: locationPoints.lon,
+    })
+    .from(locationPoints)
+    .where(
+      and(
+        eq(locationPoints.workspaceId, scope.workspaceId),
+        eq(locationPoints.kind, "position"),
+        sql`${locationPoints.label} IS NOT NULL`,
+        sql`${locationPoints.lat} BETWEEN ${point.lat - latSpan} AND ${point.lat + latSpan}`,
+        sql`${locationPoints.lon} BETWEEN ${point.lon - lonSpan} AND ${point.lon + lonSpan}`
+      )
+    )
+    .limit(50);
+  return (
+    rows
+      .map((row) => ({ distance: distanceM(row, point), label: row.label }))
+      .filter((row) => row.distance <= radiusM)
+      .toSorted((left, right) => left.distance - right.distance)[0]?.label ??
+    undefined
+  );
 }
 
 /** The latest point the web chat's button shared since `since`. */

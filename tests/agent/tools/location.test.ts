@@ -19,6 +19,7 @@ const services = vi.hoisted(() => ({
   reverse: vi.fn<typeof reverseGeocode>(),
   setAddress: vi.fn<typeof locationModule.setPointAddress>(),
   timeZone: vi.fn<typeof readWorkspaceTimeZone>(),
+  watch: vi.fn<typeof locationModule.locationWatchPilot>(),
 }));
 
 vi.mock("@db/services/location", () => ({
@@ -30,6 +31,7 @@ vi.mock("@db/services/location", () => ({
   latestPosition: services.latest,
   listLocationPoints: services.list,
   locationPilot: services.pilot,
+  locationWatchPilot: services.watch,
   setPointAddress: services.setAddress,
 }));
 vi.mock("@db/services/user-profile", () => ({
@@ -221,6 +223,22 @@ describe("the geolocation tools", () => {
     const web = await set.location_now.execute({ ask: true }, callContext());
     expect(web).toMatchObject({ asked: false });
     expect(web).not.toHaveProperty("locationButton");
+  });
+
+  it("ask for a live share where Bro follows one, and say so", async () => {
+    services.watch.mockReturnValue(true);
+    const set = await tools(said("что рядом?"));
+    if (!set || !("location_now" in set))
+      throw new Error("Expected the tools.");
+    expect(set.location_now.description).toContain("Bro follows it by itself");
+    const asked = await set.location_now.execute(
+      { ask: true },
+      callContext("authjs", "telegram")
+    );
+    expect(asked).toMatchObject({ asked: true, locationButton: true });
+    expect(asked.reply).toContain("«Транслировать геопозицию»");
+    const none = await set.location_now.execute({}, callContext());
+    expect(none.reply).toContain("share a live location");
   });
 
   it("name a fresh point only in the person's words, in their turn", async () => {

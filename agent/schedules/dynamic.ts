@@ -219,6 +219,7 @@ async function executeScheduledRun(
     if (status === "dead_letter") {
       await dispatchRecoverableReport(delivery, {
         carriesEvent: false,
+        carriesMove: false,
         conversationChannel: claim.job.conversationChannel,
         jobId: claim.job.id,
         jobKind: claim.job.kind,

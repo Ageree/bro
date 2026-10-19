@@ -15,7 +15,7 @@ import { positionMarker } from "./markers";
  * line stays in the history long after «сейчас» stopped being true.
  */
 
-const locationLinePrefix = "Геопозиция:";
+export const locationLinePrefix = "Геопозиция:";
 
 /** «15.10 14:05 (Europe/Moscow)». */
 export function localStamp(at: Date, timeZone: string) {
@@ -32,7 +32,7 @@ export function localStamp(at: Date, timeZone: string) {
 }
 
 /** A sender's or the person's text as one line of quoted data. */
-function quoted(text: string | null | undefined, cap: number) {
+export function quoted(text: string | null | undefined, cap: number) {
   const plain = lineName(text ?? undefined)?.replaceAll(/[«»]/gu, '"');
   return plain === undefined ? undefined : `«${plain.slice(0, cap)}»`;
 }
@@ -41,7 +41,7 @@ function quoted(text: string | null | undefined, cap: number) {
  * What a point is said to be at: its address, quoted as data (a venue's
  * address is what its sender wrote), or its coordinates.
  */
-function whereWords(point: {
+export function whereWords(point: {
   readonly address: string | null;
   readonly lat: number;
   readonly lon: number;
@@ -74,7 +74,10 @@ type NotedPoint = Pick<
  * The line for a point the person sent in this message. `firstEver`: the
  * workspace never shared one before, so Bro says once what it keeps.
  * `liveSeen`: live edits ever reached Bro; the first point of a live share
- * otherwise is all it will see.
+ * otherwise is all it will see. `watching`: Bro follows a live share
+ * (`agent/lib/location/watch.ts`) — a share's first point says so, the
+ * first time with a phrase to the person, and a single Telegram point from
+ * someone who never shared live asks for a live share instead.
  */
 export function sharedLine(
   point: NotedPoint,
@@ -82,6 +85,7 @@ export function sharedLine(
     readonly firstEver: boolean;
     readonly liveSeen: boolean;
     readonly timeZone: string;
+    readonly watching?: boolean;
   }
 ) {
   const at = localStamp(point.recordedAt, options.timeZone);
@@ -100,9 +104,24 @@ export function sharedLine(
       `${locationLinePrefix} человек сам прислал свою точку в ${at}: ${whereWords(point)}${accuracyWords(point.accuracyM)}. Для «рядом», «сколько идти», еды и такси. Подробнее и координаты — location_now.`
     );
   }
-  if (point.liveKey !== null && !options.liveSeen) {
+  if (point.liveKey !== null && options.watching === true) {
+    parts.push(
+      options.liveSeen
+        ? "Он включил трансляцию: пока она идёт, Бро сам видит, где он, и пишет первым, когда это пригодится."
+        : "Он включил трансляцию: пока она идёт, Бро сам видит, где он, и напишет первым, когда это пригодится (опаздывает на встречу, пришёл туда, где у него дело), но не ночью. Это его первая трансляция — скажи об этом одной фразой; перестать — остановить трансляцию."
+    );
+  } else if (point.liveKey !== null && !options.liveSeen) {
     parts.push(
       "Он включил трансляцию, но Бро пока видит только эту первую точку."
+    );
+  } else if (
+    options.watching === true &&
+    !options.liveSeen &&
+    point.kind === "position" &&
+    point.source === "telegram"
+  ) {
+    parts.push(
+      "Если в этом разговоре ещё не предлагал — одной фразой предложи вместо разовой точки транслировать геопозицию (скрепка → «Геопозиция» → «Транслировать геопозицию»): тогда Бро сам следит, где он, и пишет первым, когда это пригодится."
     );
   }
   if (options.firstEver) {

@@ -2,6 +2,7 @@ import { defineSchedule, type ScheduleToFn } from "eve/schedules";
 import { schedulesEnabled } from "@agent/lib/schedules/enabled";
 import scheduledRunChannel from "@agent/channels/scheduled-run";
 import { agencyPilot } from "@agent/lib/agency/pilot";
+import { liveMoveLines } from "@agent/lib/location/watch";
 import { agentMailCheck } from "@agent/lib/proactive/agent-mail";
 import {
   probeFailure,
@@ -62,6 +63,7 @@ import {
 } from "@db/services/subscriptions";
 import type { FlightStage } from "@shared/subscriptions/flight";
 import { readUserProfile } from "@db/services/user-profile";
+import type { AccessScope } from "@shared/identity/access-scope";
 import { localRunLabel } from "@shared/schedules/timing";
 import { resolveTimeZone } from "@shared/user-profile/schema";
 
@@ -89,8 +91,13 @@ type ClaimedWatch = Awaited<
   ReturnType<typeof claimDueProactiveWatches>
 >[number];
 
+// The tick is every minute for the runs queued between checks — a live
+// location's move (`agent/lib/location/watch.ts`), a finished call — which
+// would otherwise wait up to five minutes; the checks keep their five.
+const checksEveryMinutes = 5;
+
 export default defineSchedule({
-  cron: "*/5 * * * *",
+  cron: "* * * * *",
   run({ to, waitUntil }) {
     if (!schedulesEnabled()) return;
     waitUntil(runProactiveChecks(to));
@@ -99,13 +106,15 @@ export default defineSchedule({
 
 async function runProactiveChecks(to: ScheduleToFn) {
   const now = new Date();
-  await pruneProactiveSignals(new Date(now.getTime() - signalRetentionMs));
-  const watches = await claimDueProactiveWatches({
-    leaseForMs: checkEveryMs,
-    limit: 25,
-    now,
-  });
-  await Promise.all(watches.map((watch) => checkWorkspace(watch, now)));
+  if (now.getUTCMinutes() % checksEveryMinutes === 0) {
+    await pruneProactiveSignals(new Date(now.getTime() - signalRetentionMs));
+    const watches = await claimDueProactiveWatches({
+      leaseForMs: checkEveryMs,
+      limit: 25,
+      now,
+    });
+    await Promise.all(watches.map((watch) => checkWorkspace(watch, now)));
+  }
   const runs = await claimReadyScheduledAgentRuns({
     kind: "proactive",
     leaseForMs: workerStartupLimitMs,
@@ -616,6 +625,8 @@ async function dispatchProactiveRun(
     const facts = (await subscriptionsPilot(scope))
       ? await reminderFacts(claim.job.workspaceId, signals, timeZone)
       : undefined;
+    const move = signals.findLast((signal) => signal.source === "location");
+    const location = move && (await moveLines(scope, move, timeZone));
     // Decided now, not when the run was queued: the pilot can be switched off
     // in between, and the run then follows the switch.
     const runKind = proactiveRunKind(claim.job.workspaceId);
@@ -627,6 +638,7 @@ async function dispatchProactiveRun(
         agentic: runKind === "agentic",
         flightFacts: facts,
         home: profile,
+        ...(location && { location }),
         quietUntil: quietUntil && localRunLabel(quietUntil, timeZone),
         scheduledFor: claim.run.scheduledFor,
         signals,
@@ -638,6 +650,8 @@ async function dispatchProactiveRun(
             conversationId: claim.job.conversationId,
             scheduleId: claim.job.id,
             scheduledRunKind: runKind,
+            // A move's run gets `route_time` (`agent/tools/route_time.ts`).
+            ...(move && { scheduledRunLocation: "true" }),
             scheduledRunLeaseToken: leaseToken,
             scheduledRunId: claim.run.id,
             workspaceId: claim.job.workspaceId,
@@ -667,6 +681,26 @@ async function dispatchProactiveRun(
       leaseToken,
       error instanceof Error ? error.message : String(error)
     );
+  }
+}
+
+/**
+ * What code reads of a live location's move for its run (`liveMoveLines`);
+ * a failed read is no lines, and the worker hands nothing over about it.
+ */
+async function moveLines(
+  scope: AccessScope,
+  move: Pick<ProactiveSignal, "dedupeKey" | "itemId">,
+  timeZone: string
+) {
+  try {
+    return await liveMoveLines(scope, move, timeZone);
+  } catch (error) {
+    console.warn("[proactive] location read failed", {
+      name: error instanceof Error ? error.name : "error",
+      workspaceId: scope.workspaceId,
+    });
+    return [];
   }
 }
 

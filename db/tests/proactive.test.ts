@@ -427,6 +427,7 @@ describe("proactive watches", { timeout: 30_000 }, () => {
     expect(await jobs.listRecoverableScheduledReports(later)).toEqual([
       {
         carriesEvent: false,
+        carriesMove: false,
         conversationChannel: "telegram",
         jobId: watch.jobId,
         jobKind: "proactive",
@@ -865,6 +866,88 @@ describe("follow-ups of a finished call or run", { timeout: 30_000 }, () => {
       await proactive.queueFollowUpRun({
         ...input,
         signal: followUp("call-3"),
+      })
+    ).toEqual({ status: "no-watch" });
+  });
+});
+
+const move = (key: string) => ({
+  dedupeKey: `4242:77#arrive@${key}`,
+  itemId: "4242:77",
+  source: "location" as const,
+  threadId: null,
+});
+
+describe("moves of a live location", { timeout: 30_000 }, () => {
+  it("keeps a cap and a spacing of their own, apart from the mail's", async () => {
+    const { jobs, proactive } = await openDatabase();
+    await proactive.recordProactiveTarget(alice, telegram, now);
+    const finish = async (at: Date) => {
+      const [claim] = await jobs.claimReadyScheduledAgentRuns({
+        kind: "proactive",
+        leaseForMs: 60_000,
+        limit: 10,
+        now: at,
+      });
+      if (!claim?.run.leaseToken) throw new Error("Expected a run.");
+      await jobs.completeScheduledAgentRun(
+        claim.run.id,
+        claim.run.leaseToken,
+        "turn",
+        { kind: "nothing_to_report", reason: "Nothing new." },
+        at
+      );
+    };
+    const queue = (key: string, at: Date) =>
+      proactive.queueLocationRun({
+        now: at,
+        perDay: 2,
+        signal: move(key),
+        spacingMs: 10 * 60_000,
+        workspaceId: alice.workspaceId,
+      });
+
+    expect(await queue("1", now)).toMatchObject({ status: "queued" });
+    await finish(now);
+    expect(await queue("1", now)).toEqual({ status: "seen" });
+    const soon = new Date(now.getTime() + 5 * 60_000);
+    expect(await queue("2", soon)).toEqual({ status: "spaced" });
+    const later = new Date(now.getTime() + 11 * 60_000);
+    expect(await queue("2", later)).toMatchObject({ status: "queued" });
+    await finish(later);
+    const evening = new Date(now.getTime() + 6 * 60 * 60_000);
+    expect(await queue("3", evening)).toEqual({ status: "capped" });
+
+    // Two runs of moves today, and the mail's cap of one still has room.
+    const [watch] = await proactive.claimDueProactiveWatches({
+      leaseForMs: 15 * 60_000,
+      limit: 10,
+      now: evening,
+    });
+    if (!watch) throw new Error("Expected a due watch.");
+    expect(
+      await proactive.queueProactiveRun({
+        jobId: watch.jobId,
+        mailCheckedAt: evening,
+        maxRunsPerDay: 1,
+        now: evening,
+        signals: [bossMail],
+        workspaceId: alice.workspaceId,
+      })
+    ).toMatchObject({ status: "queued" });
+  });
+
+  it("queues nothing when the person turned proactive messages off", async () => {
+    const { profiles, proactive } = await openDatabase();
+    await proactive.recordProactiveTarget(alice, telegram, now);
+    await profiles.setProactiveMessages(alice, false);
+    expect(
+      await proactive.queueLocationRun({
+        now,
+        perDay: 12,
+        signal: move("1"),
+        spacingMs: 10 * 60_000,
+        workspaceId: alice.workspaceId,
       })
     ).toEqual({ status: "no-watch" });
   });

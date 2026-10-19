@@ -1,0 +1,2 @@
+ALTER TABLE "proactive_signals" DROP CONSTRAINT "proactive_signals_source_check";--> statement-breakpoint
+ALTER TABLE "proactive_signals" ADD CONSTRAINT "proactive_signals_source_check" CHECK ("proactive_signals"."source" IN ('gmail', 'calendar', 'agent_mail', 'phone', 'browser', 'calendar_prep', 'sweep', 'location'));

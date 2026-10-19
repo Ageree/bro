@@ -204,6 +204,16 @@ export const env = createEnv({
     // ids or *. Unset, nobody: a shared location stays what it was (an empty
     // Telegram turn, a file note in iMessage).
     LOCATION_WORKSPACES: workspaceListSchema.optional(),
+    // Bro following a Telegram live location (`agent/lib/location/watch.ts`):
+    // workspace ids or *, within LOCATION_WORKSPACES. A stop or a departure
+    // on the live share wakes Bro's own check, which writes first when the
+    // move matters. Unset, nobody: a live share only moves place reminders.
+    LOCATION_WATCH_WORKSPACES: workspaceListSchema
+      .refine(
+        (entries) => entries.every((entry) => !entry.includes("@")),
+        "LOCATION_WATCH_WORKSPACES takes workspace ids or *, not emails"
+      )
+      .optional(),
     PHONE_INIT_SECRET: trimmedValue.min(32).optional(),
     PHONE_WEBHOOK_SECRET: trimmedValue.min(32).optional(),
     MTS_EXOLVE_API_KEY: trimmedValue.optional(),

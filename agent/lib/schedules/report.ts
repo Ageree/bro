@@ -6,6 +6,7 @@ import {
   dropScheduledReport,
   releaseScheduledReport,
 } from "@db/services/scheduled-agent-jobs";
+import { listProactiveRunSignals } from "@db/services/proactive";
 import { telegramChatIdFromConversationId } from "@agent/lib/telegram-conversation";
 import { reportNeeded } from "@agent/lib/schedules/outcome";
 import { backgroundTurnMarker } from "@shared/chat/background-turn";
@@ -70,6 +71,12 @@ export async function dispatchScheduledReport(
             runId: claimed.run.id,
           })
         : [];
+    // A check handed a move of the person's live location reports on that.
+    const moved =
+      claimed.job.kind === "proactive" &&
+      (await listProactiveRunSignals(claimed.run.id)).some(
+        (signal) => signal.source === "location"
+      );
     for (const target of [claimed.delivery, ...claimed.fallbacks]) {
       if (
         // oxlint-disable-next-line eslint/no-await-in-loop -- The next chat is tried only once this one turned out to have ended.
@@ -77,6 +84,7 @@ export async function dispatchScheduledReport(
           claimed,
           earlier,
           leaseToken,
+          moved,
           target,
         })
       ) {
@@ -108,6 +116,7 @@ async function sendScheduledReport(
     readonly claimed: ClaimedScheduledReport;
     readonly earlier: AbsorbedReports;
     readonly leaseToken: string;
+    readonly moved: boolean;
     readonly target: ReportTarget;
   }
 ) {
@@ -128,7 +137,12 @@ async function sendScheduledReport(
     },
     turnPolicy: "queue" as const,
   };
-  const prompt = scheduledReportPrompt(claimed, target, report.earlier);
+  const prompt = scheduledReportPrompt(
+    claimed,
+    target,
+    report.earlier,
+    report.moved
+  );
   if (target.conversationChannel === "photon") {
     const session = await delivery
       .to(photon, {
@@ -185,18 +199,20 @@ async function sendScheduledReport(
 function scheduledReportPrompt(
   claimed: ClaimedScheduledReport,
   target: ReportTarget,
-  earlier: AbsorbedReports
+  earlier: AbsorbedReports,
+  moved: boolean
 ) {
   return [
     backgroundTurnMarker,
-    scheduledReportTask(claimed, target, earlier),
+    scheduledReportTask(claimed, target, earlier, moved),
   ].join("\n\n");
 }
 
 function scheduledReportTask(
   claimed: ClaimedScheduledReport,
   target: ReportTarget,
-  earlier: AbsorbedReports
+  earlier: AbsorbedReports,
+  moved: boolean
 ) {
   const replyContext = target.replyAnchorMessageId
     ? `Reply handle: {"kind":"automation","id":"${claimed.job.id}"}. Pass this exact value as send_message.replyTo for every user-visible message about this scheduled task. Omit replyTo only when the message is genuinely unrelated to the scheduled task.`
@@ -217,7 +233,9 @@ function scheduledReportTask(
   }
   if (claimed.job.kind === "proactive") {
     return [
-      "Your own background check of the person's mail and calendar found something. Nobody asked for this check, so you would be writing first.",
+      moved
+        ? "Your own background look at where the person is — by the live location they share in Telegram, with their calendar — found something. Nobody asked for this check, so you would be writing first; say what matters now, not that you watch where they are."
+        : "Your own background check of the person's mail and calendar found something. Nobody asked for this check, so you would be writing first.",
       `Checked at: ${claimed.run.scheduledFor.toISOString()}`,
       replyContext,
       `Worker outcome: ${JSON.stringify(claimed.run.outcome)}`,

@@ -404,7 +404,8 @@ export async function filterUnseenProactiveSignals<
  * message in parallel) or once the workspace had `maxRunsPerDay` runs in the
  * last 24 hours (a busy inbox never turns into a model run per check). A run
  * carrying a calendar event passes the cap: events are few, and one that
- * waited for the cap to reset could start before anyone heard of it. Without
+ * waited for the cap to reset could start before anyone heard of it. So does
+ * a live location's move, under its own cap (`queueLocationRun`). Without
  * `mailCheckedAt` the run is a follow-up (`queueFollowUpRun`): it moves no
  * watermark, and the watch keeps what a check last saw.
  */
@@ -433,6 +434,9 @@ export async function queueProactiveRun(input: {
       )
       .limit(1);
     if (open) return { status: "busy" as const };
+    // A live location's runs keep their own cap (`queueLocationRun`): they
+    // pass this one and do not count towards it, so a day on the move never
+    // holds the mail back, nor the mail the moves.
     const [recent] = await transaction
       .select({ count: sql<number>`count(*)::int` })
       .from(scheduledAgentRuns)
@@ -442,14 +446,17 @@ export async function queueProactiveRun(input: {
           gt(
             scheduledAgentRuns.scheduledFor,
             new Date(input.now.getTime() - 24 * 60 * 60_000)
-          )
+          ),
+          sql`NOT EXISTS (SELECT 1 FROM ${proactiveSignals} WHERE ${proactiveSignals.runId} = ${scheduledAgentRuns.id} AND ${proactiveSignals.source} = 'location')`
         )
       );
-    const carriesEvent = input.signals.some(
+    const passesCap = input.signals.some(
       (signal) =>
-        signal.source === "calendar" || signal.source === "calendar_prep"
+        signal.source === "calendar" ||
+        signal.source === "calendar_prep" ||
+        signal.source === "location"
     );
-    if (!carriesEvent && (recent?.count ?? 0) >= input.maxRunsPerDay) {
+    if (!passesCap && (recent?.count ?? 0) >= input.maxRunsPerDay) {
       return { status: "capped" as const };
     }
     const [run] = await transaction
@@ -509,6 +516,26 @@ export async function queueFollowUpRun(input: {
   readonly signal: ProactiveSignal;
   readonly workspaceId: string;
 }) {
+  const watch = await activeWatch(input.workspaceId);
+  if (!watch) return { status: "no-watch" as const };
+  const unseen = await filterUnseenProactiveSignals(input.workspaceId, [
+    input.signal,
+  ]);
+  if (unseen.length === 0) return { status: "seen" as const };
+  return queueProactiveRun({
+    jobId: watch.jobId,
+    maxRunsPerDay: input.maxRunsPerDay,
+    now: input.now,
+    signals: unseen,
+    workspaceId: input.workspaceId,
+  });
+}
+
+/**
+ * The job of the workspace's proactive watch, while it is active and its
+ * person has not turned proactive messages off.
+ */
+async function activeWatch(workspaceId: string) {
   const [watch] = await db
     .select({ jobId: proactiveWatches.jobId })
     .from(proactiveWatches)
@@ -522,20 +549,58 @@ export async function queueFollowUpRun(input: {
     )
     .where(
       and(
-        eq(proactiveWatches.workspaceId, input.workspaceId),
+        eq(proactiveWatches.workspaceId, workspaceId),
         eq(scheduledAgentJobs.status, "active"),
         sql`coalesce(${userProfiles.proactiveMessages}, true)`
       )
     )
     .limit(1);
+  return watch;
+}
+
+/**
+ * Queues a run for a move on the person's live location
+ * (`agent/lib/location/watch.ts`) on the workspace's proactive watch. The
+ * moves keep a cap of their own, apart from the mail's: at most `perDay` in
+ * any 24 hours and one per `spacingMs` (`spaced`), so a day of walking from
+ * shop to shop is a few runs, not one per stop. `no-watch` and `seen` as
+ * for a follow-up; a busy job leaves the move to the next point, which finds
+ * it again while it is fresh.
+ */
+export async function queueLocationRun(input: {
+  readonly now: Date;
+  readonly perDay: number;
+  readonly signal: ProactiveSignal;
+  readonly spacingMs: number;
+  readonly workspaceId: string;
+}) {
+  const watch = await activeWatch(input.workspaceId);
   if (!watch) return { status: "no-watch" as const };
   const unseen = await filterUnseenProactiveSignals(input.workspaceId, [
     input.signal,
   ]);
   if (unseen.length === 0) return { status: "seen" as const };
+  const recent = await db
+    .select({ createdAt: proactiveSignals.createdAt })
+    .from(proactiveSignals)
+    .where(
+      and(
+        eq(proactiveSignals.workspaceId, input.workspaceId),
+        eq(proactiveSignals.source, "location"),
+        gt(
+          proactiveSignals.createdAt,
+          new Date(input.now.getTime() - 24 * 60 * 60_000)
+        )
+      )
+    );
+  if (recent.length >= input.perDay) return { status: "capped" as const };
+  const spacedUntil = input.now.getTime() - input.spacingMs;
+  if (recent.some((row) => row.createdAt.getTime() > spacedUntil)) {
+    return { status: "spaced" as const };
+  }
   return queueProactiveRun({
     jobId: watch.jobId,
-    maxRunsPerDay: input.maxRunsPerDay,
+    maxRunsPerDay: input.perDay,
     now: input.now,
     signals: unseen,
     workspaceId: input.workspaceId,

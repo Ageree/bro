@@ -208,6 +208,7 @@ describe("scheduled agent jobs", () => {
     ).toEqual([
       {
         carriesEvent: false,
+        carriesMove: false,
         conversationChannel: "photon",
         jobId: created.id,
         jobKind: "task",

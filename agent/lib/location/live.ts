@@ -10,6 +10,7 @@ import {
 import { env } from "@shared/environment";
 import { accessScopeForUser } from "@shared/identity/access-scope";
 import { distanceM, liveKeyOf } from "@shared/location/geometry";
+import { noticeLiveMove } from "./watch";
 
 /**
  * The edits of a Telegram live location (`docs/location.md`, «Живая
@@ -19,9 +20,11 @@ import { distanceM, liveKeyOf } from "@shared/location/geometry";
  * `TG_BRIDGE_LIVE_LOCATION`). No model turn starts and no message quota is
  * spent: an edit only moves the person's place reminders (a hit's report
  * waits for the schedule tick) and, now and then, is stored as a point of
- * the track. Anything that is not the person's own private chat with Bro in
- * the geolocation pilot is answered 200 and dropped, so the bridge never
- * retries it; only a wrong secret is refused.
+ * the track. In the pilot of Bro following the share, a stored point is
+ * also read for a move worth Bro's own check (`noticeLiveMove`): that check
+ * runs later, never in this request. Anything that is not the person's own
+ * private chat with Bro in the geolocation pilot is answered 200 and
+ * dropped, so the bridge never retries it; only a wrong secret is refused.
  */
 
 export const telegramLocationPath = "/eve/v1/telegram-location";
@@ -191,11 +194,16 @@ export async function receiveLiveLocation(request: Request, now = new Date()) {
         source: "telegram_live",
       })) !== undefined
     : false;
+  // Bro follows the share once a point of it is stored (`watch.ts`).
+  const watch = stored
+    ? await noticeLiveMove(scope, liveKey, recordedAt, now)
+    : undefined;
   console.info("[location] live", {
     ended,
     evaluated: evaluate,
     hits: hits.length,
     stored,
+    ...(watch !== undefined && watch !== "off" && { watch }),
     workspaceId: scope.workspaceId,
   });
   return answer({ evaluated: evaluate, hits: hits.length, stored });

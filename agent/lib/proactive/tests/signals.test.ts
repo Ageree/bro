@@ -209,6 +209,42 @@ describe("proactive signals", () => {
     ).toContain("No new mail.");
   });
 
+  it("hands a live location's move over alone, with what code read and the calendar to look at", () => {
+    const signals = [
+      {
+        dedupeKey: "4242:77#arrive@1",
+        itemId: "4242:77",
+        source: "location" as const,
+        threadId: null,
+      },
+    ];
+    const lines = ["Геопозиция: последняя точка — «Тверская, 7»."];
+    const prompt = proactiveRunPrompt({
+      home: noHome,
+      location: lines,
+      scheduledFor: now,
+      signals,
+    });
+    expect(prompt).toContain("Proactive look at where the person is.");
+    expect(prompt).toContain(lines[0]);
+    expect(prompt).toContain(
+      "timeMin 2026-09-23T12:00:00.000Z and timeMax 2026-09-24T00:00:00.000Z"
+    );
+    // Nothing else was handed over: no «no mail» to read as news.
+    expect(prompt).not.toContain("No new mail.");
+    expect(prompt).not.toContain("No new calendar events.");
+    // Where they are is theirs: nobody hears of it from Bro unasked.
+    expect(prompt).toContain("never write to or call anyone about it");
+    expect(
+      proactiveRunPrompt({
+        home: noHome,
+        location: [],
+        scheduledFor: now,
+        signals,
+      })
+    ).toContain("could not be read now: hand over nothing about it");
+  });
+
   it("tells the worker a reminder is due for a flight it may have seen, and what to say", () => {
     const prompt = proactiveRunPrompt({
       home: noHome,

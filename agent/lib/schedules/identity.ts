@@ -14,6 +14,9 @@ const scheduledReportIdentitySchema = z.object({
 const scheduledRunIdentitySchema = z.object({
   scheduledRunId: z.uuid(),
   scheduledRunKind: z.enum(["agentic", "proactive"]).optional(),
+  // A proactive run handed a move of the person's live location
+  // (`agent/lib/location/watch.ts`).
+  scheduledRunLocation: z.literal("true").optional(),
   scheduledRunLeaseToken: z.uuid(),
 });
 
@@ -40,6 +43,7 @@ export function scheduledRunIdentity(auth: SessionContext["session"]["auth"]) {
   return identity.success
     ? {
         leaseToken: identity.data.scheduledRunLeaseToken,
+        location: identity.data.scheduledRunLocation !== undefined,
         // The agentic worker is the proactive check upgraded: same limits.
         proactive: identity.data.scheduledRunKind !== undefined,
         runId: identity.data.scheduledRunId,
