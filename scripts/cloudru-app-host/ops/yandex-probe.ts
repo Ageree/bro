@@ -23,8 +23,9 @@ import { runYandexOperation } from "@agent/lib/yandex/transport";
  * expression awaited in the page — and waits; `{direct: "afisha.search",
  * args, times, pauseMs}` sends Afisha's search from this server with no
  * browser, as YANDEX_DIRECT does, and keeps of each answer only its status,
- * time, type and the number of events. The result goes to the PUT URL,
- * never to the job's log: it holds the person's data.
+ * time, type and the number of events (printed to the job's log too). Any
+ * other result goes to the PUT URL, never to the job's log: it holds the
+ * person's data.
  */
 
 const specSchema = z.union([
@@ -202,15 +203,36 @@ async function probeDirect(spec: {
   return { answers };
 }
 
+/**
+ * A request to Object Storage, tried three times: from the VM a connection
+ * to it now and then times out before it opens (ETIMEDOUT in Node's
+ * connection to several addresses), and one such loses the whole probe.
+ */
+async function storageFetch(url: string, init?: RequestInit) {
+  const attempt = async (left: number): Promise<Response> => {
+    try {
+      return await fetch(url, init);
+    } catch (error) {
+      if (left <= 1) throw error;
+      await sleep(1000);
+      return attempt(left - 1);
+    }
+  };
+  return attempt(3);
+}
+
 async function main() {
   const [specUrl, resultUrl] = process.argv.slice(2);
   if (!specUrl || !resultUrl) {
     throw new Error("Usage: yandex-probe.sh SPEC_GET_URL RESULT_PUT_URL");
   }
-  const spec = specSchema.parse(await (await fetch(specUrl)).json());
+  const spec = specSchema.parse(await (await storageFetch(specUrl)).json());
   let result: unknown;
   if ("direct" in spec) {
     result = await probeDirect(spec);
+    // Statuses and times only, no one's data: the job's log keeps them even
+    // when the result cannot be stored.
+    console.log(JSON.stringify(result));
   } else if ("op" in spec) {
     const operation = findYandexOperation(spec.op);
     if (!operation) throw new Error(`No operation ${spec.op}.`);
@@ -219,7 +241,7 @@ async function main() {
     result = await probePage(spec.workspace, spec);
   }
   const body = JSON.stringify(result);
-  const put = await fetch(resultUrl, { body, method: "PUT" });
+  const put = await storageFetch(resultUrl, { body, method: "PUT" });
   console.log(
     JSON.stringify({ bytes: body.length, stored: put.ok, status: put.status })
   );

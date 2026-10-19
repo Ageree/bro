@@ -271,6 +271,56 @@ describe("capturing the pictures a browser run leaves behind", () => {
     });
   }, 20_000);
 
+  it("lets the report go without a page picture that is late, in the pilot", async () => {
+    const { images } = await loadImages();
+    listBrowserUseWorkspaceFiles.mockResolvedValue({
+      files: [savedFile("report/final.png", finalPng)],
+    });
+    // The store never answers: the report must not wait for it.
+    put.mockImplementationOnce(() => new Promise(() => undefined));
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
+
+    const capturing = images.captureBrowserRunImages(row(), run, {
+      pageWithinCap: true,
+    });
+    // The pilot waits two seconds for the page.
+    await vi.advanceTimersByTimeAsync(2000);
+
+    await expect(capturing).resolves.toEqual([]);
+  });
+
+  it("waits for item photos the errand asked for, in the pilot too", async () => {
+    const { images } = await loadImages();
+    listBrowserUseWorkspaceFiles.mockResolvedValue({
+      files: [
+        savedFile("report/final.png", finalPng),
+        savedFile("report/xiaomi-band-9.jpg", bandJpeg),
+      ],
+    });
+    const late = Promise.withResolvers<undefined>();
+    put.mockImplementationOnce(async () => late.promise);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
+
+    let done = false;
+    const capturing = images
+      .captureBrowserRunImages(row(), run, { pageWithinCap: true })
+      .finally(() => {
+        done = true;
+      });
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(done).toBe(false);
+    vi.useRealTimers();
+    late.resolve(undefined);
+
+    expect(await capturing).toHaveLength(2);
+  }, 20_000);
+
   it("photographs the live browser when the run saved no page of its own", async () => {
     const { images, pgliteDatabase } = await loadImages();
     const viewport = jpeg(9);

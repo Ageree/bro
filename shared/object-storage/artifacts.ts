@@ -1,3 +1,4 @@
+import { Agent } from "undici";
 import {
   objectStorageConfigured,
   presignStoredObject,
@@ -41,6 +42,15 @@ export class ArtifactStorageError extends Error {
   }
 }
 
+/**
+ * How long the retry of an upload gives each of the store's addresses before
+ * it races the next. Node's own 250 ms drops an IPv4 handshake that is merely
+ * slow for the store's IPv6 address (it has both): 19.10 on production every
+ * report screenshot failed that way in 0.3 s, «AggregateError [ETIMEDOUT]».
+ */
+const patientAttemptMs = 2500;
+let patientDialer: Agent | undefined;
+
 /** Stores an artifact's bytes, replacing what was under its path before. */
 export async function putArtifactObject(input: {
   readonly bytes: Uint8Array;
@@ -48,13 +58,34 @@ export async function putArtifactObject(input: {
   readonly pathname: string;
   readonly signal?: AbortSignal;
 }) {
-  const response = await fetch(presignArtifact(input.pathname, "PUT"), {
-    body: Buffer.from(input.bytes),
-    headers: { "content-type": input.mediaType },
-    method: "PUT",
-    // An upload of a 10 MB attachment takes longer than a read's bound.
-    signal: withTimeout(input.signal, uploadTimeoutMs(input.bytes.byteLength)),
-  });
+  const upload = (init?: { dispatcher: Agent }) =>
+    fetch(presignArtifact(input.pathname, "PUT"), {
+      ...init,
+      body: Buffer.from(input.bytes),
+      headers: { "content-type": input.mediaType },
+      method: "PUT",
+      // An upload of a 10 MB attachment takes longer than a read's bound.
+      signal: withTimeout(
+        input.signal,
+        uploadTimeoutMs(input.bytes.byteLength)
+      ),
+    });
+  // A connection that failed («fetch failed», a TypeError) is tried once
+  // more, patiently: the same bytes under the same key change nothing. A
+  // timeout or a refusal is not.
+  let response: Response;
+  try {
+    response = await upload();
+  } catch (error) {
+    if (!(error instanceof TypeError) || input.signal?.aborted === true) {
+      throw error;
+    }
+    patientDialer ??= new Agent({
+      autoSelectFamily: true,
+      autoSelectFamilyAttemptTimeout: patientAttemptMs,
+    });
+    response = await upload({ dispatcher: patientDialer });
+  }
   if (!response.ok) {
     throw new ArtifactStorageError(
       response.status,

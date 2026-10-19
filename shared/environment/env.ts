@@ -292,6 +292,12 @@ export const env = createEnv({
     // flash mode when they only search (`agent/lib/browser-vm/pilot.ts`,
     // docs/browser-speed.md). Unset, every errand runs as before.
     BROWSER_FAST_WORKSPACES: workspaceListSchema.optional(),
+    // Whose errand reports wait at most two seconds for the picture of the
+    // run's last page when the run saved no item photos, rather than for the
+    // download and store of it (1.3–19.1 s on 19.10): workspace ids or
+    // owners' emails, or `*` (`agent/lib/browser-use/images.ts`). Unset,
+    // every report waits for its pictures as before.
+    BROWSER_REPORT_FAST_WORKSPACES: workspaceListSchema.optional(),
     // Who may get the sign-in link, where the person signs in to a site
     // themselves in a live view of their own cloud browser
     // (`agent/lib/login-handoff/`, docs/login-handoff.md). Unset or empty,
