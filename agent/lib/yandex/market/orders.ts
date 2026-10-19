@@ -33,36 +33,49 @@ export const marketOrdersOperation = defineYandexOperation({
   }),
   run: marketRun(String.raw`const status = args.status || "completed";
 const limit = args.limit || 10;
-const pg = await getPage(status === "active" ? "/my/orders" : "/my/orders?filter=COMPLETED");
-if (pg.error) return pg.error;
+const path = status === "active" ? "/my/orders" : "/my/orders?filter=COMPLETED";
 // The list is a widget patch (JSON in <noframes>): find the array of groups instead of trusting its path.
-let groups = null;
-const walk = (o) => {
-  if (groups) return;
-  if (Array.isArray(o)) {
-    if (
-      o.length &&
-      o.every(
-        (x) =>
-          x &&
-          typeof x === "object" &&
-          x.onClick &&
-          x.onClick.name === "show_order" &&
-          Array.isArray(x.orders)
-      )
-    ) {
-      groups = o;
-      return;
-    }
-    o.forEach(walk);
-  } else if (o && typeof o === "object") for (const k in o) walk(o[k]);
+const findGroups = (doc) => {
+  let groups = null;
+  const walk = (o) => {
+    if (groups) return;
+    if (Array.isArray(o)) {
+      if (
+        o.length &&
+        o.every(
+          (x) =>
+            x &&
+            typeof x === "object" &&
+            x.onClick &&
+            x.onClick.name === "show_order" &&
+            Array.isArray(x.orders)
+        )
+      ) {
+        groups = o;
+        return;
+      }
+      o.forEach(walk);
+    } else if (o && typeof o === "object") for (const k in o) walk(o[k]);
+  };
+  doc.querySelectorAll('noframes[data-apiary="patch"]').forEach((n) => {
+    if (groups || !n.textContent.includes("show_order")) return;
+    try {
+      walk(JSON.parse(n.textContent).widgets);
+    } catch (e) {}
+  });
+  return groups;
 };
-pg.doc.querySelectorAll('noframes[data-apiary="patch"]').forEach((n) => {
-  if (groups || !n.textContent.includes("show_order")) return;
-  try {
-    walk(JSON.parse(n.textContent).widgets);
-  } catch (e) {}
-});
+// Now and then the page comes without the list's widget (seen on the first
+// read of a fresh tab); the next read has it, so the page is read once more.
+let pg = await getPage(path);
+if (pg.error) return pg.error;
+let groups = findGroups(pg.doc);
+if (!groups && !pg.doc.querySelector('[data-auto="ordersEmptyList"]')) {
+  await sleep(500);
+  pg = await getPage(path);
+  if (pg.error) return pg.error;
+  groups = findGroups(pg.doc);
+}
 if (!groups) {
   if (pg.doc.querySelector('[data-auto="ordersEmptyList"]'))
     return ok({ status, count: 0, orders: [] });

@@ -51,13 +51,11 @@ export const mapsOrgOperation = defineYandexOperation({
     id: z.string().regex(/^\d{1,20}$/u),
   }),
   id: "maps.org",
-  loaded: "interactive",
-  origin: "https://yandex.ru/maps/",
+  origin: "https://yandex.ru/robots.txt",
   result: z.union([card, z.object({ error: z.string() })]),
   run: `async function (args) {
   ${mapsPage}
-  const session = await mapsContext();
-  if (session === null) return { status: "ok", data: { error: "no_session" } };
+  const session = mapsContext();
   const found = await mapsCall(session, "/maps/api/search", [
     ["lang", "ru_RU"],
     ["mode", "uri"],

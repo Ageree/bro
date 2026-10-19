@@ -43,16 +43,14 @@ export const mapsSearchOperation = defineYandexOperation({
       .default([0.06, 0.03]),
   }),
   id: "maps.search",
-  loaded: "interactive",
-  origin: "https://yandex.ru/maps/",
+  origin: "https://yandex.ru/robots.txt",
   result: z.union([
     z.object({ places: z.array(place).max(10), total: z.number() }),
     z.object({ error: z.string() }),
   ]),
   run: `async function (args) {
   ${mapsPage}
-  const session = await mapsContext();
-  if (session === null) return { status: "ok", data: { error: "no_session" } };
+  const session = mapsContext();
   const d = await mapsCall(session, "/maps/api/search", [
     ["lang", "ru_RU"],
     ["ll", args.near.join(",")],
