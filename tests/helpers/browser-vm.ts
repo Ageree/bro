@@ -33,6 +33,7 @@ export const browserPoolTestEnvironment = {
 const browserVmSettings = [
   "BROWSER_BACKEND",
   "BROWSER_FAST_WORKSPACES",
+  "BROWSER_REPORT_FAST_WORKSPACES",
   "LOGIN_HANDOFF_WORKSPACES",
   "BROWSER_HOST_BUNDLE",
   "BROWSER_HOST_CLOUD",

@@ -12,6 +12,7 @@ import {
 } from "@agent/lib/browser-vm/private-route";
 import { maximumBrowserImageBytes } from "@shared/browser/artifact";
 import { captureViewportOverCdp } from "./cdp";
+import { within } from "./deadline";
 import {
   findBrowserUseSessionCdpUrl,
   listBrowserUseWorkspaceFiles,
@@ -141,9 +142,22 @@ function labelFromStem(stem: string) {
   return label.length > 0 ? label : fallbackItemLabel;
 }
 
+/**
+ * How long a report waits for the picture of the run's last page when the
+ * run saved no item photos (BROWSER_REPORT_FAST_WORKSPACES). The person asked
+ * for no pictures then, and the report turn seldom attaches the page: 19.10
+ * its download and store took 1.3–19.1 s, 7.6 s at the median, all of it
+ * before the report turn started.
+ */
+const reportPageWaitMs = 2000;
+
 export async function captureBrowserRunImages(
   row: BrowserRunRow,
-  run: BrowserUseRunSummary
+  run: BrowserUseRunSummary,
+  options: {
+    /** Wait for the page at most {@link reportPageWaitMs} when the run saved no item photos. */
+    readonly pageWithinCap?: boolean;
+  } = {}
 ): Promise<BrowserRunImage[]> {
   const { rootSessionId, sessionId: browserSessionId } = row;
   // Only a queued errand has no browser session, and it never settles here.
@@ -160,15 +174,28 @@ export async function captureBrowserRunImages(
     ? saved
     : saved.slice(0, maximumDeliveredImageArtifacts - 1);
   const context = { browserSessionId, rootSessionId, row };
-  const [viewport, captured] = await Promise.all([
+  // Each capture settles on its own, so none of them ever rejects.
+  const capturing = Promise.all([
     savedFinal ? undefined : settled(row, "viewport", captureViewport(context)),
     Promise.all(
       files.map((file) =>
         settled(row, file.path, captureSavedImage(context, file))
       )
     ),
-  ]);
-  return [viewport, ...captured].filter((image) => image !== undefined);
+  ]).then(([viewport, captured]) =>
+    [viewport, ...captured].filter((image) => image !== undefined)
+  );
+  if (options.pageWithinCap !== true || saved.some((file) => !file.final)) {
+    return capturing;
+  }
+  // The page is still stored when it comes later; this report goes without it.
+  const waited = await within(capturing, reportPageWaitMs);
+  if (!waited.timedOut) return waited.value;
+  console.info("[browser-use] report went without the page picture", {
+    runId: row.id,
+    waitedMs: reportPageWaitMs,
+  });
+  return [];
 }
 
 interface RunImageContext {
@@ -221,6 +248,7 @@ async function captureSavedImage(context: RunImageContext, file: RunImageFile) {
   // A browser VM's file comes from its worker, one of the project's VMs, so
   // it takes the private route; any other name is dialed as before. The
   // address is looked up before the download's timeout starts.
+  const startedAt = performance.now();
   await resolvePrivateRoute(file.url);
   const download = await downloadWithin(
     new URL(file.url),
@@ -235,13 +263,24 @@ async function captureSavedImage(context: RunImageContext, file: RunImageFile) {
     });
     return undefined;
   }
-  return keep(context, {
+  const downloadedAt = performance.now();
+  const kept = await keep(context, {
     bytes: download.bytes,
     idempotencyKey: `browser-run:${context.row.id}:${file.path}`,
     label: file.final ? finalScreenshotLabel : labelFromStem(file.stem),
     name: file.final ? browserRunFinalScreenshotStem : file.stem,
     sourceKind: file.final ? "viewport" : "image_resource",
   });
+  // The person waits for the slowest picture before the report turn starts
+  // (`imagesMs` of the settle timing): which leg it spends is here.
+  console.info("[browser-use] run image timing", {
+    bytes: download.bytes.byteLength,
+    downloadMs: Math.round(downloadedAt - startedAt),
+    final: file.final,
+    runId: context.row.id,
+    storeMs: Math.round(performance.now() - downloadedAt),
+  });
+  return kept;
 }
 
 async function captureViewport(context: RunImageContext) {

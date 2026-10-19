@@ -524,6 +524,33 @@ describe("wallet payments", () => {
     );
   });
 
+  it("says the balance is short before asking, when no linked card can pay", async () => {
+    services.fill.mockResolvedValue({
+      kind: "ready",
+      title: "Пополнение баланса Steam",
+      params: { pattern_id: "67569", rapida_param1: "gamer", netSum: "100" },
+      shown: [{ label: "Логин Steam", value: "gamer" }],
+    });
+    services.request.mockResolvedValue({
+      kind: "ready",
+      requestId: "request-1",
+      amountMinor: 10_000,
+      walletAllowed: true,
+      contract: undefined,
+      balanceMinor: 100,
+      card: undefined,
+    });
+    expect(
+      await call(answered("пополни стим на 100"), {
+        action: "prepare",
+        kind: "service",
+        serviceId: "67569",
+        fields: [{ name: "rapida_param1", value: "gamer" }],
+      })
+    ).toMatchObject({ kind: "refused" });
+    expect(services.create).not.toHaveBeenCalled();
+  });
+
   it("sends the person YooMoney's page when the wallet wants something done first", async () => {
     services.fill.mockResolvedValue({
       kind: "ready",

@@ -1872,6 +1872,14 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   сайта, а не браузер. Поручение на тот же сайт ждёт аккаунт (`waitsForAccount`)
   до закрытия страницы, около 15 минут (19.10 — 13 минут).
 
+- Скриншот отчёта (19.10): после 19:03 в 4 из 7 отчётов S3 PUT картинки падал за 0,3 с
+  (`fetch failed` → `AggregateError [ETIMEDOUT]`, `internalConnectMultipleTimeout`): у S3 есть
+  A и AAAA, и Node даёт каждому адресу 250 мс, бросая медленную попытку. `putArtifactObject`
+  повторяет сбой соединения раз через `undici.Agent` с порогом 2,5 с. Удачная картинка стоит
+  4–16 с (`[browser-use] run image timing` делит скачивание и запись); `BROWSER_REPORT_FAST_WORKSPACES`
+  не даёт отчёту без фото товаров ждать картинку страницы дольше 2 с. S3 с VM по v4/v6 —
+  `net-latency.sh`.
+
 Файлы без пути — в `agent/lib/browser-use/`.
 
 - `cdp.ts` вводит код как `enter_code` worker: обходит открытые shadow root и

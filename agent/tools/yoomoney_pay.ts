@@ -459,6 +459,15 @@ async function prepare(
       : undefined;
   if (!walletAllowed && fromCard === undefined)
     return refusal({ error: "wallet_not_allowed" });
+  // Nothing would pay it: the balance is short and no linked card takes it
+  // (a transfer, or a service whose form does not take a linked card, as
+  // Steam's). Said now, not after the person's yes.
+  if (
+    fromCard === undefined &&
+    balanceMinor !== undefined &&
+    balanceMinor < amountMinor
+  )
+    return refusal({ error: "not_enough_funds" });
   const draft = {
     id,
     title,

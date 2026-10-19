@@ -37,6 +37,19 @@ export async function proxyFallbackFirstPilot(scope: {
   );
 }
 
+/**
+ * Whether a run's report waits at most `reportPageWaitMs` for the picture of
+ * its last page when the run saved no item photos
+ * (BROWSER_REPORT_FAST_WORKSPACES, `agent/lib/browser-use/images.ts`). The
+ * list reads as BROWSER_FAST_WORKSPACES does; a failed lookup waits as before.
+ */
+export async function reportFastPilot(scope: {
+  readonly userId?: string;
+  readonly workspaceId: string;
+}) {
+  return inPilot("browser-report", env.BROWSER_REPORT_FAST_WORKSPACES, scope);
+}
+
 async function inPilot(
   pilot: string,
   entries: readonly string[] | undefined,

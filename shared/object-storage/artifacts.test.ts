@@ -61,6 +61,27 @@ describe("artifact objects", () => {
     expect(calls[0]?.headers.get("content-type")).toBe("image/png");
   });
 
+  it("sends an upload again once when the connection to the store failed", async () => {
+    // 19.10: «fetch failed» (ETIMEDOUT from Node's address racing) lost the
+    // report's only screenshot in 0.3 s; the same bytes under the same key
+    // are safe to send twice.
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", (_url: string, init: { dispatcher?: object }) => {
+      calls.push(init.dispatcher === undefined ? "first" : "patient");
+      return calls.length === 1
+        ? Promise.reject(new TypeError("fetch failed"))
+        : Promise.resolve(new Response(null, { status: 200 }));
+    });
+    const artifacts = await import("@shared/object-storage/artifacts");
+
+    await artifacts.putArtifactObject({
+      bytes: new Uint8Array([1]),
+      mediaType: "image/png",
+      pathname: "browser-images/u/x",
+    });
+    expect(calls).toEqual(["first", "patient"]);
+  });
+
   it("fails a refused upload, naming the cause Object Storage gave", async () => {
     stubStorage(
       new Response("<Error><Code>SignatureDoesNotMatch</Code></Error>", {
