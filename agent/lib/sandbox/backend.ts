@@ -11,6 +11,11 @@ import { presignStoredObject } from "@shared/object-storage/s3";
 import { env } from "@shared/environment";
 import { applicationOrigin } from "@shared/environment/origin";
 import { sandboxHostConfigured } from "@shared/sandbox/pilot";
+import {
+  forgetAttachments,
+  keepAttachment,
+  keptAttachment,
+} from "./attachments";
 import { inUse, openWithRoom } from "./capacity";
 import {
   deleteSandbox,
@@ -463,43 +468,48 @@ function spawnCommand(
   };
 }
 
+/**
+ * The session over a sandbox that is opened only when a call needs it
+ * (`open`): eve takes a session at every step whose history holds a staged
+ * file, to read it back (`attachments.ts`), and a file this process holds
+ * needs no open, so no restore of a stopped sandbox.
+ */
 function sandboxSession(
   sandboxId: string,
+  open: () => Promise<void>,
   reopen: () => Promise<void>
 ): SandboxSession {
   // Each call is a use of the sandbox (`inUse`), a streamed read until its
   // bytes start: no release stops the sandbox meanwhile, and one that came
   // first is undone (`againIfStopped`).
   const inSandbox = async <T>(call: () => Promise<T>) =>
-    await inUse(
-      sandboxId,
-      async () => await againIfStopped(sandboxId, reopen, call)
-    );
+    await inUse(sandboxId, async () => {
+      await open();
+      return await againIfStopped(sandboxId, reopen, call);
+    });
   const readBinaryFile = async (options: {
     readonly abortSignal?: AbortSignal;
     readonly path: string;
-  }) =>
-    await inSandbox(
-      async () =>
-        await readSandboxFile(
-          sandboxId,
-          resolveSandboxPath(options.path),
-          options.abortSignal
-        )
+  }) => {
+    const path = resolveSandboxPath(options.path);
+    const kept = keptAttachment(sandboxId, path);
+    if (kept !== undefined) return kept;
+    const bytes = await inSandbox(
+      async () => await readSandboxFile(sandboxId, path, options.abortSignal)
     );
+    if (bytes !== null) keepAttachment(sandboxId, path, bytes);
+    return bytes;
+  };
   const write = async (
     path: string,
     content: Uint8Array,
     signal: AbortSignal | undefined
   ) => {
+    const resolved = resolveSandboxPath(path);
     await inSandbox(async () => {
-      await writeSandboxFile(
-        sandboxId,
-        resolveSandboxPath(path),
-        content,
-        signal
-      );
+      await writeSandboxFile(sandboxId, resolved, content, signal);
     });
+    keepAttachment(sandboxId, resolved, content);
   };
   return {
     id: sandboxId,
@@ -523,6 +533,7 @@ function sandboxSession(
       );
     },
     removePath: async (options) => {
+      forgetAttachments(sandboxId, resolveSandboxPath(options.path));
       await inSandbox(async () => {
         await removeSandboxPath(sandboxId, {
           force: options.force,
@@ -534,6 +545,7 @@ function sandboxSession(
     },
     resolvePath: resolveSandboxPath,
     run: async (options) => {
+      await open();
       const process = spawnCommand(sandboxId, options, reopen);
       const [stdout, stderr, exit] = await Promise.all([
         readOutput(process.stdout),
@@ -552,8 +564,10 @@ function sandboxSession(
         await setSandboxNetwork(sandboxId, policy);
       });
     },
-    spawn: async (options) =>
-      await Promise.resolve(spawnCommand(sandboxId, options, reopen)),
+    spawn: async (options) => {
+      await open();
+      return spawnCommand(sandboxId, options, reopen);
+    },
     writeBinaryFile: async (options) => {
       await write(options.path, options.content, options.abortSignal);
     },
@@ -587,9 +601,10 @@ function savedWorkspace(
 /**
  * The backend eve opens sandboxes with; its prewarm keeps nothing, since
  * the host's root file system is the template. Each `create` — every step that
- * needs the sandbox — takes up the live container or restores the saved
- * `/workspace`, and hands the host a fresh tool router token and snapshot
- * links. The workspace comes from `onSession` (`use({ workspaceId })`) and is
+ * needs the sandbox — makes a session that, at its first call to the host,
+ * takes up the live container or restores the saved `/workspace`, and hands
+ * the host a fresh tool router token and snapshot links; a staged file this
+ * process holds is read without it (`attachments.ts`). The workspace comes from `onSession` (`use({ workspaceId })`) and is
  * kept in eve's reconnect state for the session's later steps. A full host
  * is waited out a while, and the session's turn end stops the sandbox again
  * (`agent/lib/sandbox/capacity.ts`): eve's own `ctx.getSandbox()` would open
@@ -616,20 +631,28 @@ export function cloudRuSandbox(
       // sandbox (`releaseSessionSandboxes`).
       const sessionId = input.tags?.sessionId;
       let workspaceId = savedWorkspace(input.existingMetadata) ?? "";
-      await openWithRoom(
-        sandboxId,
-        openRequest(sandboxId, workspaceId, settings.memoryMb),
-        sessionId
-      );
-      // A release that stopped the sandbox under this step's handle is
-      // undone with the same open (`againIfStopped`).
-      const session = sandboxSession(sandboxId, async () => {
+      const reopen = async () => {
         await openWithRoom(
           sandboxId,
           openRequest(sandboxId, workspaceId, settings.memoryMb),
           sessionId
         );
-      });
+      };
+      // Opened at the first call that needs the sandbox, once per step; a
+      // failed open is tried again by the next call.
+      let opening: Promise<void> | undefined;
+      const open = async () => {
+        opening ??= reopen();
+        try {
+          await opening;
+        } catch (error) {
+          opening = undefined;
+          throw error;
+        }
+      };
+      // A release that stopped the sandbox under this step's handle is
+      // undone with the same open (`againIfStopped`).
+      const session = sandboxSession(sandboxId, open, reopen);
       const handle: SandboxBackendHandle<CloudRuSessionOptions> = {
         captureState: async () =>
           await Promise.resolve({
@@ -638,6 +661,7 @@ export function cloudRuSandbox(
             sessionKey: input.sessionKey,
           }),
         delete: async (options) => {
+          forgetAttachments(sandboxId);
           await deleteSandbox(sandboxId);
           // Its saved `/workspace` goes too, or the next open restores it.
           await deleteSnapshot(sandboxId, options?.abortSignal);
@@ -662,11 +686,9 @@ export function cloudRuSandbox(
             options.workspaceId !== workspaceId
           ) {
             workspaceId = options.workspaceId;
-            await openWithRoom(
-              sandboxId,
-              openRequest(sandboxId, workspaceId, settings.memoryMb),
-              sessionId
-            );
+            // An open sandbox gets a token for the workspace now; one not
+            // opened yet gets it when it opens.
+            if (opening !== undefined) await reopen();
           }
           return session;
         },

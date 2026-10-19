@@ -36,6 +36,15 @@ function pdfPart(path: string, bytes = plainPdf) {
   } as const;
 }
 
+function photo(path: string) {
+  return {
+    data: { data: new Uint8Array([1, 2, 3]), type: "data" },
+    filename: path,
+    mediaType: "image/png",
+    type: "file",
+  } as const;
+}
+
 const answer = {
   content: [{ text: "Готово.", type: "text" }],
   role: "assistant",
@@ -97,13 +106,6 @@ describe("withStagedFiles", () => {
   it("turns an earlier turn's photo into its line in the pilot only", () => {
     const earlier = staged(3, "poster.png");
     const current = staged(4, "receipt.jpg");
-    const photo = (path: string) =>
-      ({
-        data: { data: new Uint8Array([1, 2, 3]), type: "data" },
-        filename: path,
-        mediaType: "image/png",
-        type: "file",
-      }) as const;
     const prompt: Prompt = [
       person({ text: "что на афише?", type: "text" }, photo(earlier)),
       answer,

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import {
@@ -35,6 +36,8 @@ function stubHost(...answers: readonly (() => Response)[]) {
 
 const opened = () =>
   Response.json({ created: true, id: "sb", restored: false, state: "running" });
+
+const notFound = () => Response.json({ error: "not_found" }, { status: 404 });
 
 const stopped = () =>
   Response.json(
@@ -99,9 +102,11 @@ const cutNote = (bytes: number) =>
 
 describe("the Cloud.ru sandbox backend", () => {
   it("opens the session's sandbox with fresh links and the router token", async () => {
-    const calls = stubHost(opened);
+    const calls = stubHost(opened, notFound);
     const { cloudRuSandbox, keys } = await backend();
     const handle = await cloudRuSandbox().create(createInput);
+    expect(calls).toEqual([]);
+    await handle.session.readBinaryFile({ path: "nope" });
     const sandboxId = keys.sandboxIdFor("session-1");
     expect(calls[0]?.method).toBe("PUT");
     expect(calls[0]?.url).toBe(
@@ -131,32 +136,40 @@ describe("the Cloud.ru sandbox backend", () => {
   });
 
   it("asks for the memory it was given, or the host's default", async () => {
-    const calls = stubHost(opened, opened);
+    const calls = stubHost(opened, notFound, opened, notFound);
     const { cloudRuSandbox } = await backend();
 
-    await cloudRuSandbox({ memoryMb: 1024 }).create(createInput);
-    await cloudRuSandbox().create(createInput);
+    for (const sandbox of [
+      cloudRuSandbox({ memoryMb: 1024 }),
+      cloudRuSandbox(),
+    ]) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- one open after the other, in the stub's order
+      const { session } = await sandbox.create(createInput);
+      // oxlint-disable-next-line eslint/no-await-in-loop -- the read opens it
+      await session.readBinaryFile({ path: "nope" });
+    }
 
     const memory = z.object({ memoryMb: z.number().optional() });
-    const [small, standard] = calls.map((call) =>
-      memory.parse(JSON.parse(call.body))
-    );
+    const [small, standard] = calls
+      .filter(({ method }) => method === "PUT")
+      .map((call) => memory.parse(JSON.parse(call.body)));
     expect(small?.memoryMb).toBe(1024);
     expect(standard).toEqual({});
   });
 
   it("opens before onSession knows the workspace, then renews the token", async () => {
-    const calls = stubHost(opened, opened);
+    const calls = stubHost(opened, notFound, opened);
     const { cloudRuSandbox, keys } = await backend();
     const handle = await cloudRuSandbox().create({
       ...createInput,
       existingMetadata: undefined,
     });
+    await handle.session.readBinaryFile({ path: "nope" });
     const first = openBody.parse(JSON.parse(calls[0]?.body ?? "{}"));
     expect(first.workspace).toBe("bro");
     expect(keys.verifySandboxToolsToken(first.tools.token)?.ws).toBe("");
     await handle.useSessionFn({ workspaceId: "personal:abc" });
-    const second = openBody.parse(JSON.parse(calls[1]?.body ?? "{}"));
+    const second = openBody.parse(JSON.parse(calls[2]?.body ?? "{}"));
     expect(second.workspace).toBe("bro");
     expect(keys.verifySandboxToolsToken(second.tools.token)?.ws).toBe(
       "personal:abc"
@@ -383,7 +396,6 @@ describe("the Cloud.ru sandbox backend", () => {
 
   it("deletes the saved /workspace with the sandbox", async () => {
     const calls = stubHost(
-      opened,
       () => new Response(null, { status: 204 }),
       () => new Response(null, { status: 204 })
     );
@@ -391,9 +403,9 @@ describe("the Cloud.ru sandbox backend", () => {
     const handle = await cloudRuSandbox().create(createInput);
     await handle.delete();
     const sandboxId = keys.sandboxIdFor("session-1");
+    expect(calls[0]?.method).toBe("DELETE");
     expect(calls[1]?.method).toBe("DELETE");
-    expect(calls[2]?.method).toBe("DELETE");
-    expect(calls[2]?.url).toContain(
+    expect(calls[1]?.url).toContain(
       `/bro-state-test/sandbox/workspaces/${sandboxId}.snap?`
     );
   });
@@ -415,6 +427,39 @@ describe("the Cloud.ru sandbox backend", () => {
     );
     expect(resolveSandboxPath("./a/b")).toBe("/workspace/a/b");
     expect(resolveSandboxPath("/etc/hosts")).toBe("/etc/hosts");
+  });
+
+  it("reads back a staged file it wrote or read without opening the sandbox again", async () => {
+    const bytes = new TextEncoder().encode("фото");
+    const hash = createHash("sha256").update(bytes).digest("hex").slice(0, 16);
+    const staged = `/workspace/attachments/${hash}/photo.jpg`;
+    const other = `/workspace/attachments/${"0".repeat(16)}/scan.pdf`;
+    const calls = stubHost(
+      opened,
+      () => new Response(null, { status: 204 }),
+      opened,
+      () => new Response("не те байты"),
+      () => new Response("не те байты")
+    );
+    const { cloudRuSandbox } = await backend();
+    const first = await cloudRuSandbox().create(createInput);
+    await first.session.writeBinaryFile({ content: bytes, path: staged });
+
+    // The next step after the sandbox was stopped: nothing to restore.
+    const next = await cloudRuSandbox().create(createInput);
+    expect(await next.session.readBinaryFile({ path: staged })).toEqual(bytes);
+    expect(calls.map(({ method }) => method)).toEqual(["PUT", "PUT"]);
+
+    // Bytes that are not the file their path names are read each time.
+    await next.session.readBinaryFile({ path: other });
+    await next.session.readBinaryFile({ path: other });
+    expect(calls.map(({ method }) => method)).toEqual([
+      "PUT",
+      "PUT",
+      "PUT",
+      "GET",
+      "GET",
+    ]);
   });
 
   it("allows no network but none", async () => {

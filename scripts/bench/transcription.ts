@@ -23,9 +23,8 @@ const { values: flags } = parseArgs({
 });
 
 registerApplicationModuleResolution();
-const { transcribeAudio } = await import(
-  "@agent/lib/inbound-media/transcription"
-);
+const { transcribeAudio } =
+  await import("@agent/lib/inbound-media/transcription");
 
 for (const path of flags.voice ?? []) {
   // oxlint-disable-next-line eslint/no-await-in-loop -- one file at a time

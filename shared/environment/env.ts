@@ -930,7 +930,9 @@ export const env = createEnv({
     // is an ISO 639-1 hint, `auto` lets the model guess. RouterAI dropped
     // Qwen3-ASR-Flash (19.10: 503 «No available providers»), and every voice
     // note waited for that refusal before Whisper answered it.
-    ROUTERAI_STT_FALLBACK_MODEL: trimmedValue.default("openai/gpt-4o-transcribe"),
+    ROUTERAI_STT_FALLBACK_MODEL: trimmedValue.default(
+      "openai/gpt-4o-transcribe"
+    ),
     ROUTERAI_STT_LANGUAGE: trimmedValue.default("ru"),
     ROUTERAI_STT_MODEL: trimmedValue.default("openai/whisper-large-v3-turbo"),
     // Object Storage of any S3-compatible provider (Selectel, say): the four
