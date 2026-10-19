@@ -19,7 +19,7 @@ const services = vi.hoisted(() => ({
   reverse: vi.fn<typeof reverseGeocode>(),
   setAddress: vi.fn<typeof locationModule.setPointAddress>(),
   timeZone: vi.fn<typeof readWorkspaceTimeZone>(),
-  watch: vi.fn<typeof locationModule.locationWatchPilot>(),
+  watch: vi.fn<typeof locationModule.followsLiveLocation>(),
 }));
 
 vi.mock("@db/services/location", () => ({
@@ -31,7 +31,7 @@ vi.mock("@db/services/location", () => ({
   latestPosition: services.latest,
   listLocationPoints: services.list,
   locationPilot: services.pilot,
-  locationWatchPilot: services.watch,
+  followsLiveLocation: services.watch,
   setPointAddress: services.setAddress,
 }));
 vi.mock("@db/services/user-profile", () => ({
@@ -226,7 +226,7 @@ describe("the geolocation tools", () => {
   });
 
   it("ask for a live share where Bro follows one, and say so", async () => {
-    services.watch.mockReturnValue(true);
+    services.watch.mockResolvedValue(true);
     const set = await tools(said("что рядом?"));
     if (!set || !("location_now" in set))
       throw new Error("Expected the tools.");

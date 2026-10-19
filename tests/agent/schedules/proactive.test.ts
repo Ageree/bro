@@ -853,6 +853,9 @@ describe("proactive schedule", () => {
     ]);
     moves.mockResolvedValue(["Геопозиция: последняя точка — «Тверская, 7»."]);
     jobs.claimRuns.mockResolvedValue([proactiveClaim()]);
+    // Even in the agency pilot a move's run only reads and writes to the
+    // person: no mail or calls about where they are.
+    agency.pilot.mockReturnValue(true);
     const send = vi
       .fn<ReturnType<ScheduleToFn>["send"]>()
       .mockResolvedValue(workerSession());
@@ -868,14 +871,19 @@ describe("proactive schedule", () => {
       "Геопозиция: последняя точка — «Тверская, 7»."
     );
     expect(send.mock.calls[0]?.[1].auth).toMatchObject({
-      attributes: { scheduledRunLocation: "true" },
+      attributes: {
+        scheduledRunKind: "proactive",
+        scheduledRunLocation: "true",
+      },
     });
   });
 
-  it("dispatches queued runs every minute and checks the watches every five", async () => {
+  it("checks the due watches and dispatches runs every minute, and prunes every five", async () => {
     vi.setSystemTime(new Date("2026-09-23T12:03:00.000Z"));
+    proactive.claimWatches.mockResolvedValue([]);
     await runSchedule(vi.fn<ScheduleToFn>());
-    expect(proactive.claimWatches).not.toHaveBeenCalled();
+    expect(proactive.prune).not.toHaveBeenCalled();
+    expect(proactive.claimWatches).toHaveBeenCalledOnce();
     expect(jobs.claimRuns).toHaveBeenCalledOnce();
   });
 

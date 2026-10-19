@@ -1,7 +1,7 @@
 import { z } from "zod";
 import {
+  followsLiveLocation,
   liveSharingSeen,
-  locationWatchPilot,
   recordShared,
   sharedBefore,
   type SharedPoint,
@@ -64,7 +64,7 @@ async function ingestOne(
     const { hits, row } = await recordShared(scope, point, { via: "message" });
     // Where Bro follows a live share, a single Telegram point too asks
     // whether one was ever seen (`sharedLine`).
-    const watching = locationWatchPilot(scope);
+    const watching = await followsLiveLocation(scope);
     const asksLive =
       (point.liveKey ?? null) !== null ||
       (watching && point.kind === "position" && point.source === "telegram");

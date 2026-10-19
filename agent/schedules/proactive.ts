@@ -93,8 +93,9 @@ type ClaimedWatch = Awaited<
 
 // The tick is every minute for the runs queued between checks — a live
 // location's move (`agent/lib/location/watch.ts`), a finished call — which
-// would otherwise wait up to five minutes; the checks keep their five.
-const checksEveryMinutes = 5;
+// would otherwise wait up to five minutes. A watch is still checked every
+// 15 minutes (its lease); old dedupe keys go every five.
+const pruneEveryMinutes = 5;
 
 export default defineSchedule({
   cron: "* * * * *",
@@ -106,15 +107,15 @@ export default defineSchedule({
 
 async function runProactiveChecks(to: ScheduleToFn) {
   const now = new Date();
-  if (now.getUTCMinutes() % checksEveryMinutes === 0) {
+  if (now.getUTCMinutes() % pruneEveryMinutes === 0) {
     await pruneProactiveSignals(new Date(now.getTime() - signalRetentionMs));
-    const watches = await claimDueProactiveWatches({
-      leaseForMs: checkEveryMs,
-      limit: 25,
-      now,
-    });
-    await Promise.all(watches.map((watch) => checkWorkspace(watch, now)));
   }
+  const watches = await claimDueProactiveWatches({
+    leaseForMs: checkEveryMs,
+    limit: 25,
+    now,
+  });
+  await Promise.all(watches.map((watch) => checkWorkspace(watch, now)));
   const runs = await claimReadyScheduledAgentRuns({
     kind: "proactive",
     leaseForMs: workerStartupLimitMs,
@@ -628,8 +629,12 @@ async function dispatchProactiveRun(
     const move = signals.findLast((signal) => signal.source === "location");
     const location = move && (await moveLines(scope, move, timeZone));
     // Decided now, not when the run was queued: the pilot can be switched off
-    // in between, and the run then follows the switch.
-    const runKind = proactiveRunKind(claim.job.workspaceId);
+    // in between, and the run then follows the switch. A move's run only
+    // reads and writes to the person: with the agentic worker's mail and
+    // calls, an invitation's text could have it tell others where they are.
+    const runKind = move
+      ? "proactive"
+      : proactiveRunKind(claim.job.workspaceId);
     const session = await to(scheduledRunChannel, {
       restart: claim.run.workerSessionId !== null,
       runId: claim.run.id,

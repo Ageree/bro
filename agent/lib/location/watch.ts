@@ -176,6 +176,10 @@ export async function noticeLiveMove(
     const queued = await queueLocationRun({
       now,
       perDay: locationRunsPerDay,
+      sameMove: {
+        keyPrefix: `${liveKey}#${move.kind}@`,
+        withinMs: move.kind === "arrive" ? arriveWithinMs : leaveWithinMs,
+      },
       signal: liveMoveSignal(liveKey, move),
       spacingMs: locationRunSpacingMs,
       workspaceId: scope.workspaceId,

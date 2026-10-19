@@ -25,7 +25,7 @@ import {
 } from "@shared/subscriptions/place";
 import { db, locationPoints, scheduledAgentJobs, subscriptions } from "@db";
 import { recordPlaceHit } from "./subscriptions";
-import { readWorkspaceTimeZone } from "./user-profile";
+import { readProactiveMessages, readWorkspaceTimeZone } from "./user-profile";
 
 /**
  * The person's shared locations (`location_points`, `docs/location.md`) and
@@ -72,6 +72,14 @@ export function locationWatchPilot(scope: Pick<AccessScope, "workspaceId">) {
       (entry) => entry === "*" || entry === scope.workspaceId
     )
   );
+}
+
+/**
+ * Whether Bro may tell the person it follows their live share: the pilot,
+ * and proactive messages on — without them nothing it notices reaches them.
+ */
+export async function followsLiveLocation(scope: AccessScope) {
+  return locationWatchPilot(scope) && (await readProactiveMessages(scope));
 }
 
 type NewPoint = Omit<

@@ -19,7 +19,7 @@ const services = vi.hoisted(() => ({
   report: vi.fn<typeof reportConversations>(),
   shared: vi.fn<typeof pointsModule.latestSharedPoint>(),
   timeZone: vi.fn<typeof profileModule.readWorkspaceTimeZone>(),
-  watch: vi.fn<typeof pointsModule.locationWatchPilot>(),
+  watch: vi.fn<typeof pointsModule.followsLiveLocation>(),
 }));
 
 vi.mock("@db/services/location", () => ({
@@ -27,7 +27,7 @@ vi.mock("@db/services/location", () => ({
   latestSharedPoint: services.shared,
   liveSharingSeen: services.live,
   locationPilot: services.pilot,
-  locationWatchPilot: services.watch,
+  followsLiveLocation: services.watch,
 }));
 vi.mock("@db/services/subscriptions", () => ({
   createSubscription: services.create,
@@ -215,7 +215,7 @@ describe("place_reminder", () => {
       expect.stringContaining("Bro does not follow them all the time")
     );
     // Where Bro follows a live share, it asks for one instead.
-    services.watch.mockReturnValue(true);
+    services.watch.mockResolvedValue(true);
     expect(
       await tool.execute(
         { action: "create", place: "home", text: "забрать посылку" },

@@ -253,6 +253,7 @@ async function dispatchRecoverableReport(
   // An urgent report at night goes alone; the held ones wait for the morning.
   return dispatchScheduledReport(delivery, report.runId, {
     absorbHeld: timing === "day",
+    moved: report.carriesMove,
   });
 }
 

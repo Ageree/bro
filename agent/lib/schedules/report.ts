@@ -6,7 +6,6 @@ import {
   dropScheduledReport,
   releaseScheduledReport,
 } from "@db/services/scheduled-agent-jobs";
-import { listProactiveRunSignals } from "@db/services/proactive";
 import { telegramChatIdFromConversationId } from "@agent/lib/telegram-conversation";
 import { reportNeeded } from "@agent/lib/schedules/outcome";
 import { backgroundTurnMarker } from "@shared/chat/background-turn";
@@ -39,7 +38,7 @@ interface ReportDelivery {
 export async function dispatchScheduledReport(
   delivery: ReportDelivery,
   runId: string,
-  options: { readonly absorbHeld?: boolean } = {}
+  options: { readonly absorbHeld?: boolean; readonly moved?: boolean } = {}
 ) {
   const claimed = await claimScheduledReport(runId);
   const leaseToken = claimed?.run.reportLeaseToken;
@@ -71,12 +70,6 @@ export async function dispatchScheduledReport(
             runId: claimed.run.id,
           })
         : [];
-    // A check handed a move of the person's live location reports on that.
-    const moved =
-      claimed.job.kind === "proactive" &&
-      (await listProactiveRunSignals(claimed.run.id)).some(
-        (signal) => signal.source === "location"
-      );
     for (const target of [claimed.delivery, ...claimed.fallbacks]) {
       if (
         // oxlint-disable-next-line eslint/no-await-in-loop -- The next chat is tried only once this one turned out to have ended.
@@ -84,7 +77,8 @@ export async function dispatchScheduledReport(
           claimed,
           earlier,
           leaseToken,
-          moved,
+          // A check handed a move of the person's live location reports on that.
+          moved: options.moved === true,
           target,
         })
       ) {

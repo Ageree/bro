@@ -17,7 +17,6 @@ import type {
   restoreScheduledAgentRunInput,
   setScheduledRunSession,
 } from "@db/services/scheduled-agent-jobs";
-import type { listProactiveRunSignals } from "@db/services/proactive";
 import type { readSubscriptionDelivery } from "@db/services/subscriptions";
 import type { readProactiveMessages } from "@db/services/user-profile";
 
@@ -36,9 +35,6 @@ const services = vi.hoisted(() => ({
   releaseRun: vi.fn<typeof releaseScheduledAgentRun>(),
   setSession: vi.fn<typeof setScheduledRunSession>(),
 }));
-const runSignals = vi.hoisted(() =>
-  vi.fn<typeof listProactiveRunSignals>(() => Promise.resolve([]))
-);
 const profile = vi.hoisted(() => ({
   enabled: vi.fn<typeof readProactiveMessages>(() => Promise.resolve(true)),
   watch: vi.fn<typeof readSubscriptionDelivery>(),
@@ -58,9 +54,6 @@ vi.mock("@db/services/scheduled-agent-jobs", () => ({
   releaseScheduledAgentRun: services.releaseRun,
   releaseScheduledReport: services.releaseReport,
   setScheduledRunSession: services.setSession,
-}));
-vi.mock("@db/services/proactive", () => ({
-  listProactiveRunSignals: runSignals,
 }));
 vi.mock("@db/services/user-profile", () => ({
   readProactiveMessages: profile.enabled,
@@ -435,21 +428,14 @@ describe("scheduled report delivery", () => {
     const report = scheduledReport();
     report.job.kind = "proactive";
     services.claimReports.mockResolvedValue(report);
-    runSignals.mockResolvedValueOnce([
-      {
-        dedupeKey: "4242:77#arrive@1",
-        itemId: "4242:77",
-        source: "location",
-        threadId: null,
-      },
-    ]);
     const send = vi
       .fn<ReturnType<ScheduleToFn>["send"]>()
       .mockResolvedValue(workerSession("main-session"));
 
     await dispatchScheduledReport(
       { to: vi.fn<ScheduleToFn>(() => ({ send })) },
-      report.run.id
+      report.run.id,
+      { moved: true }
     );
 
     const prompt = send.mock.calls[0]?.[0];

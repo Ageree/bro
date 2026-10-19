@@ -902,6 +902,7 @@ describe("moves of a live location", { timeout: 30_000 }, () => {
       proactive.queueLocationRun({
         now: at,
         perDay: 2,
+        sameMove: { keyPrefix: "4242:77#leave@", withinMs: 20 * 60_000 },
         signal: move(key),
         spacingMs: 10 * 60_000,
         workspaceId: alice.workspaceId,
@@ -937,6 +938,25 @@ describe("moves of a live location", { timeout: 30_000 }, () => {
     ).toMatchObject({ status: "queued" });
   });
 
+  it("takes a departure whose key shifted by a point as the move already handed over", async () => {
+    const { proactive } = await openDatabase();
+    await proactive.recordProactiveTarget(alice, telegram, now);
+    const leave = (key: string, at: Date) =>
+      proactive.queueLocationRun({
+        now: at,
+        perDay: 12,
+        sameMove: { keyPrefix: "4242:77#leave@", withinMs: 20 * 60_000 },
+        signal: { ...move(key), dedupeKey: `4242:77#leave@${key}` },
+        spacingMs: 0,
+        workspaceId: alice.workspaceId,
+      });
+    expect(await leave("100", now)).toMatchObject({ status: "queued" });
+    const soon = new Date(now.getTime() + 11 * 60_000);
+    expect(await leave("160", soon)).toEqual({ status: "seen" });
+    const later = new Date(now.getTime() + 21 * 60_000);
+    expect(await leave("160", later)).not.toEqual({ status: "seen" });
+  });
+
   it("queues nothing when the person turned proactive messages off", async () => {
     const { profiles, proactive } = await openDatabase();
     await proactive.recordProactiveTarget(alice, telegram, now);
@@ -945,6 +965,7 @@ describe("moves of a live location", { timeout: 30_000 }, () => {
       await proactive.queueLocationRun({
         now,
         perDay: 12,
+        sameMove: { keyPrefix: "4242:77#arrive@", withinMs: 30 * 60_000 },
         signal: move("1"),
         spacingMs: 10 * 60_000,
         workspaceId: alice.workspaceId,

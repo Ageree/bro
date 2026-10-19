@@ -23,12 +23,12 @@ import {
   stepStartedEventSchema,
 } from "@agent/lib/turn-kind/step";
 import {
+  followsLiveLocation,
   forgetLocation,
   labelPoint,
   latestPosition,
   listLocationPoints,
   locationPilot,
-  locationWatchPilot,
 } from "@db/services/location";
 import { readWorkspaceTimeZone } from "@db/services/user-profile";
 import { distanceM } from "@shared/location/geometry";
@@ -535,7 +535,7 @@ export default defineDynamic({
         personsTurn: turn.said !== null,
         said: [...(turn.said ?? []), ...turn.answers],
       };
-      const watching = locationWatchPilot(scopeFromPrincipal(auth));
+      const watching = await followsLiveLocation(scopeFromPrincipal(auth));
       return {
         location_edit: defineTool({
           availableInSubagents: false,
