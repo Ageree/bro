@@ -27,6 +27,6 @@
 
 | Единица                                 | Ветка                   | Сессия | Состояние |
 | --------------------------------------- | ----------------------- | ------ | --------- |
-| telegram — кэш быстрых продолжений      | claude/speed3-telegram  | —      | создаётся |
-| report — отчёт браузера без ожидания    | claude/speed3-report    | —      | создаётся |
-| yandex — операции Яндекса на чтение     | claude/speed3-yandex    | —      | создаётся |
+| telegram — кэш быстрых продолжений      | claude/speed3-telegram  | session_01RPqKEgmkwcpz5YXZQFDhKd | работает |
+| report — отчёт браузера без ожидания    | claude/speed3-report    | session_01QiD8qcp2rMMr5Jjde3b23d | работает |
+| yandex — операции Яндекса на чтение     | claude/speed3-yandex    | session_016WY6aWFvwMVs6829fYeytd | работает |
