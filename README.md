@@ -270,7 +270,7 @@ Voice notes are transcribed through the direct model provider's audio endpoint
 [Model provider](#model-provider)), so a deployment without one answers a voice
 note with one line saying voice is not supported. On RouterAI the
 `ROUTERAI_STT_*` variables take the place of the `OPENROUTER_STT_*` ones below
-(fallback default `openai/whisper-large-v3-turbo`). iMessage voice notes arrive
+(default `openai/whisper-large-v3-turbo`, fallback `openai/gpt-4o-transcribe`). iMessage voice notes arrive
 as CAF-Opus and are remuxed to Ogg in process. `OPENROUTER_STT_MODEL` is the
 transcription model (default `qwen/qwen3-asr-flash-2026-02-10`),
 `OPENROUTER_STT_FALLBACK_MODEL` takes over when the first model rejects the clip

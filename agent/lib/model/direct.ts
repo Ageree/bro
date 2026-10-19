@@ -283,10 +283,14 @@ async function rememberingUnreadablePdfs<Result>(
  * before eve records the call. It runs outside the step note's middleware,
  * so it never sees the note.
  */
-function stagedFilesMiddleware(): LanguageModelMiddleware {
+function stagedFilesMiddleware(
+  earlierPhotos: boolean | undefined
+): LanguageModelMiddleware {
   return {
     async transformParams({ params }) {
-      const { pdfs, prompt } = withStagedFiles(params.prompt);
+      const { pdfs, prompt } = withStagedFiles(params.prompt, {
+        earlierPhotos,
+      });
       if (pdfs.current + pdfs.earlier + pdfs.encrypted > 0) {
         console.info("[staged-files] pdf", pdfs);
       }
@@ -1449,6 +1453,12 @@ export function directModelSelection(
      */
     readonly delivered?: boolean;
     /**
+     * The pilot EARLIER_PHOTOS_WORKSPACES, with `stagedFiles`: photos of
+     * earlier turns go as their path lines, so the step can go to RunInfra
+     * (`withStagedFiles`).
+     */
+    readonly earlierPhotos?: boolean;
+    /**
      * The pilot of trimming old history: what of it goes to the provider as
      * a short trace (`historyTrimMiddleware`).
      */
@@ -1570,7 +1580,9 @@ export function directModelSelection(
     ...(options.historyTrim
       ? [historyTrimMiddleware(options.historyTrim)]
       : []),
-    ...(options.stagedFiles ? [stagedFilesMiddleware()] : []),
+    ...(options.stagedFiles
+      ? [stagedFilesMiddleware(options.earlierPhotos)]
+      : []),
     ...(options.stableContext
       ? [
           stepNoteMiddleware(

@@ -25,7 +25,8 @@ import { directModelSelection, type StepToolChoice } from "./direct";
  * a long conversation (`compactionPilot`), nor `reasoningOff`, the pilot of
  * the quicker answer step (`fastReplyPilot`), nor `routerGroups`, the pilot
  * of the tool router (`toolRouterListed`), nor `stagedFiles`, the files pilot
- * (`taskFilesEnabled`, which needs the direct model), nor `warmConversation`,
+ * (`taskFilesEnabled`, which needs the direct model) with `earlierPhotos`,
+ * its photos of earlier turns as lines, nor `warmConversation`,
  * which keeps RunInfra's cache warm (`promptWarmWorkspace`). `toolImages` is the
  * task agent's alone: a Gateway id leaves its tool pictures where eve put
  * them.
@@ -37,6 +38,7 @@ export function modelSelection(
       typeof directModelSelection
     >[1]["compaction"];
     readonly delivered?: boolean;
+    readonly earlierPhotos?: boolean;
     readonly historyTrim?: Parameters<
       typeof directModelSelection
     >[1]["historyTrim"];
@@ -66,6 +68,7 @@ export function modelSelection(
     ? directModelSelection(modelId, {
         compaction: options.compaction,
         delivered: options.delivered,
+        earlierPhotos: options.earlierPhotos,
         historyTrim: options.historyTrim,
         offeredTools: options.offeredTools,
         reasoningOff: options.reasoningOff,
