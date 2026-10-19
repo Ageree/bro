@@ -54,6 +54,7 @@ import {
 } from "./rollout";
 import { browserVmCloudInit } from "./token";
 import {
+  BrowserVmWorkerError,
   controlBrowserVmWorkerChrome,
   readBrowserVmWorkerHealth,
   resetBrowserVmWorkerProfile,
@@ -1720,10 +1721,13 @@ async function tryExit(
     ));
   } catch (error) {
     // The worker did not answer the check: how long the errand waited for
-    // that, and the error's name only, since the request carried the login.
+    // that, and the error's name and HTTP status only, since the request
+    // carried the login (19.10: a 12 ms refusal right after the sandbox woke
+    // from its snapshot said nothing more).
     console.warn("[browser-vm] the proxy exit checked", {
       durationMs: Date.now() - checkStarted,
       error: error instanceof Error ? error.name : null,
+      status: error instanceof BrowserVmWorkerError ? error.status : undefined,
       kept: false,
       ...proxy,
       rotated,

@@ -605,13 +605,14 @@ function queuedAndDue(now: Date) {
 const longestQueuePark = "5 minutes";
 
 /**
- * The workspace's own browser was just released: its errands parked behind
+ * A run on the workspace's own browser just ended: its errands parked behind
  * it fall due now, rather than when the busy answer's minute
  * (`busyRetryMs`) runs out, and the poller's live watch starts the first
  * within seconds (19.10: the browser stood free 26–44 s while one waited).
- * A row a poller is starting keeps its claim — its `retry_at` is a lease,
- * further out than any park — and one waiting for a sign-in keeps waiting
- * for it. Answers how many were moved.
+ * One still kept busy only parks again. A row a poller is starting keeps
+ * its claim — its `retry_at` is a lease, further out than any park — and
+ * one waiting for a sign-in keeps waiting for it: a page kept for the
+ * person holds that account. Answers how many were moved.
  */
 export async function hurryQueuedBrowserRuns(workspaceId: string, now: Date) {
   const rows = await db
