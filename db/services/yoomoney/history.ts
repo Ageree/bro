@@ -6,8 +6,10 @@ import { withYoomoneyToken } from "./connection";
 /**
  * What became of a payment whose outcome was lost, by its wallet's history
  * (`findYoomoneyPayment`): absent from the whole history half an hour after
- * it was sent is a payment YooMoney never made. Undefined while it cannot
- * be told.
+ * it was sent is a payment YooMoney never made — an hour, while the bank's
+ * form of a card payment is still unused: the person may open its link
+ * late, and a payment they confirm after Bro called it refused would go
+ * through. Undefined while it cannot be told.
  */
 export async function settlementFromHistory(
   scope: AccessScope,
@@ -35,7 +37,8 @@ export async function settlementFromHistory(
       case "pending":
         return { state: "pending" as const };
       case "absent":
-        return sent.getTime() < Date.now() - 30 * 60_000
+        return sent.getTime() <
+          Date.now() - (payment.bankUri === null ? 30 : 60) * 60_000
           ? { state: "refused" as const, error: "not_in_history" }
           : undefined;
       default:

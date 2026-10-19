@@ -1,4 +1,15 @@
-import { and, eq, inArray, ne } from "drizzle-orm";
+import {
+  and,
+  desc,
+  eq,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  lt,
+  ne,
+  or,
+} from "drizzle-orm";
 import { db, yoomoneyPayments } from "@db";
 import { claimDirectPurchase } from "@db/services/direct-purchases";
 import {
@@ -52,6 +63,8 @@ export async function createYoomoneyPayment(
     | "cardLabel"
     | "cscRequired"
     | "confirmationQuestion"
+    | "conversationChannel"
+    | "conversationId"
     | "expiresAt"
   >
 ) {
@@ -233,4 +246,112 @@ export async function settleYoomoneyPayment(
     )
     .returning();
   return payment;
+}
+
+/** Bro has told the person how this settled payment went: no notice for it. */
+export async function markYoomoneyOutcomeTold(
+  scope: AccessScope,
+  input: Pick<YoomoneyPayment, "id">
+) {
+  await db
+    .update(yoomoneyPayments)
+    .set({ outcomeToldAt: new Date() })
+    .where(
+      and(
+        owned(scope, input),
+        inArray(yoomoneyPayments.state, ["paid", "refused"]),
+        isNull(yoomoneyPayments.outcomeToldAt)
+      )
+    );
+}
+
+/**
+ * Payments in flight the tick reads back (`db/services/yoomoney/settle.ts`),
+ * across workspaces, newest first — a stale one whose wallet is gone must
+ * not keep a fresh one waiting: one YooMoney may still be processing or
+ * whose answer was lost, and a claim left `submitting` past the confirm call
+ * that made it. A card payment the person may still be confirming at their
+ * bank waits ten minutes from its send: YooMoney has no outcome for it
+ * before the bank sends them back, which its return address reads at once.
+ * Payments older than a week are left to `status`.
+ */
+export async function yoomoneyPaymentsToReadBack(now: Date, limit = 20) {
+  const sentBefore = (ms: number) =>
+    lt(yoomoneyPayments.submittedAt, new Date(now.getTime() - ms));
+  return db
+    .select()
+    .from(yoomoneyPayments)
+    .where(
+      and(
+        gt(
+          yoomoneyPayments.submittedAt,
+          new Date(now.getTime() - 7 * 86_400_000)
+        ),
+        or(
+          eq(yoomoneyPayments.state, "unknown"),
+          and(eq(yoomoneyPayments.state, "submitting"), sentBefore(120_000)),
+          and(
+            eq(yoomoneyPayments.state, "pending"),
+            or(isNull(yoomoneyPayments.bankUri), sentBefore(10 * 60_000))
+          )
+        )
+      )
+    )
+    .orderBy(desc(yoomoneyPayments.submittedAt))
+    .limit(limit);
+}
+
+/** A notice not sent is taken again by the next tick, for an hour. */
+const noticeRetryMs = 60 * 60_000;
+
+/**
+ * Settled payments whose outcome nobody told the person — paid or refused
+ * on their page, at the bank, or by the tick — taken once for a notice in
+ * the conversation they were asked in. Only a payment once sent, settled in
+ * the last day and half a minute ago or more: Bro's own confirm or status
+ * call marks what it tells the moment it settles it.
+ */
+export async function claimYoomoneyOutcomeNotices(now: Date, limit = 10) {
+  const due = await db
+    .select({ id: yoomoneyPayments.id })
+    .from(yoomoneyPayments)
+    .where(
+      and(
+        inArray(yoomoneyPayments.state, ["paid", "refused"]),
+        isNull(yoomoneyPayments.outcomeToldAt),
+        isNotNull(yoomoneyPayments.conversationChannel),
+        isNotNull(yoomoneyPayments.conversationId),
+        isNotNull(yoomoneyPayments.submittedAt),
+        gt(yoomoneyPayments.settledAt, new Date(now.getTime() - 86_400_000)),
+        lt(yoomoneyPayments.settledAt, new Date(now.getTime() - 30_000))
+      )
+    )
+    .limit(limit);
+  if (due.length === 0) return [];
+  return db
+    .update(yoomoneyPayments)
+    .set({ outcomeToldAt: now })
+    .where(
+      and(
+        inArray(
+          yoomoneyPayments.id,
+          due.map((row) => row.id)
+        ),
+        isNull(yoomoneyPayments.outcomeToldAt)
+      )
+    )
+    .returning();
+}
+
+/** A notice that did not land is taken again, while its payment is fresh. */
+export async function releaseYoomoneyOutcomeNotice(id: string, now: Date) {
+  await db
+    .update(yoomoneyPayments)
+    .set({ outcomeToldAt: null })
+    .where(
+      and(
+        eq(yoomoneyPayments.id, id),
+        gt(yoomoneyPayments.settledAt, new Date(now.getTime() - noticeRetryMs))
+      )
+    );
 }
