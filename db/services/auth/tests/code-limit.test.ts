@@ -10,6 +10,7 @@ import type * as Environment from "@shared/environment";
 vi.setConfig({ testTimeout: 30_000 });
 
 const mocks = vi.hoisted(() => ({
+  photonLineFor: vi.fn<(phoneNumber: string) => Promise<string | undefined>>(),
   sendPhotonText:
     vi.fn<(input: { message: string; to: string }) => Promise<void>>(),
 }));
@@ -24,6 +25,9 @@ vi.mock("@db/services/installation-secrets", () => ({
     betterAuthSecret: "sign-in-code-limit-test-secret-0123456789",
   }),
 }));
+vi.mock("@db/services/photon-users", () => ({
+  photonLineFor: mocks.photonLineFor,
+}));
 vi.mock("@db/services/auth/photon", async (importOriginal) => ({
   ...(await importOriginal<typeof Photon>()),
   sendPhotonText: mocks.sendPhotonText,
@@ -36,6 +40,7 @@ const minutes = (count: number) => count * 60_000;
 afterEach(async () => {
   vi.restoreAllMocks();
   mocks.sendPhotonText.mockReset();
+  mocks.photonLineFor.mockReset();
   await Promise.all(databases.splice(0).map((database) => database.close()));
 });
 
@@ -203,6 +208,27 @@ describe("sign-in code limit", () => {
     const answers = await Promise.all([claim(), claim(), claim(), claim()]);
 
     expect(answers.filter(Boolean)).toHaveLength(3);
+  });
+});
+
+describe("a verified sign-in", () => {
+  it("registers the phone on Bro's iMessage line, a refused code does not", async () => {
+    // Photon delivers iMessage only from its project's users: a phone that
+    // signed in on the web was never one, and its first message bounced.
+    mocks.sendPhotonText.mockResolvedValue(undefined);
+    mocks.photonLineFor.mockResolvedValue("+16465792868");
+    const { send, verify } = await signIn();
+    await send("+79990000005", "198.51.100.4");
+
+    await expect(
+      verify("+79990000005", "000000", "198.51.100.4")
+    ).resolves.toBe(400);
+    expect(mocks.photonLineFor).not.toHaveBeenCalled();
+
+    await expect(
+      verify("+79990000005", lastCode(), "198.51.100.4")
+    ).resolves.toBe(200);
+    expect(mocks.photonLineFor).toHaveBeenCalledExactlyOnceWith("+79990000005");
   });
 });
 

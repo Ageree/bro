@@ -470,6 +470,22 @@ describe("Lavka purchase fixed page functions", () => {
     expect((await ready()).publicQuote.amountMinor).toBe(38_400);
   });
 
+  it("takes a Plus account that only earns points on the order", async () => {
+    // A Plus account's cart carries the gain flow even with points to spend
+    // (20.10: 54 points, total 657 ₽ to the card); refusing it refused every
+    // Lavka order of the account as an unsupported cart.
+    withCart({
+      cashback: {
+        availableForPayment: 54,
+        exist: true,
+        flow: "gain",
+        fullPayment: false,
+        fullPaymentCharge: false,
+      },
+    });
+    expect((await ready()).publicQuote.amountMinor).toBe(38_400);
+  });
+
   it("blocks weighted or restricted goods", async () => {
     withCart({ items: [{ ...cartFixture.items[0], quantityType: "weight" }] });
     expect(await prepareLavkaPurchase("workspace:synthetic")).toEqual({

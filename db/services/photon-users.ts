@@ -1,5 +1,13 @@
+import { createHash } from "node:crypto";
 import * as z from "zod";
-import { photonProjectCredentials } from "@shared/photon/credentials";
+import {
+  findOnboardingRequest,
+  recordOnboardingRequest,
+} from "@db/services/onboarding-requests";
+import {
+  photonConfigured,
+  photonProjectCredentials,
+} from "@shared/photon/credentials";
 
 /**
  * Photon's REST surface for provisioning a line. The chat adapter only sends
@@ -66,4 +74,43 @@ export async function createPhotonSharedUser(
     );
   }
   return user.data.assignedPhoneNumber;
+}
+
+/**
+ * A line asked for at sign-in, not by a landing visitor: the row's caller
+ * digest names the path, the visitor's address is not needed.
+ */
+const signInCallerHash = createHash("sha256").update("sign-in").digest("hex");
+
+/**
+ * The Bro line a signed-in phone writes to. Photon delivers an inbound
+ * iMessage only from a phone registered as a project user («This number
+ * didn't recognize yours»), so a person who signed in on the web is
+ * registered here, once, and gets the number Photon bound them to — not the
+ * deployment's `IMESSAGE_PHONE_NUMBER`, which can name a line they are not
+ * on. Undefined when Photon is not configured or does not answer: the caller
+ * falls back to the deployment's number.
+ */
+export async function photonLineFor(phoneNumber: string) {
+  if (!photonConfigured()) return undefined;
+  try {
+    const stored = await findOnboardingRequest(phoneNumber);
+    if (stored) return stored.assignedPhoneNumber;
+    const assignedPhoneNumber = await createPhotonSharedUser(
+      phoneNumber,
+      AbortSignal.timeout(8000)
+    );
+    return await recordOnboardingRequest({
+      assignedPhoneNumber,
+      ipHash: signInCallerHash,
+      phoneNumber,
+    });
+  } catch (error) {
+    // Nothing about the number goes to the log.
+    console.warn("[photon] the line for a signed-in phone was not resolved", {
+      error: error instanceof Error ? error.name : "unknown",
+      message: error instanceof PhotonUserError ? error.message : undefined,
+    });
+    return undefined;
+  }
 }
