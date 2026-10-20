@@ -1,4 +1,5 @@
 import { QueryProvider } from "@app/_providers/query-provider";
+import { voiceTalkEnabled } from "@shared/voice/pilot";
 import { isAdminScope } from "@web/auth/admin";
 import { requestSession, requireRequestScope } from "@web/auth/request-scope";
 import { TooltipProvider } from "@web/components/ui/tooltip";
@@ -14,9 +15,11 @@ import { CabinetFrame } from "./_components/authenticated-navigation";
 export default async function AuthenticatedLayout({
   children,
 }: LayoutProps<"/">) {
-  const [showAdmin, session] = await Promise.all([
-    requireRequestScope().then(isAdminScope),
+  const scope = requireRequestScope();
+  const [showAdmin, session, { workspaceId }] = await Promise.all([
+    scope.then(isAdminScope),
     requestSession(),
+    scope,
   ]);
 
   return (
@@ -30,6 +33,7 @@ export default async function AuthenticatedLayout({
               />
             }
             showAdmin={showAdmin}
+            showVoice={voiceTalkEnabled(workspaceId)}
           >
             {children}
           </CabinetFrame>
