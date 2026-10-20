@@ -54,6 +54,7 @@ describe("source layout", () => {
       "subscriptions",
       "user-profile",
       "vault",
+      "voice",
       "workstreams",
       "yoomoney",
     ]);
