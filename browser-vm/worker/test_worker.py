@@ -867,8 +867,8 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         action = tools.registry.registry.actions["upload_file"].function
         read = tools.registry.registry.actions["read_file"].function
         self.assertEqual(inspect.signature(action), inspect.signature(original_upload))
-        selected = types.SimpleNamespace(target_id="top-target", frame_id="top-frame")
-        file_input = types.SimpleNamespace(target_id="frame-target", frame_id="upload-frame")
+        selected = types.SimpleNamespace(target_id="top-target", frame_id="top-frame", backend_node_id=1)
+        file_input = types.SimpleNamespace(target_id="frame-target", frame_id="upload-frame", backend_node_id=2)
         frames = mock.AsyncMock(return_value={"frameTree": {"frame": {
             "id": "upload-frame", "securityOrigin": "https://shop.test", "url": "https://shop.test/form"}}})
         cdp = types.SimpleNamespace(session_id="frame-session", cdp_client=types.SimpleNamespace(
@@ -960,6 +960,169 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
                 frames.return_value = {"frameTree": {"frame": {"id": "upload-frame", "securityOrigin": origin}}}
                 self.assertIn("error", await action(params=params, **context))
                 self.assertEqual(len(calls), before + 1)
+
+    async def test_a_file_goes_in_as_a_person_puts_it_picker_then_button_then_field_then_drop(self):
+        await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Open the shop."})
+        await self.settled("r1")
+        session, run = self.worker.sessions["s1"], self.worker.runs["r1"]
+        path = (await (await self.put_file()).json())["path"]
+        calls = []
+
+        async def original_upload(*, params, **kwargs):
+            calls.append(("field", params.index))
+            return {"extracted_content": "uploaded"}
+
+        async def original_click(*, params, **kwargs):
+            calls.append(("click", params.index))
+            return types.SimpleNamespace(extracted_content="Clicked button", long_term_memory=None, error=None)
+
+        class Tools:
+            def __init__(self):
+                self.registry = types.SimpleNamespace(registry=types.SimpleNamespace(actions={
+                    name: types.SimpleNamespace(function=function) for name, function in (
+                        ("upload_file", original_upload), ("read_file", original_upload), ("click", original_click))}))
+
+            def action(self, description):
+                return lambda function: function
+
+        class Pickers:
+            """The tab's pickers as the test sets them: what is open, and what a click or a drop would do."""
+            def __init__(self):
+                self.open, self.opens, self.drop_answer, self.choose_answer = None, None, None, None
+                self.chosen, self.notes, self.clicks = [], [], {}
+
+            async def ready(self, target):
+                return object() if target == "tab" else None
+
+            def waiting(self, target, since=None):
+                return self.open
+
+            async def choose(self, target, picker, file, site=None):
+                self.chosen.append((picker["backendNodeId"], file, site))
+                return self.choose_answer
+
+            async def click_open(self, target, backend):
+                calls.append(("picker click", backend))
+                return self.opens
+
+            async def drop(self, target, backend, file, site=None):
+                calls.append(("drop", backend))
+                return self.drop_answer
+
+            def notice(self, target, has_files):
+                self.notes.append(has_files)
+                return "PICKER OPENED" if self.open else None
+
+            def hush(self, target):
+                calls.append(("hush", target))
+
+        self.enterContext(mock.patch.object(sys.modules["browser_use"], "Tools", Tools, create=True))
+        run.pickers = pickers = Pickers()
+        actions = self.build_tools(self.worker, session, run).registry.registry.actions
+        self.assertIn("drop zone", actions["upload_file"].description)
+        button = types.SimpleNamespace(target_id="tab", frame_id="top", backend_node_id=10)
+        other = types.SimpleNamespace(target_id="tab", frame_id="top", backend_node_id=11)
+        field = types.SimpleNamespace(target_id="tab", frame_id="top", backend_node_id=12, parent_node=None)
+        near = {10: None, 11: None, 12: field}
+        frames = mock.AsyncMock(return_value={"frameTree": {"frame": {"id": "top", "securityOrigin": "https://shop.test"}}})
+        cdp = types.SimpleNamespace(session_id="tab-session", cdp_client=types.SimpleNamespace(
+            send=types.SimpleNamespace(Page=types.SimpleNamespace(getFrameTree=frames))))
+        browser = types.SimpleNamespace(
+            agent_focus_target_id="tab", get_current_page_url=mock.AsyncMock(return_value="https://shop.test/form"),
+            get_selector_map=mock.AsyncMock(return_value={1: button, 2: other, 3: field}),
+            find_file_input_near_element=lambda node: near[node.backend_node_id],
+            get_or_create_cdp_session=mock.AsyncMock(return_value=cdp))
+        context = {"browser_session": browser, "available_file_paths": [path], "file_system": object()}
+
+        async def upload(index, file=path):
+            calls.clear()
+            pickers.chosen.clear()
+            return await actions["upload_file"].function(params=types.SimpleNamespace(path=file, index=index), **context)
+
+        # Nothing outside the session goes onto a page: not the browser profile's cookies.
+        self.assertIn("error", await upload(1, str(worker.ROOT / "profile" / "Default" / "Cookies")))
+        self.assertEqual(calls, [])
+
+        # The picker the agent's click on this button opened is answered, with the file's bound site.
+        pickers.open = {"backendNodeId": 99, "clicked": 10}
+        result = await upload(1)
+        self.assertIn("when you clicked", result["extracted_content"])
+        self.assertEqual((calls, pickers.chosen), ([], [(99, path, "https://shop.test")]))
+        # Another button's picker is not this one's: the button is clicked for its own.
+        pickers.opens = {"backendNodeId": 98}
+        self.assertIn("file picker", (await upload(2))["extracted_content"])
+        self.assertEqual((calls, pickers.chosen), ([("picker click", 11)], [(98, path, "https://shop.test")]))
+        # A picker of another site's frame refuses the file.
+        pickers.choose_answer = "belongs to another site's frame"
+        self.assertIn("another site's frame", (await upload(2))["error"])
+        pickers.open = pickers.opens = pickers.choose_answer = None
+        # A file field itself is set directly; nothing is clicked.
+        self.assertEqual(await upload(3), {"extracted_content": "uploaded"})
+        self.assertEqual(calls, [("field", 3)])
+        # A field beside the button is set as before, without a click; a button with none is clicked, and a
+        # file dropped onto it when that opens no picker (a late picker of that click then needs no word).
+        near[11] = field
+        self.assertEqual(await upload(2), {"extracted_content": "uploaded"})
+        self.assertEqual(calls, [("field", 2)])
+        near[11] = None
+        self.assertIn("Dropped", (await upload(2))["extracted_content"])
+        self.assertEqual(calls, [("picker click", 11), ("drop", 11), ("hush", "tab")])
+        pickers.drop_answer = "The page takes no dropped file there."
+        self.assertIn("takes no dropped file", (await upload(2))["error"])
+        self.assertIn("error", await upload(7))
+        # Another tab's element is neither clicked nor dropped onto.
+        browser.agent_focus_target_id = "elsewhere"
+        self.assertIn("error", await upload(2))
+        self.assertEqual(calls, [])
+        browser.agent_focus_target_id = "tab"
+        # A click that opened the page's picker says so, and whether there is a file to give it.
+        pickers.open = {"backendNodeId": 99}
+        clicked = await actions["click"].function(params=types.SimpleNamespace(index=1), **context)
+        self.assertIn("PICKER OPENED", clicked.extracted_content)
+        await actions["click"].function(params=types.SimpleNamespace(index=1), **{**context, "available_file_paths": []})
+        self.assertEqual(pickers.notes, [True, False])
+        self.assertEqual(pickers.clicks["tab"][1], 10)
+
+    async def test_a_picker_is_chosen_only_for_its_own_documents_site_and_said_once(self):
+        pickers = worker.FilePickers()
+        sent = []
+        origin = {"value": "https://ads.test"}
+
+        class Link:
+            async def call(self, method, params=None):
+                sent.append((method, params))
+                return {"Page.createIsolatedWorld": {"executionContextId": 5},
+                        "DOM.resolveNode": {"object": {"objectId": "field"}},
+                        "Runtime.callFunctionOn": {"result": origin}}.get(method, {})
+
+        pickers.links["tab"] = Link()
+        pickers.handle("tab", "Page.fileChooserOpened", {"frameId": "top", "backendNodeId": 7, "mode": "selectSingle"})
+        picker = pickers.waiting("tab")
+        self.assertIn("another site's frame", await pickers.choose("tab", picker, "/x/logo.png", "https://shop.test"))
+        self.assertNotIn("DOM.setFileInputFiles", [method for method, _ in sent])
+        self.assertIn(("DOM.resolveNode", {"backendNodeId": 7, "executionContextId": 5}), sent)
+        origin["value"] = "https://shop.test"
+        self.assertIsNone(await pickers.choose("tab", picker, "/x/logo.png", "https://shop.test"))
+        self.assertEqual(sent[-1], ("DOM.setFileInputFiles", {"files": ["/x/logo.png"], "backendNodeId": 7}))
+        self.assertIsNone(pickers.waiting("tab"))
+        # Said once; gone with its page; stale after a while; and no word for a picker after upload_file's own
+        # click that put the file in another way.
+        pickers.handle("tab", "Page.fileChooserOpened", {"frameId": "top", "backendNodeId": 8})
+        self.assertEqual(pickers.notice("tab", True), worker.PICKER_OPENED)
+        self.assertIsNone(pickers.notice("tab", True))
+        pickers.handle("tab", "Page.frameNavigated", {"frame": {"id": "other"}})
+        self.assertIsNotNone(pickers.waiting("tab"))
+        pickers.handle("tab", "Page.frameNavigated", {"frame": {"id": "top"}})
+        self.assertIsNone(pickers.waiting("tab"))
+        pickers.handle("tab", "Page.fileChooserOpened", {"frameId": "inner", "backendNodeId": 9})
+        pickers.handle("tab", "Page.frameDetached", {"frameId": "inner"})
+        self.assertIsNone(pickers.waiting("tab"))
+        pickers.handle("tab", "Page.fileChooserOpened", {"frameId": "top", "backendNodeId": 10})
+        pickers.opened["tab"]["at"] -= worker.FilePickers.FRESH_S + 1
+        self.assertIsNone(pickers.waiting("tab"))
+        pickers.hush("tab")
+        pickers.handle("tab", "Page.fileChooserOpened", {"frameId": "top", "backendNodeId": 11})
+        self.assertIsNone(pickers.notice("tab", True))
 
     async def test_uploads_refresh_before_a_live_step_and_continue_only_in_their_session(self):
         waiting, proceed = asyncio.Event(), asyncio.Event()

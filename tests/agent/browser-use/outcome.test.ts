@@ -9,6 +9,8 @@ import {
   unreachableCause,
   unreachableRun,
 } from "@agent/lib/browser-use/outcome";
+import { browserRunNeedGuidance } from "@agent/lib/browser-use/guidance";
+import { keepsPage } from "@agent/lib/browser-use/release";
 
 describe("a site the network never loaded", () => {
   const d06 =
@@ -126,6 +128,15 @@ describe("browser run outcome parsing", () => {
     expect(parseBrowserOutcome("NEEDS: fingerprint").needs).toBe("none");
     expect(parseBrowserOutcome(null).needs).toBe("none");
     expect(parseBrowserOutcome("NEEDS: 3ds").needs).toBe("3ds");
+  });
+
+  it("reads a file the page asks for as Bro's to supply", () => {
+    const outcome = parseBrowserOutcome(
+      "RESULT: шаг 1 заполнен, нужен логотип\nNEEDS: file\nDETAILS: квадратный PNG до 1 МБ"
+    );
+    expect(outcome.needs).toBe("file");
+    expect(keepsPage(outcome.needs)).toBe(true);
+    expect(browserRunNeedGuidance(outcome.needs)).toContain("browser_files");
   });
 
   it("reads the pages the run is signed in on, or none", () => {

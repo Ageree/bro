@@ -17,6 +17,7 @@ export const browserRunNeeds = [
   "payment",
   "decision",
   "info",
+  "file",
 ] as const;
 
 export type BrowserRunNeed = (typeof browserRunNeeds)[number];
