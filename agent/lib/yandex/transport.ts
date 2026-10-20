@@ -1,9 +1,13 @@
-import { callInPageOverCdp } from "@agent/lib/browser-use/cdp";
+import {
+  PageUnreachableError,
+  callInPageOverCdp,
+} from "@agent/lib/browser-use/cdp";
 import { within } from "@agent/lib/browser-use/deadline";
 import { usesBrowserPool } from "@agent/lib/browser-vm/backend";
 import { browserVmProfileId } from "@agent/lib/browser-vm/ids";
 import {
   createBrowserVmBrowser,
+  renewBrowserVmExit,
   stopBrowserVmBrowser,
 } from "@agent/lib/browser-vm/runs";
 import { afishaSearchDirect } from "./afisha/direct";
@@ -74,6 +78,37 @@ export async function runYandexOperation(
   if (!(await usesBrowserPool({ workspaceId }))) {
     return { kind: "unavailable" };
   }
+  const first = await callInTab(workspaceId, operation, args);
+  if (first.kind !== "unreachable") return first;
+  // The page found no network through the browser's exit: 20.10 the owner's
+  // sticky exit died, and every call failed on it until a message of theirs
+  // happened to find its check stale. The browser moves to another exit at
+  // once, and the call is made again on it when nothing of it ran or it
+  // only reads; a change that may have gone out is not sent twice.
+  const renewed = await renewBrowserVmExit(browserVmProfileId(workspaceId, 0));
+  const again = renewed && (!first.ran || operation.access === "read");
+  console.warn("[yandex] the page did not reach the site", {
+    again,
+    operation: operation.id,
+    ran: first.ran,
+    renewed,
+    workspaceId,
+  });
+  if (!again) return { kind: "failed", reason: "page" };
+  const second = await callInTab(workspaceId, operation, args);
+  return second.kind === "unreachable"
+    ? { kind: "failed", reason: "page" }
+    : second;
+}
+
+/** One call in a tab of its own; `unreachable` when the network failed it. */
+async function callInTab(
+  workspaceId: string,
+  operation: YandexOperation,
+  args: JsonValue
+): Promise<
+  YandexOutcome | { readonly kind: "unreachable"; readonly ran: boolean }
+> {
   const began = Date.now();
   const opening = openTab(workspaceId);
   let opened: Awaited<ReturnType<typeof within<Awaited<typeof opening>>>>;
@@ -118,6 +153,10 @@ export async function runYandexOperation(
       workspaceId,
     });
     if (!value.ran) {
+      // Chrome's own error page: the document never came.
+      if (value.url.startsWith("chrome-error:")) {
+        return { kind: "unreachable", ran: false };
+      }
       const where = landing(value.url);
       if (where === "signed_out") return { kind: "signed_out" };
       if (where === "captcha") return { kind: "captcha" };
@@ -132,6 +171,9 @@ export async function runYandexOperation(
       ? { data: data.data, kind: "ok" }
       : { kind: "failed", reason: "answer" };
   } catch (error) {
+    if (error instanceof PageUnreachableError) {
+      return { kind: "unreachable", ran: error.ran };
+    }
     // The error may quote the page: only its fact is logged.
     console.warn("[yandex] the call failed", {
       name: error instanceof Error ? error.name : "unknown",

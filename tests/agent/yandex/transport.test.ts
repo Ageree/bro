@@ -1,19 +1,22 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { callInPageOverCdp } from "@agent/lib/browser-use/cdp";
+import type * as Cdp from "@agent/lib/browser-use/cdp";
 import type { usesBrowserPool } from "@agent/lib/browser-vm/backend";
 import type {
   createBrowserVmBrowser,
+  renewBrowserVmExit,
   stopBrowserVmBrowser,
 } from "@agent/lib/browser-vm/runs";
 
 const services = vi.hoisted(() => ({
-  call: vi.fn<typeof callInPageOverCdp>(),
+  call: vi.fn<typeof Cdp.callInPageOverCdp>(),
   create: vi.fn<typeof createBrowserVmBrowser>(),
   pool: vi.fn<typeof usesBrowserPool>(),
+  renew: vi.fn<typeof renewBrowserVmExit>(),
   stop: vi.fn<typeof stopBrowserVmBrowser>(),
 }));
 
-vi.mock("@agent/lib/browser-use/cdp", () => ({
+vi.mock("@agent/lib/browser-use/cdp", async (original) => ({
+  ...(await original<typeof Cdp>()),
   callInPageOverCdp: services.call,
 }));
 vi.mock("@agent/lib/browser-vm/backend", () => ({
@@ -21,10 +24,12 @@ vi.mock("@agent/lib/browser-vm/backend", () => ({
 }));
 vi.mock("@agent/lib/browser-vm/runs", () => ({
   createBrowserVmBrowser: services.create,
+  renewBrowserVmExit: services.renew,
   stopBrowserVmBrowser: services.stop,
 }));
 
 import { z } from "zod";
+import { PageUnreachableError } from "@agent/lib/browser-use/cdp";
 import {
   type JsonValue,
   defineYandexOperation,
@@ -44,7 +49,88 @@ beforeEach(() => {
   vi.clearAllMocks();
   services.pool.mockResolvedValue(true);
   services.create.mockResolvedValue({ cdpUrl: "wss://pool/cdp", id: "tab-1" });
+  services.renew.mockResolvedValue(true);
   services.stop.mockResolvedValue(undefined);
+});
+
+/** A cart change of Lavka's, which may not go out twice. */
+const cartChange = defineYandexOperation({
+  about: "Test cart change",
+  access: "cart",
+  args: z.object({}),
+  id: "test.cart",
+  origin: "https://lavka.yandex.ru/robots.txt",
+  result: z.object({}),
+  run: "async function () { return { status: 'ok', data: {} }; }",
+  service: "yandex-lavka",
+});
+
+describe("a Yandex call the browser's exit did not carry", () => {
+  const signedIn = loaded("https://id.yandex.ru/", {
+    data: { requestWorks: true, signedIn: true },
+    status: "ok",
+  });
+
+  it("moves the browser to another exit and reads again on it", async () => {
+    // 20.10: the owner's sticky exit died, and every call failed on it.
+    services.call
+      .mockRejectedValueOnce(new PageUnreachableError(true))
+      .mockResolvedValueOnce(signedIn);
+    expect(await runYandexOperation(workspaceId, statusOperation, {})).toEqual({
+      data: { requestWorks: true, signedIn: true },
+      kind: "ok",
+    });
+    expect(services.renew).toHaveBeenCalledWith(
+      services.create.mock.calls[0]?.[0].profileId
+    );
+    expect(services.call).toHaveBeenCalledTimes(2);
+    expect(services.stop).toHaveBeenCalledTimes(2);
+  });
+
+  it("makes a change again only when nothing of it ran", async () => {
+    services.call
+      .mockResolvedValueOnce({
+        ran: false,
+        url: "chrome-error://chromewebdata/",
+      })
+      .mockResolvedValueOnce(
+        loaded("https://lavka.yandex.ru/robots.txt", {
+          data: {},
+          status: "ok",
+        })
+      );
+    expect(await runYandexOperation(workspaceId, cartChange, {})).toEqual({
+      data: {},
+      kind: "ok",
+    });
+    expect(services.call).toHaveBeenCalledTimes(2);
+
+    services.call.mockReset();
+    services.call.mockRejectedValue(new PageUnreachableError(true));
+    expect(await runYandexOperation(workspaceId, cartChange, {})).toEqual({
+      kind: "failed",
+      reason: "page",
+    });
+    expect(services.renew).toHaveBeenCalledTimes(2);
+    expect(services.call).toHaveBeenCalledTimes(1);
+  });
+
+  it("tries no more when no other exit could be had, or the new one fails too", async () => {
+    services.renew.mockResolvedValueOnce(false);
+    services.call.mockRejectedValue(new PageUnreachableError(false));
+    expect(await runYandexOperation(workspaceId, statusOperation, {})).toEqual({
+      kind: "failed",
+      reason: "page",
+    });
+    expect(services.call).toHaveBeenCalledTimes(1);
+
+    expect(await runYandexOperation(workspaceId, statusOperation, {})).toEqual({
+      kind: "failed",
+      reason: "page",
+    });
+    expect(services.call).toHaveBeenCalledTimes(3);
+    expect(services.renew).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("a Yandex call", () => {

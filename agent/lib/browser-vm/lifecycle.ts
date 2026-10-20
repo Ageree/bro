@@ -132,6 +132,12 @@ const exitCheckMs = 30 * 60_000;
 /** Sticky sessions tried after the first on a proxy, for an exit inside Russia. */
 const exitRotations = 3;
 /**
+ * Chrome's tunnels in a row the proxy did not open before the exit counts as
+ * dead (the worker's health): a site that is down fails only its own, and
+ * any tunnel that opens starts the count again.
+ */
+const deadExitTunnels = 3;
+/**
  * Every errand waits on the same exit, so it is tried again after this. Five
  * minutes held the owner's errand 14.10 while the proxy's 500s were gone a
  * minute later.
@@ -566,7 +572,8 @@ const exitWarmUps = new Map<string, Promise<void>>();
  * Check the exit of a person's ready browser as soon as they write, beside
  * the model's first step, so the errand that may follow finds it fresh
  * (`exitCheckMs`) instead of waiting 7–10 s on the check itself (owner,
- * 14.10). The person's own turn rules hold: the first Russian exit is taken
+ * 14.10), and a fresh exit the worker saw die is replaced the same way. The
+ * person's own turn rules hold: the first Russian exit is taken
  * however slow. A browser busy with a run, or holding a kept page, is left
  * as it is (`prepareAfterWarmUp`). Never throws.
  */
@@ -578,7 +585,13 @@ export async function warmBrowserVmExit(workspaceId: string, now = new Date()) {
       if (vm?.state !== "ready") return;
       const checkedAt =
         vm.proxyExit === null ? Number.NaN : Date.parse(vm.proxyExit.at);
-      if (checkedAt > now.getTime() - exitCheckMs) return;
+      if (checkedAt > now.getTime() - exitCheckMs) {
+        // A fresh check is trusted unless the worker saw the exit die since.
+        const health = await readBrowserVmWorkerHealth(vm).catch(
+          () => undefined
+        );
+        if (health === undefined || !exitStoppedCarrying(health)) return;
+      }
       await prepareAfterWarmUp(vm, now, { inTurn: true });
     } catch (error) {
       // The errand checks the exit again by itself.
@@ -602,6 +615,7 @@ async function prepareAfterWarmUp(
   {
     freshExit = false,
     inTurn = false,
+    renewExit = false,
     rotate = true,
   }: {
     readonly freshExit?: boolean;
@@ -611,6 +625,8 @@ async function prepareAfterWarmUp(
      * errand queues for the poller to finish it.
      */
     readonly inTurn?: boolean;
+    /** A page of the browser could not reach its site through this exit. */
+    readonly renewExit?: boolean;
     readonly rotate?: boolean;
   } = {}
 ) {
@@ -618,6 +634,23 @@ async function prepareAfterWarmUp(
   const health = await readBrowserVmWorkerHealth(vm);
   if (health.busy) {
     return health.proxy ? vm : routeThroughRussia(vm, now, { rotations: 0 });
+  }
+  // An exit that stopped carrying Chrome is left for the next rotation even
+  // under a kept page or a follow-up: that page has no network either. 20.10
+  // the owner's sticky exit died, every Yandex call failed on it, and only a
+  // message of theirs that happened to find the check stale moved it.
+  if (renewExit || exitStoppedCarrying(health)) {
+    console.warn("[browser-vm] the exit stopped carrying the browser", {
+      failing: health.tunnel?.failing ?? null,
+      lastStatus: health.tunnel?.lastStatus ?? null,
+      renewExit,
+      workspaceId: vm.workspaceId,
+    });
+    return routeThroughRussia(vm, now, {
+      next: true,
+      rotations: exitRotations,
+      searchUntil,
+    });
   }
   const movable =
     (rotate || freshExit) &&
@@ -654,6 +687,13 @@ async function prepareAfterWarmUp(
     rotations: exitRotations,
     searchUntil,
   });
+}
+
+/** The worker saw the proxy fail Chrome's tunnels `deadExitTunnels` in a row. */
+function exitStoppedCarrying(
+  health: Awaited<ReturnType<typeof readBrowserVmWorkerHealth>>
+) {
+  return health.proxy && (health.tunnel?.failing ?? 0) >= deadExitTunnels;
 }
 
 /**

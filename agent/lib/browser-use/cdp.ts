@@ -603,9 +603,46 @@ const globalObjectSchema = z.object({
 });
 
 const functionCallSchema = z.object({
-  exceptionDetails: z.object({}).loose().optional(),
+  exceptionDetails: z
+    .object({
+      exception: z
+        .object({
+          className: z.string().optional(),
+          description: z.string().optional(),
+        })
+        .optional(),
+    })
+    .loose()
+    .optional(),
   result: z.object({ value: resultSchema.optional() }).optional(),
 });
+
+const navigationSchema = z.object({ errorText: z.string().optional() });
+
+/**
+ * Chrome's own errors for a document the network never brought: the proxy
+ * did not open the tunnel, the exit went dark. A site's own refusal is a
+ * page, not one of these.
+ */
+const unreachableNavigation =
+  /^net::ERR_(?:TUNNEL_CONNECTION_FAILED|PROXY_\w+|SOCKS_\w+|CONNECTION_(?:CLOSED|FAILED|REFUSED|RESET|TIMED_OUT)|TIMED_OUT|EMPTY_RESPONSE|ADDRESS_UNREACHABLE|NAME_NOT_RESOLVED|INTERNET_DISCONNECTED|NETWORK_CHANGED)$/u;
+
+/**
+ * The page could not reach its own site through the browser's network:
+ * Chrome failed the navigation (`ran` false, nothing was called), or a
+ * request of the called function to its own origin failed before any answer
+ * (`ran` true, what it sent before may have gone through). Another exit may
+ * well reach the site.
+ */
+export class PageUnreachableError extends Error {
+  readonly ran: boolean;
+
+  constructor(ran: boolean) {
+    super("The page could not reach its site.");
+    this.name = "PageUnreachableError";
+    this.ran = ran;
+  }
+}
 
 /** The load a call from a page waits for; a script's data comes after it. */
 const callLoadWaitMs = 20_000;
@@ -627,7 +664,8 @@ const callRunTimeoutMs = 60_000;
  *
  * `runOn` sees where the page ended up before anything runs: a redirect to
  * a sign-in or to another site leaves the function uncalled. Pictures and
- * fonts are not downloaded.
+ * fonts are not downloaded. A page the network did not carry throws
+ * `PageUnreachableError`.
  */
 export async function callInPageOverCdp(
   cdpUrl: string,
@@ -647,7 +685,12 @@ export async function callInPageOverCdp(
       .call("Network.setBlockedURLs", { urls: visitBlockedUrls })
       .catch(() => undefined);
     await connection.call("Page.enable", {});
-    await connection.call("Page.navigate", { url: page.url });
+    const navigated = navigationSchema.safeParse(
+      await connection.call("Page.navigate", { url: page.url })
+    );
+    if (unreachableNavigation.test(navigated.data?.errorText ?? "")) {
+      throw new PageUnreachableError(false);
+    }
     const deadline = Date.now() + callLoadWaitMs;
     const readPage = async (): Promise<string> => {
       const reply = evaluationSchema.safeParse(
@@ -694,8 +737,16 @@ export async function callInPageOverCdp(
         callRunTimeoutMs
       )
     );
-    // The details of an exception are the page's text: they are not kept.
-    if (reply.exceptionDetails) throw new Error("The page's call failed.");
+    // The details of an exception are the page's text: they are not kept,
+    // only whether it was the function's own request that found no network
+    // (the operations fetch their own origin, so no CORS rule says this).
+    if (reply.exceptionDetails) {
+      const { className, description } = reply.exceptionDetails.exception ?? {};
+      throw className === "TypeError" &&
+        /^TypeError: Failed to fetch\b/u.test(description ?? "")
+        ? new PageUnreachableError(true)
+        : new Error("The page's call failed.");
+    }
     return { ran: true as const, url, value: reply.result?.value };
   } finally {
     connection.close();

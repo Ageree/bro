@@ -52,6 +52,17 @@ const healthSchema = z.object({
   /** Whether the residential proxy is set; until it is, Chrome has no network. */
   proxy: z.boolean(),
   stage: z.string().nullable(),
+  /**
+   * Chrome's tunnels through the proxy since it was last set (a worker from
+   * 2026-10-20 on): `failing` counts the ones in a row the proxy did not
+   * open, so a sticky exit that died shows here before any errand trips on it.
+   */
+  tunnel: z
+    .object({
+      failing: z.number().int().min(0),
+      lastStatus: z.number().int().nullable(),
+    })
+    .optional(),
   uptimeSeconds: z.number(),
   worker: z.string(),
 });
