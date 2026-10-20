@@ -17,8 +17,10 @@ site secrets with each run, and all stay in memory. Chrome always talks to the f
 profile never sees the VM's own datacenter address.
 
 Routes (all but a plain /v1/health need a token):
-  GET  /v1/health[?machine=1]             liveness, Chrome, busy flag (no secrets); `machine` (with a token):
-                                          memory, load, disk, profile size
+  GET  /v1/health[?machine=1]             liveness, Chrome, busy flag (no secrets), how Chrome's tunnels through
+                                          the proxy end since it was set (`tunnel`: failing in a row, last
+                                          failure's status and time, opened and failed); `machine` (with a
+                                          token): memory, load, disk, profile size
   POST /v1/session                        {proxy: {host, port, username, password}} → exit address and speed
                                           (`error`: no address; `speedError`: the address, speed unknown)
   GET  /v1/runs?contains=<line>           runs of this VM, newest first (adoption after a lost start)
@@ -85,7 +87,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-10-14.1"
+VERSION = "2026-10-20.1"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -237,16 +239,27 @@ TUNNEL_RETRY_PAUSE_S = 0.5
 class Forwarder:
     """127.0.0.1:3128 → the workspace's residential proxy, adding its login (Chrome cannot send one
     from the command line). Until Bro sets the upstream every request gets 502, so Chrome never
-    reaches a site from the VM's own address. Counts bytes: residential traffic is billed per GB."""
+    reaches a site from the VM's own address. Counts bytes: residential traffic is billed per GB.
+    Counts how Chrome's tunnels through the upstream end (`tunnels`, in /v1/health): 20.10 the owner's
+    sticky exit stopped opening any, every page failed with ERR_TUNNEL_CONNECTION_FAILED, and nothing
+    told Bro to move to a fresh exit."""
 
     def __init__(self):
         self.upstream = None
         self.totals = {"up": 0, "down": 0, "connections": 0, "refused": 0}
         self.open = set()  # writers of tunnels in flight: each handler holds the login in its locals
+        self.forget_tunnels()
+
+    def forget_tunnels(self):
+        """Tunnels count afresh for each upstream: `failing` is how many failed in a row since the last
+        one that opened, `lastStatus` what Chrome got on the last failure (the proxy's status, or the
+        worker's own 502 when the proxy could not be reached or answered nothing)."""
+        self.tunnels = {"failing": 0, "lastStatus": None, "lastFailureAt": None, "succeeded": 0, "failed": 0}
 
     def drop(self):
         """Forget the login and close every tunnel carrying it, so their handlers end and let it go."""
         self.upstream = None
+        self.forget_tunnels()
         for writer in list(self.open):
             with contextlib.suppress(Exception):
                 writer.close()
@@ -256,6 +269,22 @@ class Forwarder:
         username, password = proxy.get("username"), proxy.get("password")
         auth = b64encode_text(f"{username}:{password}") if username else None
         self.upstream = (host, port, auth)
+        self.forget_tunnels()
+
+    def count_tunnel(self, upstream, status):
+        """How one CONNECT of Chrome ended after its tries: 200 opened the tunnel, any other status failed it.
+        A tunnel asked of an upstream since dropped or set again counts for nothing: the new exit starts
+        clean. The log line names neither the login, the proxy nor the site: the site is the person's."""
+        if upstream is not self.upstream:
+            return
+        if status == 200:
+            self.tunnels["succeeded"] += 1
+            self.tunnels["failing"] = 0
+            return
+        self.tunnels["failed"] += 1
+        self.tunnels["failing"] += 1
+        self.tunnels.update({"lastStatus": status, "lastFailureAt": round(time.time(), 3)})
+        log.warning("forwarder: tunnel failed status=%d failing=%d", status, self.tunnels["failing"])
 
     async def pipe(self, reader, writer, key):
         try:
@@ -282,7 +311,8 @@ class Forwarder:
                 await client_writer.drain()
             client_writer.close()
             return
-        host, port, auth = self.upstream
+        upstream = self.upstream
+        host, port, auth = upstream
         lines = head.decode("latin-1").split("\r\n")
         dropped = ("proxy-authorization:", "proxy-connection:", "connection:")
         kept = [line for line in lines[1:] if line and not line.lower().startswith(dropped)]
@@ -301,6 +331,8 @@ class Forwarder:
                 if not last:
                     await asyncio.sleep(TUNNEL_RETRY_PAUSE_S * (attempt + 1))
                     continue
+                if tunnel:
+                    self.count_tunnel(upstream, 502)
                 client_writer.write(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
                 client_writer.close()
                 return
@@ -328,11 +360,13 @@ class Forwarder:
                 await asyncio.sleep(TUNNEL_RETRY_PAUSE_S * (attempt + 1))
                 continue
             if not answer:
+                self.count_tunnel(upstream, 502)
                 client_writer.write(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
                 client_writer.close()
                 with contextlib.suppress(Exception):
                     up_writer.close()
                 return
+            self.count_tunnel(upstream, answer_status(answer) or 502)  # an answer with no status is no tunnel
             self.totals["down"] += len(answer)
             client_writer.write(answer)
             break
@@ -349,6 +383,12 @@ class Forwarder:
             self.open.difference_update((client_writer, up_writer))
             with contextlib.suppress(Exception):
                 up_writer.close()
+
+
+def answer_status(head):
+    """The status code of an HTTP answer's head (`HTTP/1.1 407 …`), or None when its first line has none."""
+    parts = head.split(b"\r\n", 1)[0].split(b" ", 2)
+    return int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
 
 
 def b64encode_text(text):
@@ -3560,7 +3600,7 @@ async def health(request):
         "configured": worker.config is not None, "uptimeSeconds": float(Path("/proc/uptime").read_text().split()[0]),
         "chrome": await chrome_ready(), "busy": worker.busy(), "proxy": worker.forwarder.upstream is not None,
         "stage": stage_file.read_text().strip() if stage_file.exists() else None, "generation": worker.generation,
-        **details,
+        "tunnel": dict(worker.forwarder.tunnels), **details,
     })
 
 
