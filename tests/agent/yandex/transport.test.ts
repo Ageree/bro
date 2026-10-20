@@ -89,10 +89,7 @@ describe("a Yandex call the browser's exit did not carry", () => {
 
   it("makes a change again only when nothing of it ran", async () => {
     services.call
-      .mockResolvedValueOnce({
-        ran: false,
-        url: "chrome-error://chromewebdata/",
-      })
+      .mockRejectedValueOnce(new PageUnreachableError(false))
       .mockResolvedValueOnce(
         loaded("https://lavka.yandex.ru/robots.txt", {
           data: {},
@@ -113,6 +110,20 @@ describe("a Yandex call the browser's exit did not carry", () => {
     });
     expect(services.renew).toHaveBeenCalledTimes(2);
     expect(services.call).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves the exit alone when a page failed for the site's own reasons", async () => {
+    // Chrome's error page for a redirect loop or a certificate, not the
+    // network: no new address for every call while a service is down.
+    services.call.mockResolvedValue({
+      ran: false,
+      url: "chrome-error://chromewebdata/",
+    });
+    expect(await runYandexOperation(workspaceId, statusOperation, {})).toEqual({
+      kind: "failed",
+      reason: "page",
+    });
+    expect(services.renew).not.toHaveBeenCalled();
   });
 
   it("tries no more when no other exit could be had, or the new one fails too", async () => {

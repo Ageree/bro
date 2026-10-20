@@ -738,8 +738,9 @@ export async function callInPageOverCdp(
       )
     );
     // The details of an exception are the page's text: they are not kept,
-    // only whether it was the function's own request that found no network
-    // (the operations fetch their own origin, so no CORS rule says this).
+    // only whether a request of the function found no answer at all. Chrome
+    // says the same of a cross-origin request it refused (`go.card_verify`
+    // asks trust.yandex.ru), so the caller checks the exit before moving it.
     if (reply.exceptionDetails) {
       const { className, description } = reply.exceptionDetails.exception ?? {};
       throw className === "TypeError" &&

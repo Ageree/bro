@@ -2387,7 +2387,7 @@ describe("routing the VM's browser through a Russian exit", () => {
     expect(worker.setBrowserVmWorkerProxy).not.toHaveBeenCalled();
   });
 
-  it("moves an exit the worker saw stop opening tunnels, even under a follow-up's kept page", async () => {
+  it("checks again an exit the worker saw stop opening tunnels, and moves it even under a follow-up's kept page", async () => {
     // 20.10: the owner's sticky exit died, and every Yandex call and errand
     // failed on it while its check was still fresh.
     const lifecycle = await loadLifecycle();
@@ -2397,20 +2397,28 @@ describe("routing the VM's browser through a Russian exit", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     vi.spyOn(console, "info").mockImplementation(() => undefined);
     worker.readBrowserVmWorkerHealth.mockResolvedValue(
-      health({ tunnel: { failing: 3, lastStatus: 502 } })
+      health({ tunnel: { failing: 3, lastStatus: 502, sinceLastFailure: 4 } })
     );
-    worker.setBrowserVmWorkerProxy.mockResolvedValue(
-      proxySetup({ country: "RU", ip: "95.24.1.21" })
-    );
+    worker.setBrowserVmWorkerProxy
+      .mockResolvedValueOnce({
+        ...proxySetup({ country: "RU", ip: "95.24.1.2" }),
+        exit: { error: "TimeoutError" },
+      })
+      .mockResolvedValue(proxySetup({ country: "RU", ip: "95.24.1.21" }));
 
     const prepared = await lifecycle.prepareBrowserVmSession(vm, now, {
       rotate: false,
     });
 
-    expect(worker.setBrowserVmWorkerProxy).toHaveBeenCalledOnce();
-    expect(worker.setBrowserVmWorkerProxy.mock.calls[0]?.[1].username).toMatch(
-      /r1$/u
-    );
+    // The session it was on first, and the next one when that failed.
+    expect(
+      worker.setBrowserVmWorkerProxy.mock.calls.map(
+        ([, proxy]) => proxy.username
+      )
+    ).toEqual([
+      expect.stringMatching(/^user-session-bro[\da-f]{12}$/u),
+      expect.stringMatching(/r1$/u),
+    ]);
     expect(prepared.proxyExit).toMatchObject({ ip: "95.24.1.21" });
     expect(warn).toHaveBeenCalledWith(
       "[browser-vm] the exit stopped carrying the browser",
@@ -2418,24 +2426,7 @@ describe("routing the VM's browser through a Russian exit", () => {
     );
   });
 
-  it("keeps an exit that failed fewer tunnels in a row, and a running errand's exit", async () => {
-    const lifecycle = await loadLifecycle();
-    const vm = vmRow();
-    rows.set(workspaceId, vm);
-    worker.readBrowserVmWorkerHealth.mockResolvedValue(
-      health({ tunnel: { failing: 2, lastStatus: 502 } })
-    );
-    expect(await lifecycle.prepareBrowserVmSession(vm, now)).toBe(vm);
-    worker.readBrowserVmWorkerHealth.mockResolvedValue(
-      health({ busy: true, tunnel: { failing: 9, lastStatus: 502 } })
-    );
-    expect(
-      await lifecycle.prepareBrowserVmSession(vm, now, { renewExit: true })
-    ).toBe(vm);
-    expect(worker.setBrowserVmWorkerProxy).not.toHaveBeenCalled();
-  });
-
-  it("renews a fresh exit a page could not reach its site through", async () => {
+  it("keeps the session that still answers its check, and trusts no old or short run of failures", async () => {
     const lifecycle = await loadLifecycle();
     const vm = vmRow();
     rows.set(workspaceId, vm);
@@ -2445,33 +2436,69 @@ describe("routing the VM's browser through a Russian exit", () => {
       proxySetup({ country: "RU", ip: "95.24.1.22" })
     );
 
-    const prepared = await lifecycle.prepareBrowserVmSession(vm, now, {
+    const renewed = await lifecycle.prepareBrowserVmSession(vm, now, {
       renewExit: true,
       rotate: false,
     });
 
+    expect(worker.setBrowserVmWorkerProxy).toHaveBeenCalledOnce();
     expect(worker.setBrowserVmWorkerProxy.mock.calls[0]?.[1].username).toMatch(
-      /r1$/u
+      /^user-session-bro[\da-f]{12}$/u
     );
-    expect(prepared.proxyExit).toMatchObject({ ip: "95.24.1.22" });
+    expect(renewed.proxyExit).toMatchObject({ at: now.toISOString() });
+
+    worker.setBrowserVmWorkerProxy.mockClear();
+    // Too few failures in a row, or a run of them that ended long ago.
+    worker.readBrowserVmWorkerHealth.mockResolvedValue(
+      health({ tunnel: { failing: 2, lastStatus: 502, sinceLastFailure: 1 } })
+    );
+    expect(await lifecycle.prepareBrowserVmSession(vm, now)).toBe(vm);
+    worker.readBrowserVmWorkerHealth.mockResolvedValue(
+      health({
+        tunnel: { failing: 40, lastStatus: 502, sinceLastFailure: 900 },
+      })
+    );
+    expect(await lifecycle.prepareBrowserVmSession(vm, now)).toBe(vm);
+    // A run going on the browser keeps its exit, whatever the page said.
+    worker.readBrowserVmWorkerHealth.mockResolvedValue(
+      health({
+        busy: true,
+        tunnel: { failing: 9, lastStatus: 502, sinceLastFailure: 1 },
+      })
+    );
+    expect(
+      await lifecycle.prepareBrowserVmSession(vm, now, { renewExit: true })
+    ).toBe(vm);
+    expect(worker.setBrowserVmWorkerProxy).not.toHaveBeenCalled();
   });
 
-  it("replaces a fresh exit the worker saw die when the person writes", async () => {
+  it("checks a fresh exit the worker saw die when the person writes, one check at a time", async () => {
     const lifecycle = await loadLifecycle();
-    rows.set(workspaceId, vmRow());
+    const vm = vmRow();
+    rows.set(workspaceId, vm);
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     vi.spyOn(console, "info").mockImplementation(() => undefined);
     worker.readBrowserVmWorkerHealth.mockResolvedValue(
-      health({ tunnel: { failing: 5, lastStatus: 568 } })
+      health({ tunnel: { failing: 5, lastStatus: 568, sinceLastFailure: 2 } })
     );
-    worker.setBrowserVmWorkerProxy.mockResolvedValue(
-      proxySetup({ country: "RU", ip: "95.24.1.23" })
-    );
+    const answer = Promise.withResolvers<ReturnType<typeof proxySetup>>();
+    worker.setBrowserVmWorkerProxy.mockReturnValue(answer.promise);
 
-    await lifecycle.warmBrowserVmExit(workspaceId, now);
+    const warming = lifecycle.warmBrowserVmExit(workspaceId, now);
+    const renewing = lifecycle.prepareBrowserVmSession(vm, now, {
+      renewExit: true,
+      rotate: false,
+    });
+    await vi.waitFor(() => {
+      expect(worker.setBrowserVmWorkerProxy).toHaveBeenCalledOnce();
+    });
+    answer.resolve(proxySetup({ country: "RU", ip: "95.24.1.23" }));
+    await warming;
 
-    expect(worker.setBrowserVmWorkerProxy).toHaveBeenCalledOnce();
     expect(stored().proxyExit).toMatchObject({ ip: "95.24.1.23" });
+    // The renewal waited for the warm-up and then checked on its own.
+    await renewing;
+    expect(worker.setBrowserVmWorkerProxy).toHaveBeenCalledTimes(2);
   });
 });
 

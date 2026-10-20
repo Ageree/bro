@@ -19,8 +19,8 @@ profile never sees the VM's own datacenter address.
 Routes (all but a plain /v1/health need a token):
   GET  /v1/health[?machine=1]             liveness, Chrome, busy flag (no secrets), how Chrome's tunnels through
                                           the proxy end since it was set (`tunnel`: failing in a row, last
-                                          failure's status and time, opened and failed); `machine` (with a
-                                          token): memory, load, disk, profile size
+                                          failure's status and seconds since it); `machine` (with a token):
+                                          memory, load, disk, profile size
   POST /v1/session                        {proxy: {host, port, username, password}} → exit address and speed
                                           (`error`: no address; `speedError`: the address, speed unknown)
   GET  /v1/runs?contains=<line>           runs of this VM, newest first (adoption after a lost start)
@@ -87,7 +87,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-10-20.1"
+VERSION = "2026-10-20.2"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -273,8 +273,19 @@ class Forwarder:
     def forget_tunnels(self):
         """Tunnels count afresh for each upstream: `failing` is how many failed in a row since the last
         one that opened, `lastStatus` what Chrome got on the last failure (the proxy's status, or the
-        worker's own 502 when the proxy could not be reached or answered nothing)."""
-        self.tunnels = {"failing": 0, "lastStatus": None, "lastFailureAt": None, "succeeded": 0, "failed": 0}
+        worker's own 502 when the proxy could not be reached or answered nothing), `lastFailure` its
+        monotonic time: a sandbox woken from its snapshot has the wall clock of the snapshot for a while."""
+        self.tunnels = {"failing": 0, "lastStatus": None, "lastFailure": None, "succeeded": 0, "failed": 0}
+
+    def tunnel_health(self):
+        """The tunnels for the plain /v1/health: whether the exit stopped opening them and how long ago,
+        never how many the person's browsing opened."""
+        last = self.tunnels["lastFailure"]
+        return {
+            "failing": self.tunnels["failing"],
+            "lastStatus": self.tunnels["lastStatus"],
+            "sinceLastFailure": None if last is None else round(time.monotonic() - last, 1),
+        }
 
     def drop(self):
         """Forget the login and close every tunnel carrying it, so their handlers end and let it go."""
@@ -303,8 +314,12 @@ class Forwarder:
             return
         self.tunnels["failed"] += 1
         self.tunnels["failing"] += 1
-        self.tunnels.update({"lastStatus": status, "lastFailureAt": round(time.time(), 3)})
-        log.warning("forwarder: tunnel failed status=%d failing=%d", status, self.tunnels["failing"])
+        self.tunnels.update({"lastStatus": status, "lastFailure": time.monotonic()})
+        # A dead exit fails Chrome's tunnels several a second, and the journal keeps 2000 lines: the first
+        # failure, the third (Bro takes the exit for dead there) and every fiftieth after.
+        failing = self.tunnels["failing"]
+        if failing in (1, 3) or failing % 50 == 0:
+            log.warning("forwarder: tunnel failed status=%d failing=%d", status, failing)
 
     async def pipe(self, reader, writer, key):
         try:
@@ -4017,7 +4032,7 @@ async def health(request):
         "configured": worker.config is not None, "uptimeSeconds": float(Path("/proc/uptime").read_text().split()[0]),
         "chrome": await chrome_ready(), "busy": worker.busy(), "proxy": worker.forwarder.upstream is not None,
         "stage": stage_file.read_text().strip() if stage_file.exists() else None, "generation": worker.generation,
-        "tunnel": dict(worker.forwarder.tunnels), **details,
+        "tunnel": worker.forwarder.tunnel_health(), **details,
     })
 
 

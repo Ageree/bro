@@ -640,11 +640,12 @@ export async function createBrowserVmBrowser(input: {
 }
 
 /**
- * Move the workspace's ready browser to another exit after one of its pages
- * could not reach its site through this one (a Yandex call): the next sticky
- * session, then the other proxy, as long as a person's turn waits for an
- * exit. A browser busy with a run keeps its exit. True once a Russian exit
- * is in place; never throws, since the caller's own outcome stands.
+ * Check the workspace's ready browser's exit again after one of its pages
+ * could not reach its site through it (a Yandex call), and move it on — the
+ * next sticky session, then the other proxy — when the check fails, as long
+ * as a person's turn waits for an exit. A browser busy with a run keeps its
+ * exit unchecked. True once the exit was checked again and is Russian; never
+ * throws, since the caller's own outcome stands.
  */
 export async function renewBrowserVmExit(profileId: string) {
   const vm = await readyVm(browserVmWorkspace(profileId));
@@ -655,7 +656,9 @@ export async function renewBrowserVmExit(profileId: string) {
       renewExit: true,
       rotate: false,
     });
-    return renewed.proxyExit !== null;
+    return (
+      renewed.proxyExit !== null && renewed.proxyExit.at !== vm.proxyExit?.at
+    );
   } catch (error) {
     console.warn("[browser-vm] the exit could not be renewed", {
       error: error instanceof Error ? error.name : null,

@@ -238,7 +238,7 @@ class ForwarderTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(asked, worker.TUNNEL_ATTEMPTS)
         # The tries of one tunnel are one failure, and the line names neither the site nor the login.
         self.assertEqual((tunnels["failing"], tunnels["lastStatus"], tunnels["failed"]), (1, 568, 1))
-        self.assertAlmostEqual(tunnels["lastFailureAt"], time.time(), delta=5)
+        self.assertAlmostEqual(tunnels["lastFailure"], time.monotonic(), delta=5)
         self.assertEqual(logs.output, ["WARNING:bro-worker:forwarder: tunnel failed status=568 failing=1"])
 
     async def proxy_answering(self, answers):
@@ -277,9 +277,9 @@ class ForwarderTest(unittest.IsolatedAsyncioTestCase):
                                                          b"HTTP/1.1 200 Connection established\r\n\r\n"])
         with self.assertLogs("bro-worker", "WARNING") as logs:
             self.assertEqual([await connect(), await connect()], [503, 503])
-        self.assertEqual(logs.output[-1], "WARNING:bro-worker:forwarder: tunnel failed status=503 failing=2")
+        self.assertEqual(logs.output, ["WARNING:bro-worker:forwarder: tunnel failed status=503 failing=1"])
         self.assertEqual(await connect(), 200)
-        self.assertEqual({k: v for k, v in forwarder.tunnels.items() if k != "lastFailureAt"},
+        self.assertEqual({k: v for k, v in forwarder.tunnels.items() if k != "lastFailure"},
                          {"failing": 0, "lastStatus": 503, "succeeded": 1, "failed": 2})
 
     async def test_a_proxy_that_answers_nothing_fails_the_tunnel_with_the_workers_502(self):
@@ -292,9 +292,19 @@ class ForwarderTest(unittest.IsolatedAsyncioTestCase):
         forwarder.upstream = ("127.0.0.1", closed.sockets[0].getsockname()[1], None)
         closed.close()
         await closed.wait_closed()
-        with self.assertLogs("bro-worker", "WARNING"):
+        with self.assertNoLogs("bro-worker", "WARNING"):  # only the first, the third and every fiftieth
             self.assertEqual(await connect(), 502)
         self.assertEqual((forwarder.tunnels["failing"], forwarder.tunnels["lastStatus"]), (2, 502))
+
+    def test_a_dead_exit_logs_its_failures_sparingly(self):
+        # A dead exit fails Chrome's tunnels several a second, and `host.py logs` keeps 2000 lines.
+        forwarder = worker.Forwarder()
+        forwarder.configure({"host": "proxy.example", "port": 1, "username": "u", "password": "p"})
+        with self.assertLogs("bro-worker", "WARNING") as logs:
+            for _ in range(100):
+                forwarder.count_tunnel(forwarder.upstream, 502)
+        self.assertEqual([line.rsplit("=", 1)[1] for line in logs.output], ["1", "3", "50", "100"])
+        self.assertEqual(forwarder.tunnel_health()["failing"], 100)
 
     async def test_a_new_upstream_starts_clean(self):
         release = asyncio.Event()
@@ -314,7 +324,7 @@ class ForwarderTest(unittest.IsolatedAsyncioTestCase):
         proxy = {"host": "127.0.0.1", "port": forwarder.upstream[1], "username": "u", "password": "p"}
         forwarder.configure(proxy)  # POST /v1/session: the same login, a fresh exit
         self.assertEqual(forwarder.tunnels,
-                         {"failing": 0, "lastStatus": None, "lastFailureAt": None, "succeeded": 0, "failed": 0})
+                         {"failing": 0, "lastStatus": None, "lastFailure": None, "succeeded": 0, "failed": 0})
         with self.assertLogs("bro-worker", "WARNING"):
             await connect()
         forwarder.drop()  # park
@@ -1957,9 +1967,9 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
             for status in (200, 502, 502):
                 forwarder.count_tunnel(forwarder.upstream, status)
         tunnel = (await (await self.client.get("/v1/health")).json())["tunnel"]
-        self.assertEqual({k: v for k, v in tunnel.items() if k != "lastFailureAt"},
-                         {"failing": 2, "lastStatus": 502, "succeeded": 1, "failed": 2})
-        self.assertIsInstance(tunnel["lastFailureAt"], float)
+        self.assertEqual({k: v for k, v in tunnel.items() if k != "sinceLastFailure"},
+                         {"failing": 2, "lastStatus": 502})
+        self.assertGreaterEqual(tunnel["sinceLastFailure"], 0)
 
     async def test_an_exit_whose_megabyte_did_not_come_through_keeps_its_address(self):
         ipinfo = {"ip": "95.24.1.1", "city": "Moscow", "region": "Moscow", "country": "RU", "org": "AS8402"}

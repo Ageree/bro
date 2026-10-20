@@ -82,19 +82,21 @@ export async function runYandexOperation(
   if (first.kind !== "unreachable") return first;
   // The page found no network through the browser's exit: 20.10 the owner's
   // sticky exit died, and every call failed on it until a message of theirs
-  // happened to find its check stale. The browser moves to another exit at
-  // once, and the call is made again on it when nothing of it ran or it
-  // only reads; a change that may have gone out is not sent twice.
-  const renewed = await renewBrowserVmExit(browserVmProfileId(workspaceId, 0));
-  const again = renewed && (!first.ran || operation.access === "read");
+  // happened to find its check stale. The exit is checked again at once and
+  // moved when that fails, and the call is made again when nothing of it ran
+  // or it only reads. A change that may have gone out is not sent twice, and
+  // its answer does not wait for the check.
+  const profileId = browserVmProfileId(workspaceId, 0);
+  const again = !first.ran || operation.access === "read";
+  if (!again) void renewBrowserVmExit(profileId);
+  const renewed = again ? await renewBrowserVmExit(profileId) : null;
   console.warn("[yandex] the page did not reach the site", {
-    again,
     operation: operation.id,
     ran: first.ran,
     renewed,
     workspaceId,
   });
-  if (!again) return { kind: "failed", reason: "page" };
+  if (renewed !== true) return { kind: "failed", reason: "page" };
   const second = await callInTab(workspaceId, operation, args);
   return second.kind === "unreachable"
     ? { kind: "failed", reason: "page" }
@@ -153,10 +155,6 @@ async function callInTab(
       workspaceId,
     });
     if (!value.ran) {
-      // Chrome's own error page: the document never came.
-      if (value.url.startsWith("chrome-error:")) {
-        return { kind: "unreachable", ran: false };
-      }
       const where = landing(value.url);
       if (where === "signed_out") return { kind: "signed_out" };
       if (where === "captcha") return { kind: "captcha" };

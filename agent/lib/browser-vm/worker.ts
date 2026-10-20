@@ -54,13 +54,15 @@ const healthSchema = z.object({
   stage: z.string().nullable(),
   /**
    * Chrome's tunnels through the proxy since it was last set (a worker from
-   * 2026-10-20 on): `failing` counts the ones in a row the proxy did not
-   * open, so a sticky exit that died shows here before any errand trips on it.
+   * 2026-10-20.2 on): `failing` counts the ones in a row the proxy did not
+   * open, so a sticky exit that died shows here before any errand trips on
+   * it; `sinceLastFailure` is in seconds, by the worker's own clock.
    */
   tunnel: z
     .object({
       failing: z.number().int().min(0),
       lastStatus: z.number().int().nullable(),
+      sinceLastFailure: z.number().min(0).nullable(),
     })
     .optional(),
   uptimeSeconds: z.number(),
