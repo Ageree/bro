@@ -1,3 +1,5 @@
+import { voiceLine } from "@shared/voice/marker";
+
 // GPT-Live's delegation event carries no words (docs: «does not contain the
 // user's utterance or task text»), so the page keeps both transcripts on the
 // session's timeline and gives Bro what the person said since the last
@@ -38,8 +40,8 @@ export class Hearing {
 
   /**
    * The person's words not yet given to Bro, their last few utterances, with
-   * the voice's lines between them in brackets (`(ты: «…»)`, which the web
-   * channel explains to the model). The voice's line after their last words
+   * the voice's lines between them (`voiceLine`, which the web channel
+   * explains to the model). The voice's line after their last words
    * («Сейчас гляну») is not part of the request.
    */
   takeRequest() {
@@ -57,9 +59,7 @@ export class Hearing {
     );
     return [...person, ...voice]
       .toSorted((a, b) => a.startMs - b.startMs)
-      .map((line) =>
-        line.by === "person" ? line.text : `(ты: «${line.text}»)`
-      )
+      .map((line) => (line.by === "person" ? line.text : voiceLine(line.text)))
       .join("\n");
   }
 }

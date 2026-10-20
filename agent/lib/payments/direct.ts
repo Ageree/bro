@@ -12,7 +12,7 @@ import { env } from "@shared/environment";
 import type { AccessScope } from "@shared/identity/access-scope";
 import { directModelActive } from "@shared/model/provider";
 import { decideAutoPayment, type SpendTarget } from "@shared/spending/limit";
-import { voiceTalkMarker } from "@shared/voice/marker";
+import { voiceLinePattern } from "@shared/voice/marker";
 
 /**
  * The person's own request is their consent to pay (owner 15.10, pilot
@@ -167,9 +167,10 @@ export function writtenBudgetRub(request: string) {
  * The person's request to buy, read in code from the words that opened this
  * turn of theirs (DIRECT_PURCHASE_WORKSPACES): undefined outside the pilot,
  * in a turn they did not open, after a compaction inside it, for a message
- * they forwarded or said aloud on /talk (a transcript may mishear: a voice
- * purchase is always asked), and for words that ask nothing to be bought
- * now — a question, a negation, «только найди», «спроси меня».
+ * they forwarded, and for words that ask nothing to be bought now — a
+ * question, a negation, «только найди», «спроси меня». Said aloud on /talk,
+ * a request counts like a typed one (owner 20.10); the voice's own lines
+ * between the person's words there are not theirs.
  */
 export function purchaseRequestOf(
   scope: { readonly workspaceId: string },
@@ -184,13 +185,14 @@ export function purchaseRequestOf(
     said === null ||
     said.length === 0 ||
     step.turnId === undefined ||
-    said.some(
-      (text) => text.includes(forwardedMarker) || text.includes(voiceTalkMarker)
-    )
+    said.some((text) => text.includes(forwardedMarker))
   )
     return undefined;
-  const request = said.join("\n").trim();
-  const asking = said.some(
+  const own = said
+    .map((text) => text.replaceAll(voiceLinePattern, "").trim())
+    .filter((text) => text.length > 0);
+  const request = own.join("\n").trim();
+  const asking = own.some(
     (text) => purchaseVerbPattern.test(text) && !/[?？]\s*$/u.test(text.trim())
   );
   if (!asking || negatedPattern.test(request) || askFirstPattern.test(request))
