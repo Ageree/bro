@@ -256,6 +256,79 @@ describe("send_message and the delivery sentinel", () => {
   });
 });
 
+/** A Lavka product photo on Yandex's image CDN. */
+const photo = (name: string) =>
+  `https://avatars.mds.yandex.net/get-grocery-goods/1/${name}/600x600`;
+
+describe("send_message and pictures written into the text", () => {
+  // 20.10: the model wrote Lavka's photos as ![…](https://…), which
+  // Telegram posts as «!» and a bare link.
+  it("attaches them and keeps each caption as a line", async () => {
+    const sendMessage = await resolveSendMessage("channel:telegram", [
+      personMessage("покажи котлеты из Лавки"),
+    ]);
+
+    expect(
+      await sendMessage.execute(
+        {
+          attachments: [{ kind: "image", url: photo("b") }],
+          kind: "message",
+          replyTo: { kind: "current" },
+          text: `Вот котлеты:\n\n![Котлеты «Индилайт», 400 г — 399 ₽](${photo("a")})  \n![Бифштекс, 200 г — 135 ₽](${photo("b")})\n\n\n![](${photo("c")})\n\nЧто берём?`,
+        },
+        toolContext()
+      )
+    ).toEqual({
+      attachments: [
+        { kind: "image", url: photo("b") },
+        { kind: "image", url: photo("a") },
+        { kind: "image", url: photo("c") },
+      ],
+      kind: "message",
+      replyTo: { kind: "current" },
+      text: "Вот котлеты:\n\nКотлеты «Индилайт», 400 г — 399 ₽\nБифштекс, 200 г — 135 ₽\n\nЧто берём?",
+    });
+  });
+
+  it("leaves Bro's own artifacts and the pictures past ten attachments as written", async () => {
+    const sendMessage = await resolveSendMessage("channel:telegram", [
+      personMessage("покажи котлеты из Лавки"),
+    ]);
+    const nine = Array.from({ length: 9 }, (_, index) => ({
+      kind: "image" as const,
+      url: photo(String(index)),
+    }));
+    const text = `![картинка](/artifacts/0b9f6c2e-6c8f-4a7e-9a39-6d0f3f2a1b11)\n![Первая](${photo("x")})\n![Вторая](${photo("y")})`;
+
+    expect(
+      await sendMessage.execute(
+        { attachments: nine, kind: "message", text },
+        toolContext()
+      )
+    ).toEqual({
+      attachments: [...nine, { kind: "image", url: photo("x") }],
+      kind: "message",
+      text: `![картинка](/artifacts/0b9f6c2e-6c8f-4a7e-9a39-6d0f3f2a1b11)\nПервая\n![Вторая](${photo("y")})`,
+    });
+  });
+
+  it("sends a text of pictures alone as the pictures", async () => {
+    const sendMessage = await resolveSendMessage("channel:telegram", [
+      personMessage("скинь фото"),
+    ]);
+
+    expect(
+      await sendMessage.execute(
+        { kind: "message", text: `![](${photo("a")})` },
+        toolContext()
+      )
+    ).toEqual({
+      attachments: [{ kind: "image", url: photo("a") }],
+      kind: "message",
+    });
+  });
+});
+
 describe("send_message and the early reply", () => {
   const headsUp = {
     kind: "message" as const,

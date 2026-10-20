@@ -5,7 +5,10 @@ import {
   addReactionToMessageOutputSchema,
   reactToMessageOutputSchema,
 } from "@shared/chat/reaction";
-import { sendMessageOutputSchema } from "@shared/chat/message-delivery";
+import {
+  maximumMessageAttachments,
+  sendMessageOutputSchema,
+} from "@shared/chat/message-delivery";
 import { reportedBrowserRunId } from "../lib/browser-use/report-caller";
 import { withGroupedRoubles } from "../lib/delivery/amounts";
 import { withHttpsLinks, withVisibleLinks } from "../lib/delivery/links";
@@ -187,9 +190,11 @@ function defineSendMessage(
         if (pastAnswer) return { skipped: "past" as const };
         const outgoing = withoutBookkeeping(
           withHttpsLinksInText(
-            withExactSharedLinks(
-              withExactLoginHandoffLink(message),
-              sharedLinks
+            withInlineImagesAttached(
+              withExactSharedLinks(
+                withExactLoginHandoffLink(message),
+                sharedLinks
+              )
             )
           )
         );
@@ -241,6 +246,46 @@ function defineSendMessage(
       );
     },
   });
+}
+
+/** `![caption](https://…)`: a picture from outside written into the text. */
+const inlineImagePattern = /!\[((?:\\.|[^\]\n])*)\]\((https:\/\/[^\s)]+)\)/gu;
+
+/**
+ * The send with the outside pictures its text shows as `![…](https://…)`
+ * attached instead, each caption left as a line of the text. The model
+ * writes found photos so, as the instructions have it for Bro's own
+ * artifacts (`/artifacts/…`, which this leaves alone): on 20.10 it sent
+ * Lavka's products that way twice out of two, and Telegram posts the markup
+ * as «!» and a bare link. A picture past the attachment cap stays as
+ * written.
+ */
+function withInlineImagesAttached(message: SentMessage): SentMessage {
+  if (message.kind === "link" || message.text === undefined) return message;
+  const attachments = [...(message.attachments ?? [])];
+  let text = "";
+  let from = 0;
+  for (const match of message.text.matchAll(inlineImagePattern)) {
+    const [markdown, caption = "", url = ""] = match;
+    const attached = attachments.some((attachment) => attachment.url === url);
+    if (!attached && attachments.length >= maximumMessageAttachments) continue;
+    if (!attached) attachments.push({ kind: "image", url });
+    text += message.text.slice(from, match.index) + caption.trim();
+    from = match.index + markdown.length;
+  }
+  if (from === 0) return message;
+  text = (text + message.text.slice(from))
+    .replace(/[ \t]+\n/gu, "\n")
+    .replace(/\n{3,}/gu, "\n\n")
+    .trim();
+  const sent: Extract<SentMessage, { kind: "message" }> = {
+    attachments,
+    kind: "message",
+  };
+  if (text) sent.text = text;
+  if (message.replyTo !== undefined) sent.replyTo = message.replyTo;
+  // A channel posts only what parses (an address past 2048 characters).
+  return sendMessageOutputSchema.safeParse(sent).success ? sent : message;
 }
 
 /** The send with `https://` on every link address its text leaves bare. */
