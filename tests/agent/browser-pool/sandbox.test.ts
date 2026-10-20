@@ -570,6 +570,185 @@ describe(
   }
 );
 
+describe(
+  "a picture Bro drew goes to the errand's site",
+  { timeout: 60_000 },
+  () => {
+    it("uploads only a picture generate_image drew in this conversation", async () => {
+      vi.stubEnv("BROWSER_VM_FILES_WORKSPACES", alice.workspaceId);
+      const pool = await loadPool();
+      const records = await import("@db/services/browser-runs");
+      const { browserTask } = await import("@agent/tools/browser_task");
+      const pictures = await import("@db/services/generated-images");
+      const storage = await import("@agent/lib/image-artifact/storage");
+      const drawn = "/artifacts/0f3c2a1e-7b5d-4c3e-9a8f-1b2c3d4e5f60";
+      const bytes = new TextEncoder().encode("synthetic PNG");
+      const artifact = {
+        byteSize: bytes.byteLength,
+        contentHash: "hash",
+        createdAt: now,
+        createdByUserId: alice.userId,
+        filename: "picture.png",
+        id: drawn.slice("/artifacts/".length),
+        idempotencyKey: "draw",
+        mediaType: "image/png",
+        model: "image-model",
+        prompt: "logo",
+        rootSessionId: "root-1",
+        storagePathname: "generated/picture.png",
+        workspaceId: alice.workspaceId,
+      };
+      const read = vi
+        .spyOn(pictures, "readGeneratedImageArtifact")
+        .mockImplementation(async (_scope, _id, options) =>
+          options?.rootSessionId === "root-1" ? artifact : undefined
+        );
+      vi.spyOn(storage, "readPrivateImage").mockResolvedValue(bytes);
+      const run = await records.createBrowserRun(alice, {
+        conversationChannel: "eve",
+        conversationId: "root-1",
+        id: "logo-run",
+        profileId: `vm:${alice.workspaceId}:p1`,
+        rootSessionId: "root-1",
+        sessionId: `vm:${alice.workspaceId}:s:logo`,
+        site: "https://example.test",
+        status: "done",
+        task: "Publish the product card",
+      });
+      vi.spyOn(browserTask, "execute").mockResolvedValue({
+        note: "Attached",
+        runId: "attachment-run",
+        status: "running",
+      });
+      const upload = vi
+        .spyOn(pool.runs, "uploadBrowserVmSessionFile")
+        .mockResolvedValue({
+          path: "/workspace/uploads/picture.png",
+          size: bytes.byteLength,
+        });
+      const session = {
+        auth: {
+          current: {
+            attributes: { workspaceId: alice.workspaceId },
+            authenticator: "authjs",
+            principalId: alice.userId,
+            principalType: "user",
+          },
+          initiator: null,
+        },
+        id: "root-1",
+        turn: { id: "turn-1", sequence: 1 },
+      };
+      const context = {
+        abortSignal: new AbortController().signal,
+        callId: "file-call",
+        async getSandbox() {
+          return {
+            delete: unusedFileSandboxIo,
+            id: "unused-sandbox",
+            readBinaryFile: unusedFileSandboxIo,
+            readFile: unusedFileSandboxIo,
+            readTextFile: unusedFileSandboxIo,
+            removePath: unusedFileSandboxIo,
+            resolvePath: (path: string) => path,
+            run: unusedFileSandboxIo,
+            setNetworkPolicy: unusedFileSandboxIo,
+            spawn: unusedFileSandboxIo,
+            stop: unusedFileSandboxIo,
+            writeBinaryFile: unusedFileSandboxIo,
+            writeFile: unusedFileSandboxIo,
+            writeTextFile: unusedFileSandboxIo,
+          };
+        },
+        getSkill() {
+          throw new Error("No skill is needed");
+        },
+        getToken() {
+          throw new Error("No token is needed");
+        },
+        requireAuth() {
+          throw new Error("No inline auth is needed");
+        },
+        session,
+        toolName: "browser_files",
+      } satisfies ToolContext;
+      const { default: files } = await import("@agent/tools/browser_files");
+      const resolve = files.events["step.started"];
+      if (!resolve) throw new Error("Files must resolve per step");
+      const tools = await resolve({}, {
+        channel: { kind: "channel:eve" },
+        messages: [
+          { content: "Нарисуй логотип и загрузи его на сайт", role: "user" },
+          {
+            content: [
+              {
+                input: { prompt: "logo" },
+                toolCallId: "draw",
+                toolName: "generate_image",
+                type: "tool-call",
+              },
+            ],
+            role: "assistant",
+          },
+          {
+            content: [
+              {
+                output: { type: "json", value: { artifact: drawn } },
+                toolCallId: "draw",
+                toolName: "generate_image",
+                type: "tool-result",
+              },
+            ],
+            role: "tool",
+          },
+        ],
+        model: null,
+        session,
+      } satisfies DynamicResolveContext);
+      if (!tools || "execute" in tools)
+        throw new Error("The files tool must resolve");
+      expect(
+        await tools.browser_files.execute({ action: "list" }, context)
+      ).toMatchObject({ drawn: [{ source: drawn }], status: "listed" });
+      const elsewhere = "/artifacts/9e8d7c6b-5a49-4382-9716-0f1e2d3c4b5a";
+      const refuse = async (source: string) =>
+        tools.browser_files.execute(
+          {
+            action: "upload",
+            runId: run.id,
+            site: "https://example.test",
+            sources: [source],
+          },
+          context
+        );
+      expect(await refuse(elsewhere)).toMatchObject({ status: "unknown_file" });
+      expect(await refuse(`https://evil.test${drawn}`)).toMatchObject({
+        status: "unknown_file",
+      });
+      expect(upload).not.toHaveBeenCalled();
+      expect(
+        await tools.browser_files.execute(
+          {
+            action: "upload",
+            runId: run.id,
+            site: "https://example.test",
+            sources: [drawn],
+          },
+          context
+        )
+      ).toMatchObject({ runId: "attachment-run", status: "uploaded" });
+      expect(read).toHaveBeenCalledWith(alice, artifact.id, {
+        rootSessionId: "root-1",
+      });
+      expect(upload.mock.calls[0]?.[1]).toMatchObject({
+        bytes,
+        mediaType: "image/png",
+        site: "https://example.test",
+      });
+    });
+  }
+);
+
 /** A ready host in `slot`, as the host watchdog would leave it. */
 async function seedHost(
   pool: Pool,

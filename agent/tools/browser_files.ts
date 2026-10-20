@@ -20,12 +20,15 @@ import {
   readSandboxFileWithin,
 } from "@agent/lib/sandbox/inbox";
 import { readOwnedSharedFile } from "@agent/lib/sandbox/files";
+import { drawnPictures } from "@agent/lib/image-artifact/generation";
+import { readPrivateImage } from "@agent/lib/image-artifact/storage";
 import { turnKind } from "@agent/lib/turn-kind/kind";
 import {
   stepIdentity,
   stepStartedEventSchema,
 } from "@agent/lib/turn-kind/step";
 import { readBrowserRunForScope } from "@db/services/browser-runs";
+import { readGeneratedImageArtifact } from "@db/services/generated-images";
 import { browserTask } from "./browser_task";
 import { outboundRuleApproval } from "@agent/lib/memory/rule-approval";
 
@@ -38,7 +41,7 @@ const inputSchema = z.discriminatedUnion("action", [
       .min(1)
       .max(10)
       .describe(
-        "Original staged paths or processed-file links returned by list. Choose the final files that meet the website's requirements."
+        "Original staged paths, processed-file links or drawn pictures (/artifacts/<id>) returned by list. Choose the final files that meet the website's requirements."
       ),
     runId: z.string().min(1),
     site: z.url(),
@@ -95,11 +98,16 @@ export default defineDynamic({
       const processed = allowed
         ? reportedSharedFileLinks(fileContext.messages)
         : [];
+      // Pictures generate_image drew in this chat: a logo or a cover a site
+      // asks for that nobody sent (Product Radar, 20.10).
+      const drawn = allowed
+        ? drawnPictures(fileContext.messages).slice(0, 20)
+        : [];
       return {
         browser_files: defineTool({
           availableInSubagents: false,
           description:
-            "Bridge files from this conversation to its existing browser_task errand. list returns originals, including inline photos/PDFs, and files produced by the task agent. First open the errand with browser_task and inspect the site's actual requirements. When the original is unsuitable, give its listed path and those requirements to task, let it inspect and prepare the file with its sandbox tools, and obtain the finished link via share_file. Do not hard-code transformations, guess page positions or send unnecessary pages/data. upload takes only listed sources for this run's HTTPS site without an approval card, subject to saved user rules, then resumes that errand for the requested file attachment only; it adds no permission to enter other personal data, submit a form or pay. Do not continue it a second time just to supply the files. A processed file must belong to this workspace and root conversation; arbitrary URLs, another chat's files and invented paths are refused. Do not copy private document contents into browser task text.",
+            "Bridge files from this conversation to its existing browser_task errand. list returns originals, including inline photos/PDFs, files produced by the task agent, and pictures you drew with generate_image. First open the errand with browser_task and inspect the site's actual requirements. When the original is unsuitable, give its listed path and those requirements to task, let it inspect and prepare the file with its sandbox tools, and obtain the finished link via share_file. When the site needs a file this chat does not have (the run stopped with NEEDS: file), prepare it with task and share_file, or upload a picture you drew for it; a personal document the user sent for something else never goes unasked. Do not hard-code transformations, guess page positions or send unnecessary pages/data. upload takes only listed sources for this run's HTTPS site without an approval card, subject to saved user rules, then resumes that errand for the requested file attachment only; it adds no permission to enter other personal data, submit a form or pay. Do not continue it a second time just to supply the files. A processed file must belong to this workspace and root conversation; arbitrary URLs, another chat's files and invented paths are refused. Do not copy private document contents into browser task text.",
           inputSchema,
           approval: async (ctx) => {
             if (!allowed || ctx.toolInput === undefined)
@@ -132,6 +140,7 @@ export default defineDynamic({
                     size,
                   })),
                 processed: processed.map((source) => ({ source })),
+                drawn: drawn.map((source) => ({ source })),
                 status: "listed",
               };
             }
@@ -140,7 +149,8 @@ export default defineDynamic({
               sources.some(
                 (source) =>
                   !originals.some((file) => file.path === source) &&
-                  !processed.includes(source)
+                  !processed.includes(source) &&
+                  !drawn.includes(source)
               )
             )
               return {
@@ -180,6 +190,29 @@ export default defineDynamic({
               const file = originals.find(
                 (original) => original.path === source
               );
+              if (file === undefined && drawn.includes(source)) {
+                const artifact = await readGeneratedImageArtifact(
+                  scope,
+                  source.slice("/artifacts/".length),
+                  { rootSessionId: ctx.session.id }
+                );
+                const bytes =
+                  artifact === undefined || artifact.byteSize > documentByteCap
+                    ? undefined
+                    : await readPrivateImage(artifact, signal);
+                if (artifact === undefined || bytes === undefined)
+                  failures.push({
+                    note: "Nothing was copied. This picture is missing, too large or no longer matches what was drawn; draw it again.",
+                    status: "file_unavailable",
+                  });
+                else
+                  uploads.push({
+                    bytes,
+                    mediaType: artifact.mediaType,
+                    name: artifact.filename,
+                  });
+                return;
+              }
               if (file === undefined) {
                 const shared = await readOwnedSharedFile(source, {
                   sessionId: ctx.session.id,
