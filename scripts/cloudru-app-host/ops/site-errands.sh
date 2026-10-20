@@ -122,7 +122,7 @@ WITH window_runs AS (
   SELECT l.*,
          CASE WHEN l.needs_value IS NULL THEN NULL
               WHEN lower(regexp_replace(l.needs_value, '\s+', '_', 'g'))
-                   ~ '^(none|sms_code|email_code|push|3ds|captcha|password|address|payment|decision|info)$'
+                   ~ '^(none|sms_code|email_code|push|3ds|captcha|password|address|payment|decision|info|file)$'
                 THEN lower(regexp_replace(l.needs_value, '\s+', '_', 'g'))
               WHEN l.needs_value ~* '^(нет|-|—|n/a|н/д)$' THEN 'none'
               ELSE 'other' END AS needs,

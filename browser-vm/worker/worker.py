@@ -85,7 +85,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-10-14.1"
+VERSION = "2026-10-20.1"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -162,6 +162,26 @@ earlier ones: type into a field and press Enter or its search button, fill sever
 a filter and apply it. Look at the page between steps whenever an action opens, submits or changes it.
 """.strip()
 FILE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
+# browser-use gives upload_file no description: the agent did not know it takes an upload button or a zone.
+UPLOAD_DESCRIPTION = (
+    "Attach a file from available_file_paths to the page the way a person does: give the index of the page's "
+    "upload button, «Выбрать файл» link, drop zone or file field. It picks the file in the page's own file "
+    "picker (the one your click opened, or the one that button opens), sets the file field, or drops the file "
+    "onto the zone. Never attach a file with evaluate (fetch, DataTransfer, a data: URL): pages do not take it."
+)
+FIELD_SET = (
+    "If the page does not show the file, click the page's own upload button yourself and call upload_file on that "
+    "button again: it picks the file in the picker the button opens."
+)
+PICKER_OPENED = (
+    "This opened the page's file picker: it waits, unseen, for a file. Attach the file now with upload_file on "
+    "this same element."
+)
+PICKER_WITHOUT_FILE = (
+    "This opened the page's file picker, but this run has no file to give it. Do not make one, and never attach "
+    "one with evaluate (fetch, DataTransfer, a data: URL): finish the rest you can and stop, saying in your final "
+    "answer which file the page asks for — what it is, the formats, the size and dimensions it allows."
+)
 log = logging.getLogger("bro-worker")
 
 
@@ -622,6 +642,285 @@ class SiteErrors:
                 "server refused during this run):\n" + "\n".join(map(line, self.entries)) + "\n\n")
 
 
+class FilePickers:
+    """The file pickers a run's pages open, answered as a person answers them. The browser is headful (Xvfb): a
+    page's «Загрузить» button opened the native file dialog nobody can answer, and an upload widget that makes
+    its file field only on that click left the agent no field to set («No file upload element found»). On
+    Product Radar (20.10) the run had no file to give and fell back to `evaluate` with fetch and DataTransfer,
+    which the page never took.
+
+    Each tab of the run is listened to on a CDP socket of its own, beside the agent's, with the dialog
+    intercepted (`Page.setInterceptFileChooserDialog`): no window opens, and Chrome says which field of which
+    frame asked for a file (`Page.fileChooserOpened`). Choosing the file in it is `DOM.setFileInputFiles` on
+    that field — what a person's choice in the dialog does: the page's own field, its own change event. A file
+    the page should take by drag and drop is dropped the way a file dragged from the desktop is
+    (`Input.dispatchDragEvent` with the file), and only where the page says it takes one (its dragover handler
+    cancels the event): elsewhere the drop does nothing, and the agent is told that, not a success. A frame in
+    another process (a cross-site iframe) has no socket here: its picker is never answered, nor dropped into."""
+
+    WAIT_S = 2.5  # how long a click of upload_file is given to open the page's picker
+    FRESH_S = 120  # a picker opened longer ago belongs to an earlier step, not to this upload
+    READY_S = 3
+    # Copy, link and move: what a file dragged from the desktop allows, whichever the page asks for.
+    DRAG_OPERATIONS = 1 | 2 | 16
+    WRAPPERS = {"IFRAME", "FRAME", "OBJECT", "EMBED"}
+    # Run in an isolated world of the frame: the page sees neither the listeners nor what they keep. A drop
+    # the page let through would be Chrome's to handle, and Chrome opens a dropped file in a tab of its own:
+    # the last listener cancels it. Calling the result with true takes the listeners away.
+    DRAG_WATCH = """(() => {
+        const seen = {}, ours = {}, listeners = [];
+        const listen = (type, listener, capture) => {
+            addEventListener(type, listener, capture);
+            listeners.push([type, listener, capture]);
+        };
+        for (const type of ['dragenter', 'dragover', 'drop']) listen(type, event => { seen[type] = event; }, true);
+        listen('drop', event => { if (!event.defaultPrevented) { ours.drop = true; event.preventDefault(); } }, false);
+        return done => {
+            if (done) for (const [type, listener, capture] of listeners) removeEventListener(type, listener, capture);
+            return Object.fromEntries(Object.entries(seen).map(([type, event]) => [type, event.defaultPrevented && !ours[type]]));
+        };
+    })()"""
+    OWN_ORIGIN = "function () { return this.ownerDocument.location.origin; }"
+    # Whether a click on the element at that point is an upload's. Never a control that sends or clears its
+    # form (a button without a type in a form is a submit button) or a link away. And what is under the point
+    # is the element, inside it (its shadow root too: an upload web component), or a page's own file field
+    # laid over it (a transparent input over a styled button): anything else covers it and would be pressed.
+    CLICKABLE = """function (other) {
+        const leaves = this.localName === 'a' && !/^(#|javascript:|$)/i.test((this.getAttribute('href') || '').trim());
+        if ((this.form && ['submit', 'image', 'reset'].includes(this.type)) || leaves) return false;
+        for (let node = other; node; node = node.getRootNode().host) {
+            if (node === this || this.contains(node)) return true;
+        }
+        return other.localName === 'input' && other.type === 'file';
+    }"""
+
+    def __init__(self):
+        self.links = {}  # target id → CdpLink to that tab, once its pickers are intercepted
+        self.tasks = {}  # target id → the task listening to it
+        # target id → the page's latest picker not answered: frameId, backendNodeId, mode, when it opened, the
+        # element the click that opened it was on, and whether the agent was told of it
+        self.opened = {}
+        self.clicks = {}  # target id → (when, element) of the last click there, the agent's or upload_file's
+        self.quiet = {}  # target id → until when a late picker of upload_file's own click needs no word
+
+    def start(self, websocket_url, target):
+        if target not in self.tasks:
+            self.tasks[target] = asyncio.create_task(self.listen(websocket_url, target))
+
+    def watches(self, target):
+        return target in self.tasks
+
+    async def stop(self):
+        for task in self.tasks.values():
+            task.cancel()
+        for task in self.tasks.values():
+            with contextlib.suppress(BaseException):
+                await task
+        self.tasks.clear()
+
+    @staticmethod
+    async def send(link, method, params=None):
+        """A command on the tab's socket. A socket that closes under it (the tab is gone) is an error of this
+        upload, not a cancel of the run's whole step."""
+        try:
+            return await link.call(method, params)
+        except asyncio.CancelledError:
+            if asyncio.current_task().cancelling():
+                raise
+            raise ConnectionError(f"{method}: the tab's socket closed") from None
+
+    async def listen(self, websocket_url, target):
+        with contextlib.suppress(Exception):
+            async with aiohttp.ClientSession() as http:
+                async with http.ws_connect(websocket_url, max_msg_size=64 * 1024 * 1024, timeout=10) as ws:
+                    link = CdpLink(ws)
+                    link.start()
+                    try:
+                        await self.send(link, "Page.enable")
+                        await self.send(link, "Page.setInterceptFileChooserDialog", {"enabled": True})
+                        self.links[target] = link
+                        while (event := await link.events.get()) is not None:
+                            self.handle(target, event.get("method"), event.get("params") or {})
+                    finally:
+                        self.links.pop(target, None)
+                        await link.close()
+
+    def handle(self, target, method, params):
+        now = time.monotonic()
+        if method == "Page.fileChooserOpened" and params.get("backendNodeId"):
+            click = self.clicks.get(target)
+            clicked = click[1] if click is not None and 0 <= now - click[0] <= self.WAIT_S * 2 else None
+            self.opened[target] = {**params, "at": now, "clicked": clicked,
+                                   "told": now < self.quiet.get(target, 0)}
+            return
+        # A field of a page that is gone: its node ids may be another page's now.
+        frame = (params.get("frame") or {}).get("id") if method == "Page.frameNavigated" else params.get("frameId")
+        picker = self.opened.get(target)
+        if method in ("Page.frameNavigated", "Page.frameDetached") and picker is not None and picker["frameId"] == frame:
+            self.opened.pop(target, None)
+
+    async def ready(self, target):
+        """The tab's link with its pickers intercepted, listening to it now if nobody did; None if it fails."""
+        if target not in self.tasks:
+            with contextlib.suppress(Exception):
+                address = {t["id"]: t for t in await page_targets()}[target]["webSocketDebuggerUrl"]
+                self.start(address, target)
+        task = self.tasks.get(target)
+        deadline = time.monotonic() + self.READY_S
+        while task is not None and target not in self.links and not task.done() and time.monotonic() < deadline:
+            await asyncio.sleep(0.05)
+        return self.links.get(target)
+
+    def waiting(self, target, since=None):
+        """The picker the page opened and nobody answered, if it opened lately (and after `since`)."""
+        picker = self.opened.get(target)
+        if picker is None or time.monotonic() - picker["at"] > self.FRESH_S:
+            return None
+        return picker if since is None or picker["at"] >= since else None
+
+    def notice(self, target, has_files):
+        """What to tell the agent, once, of a picker a click opened and nobody answered yet."""
+        picker = self.waiting(target)
+        if picker is None or picker["told"]:
+            return None
+        picker["told"] = True
+        return PICKER_OPENED if has_files else PICKER_WITHOUT_FILE
+
+    def hush(self, target):
+        """upload_file put the file in another way after its own click: a picker that click opens late is not
+        a second file to attach."""
+        self.quiet[target] = time.monotonic() + self.WAIT_S * 2
+        picker = self.waiting(target)
+        if picker is not None:
+            picker["told"] = True
+
+    async def frame_origin(self, link, frame_id):
+        tree = await self.send(link, "Page.getFrameTree")
+        pending = [tree.get("frameTree", {})]
+        while pending:
+            node = pending.pop()
+            frame = node.get("frame", {})
+            if frame.get("id") == frame_id:
+                return https_origin(frame.get("securityOrigin"), True)
+            pending.extend(node.get("childFrames") or [])
+        return None
+
+    async def world(self, link, frame_id, name):
+        """An execution context of the frame that the page's scripts cannot reach."""
+        made = await self.send(link, "Page.createIsolatedWorld", {"frameId": frame_id, "worldName": name})
+        return made["executionContextId"]
+
+    async def choose(self, target, picker, path, site=None):
+        """Choose the file in the picker; an error's text when its field is not the bound site's. The field's
+        own document is asked, from a world of its frame, for its origin: not the page, not the frame tree."""
+        link = self.links.get(target)
+        if link is None:
+            return "The page's file picker is gone."
+        if site is not None:
+            context = await self.world(link, picker["frameId"], "bro-picker")
+            node = await self.send(link, "DOM.resolveNode", {"backendNodeId": picker["backendNodeId"],
+                                                             "executionContextId": context})
+            answer = await self.send(link, "Runtime.callFunctionOn", {
+                "functionDeclaration": self.OWN_ORIGIN, "objectId": node["object"]["objectId"], "returnByValue": True})
+            if https_origin((answer.get("result") or {}).get("value"), True) != site:
+                return ("The file picker the page opened belongs to another site's frame: this file goes only to its "
+                        "bound HTTPS site.")
+        await self.send(link, "DOM.setFileInputFiles", {"files": [path], "backendNodeId": picker["backendNodeId"]})
+        if self.opened.get(target) is picker:
+            self.opened.pop(target, None)
+        return None
+
+    async def point(self, link, backend):
+        """The middle of the element's largest visible part, in the tab's viewport, after scrolling to it."""
+        with contextlib.suppress(Exception):
+            await self.send(link, "DOM.scrollIntoViewIfNeeded", {"backendNodeId": backend})
+        quads = (await self.send(link, "DOM.getContentQuads", {"backendNodeId": backend})).get("quads") or []
+        viewport = (await self.send(link, "Page.getLayoutMetrics")).get("cssLayoutViewport") or {}
+        width, height = viewport.get("clientWidth") or 0, viewport.get("clientHeight") or 0
+        best, area = None, 0
+        for quad in quads:
+            if len(quad) < 8:
+                continue
+            xs, ys = quad[0::2], quad[1::2]
+            seen = (max(0, min(width, max(xs)) - max(0, min(xs))) * max(0, min(height, max(ys)) - max(0, min(ys))))
+            if seen > area:
+                best, area = quad, seen
+        if best is None:
+            return None
+        x, y = sum(best[0::2]) / 4, sum(best[1::2]) / 4
+        return max(0, min(width - 1, x)), max(0, min(height - 1, y))
+
+    async def click_open(self, target, backend):
+        """Click the element with the mouse, as a person clicks an upload button, and return the picker that
+        click opened, or None when it opened none within `WAIT_S`. Nothing is clicked when something else
+        covers the element: the click would press that."""
+        link = self.links.get(target)
+        place = await self.point(link, backend) if link is not None else None
+        if place is None:
+            return None
+        x, y = place
+        hit = await self.send(link, "DOM.getNodeForLocation", {"x": int(x), "y": int(y)})
+        context = await self.world(link, hit["frameId"], "bro-click")
+        mine, under = [await self.send(link, "DOM.resolveNode", {"backendNodeId": node, "executionContextId": context})
+                       for node in (backend, hit["backendNodeId"])]
+        answer = await self.send(link, "Runtime.callFunctionOn", {
+            "functionDeclaration": self.CLICKABLE, "objectId": mine["object"]["objectId"],
+            "arguments": [{"objectId": under["object"]["objectId"]}], "returnByValue": True})
+        if (answer.get("result") or {}).get("value") is not True:
+            return None
+        since = time.monotonic()
+        self.clicks[target] = (since, backend)
+        await self.send(link, "Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y})
+        for kind in ("mousePressed", "mouseReleased"):
+            await self.send(link, "Input.dispatchMouseEvent",
+                            {"type": kind, "x": x, "y": y, "button": "left", "clickCount": 1})
+        while time.monotonic() - since < self.WAIT_S:
+            picker = self.waiting(target, since)
+            if picker is not None:
+                picker["told"] = True  # upload_file answers it now
+                return picker
+            await asyncio.sleep(0.1)
+        return None
+
+    async def drop(self, target, backend, path, site=None):
+        """Drop the file onto the element as a file dragged from the desktop is. Returns None once the page took
+        the drop, or why it was not dropped."""
+        link = self.links.get(target)
+        place = await self.point(link, backend) if link is not None else None
+        if place is None:
+            return "It has no visible place to drop a file on."
+        x, y = place
+        hit = await self.send(link, "DOM.getNodeForLocation",
+                              {"x": int(x), "y": int(y), "includeUserAgentShadowDOM": True})
+        described = await self.send(link, "DOM.describeNode", {"backendNodeId": hit["backendNodeId"]})
+        if (described.get("node") or {}).get("nodeName", "").upper() in self.WRAPPERS:
+            return "Another page is embedded where it is: a file is never dropped into it."
+        if site is not None and await self.frame_origin(link, hit.get("frameId")) != site:
+            return "Something of another site covers it: this file goes only to its bound HTTPS site."
+        watch = await self.send(link, "Runtime.evaluate", {
+            "expression": self.DRAG_WATCH, "contextId": await self.world(link, hit["frameId"], "bro-drop")})
+        watched = watch["result"]["objectId"]
+
+        async def prevented(done=False):
+            answer = await self.send(link, "Runtime.callFunctionOn", {
+                "functionDeclaration": "function (done) { return this(done); }", "objectId": watched,
+                "arguments": [{"value": done}], "returnByValue": True})
+            return answer.get("result", {}).get("value") or {}
+
+        data = {"items": [], "files": [path], "dragOperationsMask": self.DRAG_OPERATIONS}
+        try:
+            for kind in ("dragEnter", "dragOver"):
+                await self.send(link, "Input.dispatchDragEvent", {"type": kind, "x": x, "y": y, "data": data})
+            if not (await prevented()).get("dragover"):
+                await self.send(link, "Input.dispatchDragEvent", {"type": "dragCancel", "x": x, "y": y, "data": data})
+                return "The page takes no dropped file there."
+            await self.send(link, "Input.dispatchDragEvent", {"type": "drop", "x": x, "y": y, "data": data})
+            return None if (await prevented(True)).get("drop") else "The page did not take the dropped file."
+        finally:
+            with contextlib.suppress(Exception):
+                await prevented(True)
+
+
 def secret_cleaner(secrets):
     """A function that cuts every secret's value (three characters or longer) out of a text and folds its
     whitespace: what the worker writes or tells from a page passes through it."""
@@ -894,6 +1193,7 @@ class Run:
         self.messages = []
         self.cancel_requested = False
         self.agent = None
+        self.pickers = None  # FilePickers of its tabs, while it runs
         self.work = None  # the task working the run, while it does: a cut-off or a cancel stops it
         self.unread_messages = []  # messages queued into this run the agent never read (set once terminal)
         self.outcome = None  # (status, result, error) the run came to, while it still lets go of the browser
@@ -1334,46 +1634,151 @@ class Worker:
                 return "This browser upload is no longer valid."
             return None
 
+        async def field_origin(browser_session, file_input):
+            """The HTTPS origin of the frame that owns the file field, or None."""
+            with contextlib.suppress(Exception):
+                if file_input is not None and file_input.target_id:
+                    target_id = file_input.target_id
+                    owner = file_input
+                    while owner is not None and owner.target_id == target_id and not owner.frame_id:
+                        owner = owner.parent_node
+                    if owner is not None and owner.target_id == target_id and owner.frame_id:
+                        cdp = await browser_session.get_or_create_cdp_session(target_id=target_id, focus=False)
+                        tree = await cdp.cdp_client.send.Page.getFrameTree(session_id=cdp.session_id)
+                        pending = [tree.get("frameTree", {})]
+                        while pending:
+                            node = pending.pop()
+                            frame = node.get("frame", {})
+                            if frame.get("id") == owner.frame_id:
+                                return https_origin(frame.get("securityOrigin"), True)
+                            pending.extend(node.get("childFrames") or [])
+            return None
+
+        def file_pickers():
+            if run is None:
+                return None
+            if run.pickers is None:
+                run.pickers = FilePickers()
+            return run.pickers
+
         original_upload = tools.registry.registry.actions["upload_file"].function
 
         @functools.wraps(original_upload)
         async def upload_file(*args, params=None, browser_session=None, available_file_paths=None, **kwargs):
+            """A file goes in the way a person puts it there: into the file picker the page opened, into its file
+            field, through the picker its upload button opens, or dropped onto its drop zone."""
             refusal = upload_refusal(params.path, available_file_paths)
             if refusal:
                 return ActionResult(error=refusal)
+            # browser-use takes any path for a browser it did not start: the profile's cookies and logins too.
+            if session.workspace.resolve() not in Path(params.path).resolve().parents:
+                return ActionResult(error="Only a file this browser session was given or saved can go onto a page.")
+            site = None
             if private_upload_path(params.path):
-                record = session.upload_files()[params.path]
+                site = session.upload_files()[params.path]["site"]
                 origin = None
                 with contextlib.suppress(Exception):
                     origin = https_origin(await browser_session.get_current_page_url())
-                if origin != record["site"]:
+                if origin != site:
                     return ActionResult(error="This upload is only allowed on its bound HTTPS site.")
-                frame_origin = None
+            name = Path(params.path).name
+            pickers = file_pickers()
+            target = getattr(browser_session, "agent_focus_target_id", None)
+            ready = pickers is not None and isinstance(target, str) and await pickers.ready(target) is not None
+
+            async def chosen(picker, how):
+                refused = await pickers.choose(target, picker, params.path, site)
+                if refused:
+                    return ActionResult(error=refused)
+                text = (f"Chose {name} in the file picker the page opened {how}, as a person picks a file in "
+                        "that dialog. Look at the page to see that it shows the file.")
+                return ActionResult(extracted_content=text, long_term_memory=text)
+
+            selected = None
+            with contextlib.suppress(Exception):
+                selected = (await browser_session.get_selector_map()).get(params.index)
+            if selected is None:
+                return ActionResult(error=f"Element with index {params.index} does not exist.")
+            file_input = None
+            with contextlib.suppress(Exception):
+                file_input = browser_session.find_file_input_near_element(selected)
+            own_tab = ready and getattr(selected, "target_id", None) == target
+            # The agent clicked this upload button, and the picker it opened waits for a file. Only this
+            # element's: a form with two uploads (a passport, a photo) must not get one's file in the other.
+            waiting = pickers.waiting(target) if ready else None
+            related = {node.backend_node_id for node in (selected, file_input) if node is not None}
+            if waiting is not None and own_tab and (waiting.get("clicked") in related
+                                                    or waiting["backendNodeId"] in related):
                 with contextlib.suppress(Exception):
-                    selected = (await browser_session.get_selector_map()).get(params.index)
-                    file_input = browser_session.find_file_input_near_element(selected) if selected is not None else None
-                    if file_input is not None and file_input.target_id:
-                        target_id = file_input.target_id
-                        owner = file_input
-                        while owner is not None and owner.target_id == target_id and not owner.frame_id:
-                            owner = owner.parent_node
-                        if owner is not None and owner.target_id == target_id and owner.frame_id:
-                            cdp = await browser_session.get_or_create_cdp_session(target_id=target_id, focus=False)
-                            tree = await cdp.cdp_client.send.Page.getFrameTree(session_id=cdp.session_id)
-                            pending = [tree.get("frameTree", {})]
-                            while pending:
-                                node = pending.pop()
-                                frame = node.get("frame", {})
-                                if frame.get("id") == owner.frame_id:
-                                    frame_origin = https_origin(frame.get("securityOrigin"), True)
-                                    break
-                                pending.extend(node.get("childFrames") or [])
-                if frame_origin != record["site"]:
+                    return await chosen(waiting, "when you clicked its upload button")
+
+            if file_input is not None:
+                # browser-use's own way, as before: the field the element is or has beside it.
+                if site is not None and await field_origin(browser_session, file_input) != site:
                     return ActionResult(error="The selected file input must belong to the bound HTTPS site.")
-            return await original_upload(*args, params=params, browser_session=browser_session,
-                                         available_file_paths=available_file_paths, **kwargs)
+                result = await original_upload(*args, params=params, browser_session=browser_session,
+                                               available_file_paths=available_file_paths, **kwargs)
+                if file_input is not selected and not getattr(result, "error", None):
+                    with contextlib.suppress(Exception):
+                        result.extracted_content = f"{result.extracted_content or ''} {FIELD_SET}".strip()
+                return result
+            # No field until the button is pressed: click it as a person does, and pick the file in its picker.
+            clicked = own_tab
+            picker = None
+            if clicked:
+                with contextlib.suppress(Exception):
+                    picker = await pickers.click_open(target, selected.backend_node_id)
+                if picker is not None:
+                    with contextlib.suppress(Exception):
+                        return await chosen(picker, "when its upload button was clicked")
+            why = "It opened no file picker when clicked and has no file field."
+            if own_tab:
+                try:
+                    why = await pickers.drop(target, selected.backend_node_id, params.path, site) or ""
+                except Exception:
+                    why = "The file could not be dropped onto it."
+                if not why:
+                    if clicked:
+                        pickers.hush(target)
+                    text = (f"Dropped {name} onto element {params.index}, as a person drags a file from the desktop "
+                            "onto the page. Look at the page to see that it shows the file.")
+                    return ActionResult(extracted_content=text, long_term_memory=text)
+            return ActionResult(error=f"Element {params.index} took no file: {why} Give upload_file the index of the "
+                                      "page's own upload button, «Выбрать файл» link, drop zone or file field; when "
+                                      "it is the upload button, click it yourself, then call upload_file on it again.")
 
         tools.registry.registry.actions["upload_file"].function = upload_file
+        tools.registry.registry.actions["upload_file"].description = UPLOAD_DESCRIPTION
+
+        actions = tools.registry.registry.actions
+        original_click = actions["click"].function if "click" in actions else None
+
+        async def click(*args, params=None, browser_session=None, available_file_paths=None, **kwargs):
+            """A click that opened the page's file picker says so: nothing else on the page shows it, and the
+            native dialog it would have opened stays shut."""
+            pickers = file_pickers()
+            target = getattr(browser_session, "agent_focus_target_id", None)
+            ready = pickers is not None and isinstance(target, str) and await pickers.ready(target) is not None
+            if ready:
+                clicked = None
+                with contextlib.suppress(Exception):
+                    if getattr(params, "index", None) is not None:
+                        clicked = (await browser_session.get_selector_map())[params.index].backend_node_id
+                pickers.clicks[target] = (time.monotonic(), clicked)
+            result = await original_click(*args, params=params, browser_session=browser_session,
+                                          available_file_paths=available_file_paths, **kwargs)
+            # Its picker's event may come a moment later: then the next step is told (`notice`).
+            note = None
+            if ready and not getattr(result, "error", None):
+                note = pickers.notice(target, bool(available_file_paths))
+            if note:
+                with contextlib.suppress(Exception):
+                    result.extracted_content = f"{result.extracted_content or ''} {note}".strip()
+                    result.long_term_memory = f"{result.long_term_memory or ''} {note}".strip()
+            return result
+
+        if original_click is not None:
+            actions["click"].function = functools.wraps(original_click)(click)
         original_read = tools.registry.registry.actions["read_file"].function
 
         @functools.wraps(original_read)
@@ -1604,6 +2009,7 @@ class Worker:
 
         pending_messages = []  # this step's batch: folded back if the step is cut off before it finishes
         site_errors = SiteErrors()
+        run.pickers = pickers = FilePickers()
         trail = StepTrail(session.workspace / TRAIL / run.id, session.sensitive_data)
         with contextlib.suppress(Exception):
             await asyncio.to_thread(prune_trails, TRAIL_RUNS - 1)
@@ -1615,11 +2021,17 @@ class Worker:
             agent.available_file_paths = sorted(session.upload_files())
             # A tab the agent moved into (a link that opens one, its own `navigate` with `new_tab`) is listened to
             # from now on: the checkout it goes through there is the run's too.
+            focus = getattr(browser, "agent_focus_target_id", None)
             with contextlib.suppress(Exception):
-                focus = getattr(browser, "agent_focus_target_id", None)
-                if focus and not site_errors.watches(focus):
+                if focus and not (site_errors.watches(focus) and pickers.watches(focus)):
                     targets = {t["id"]: t for t in await page_targets()}
                     site_errors.start(targets[focus]["webSocketDebuggerUrl"], focus)
+                    pickers.start(targets[focus]["webSocketDebuggerUrl"], focus)
+            # A picker the last step's click opened after that click's answer was already in.
+            with contextlib.suppress(Exception):
+                note = pickers.notice(focus, bool(agent.available_file_paths)) if focus else None
+                if note:
+                    tell_agent(agent, note)
             # The site's refusals of what the last step sent: the next model call sees them, whatever the
             # page shows (it may show nothing and move on).
             with contextlib.suppress(Exception):
@@ -1670,10 +2082,13 @@ class Worker:
         with contextlib.suppress(Exception):
             targets = {t["id"]: t for t in await page_targets()}
             site_errors.start(targets[session.tab]["webSocketDebuggerUrl"], session.tab)
+            pickers.start(targets[session.tab]["webSocketDebuggerUrl"], session.tab)
         try:
             history = await agent.run(max_steps=max_steps, on_step_start=read_messages, on_step_end=step_ended)
         finally:
             await site_errors.stop()
+            await pickers.stop()
+            run.pickers = None
             # browser-use swallows an InterruptedError raised by `should_stop` mid-step (a cancel or the
             # deadline landing while the LLM call or an action was in flight) and returns normally, with
             # `agent.state.stopped` the only sign that the step which just read `pending_messages` never
@@ -3480,7 +3895,9 @@ site does not open, say so. Credentials and codes come as <secret>alias</secret>
 placeholder itself into the field; the browser types the real value only on the site it belongs to. A
 one-time code you are given goes in with the enter_code action, never digit by digit. A bank card form goes in
 with the fill_card action, never field by field; type a card secret yourself only into a field fill_card
-says it could not fill. A phone field that already shows a country code (+7) or a mask keeps it: type only
+says it could not fill. A file goes onto a page with the upload_file action, on the page's upload button, drop
+zone or file field, never with evaluate; when the page needs a file you were not given, do not make one: say
+which file it asks for. A phone field that already shows a country code (+7) or a mask keeps it: type only
 the digits after it, never the +7 or 8 again (for +7 921 781-88-76, type 9217818876). Read a form back after
 filling it: a phone with a doubled 7, extra digits or another country's flag was typed wrong, so type it again
 that way rather than hunting the country list. When a form's button seems to do nothing, read the errors the

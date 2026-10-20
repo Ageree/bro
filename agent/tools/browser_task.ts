@@ -565,6 +565,17 @@ function captchaLine() {
   ].join(" ");
 }
 
+/**
+ * A run with no file for the page's upload field made one up: on Product
+ * Radar (20.10) it fetched a picture and set it through DataTransfer in
+ * `evaluate`, the page never took it, and Bro told the person the site
+ * «блокирует загрузку файла программно». The worker attaches files the way a
+ * person does (`FilePickers` in `browser-vm/worker/worker.py`); a file it was
+ * not given is Bro's to supply, so the run says which one it needs.
+ */
+const fileUploadLine =
+  "A file the page asks for — a logo, a photo, a scan, a document — goes onto it only with the upload_file action, on the page's upload button, drop zone or file field, and only from the files you were given. Never make a file yourself or attach one with evaluate (fetch, DataTransfer, a data: URL): pages do not take it. When the page needs a file you were not given, do what else the errand allows and stop with NEEDS: file, saying in DETAILS what file it asks for — what it is, the formats, the size and the dimensions it allows.";
+
 const networkErrorNames =
   "ERR_NAME_NOT_RESOLVED, ERR_TUNNEL_CONNECTION_FAILED, ERR_PROXY_CONNECTION_FAILED, ERR_CONNECTION_RESET, ERR_CONNECTION_REFUSED, ERR_CONNECTION_TIMED_OUT, ERR_TIMED_OUT, ERR_EMPTY_RESPONSE or «This site can't be reached»";
 
@@ -1513,6 +1524,7 @@ export function composeBrowserTask(options: {
     rememberSignInLine,
     gosuslugiSignInRule(options.site, options.consent?.kind === "confirmed"),
     captchaLine(),
+    fileUploadLine,
     unreachableLine(options.consent !== undefined || options.allowPayment),
     imagesContract(options.collectImages),
     outcomeContract(),
@@ -1732,6 +1744,7 @@ export function composeBrowserContinuation(options: {
     rememberSignInLine,
     gosuslugiSignInRule(options.site, options.consent?.kind === "confirmed"),
     captchaLine(),
+    fileUploadLine,
     unreachableLine(options.consent !== undefined || options.allowPayment),
     imagesContract(options.collectImages),
     outcomeContract(),
