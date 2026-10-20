@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import * as z from "zod";
 import {
   findOnboardingRequest,
-  recordOnboardingRequest,
+  storeOnboardingLine,
 } from "@db/services/onboarding-requests";
 import {
   photonConfigured,
@@ -86,31 +86,33 @@ const signInCallerHash = createHash("sha256").update("sign-in").digest("hex");
  * The Bro line a signed-in phone writes to. Photon delivers an inbound
  * iMessage only from a phone registered as a project user («This number
  * didn't recognize yours»), so a person who signed in on the web is
- * registered here, once, and gets the number Photon bound them to — not the
+ * registered here and gets the number Photon bound them to — not the
  * deployment's `IMESSAGE_PHONE_NUMBER`, which can name a line they are not
- * on. Undefined when Photon is not configured or does not answer: the caller
- * falls back to the deployment's number.
+ * on. Photon is asked every time (it answers the same user for a phone):
+ * rows the Convex import stored named lines of an earlier project (20.10,
+ * the cabinet still linked +1 415). The stored line is kept for a Photon
+ * that does not answer; undefined then means the deployment's number.
  */
 export async function photonLineFor(phoneNumber: string) {
   if (!photonConfigured()) return undefined;
   try {
-    const stored = await findOnboardingRequest(phoneNumber);
-    if (stored) return stored.assignedPhoneNumber;
     const assignedPhoneNumber = await createPhotonSharedUser(
       phoneNumber,
-      AbortSignal.timeout(8000)
+      AbortSignal.timeout(5000)
     );
-    return await recordOnboardingRequest({
+    await storeOnboardingLine({
       assignedPhoneNumber,
       ipHash: signInCallerHash,
       phoneNumber,
     });
+    return assignedPhoneNumber;
   } catch (error) {
     // Nothing about the number goes to the log.
     console.warn("[photon] the line for a signed-in phone was not resolved", {
       error: error instanceof Error ? error.name : "unknown",
       message: error instanceof PhotonUserError ? error.message : undefined,
     });
-    return undefined;
+    return (await findOnboardingRequest(phoneNumber).catch(() => undefined))
+      ?.assignedPhoneNumber;
   }
 }

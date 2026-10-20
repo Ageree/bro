@@ -5,7 +5,7 @@ import type {
 } from "@shared/photon/credentials";
 import type {
   findOnboardingRequest,
-  recordOnboardingRequest,
+  storeOnboardingLine,
 } from "@db/services/onboarding-requests";
 import {
   createPhotonSharedUser,
@@ -16,7 +16,7 @@ const mocks = vi.hoisted(() => ({
   findOnboardingRequest: vi.fn<typeof findOnboardingRequest>(),
   photonConfigured: vi.fn<typeof photonConfigured>(),
   photonProjectCredentials: vi.fn<typeof photonProjectCredentials>(),
-  recordOnboardingRequest: vi.fn<typeof recordOnboardingRequest>(),
+  storeOnboardingLine: vi.fn<typeof storeOnboardingLine>(),
 }));
 
 vi.mock("@shared/photon/credentials", () => ({
@@ -26,7 +26,7 @@ vi.mock("@shared/photon/credentials", () => ({
 
 vi.mock("@db/services/onboarding-requests", () => ({
   findOnboardingRequest: mocks.findOnboardingRequest,
-  recordOnboardingRequest: mocks.recordOnboardingRequest,
+  storeOnboardingLine: mocks.storeOnboardingLine,
 }));
 
 const fetchMock = vi.fn<typeof fetch>();
@@ -99,13 +99,10 @@ describe("Photon shared users", () => {
 });
 
 describe("the line of a signed-in phone", () => {
-  it("registers a phone Photon does not know and keeps its line", async () => {
+  it("registers the phone and keeps the line Photon answered", async () => {
     // Photon delivered nothing from a phone that signed in on the web: it
     // was never a project user, and the cabinet linked another line.
-    mocks.findOnboardingRequest.mockResolvedValue(undefined);
-    mocks.recordOnboardingRequest.mockImplementation(async (request) =>
-      Promise.resolve(request.assignedPhoneNumber)
-    );
+    mocks.storeOnboardingLine.mockResolvedValue(undefined);
     fetchMock.mockResolvedValue(
       Response.json({
         data: { assignedPhoneNumber: "+16465792868", id: "user-2" },
@@ -114,15 +111,40 @@ describe("the line of a signed-in phone", () => {
     );
 
     await expect(photonLineFor("+79991234567")).resolves.toBe("+16465792868");
-    expect(mocks.recordOnboardingRequest).toHaveBeenCalledExactlyOnceWith(
+    expect(mocks.storeOnboardingLine).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({
         assignedPhoneNumber: "+16465792868",
         phoneNumber: "+79991234567",
       })
     );
+    expect(mocks.findOnboardingRequest).not.toHaveBeenCalled();
   });
 
-  it("reuses the stored line without asking Photon again", async () => {
+  it("answers Photon's line over one an earlier project stored", async () => {
+    // 20.10: the Convex import's row named +1 415, a line of an earlier
+    // project, and the cabinet kept linking it.
+    mocks.findOnboardingRequest.mockResolvedValue({
+      assignedPhoneNumber: "+14155796445",
+      createdAt: new Date(),
+      ipHash: "hash",
+      phoneNumber: "+79991234567",
+    });
+    mocks.storeOnboardingLine.mockResolvedValue(undefined);
+    fetchMock.mockResolvedValue(
+      Response.json({
+        data: { assignedPhoneNumber: "+16282649335", id: "user-1" },
+        succeed: true,
+      })
+    );
+
+    await expect(photonLineFor("+79991234567")).resolves.toBe("+16282649335");
+  });
+
+  it("keeps the stored line while Photon refuses, and nothing without one", async () => {
+    fetchMock.mockResolvedValue(
+      Response.json({ message: "limit", succeed: false }, { status: 402 })
+    );
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
     mocks.findOnboardingRequest.mockResolvedValue({
       assignedPhoneNumber: "+16282649335",
       createdAt: new Date(),
@@ -131,17 +153,9 @@ describe("the line of a signed-in phone", () => {
     });
 
     await expect(photonLineFor("+79991234567")).resolves.toBe("+16282649335");
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
+    expect(mocks.storeOnboardingLine).not.toHaveBeenCalled();
 
-  it("leaves the deployment's number to the caller when Photon refuses", async () => {
     mocks.findOnboardingRequest.mockResolvedValue(undefined);
-    fetchMock.mockResolvedValue(
-      Response.json({ message: "limit", succeed: false }, { status: 402 })
-    );
-    vi.spyOn(console, "warn").mockImplementation(() => undefined);
-
     await expect(photonLineFor("+79991234567")).resolves.toBeUndefined();
-    expect(mocks.recordOnboardingRequest).not.toHaveBeenCalled();
   });
 });
