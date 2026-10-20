@@ -174,8 +174,20 @@ describe("the food operations", () => {
       ),
       { limit: 10, query: "молоко" }
     );
-    expect(data).toMatchObject({ found: 2 });
-    expect(JSON.stringify(data)).toContain('"price":91');
+    expect(data).toMatchObject({
+      found: 2,
+      products: [
+        // An old price no higher than the price is no discount.
+        {
+          image:
+            "https://avatars.mds.yandex.net/get-grocery-goods/1/test-milk/600x600",
+          oldPrice: null,
+          price: 91,
+        },
+        // A photo off Yandex's image CDN is not passed on.
+        { image: null, oldPrice: 159, price: 139 },
+      ],
+    });
   });
 
   it("reads a place's menu with its delivery terms", async () => {

@@ -51,6 +51,7 @@ import {
   taskFilesAttachmentLimits,
   type OutboundFile,
 } from "@agent/lib/outbound-media/attachments";
+import { flattenedPng } from "@agent/lib/outbound-media/flatten";
 import { startedByPerson } from "@agent/lib/mode";
 import {
   askRouterAboutNext,
@@ -899,13 +900,26 @@ async function uploadMedia(
   uploads: readonly OutboundFile[]
 ) {
   const undelivered: string[] = [];
-  // `sendPhoto` answers a photo past its limit with 413, which is no
-  // rejection worth a retry as a document (`sendFile`), so it goes as one.
-  const files = uploads.map((file) =>
-    file.kind === "photo" && file.data.byteLength > telegramPhotoBytes
-      ? { ...file, kind: "document" as const }
-      : file
-  );
+  const files: OutboundFile[] = [];
+  // One at a time: a redrawn photo holds its pixels several times over.
+  for (const file of uploads) {
+    // `sendPhoto` answers a photo past its limit with 413, which is no
+    // rejection worth a retry as a document (`sendFile`), so it goes as one.
+    if (file.kind === "photo" && file.data.byteLength > telegramPhotoBytes) {
+      files.push({ ...file, kind: "document" });
+      continue;
+    }
+    // Telegram's JPEG has no transparency: a cut-out goes on white.
+    const flat =
+      file.kind === "photo" && file.mimeType === "image/png"
+        ? await flattenedPng(file.data).catch(() => undefined)
+        : undefined;
+    files.push(
+      flat && flat.byteLength <= telegramPhotoBytes
+        ? { ...file, data: flat }
+        : file
+    );
+  }
   const separate = files.filter((file) => !isAlbumFile(file));
   const individual: OutboundFile[] = [];
   for (const album of albums(files.filter((file) => isAlbumFile(file)))) {

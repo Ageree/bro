@@ -1045,6 +1045,11 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
 
 ## Яндекс Еда
 
+- Фото товаров Лавки (20.10): `food.lavka_search` отдаёт `image` — шаблон `snippetImage.url`
+  (`avatars.mds.yandex.net/…/{w}x{h}`) в 600×600 (есть не все размеры: 640 — 404); CDN отвечает
+  без cookies, а страницу Лавки `find_images` с сервера не открывает (капча). Это PNG с
+  прозрачным фоном и чёрным под ним: перед `sendPhoto` Telegram-канал кладёт такой PNG на белый
+  (`agent/lib/outbound-media/flatten.ts`). Старая цена — `oldPrice`, поля `fullPrice` в ответе нет.
 - Корзина Еды: `add_bulk` прибавляет количество к блюду, уже лежащему в корзине; менять его — PUT `/api/v1/cart/<id позиции>`. Чтение корзины видит позиции только с `soft_multi=true` в query (`agent/lib/yandex/food/cart.ts`, `food.eda_cart_set`).
 - Ссылку банка (3-D Secure) открывает только человек: открытие её в браузере
   Бро (12.10, проба) тратит сессию банка, вторая — «Invalid request», и Лавка
