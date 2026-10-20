@@ -651,6 +651,55 @@ describe("calling a function in a page over CDP", () => {
     });
   }, 25_000);
 
+  it("tells a page the network did not carry from one that failed on its own", async () => {
+    // 20.10 the owner's sticky exit died: every page failed with
+    // ERR_TUNNEL_CONNECTION_FAILED, and Lavka's search said only «failed».
+    const call = async (page: CdpBrowserFixture["page"]) => {
+      const fixture = await fake({ injections: {}, page, sessions: {} });
+      try {
+        return await callInPageOverCdp(fixture.url, {
+          argument: {},
+          fn: "async function () { return 1; }",
+          loaded: "complete",
+          runOn: () => true,
+          url: "https://lavka.yandex.ru/robots.txt",
+        });
+      } catch (error) {
+        return error;
+      }
+    };
+    const lavka = "https://lavka.yandex.ru/robots.txt";
+
+    expect(
+      await call({
+        navigationError: "net::ERR_TUNNEL_CONNECTION_FAILED",
+        url: "chrome-error://chromewebdata/",
+      })
+    ).toMatchObject({ name: "PageUnreachableError", ran: false });
+    expect(
+      await call({
+        thrown: {
+          className: "TypeError",
+          description: "TypeError: Failed to fetch\n    at lavkaPage",
+        },
+        url: lavka,
+      })
+    ).toMatchObject({ name: "PageUnreachableError", ran: true });
+    // A certificate or a redirect loop is the site's, and so is its own error.
+    expect(
+      await call({
+        navigationError: "net::ERR_TOO_MANY_REDIRECTS",
+        url: "chrome-error://chromewebdata/",
+      })
+    ).toEqual({ ran: true, url: "chrome-error://chromewebdata/", value: null });
+    expect(
+      await call({
+        thrown: { className: "Error", description: "Error: http 500" },
+        url: lavka,
+      })
+    ).toMatchObject({ message: "The page's call failed." });
+  }, 15_000);
+
   it("runs nothing in a page it was not meant to land on", async () => {
     const fixture = await fake({
       injections: {},

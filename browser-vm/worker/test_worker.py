@@ -147,6 +147,7 @@ class ForwarderTest(unittest.IsolatedAsyncioTestCase):
         server.close()
         self.assertTrue(answer.startswith(b"HTTP/1.1 502"))
         self.assertEqual(forwarder.totals["refused"], 1)
+        self.assertEqual(forwarder.tunnels["failed"], 0)  # no exit to blame yet
 
     async def test_adds_the_login_for_the_upstream(self):
         seen = []
@@ -176,7 +177,8 @@ class ForwarderTest(unittest.IsolatedAsyncioTestCase):
 
     async def tunnel_through(self, answers):
         """Opens one CONNECT through a forwarder whose upstream answers each attempt with the next of
-        `answers`; returns what the client read and how many times the upstream was asked."""
+        `answers`; returns what the client read, how many times the upstream was asked and the forwarder's
+        count of tunnels."""
         asked = []
 
         async def upstream(reader, writer):
@@ -208,28 +210,135 @@ class ForwarderTest(unittest.IsolatedAsyncioTestCase):
         writer.close()
         server.close()
         up.close()
-        return head, echoed, len(asked)
+        return head, echoed, len(asked), forwarder.tunnels
 
     async def test_asks_again_when_the_proxy_fails_to_open_the_tunnel(self):
         # 14.10: the residential proxy answered 500 to about every other request, and each one reached Chrome
         # as ERR_TUNNEL_CONNECTION_FAILED, reloading the site's form.
-        head, echoed, asked = await self.tunnel_through([
+        head, echoed, asked, tunnels = await self.tunnel_through([
             b"HTTP/1.1 500 Internal Server Error\r\n\r\n",
             b"HTTP/1.1 200 Connection established\r\n\r\n",
         ])
         self.assertTrue(head.startswith(b"HTTP/1.1 200"))
         self.assertEqual(echoed, b"hello")
         self.assertEqual(asked, 2)
+        self.assertEqual((tunnels["succeeded"], tunnels["failed"]), (1, 0))  # a try the next one mended is no failure
 
     async def test_hands_a_refused_login_to_chrome_at_once(self):
-        head, _, asked = await self.tunnel_through([b"HTTP/1.1 407 Proxy Authentication Required\r\n\r\n"])
+        with self.assertLogs("bro-worker", "WARNING"):
+            head, _, asked, tunnels = await self.tunnel_through([b"HTTP/1.1 407 Proxy Authentication Required\r\n\r\n"])
         self.assertTrue(head.startswith(b"HTTP/1.1 407"))
         self.assertEqual(asked, 1)
+        self.assertEqual((tunnels["failing"], tunnels["lastStatus"], tunnels["failed"]), (1, 407, 1))
 
     async def test_gives_up_after_the_last_try(self):
-        head, _, asked = await self.tunnel_through([b"HTTP/1.1 568 Internal Server Error\r\n\r\n"])
+        with self.assertLogs("bro-worker", "WARNING") as logs:
+            head, _, asked, tunnels = await self.tunnel_through([b"HTTP/1.1 568 Internal Server Error\r\n\r\n"])
         self.assertTrue(head.startswith(b"HTTP/1.1 568"))
         self.assertEqual(asked, worker.TUNNEL_ATTEMPTS)
+        # The tries of one tunnel are one failure, and the line names neither the site nor the login.
+        self.assertEqual((tunnels["failing"], tunnels["lastStatus"], tunnels["failed"]), (1, 568, 1))
+        self.assertAlmostEqual(tunnels["lastFailure"], time.monotonic(), delta=5)
+        self.assertEqual(logs.output, ["WARNING:bro-worker:forwarder: tunnel failed status=568 failing=1"])
+
+    async def proxy_answering(self, answers):
+        """A forwarder set to a residential proxy that answers each CONNECT with the next of `answers` (the
+        last repeats; b"" hangs up), and a function that opens one tunnel through it and returns the status
+        Chrome got."""
+
+        async def upstream(reader, writer):
+            await reader.readuntil(b"\r\n\r\n")
+            writer.write(answers.pop(0) if len(answers) > 1 else answers[0])
+            await writer.drain()
+            writer.close()
+
+        up = await asyncio.start_server(upstream, "127.0.0.1", 0)
+        self.addCleanup(up.close)
+        forwarder = worker.Forwarder()
+        forwarder.configure({"host": "127.0.0.1", "port": up.sockets[0].getsockname()[1], "username": "u",
+                             "password": "p"})
+        server = await asyncio.start_server(forwarder.handle, "127.0.0.1", 0)
+        self.addCleanup(server.close)
+        self.enterContext(mock.patch.object(worker, "TUNNEL_RETRY_PAUSE_S", 0))
+
+        async def connect():
+            reader, writer = await asyncio.open_connection("127.0.0.1", server.sockets[0].getsockname()[1])
+            writer.write(b"CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n")
+            await writer.drain()
+            head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 5)
+            writer.close()
+            return worker.answer_status(head)
+
+        return forwarder, connect
+
+    async def test_a_tunnel_that_opens_ends_the_run_of_failures(self):
+        failure = b"HTTP/1.1 503 Service Unavailable\r\n\r\n"
+        forwarder, connect = await self.proxy_answering([*[failure] * 2 * worker.TUNNEL_ATTEMPTS,
+                                                         b"HTTP/1.1 200 Connection established\r\n\r\n"])
+        with self.assertLogs("bro-worker", "WARNING") as logs:
+            self.assertEqual([await connect(), await connect()], [503, 503])
+        self.assertEqual(logs.output, ["WARNING:bro-worker:forwarder: tunnel failed status=503 failing=1"])
+        self.assertEqual(await connect(), 200)
+        self.assertEqual({k: v for k, v in forwarder.tunnels.items() if k != "lastFailure"},
+                         {"failing": 0, "lastStatus": 503, "succeeded": 1, "failed": 2})
+
+    async def test_a_proxy_that_answers_nothing_fails_the_tunnel_with_the_workers_502(self):
+        forwarder, connect = await self.proxy_answering([b""])  # hangs up on every try
+        with self.assertLogs("bro-worker", "WARNING"):
+            self.assertEqual(await connect(), 502)
+        self.assertEqual((forwarder.tunnels["failing"], forwarder.tunnels["lastStatus"]), (1, 502))
+        # Gone altogether: nothing listens where the proxy was.
+        closed = await asyncio.start_server(lambda reader, writer: None, "127.0.0.1", 0)
+        forwarder.upstream = ("127.0.0.1", closed.sockets[0].getsockname()[1], None)
+        closed.close()
+        await closed.wait_closed()
+        with self.assertNoLogs("bro-worker", "WARNING"):  # only the first, the third and every fiftieth
+            self.assertEqual(await connect(), 502)
+        self.assertEqual((forwarder.tunnels["failing"], forwarder.tunnels["lastStatus"]), (2, 502))
+
+    def test_a_dead_exit_logs_its_failures_sparingly(self):
+        # A dead exit fails Chrome's tunnels several a second, and `host.py logs` keeps 2000 lines.
+        forwarder = worker.Forwarder()
+        forwarder.configure({"host": "proxy.example", "port": 1, "username": "u", "password": "p"})
+        with self.assertLogs("bro-worker", "WARNING") as logs:
+            for _ in range(100):
+                forwarder.count_tunnel(forwarder.upstream, 502)
+        self.assertEqual([line.rsplit("=", 1)[1] for line in logs.output], ["1", "3", "50", "100"])
+        self.assertEqual(forwarder.tunnel_health()["failing"], 100)
+
+    async def test_a_new_upstream_starts_clean(self):
+        release = asyncio.Event()
+        asked = asyncio.Event()
+
+        async def upstream(reader, writer):
+            await reader.readuntil(b"\r\n\r\n")
+            asked.set()
+            await release.wait()
+            writer.write(b"HTTP/1.1 502 Bad Gateway\r\n\r\n")
+            await writer.drain()
+            writer.close()
+
+        forwarder, connect = await self.proxy_answering([b"HTTP/1.1 407 Proxy Authentication Required\r\n\r\n"])
+        with self.assertLogs("bro-worker", "WARNING"):
+            await connect()
+        proxy = {"host": "127.0.0.1", "port": forwarder.upstream[1], "username": "u", "password": "p"}
+        forwarder.configure(proxy)  # POST /v1/session: the same login, a fresh exit
+        self.assertEqual(forwarder.tunnels,
+                         {"failing": 0, "lastStatus": None, "lastFailure": None, "succeeded": 0, "failed": 0})
+        with self.assertLogs("bro-worker", "WARNING"):
+            await connect()
+        forwarder.drop()  # park
+        self.assertEqual((forwarder.tunnels["failing"], forwarder.tunnels["failed"]), (0, 0))
+        # A tunnel asked of the exit before the next one was set does not count against the next one.
+        slow = await asyncio.start_server(upstream, "127.0.0.1", 0)
+        self.addCleanup(slow.close)
+        forwarder.configure({**proxy, "port": slow.sockets[0].getsockname()[1]})
+        pending = asyncio.create_task(connect())
+        await asyncio.wait_for(asked.wait(), 5)
+        forwarder.configure(proxy)
+        release.set()
+        self.assertEqual(await pending, 502)
+        self.assertEqual(forwarder.tunnels["failed"], 0)
 
     async def test_drop_closes_the_tunnels_that_carry_the_login(self):
         held = asyncio.Event()
@@ -1851,6 +1960,16 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("memoryMb", details)
         self.assertEqual(len(walks), 1)  # the minute's second answer reuses the walk
         self.assertNotEqual(walks[0], threading.get_ident())  # not on the loop the forwarder shares
+
+    async def test_health_says_whether_the_exit_still_opens_tunnels(self):
+        forwarder = self.worker.forwarder
+        with self.assertLogs("bro-worker", "WARNING"):
+            for status in (200, 502, 502):
+                forwarder.count_tunnel(forwarder.upstream, status)
+        tunnel = (await (await self.client.get("/v1/health")).json())["tunnel"]
+        self.assertEqual({k: v for k, v in tunnel.items() if k != "sinceLastFailure"},
+                         {"failing": 2, "lastStatus": 502})
+        self.assertGreaterEqual(tunnel["sinceLastFailure"], 0)
 
     async def test_an_exit_whose_megabyte_did_not_come_through_keeps_its_address(self):
         ipinfo = {"ip": "95.24.1.1", "city": "Moscow", "region": "Moscow", "country": "RU", "org": "AS8402"}

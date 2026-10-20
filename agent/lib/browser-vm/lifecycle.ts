@@ -132,6 +132,14 @@ const exitCheckMs = 30 * 60_000;
 /** Sticky sessions tried after the first on a proxy, for an exit inside Russia. */
 const exitRotations = 3;
 /**
+ * Chrome's tunnels in a row the proxy did not open before the exit counts as
+ * dead (the worker's health): a site that is down fails only its own, and
+ * any tunnel that opens starts the count again.
+ */
+const deadExitTunnels = 3;
+/** ...the last of them no longer ago than this. */
+const deadExitWindowSeconds = 300;
+/**
  * Every errand waits on the same exit, so it is tried again after this. Five
  * minutes held the owner's errand 14.10 while the proxy's 500s were gone a
  * minute later.
@@ -543,54 +551,78 @@ export async function prepareBrowserVmSession(
   now = new Date(),
   options: Parameters<typeof prepareAfterWarmUp>[2] = {}
 ) {
-  // A warm-up may be checking the exit right now: running a second check
-  // beside it would point the worker at two sessions at once. Wait for it
-  // and go on from what it left.
-  const warming = exitWarmUps.get(vm.workspaceId);
-  if (warming === undefined) return prepareAfterWarmUp(vm, now, options);
-  await warming;
-  return prepareAfterWarmUp(
-    (await readBrowserVm(vm.workspaceId)) ?? vm,
-    now,
-    options
+  // A warm-up or another errand may be checking the exit right now: a second
+  // check beside it would point the worker at two sessions at once, and the
+  // record could name the other one. Wait for it and go on from what it left.
+  return oneExitCheckAtATime(vm.workspaceId, async (waited) =>
+    prepareAfterWarmUp(
+      waited ? ((await readBrowserVm(vm.workspaceId)) ?? vm) : vm,
+      now,
+      options
+    )
   );
 }
 
 /**
- * Exit checks a person's message started (`warmBrowserVmExit`), by
- * workspace: one eve serves the world's base, so one process sees them all.
+ * The exit preparations of each workspace, each after the one before: one
+ * eve serves the world's base, so one process sees them all.
  */
-const exitWarmUps = new Map<string, Promise<void>>();
+const exitChecks = new Map<string, Promise<undefined>>();
+
+/** Workspaces whose person's message already has a warm-up of the exit. */
+const exitWarmUps = new Set<string>();
+
+/** `check` once the workspace's earlier exit preparations are over. */
+async function oneExitCheckAtATime<T>(
+  workspaceId: string,
+  check: (waited: boolean) => Promise<T>
+) {
+  const before = exitChecks.get(workspaceId);
+  const { promise: done, resolve } = Promise.withResolvers<undefined>();
+  const mine = before === undefined ? done : before.then(async () => done);
+  exitChecks.set(workspaceId, mine);
+  try {
+    if (before !== undefined) await before;
+    return await check(before !== undefined);
+  } finally {
+    resolve(undefined);
+    if (exitChecks.get(workspaceId) === mine) exitChecks.delete(workspaceId);
+  }
+}
 
 /**
  * Check the exit of a person's ready browser as soon as they write, beside
  * the model's first step, so the errand that may follow finds it fresh
  * (`exitCheckMs`) instead of waiting 7–10 s on the check itself (owner,
- * 14.10). The person's own turn rules hold: the first Russian exit is taken
- * however slow. A browser busy with a run, or holding a kept page, is left
- * as it is (`prepareAfterWarmUp`). Never throws.
+ * 14.10), and a fresh exit the worker saw stop carrying Chrome is checked
+ * the same way. The person's own turn rules hold: the first Russian exit is
+ * taken however slow. A browser busy with a run, or holding a kept page, is
+ * left as it is (`prepareAfterWarmUp`). Never throws.
  */
 export async function warmBrowserVmExit(workspaceId: string, now = new Date()) {
   if (exitWarmUps.has(workspaceId)) return;
-  const warming = (async () => {
-    try {
+  exitWarmUps.add(workspaceId);
+  try {
+    await oneExitCheckAtATime(workspaceId, async () => {
       const vm = await readBrowserVm(workspaceId);
       if (vm?.state !== "ready") return;
       const checkedAt =
         vm.proxyExit === null ? Number.NaN : Date.parse(vm.proxyExit.at);
-      if (checkedAt > now.getTime() - exitCheckMs) return;
+      if (checkedAt > now.getTime() - exitCheckMs) {
+        // A fresh check is trusted unless the worker saw the exit die since.
+        const health = await readBrowserVmWorkerHealth(vm).catch(
+          () => undefined
+        );
+        if (health === undefined || !exitStoppedCarrying(health)) return;
+      }
       await prepareAfterWarmUp(vm, now, { inTurn: true });
-    } catch (error) {
-      // The errand checks the exit again by itself.
-      console.warn("[browser-vm] the exit could not be warmed up", {
-        error: error instanceof Error ? error.name : null,
-        workspaceId,
-      });
-    }
-  })();
-  exitWarmUps.set(workspaceId, warming);
-  try {
-    await warming;
+    });
+  } catch (error) {
+    // The errand checks the exit again by itself.
+    console.warn("[browser-vm] the exit could not be warmed up", {
+      error: error instanceof Error ? error.name : null,
+      workspaceId,
+    });
   } finally {
     exitWarmUps.delete(workspaceId);
   }
@@ -602,6 +634,7 @@ async function prepareAfterWarmUp(
   {
     freshExit = false,
     inTurn = false,
+    renewExit = false,
     rotate = true,
   }: {
     readonly freshExit?: boolean;
@@ -611,6 +644,8 @@ async function prepareAfterWarmUp(
      * errand queues for the poller to finish it.
      */
     readonly inTurn?: boolean;
+    /** A page of the browser could not reach its site through this exit. */
+    readonly renewExit?: boolean;
     readonly rotate?: boolean;
   } = {}
 ) {
@@ -619,10 +654,34 @@ async function prepareAfterWarmUp(
   if (health.busy) {
     return health.proxy ? vm : routeThroughRussia(vm, now, { rotations: 0 });
   }
+  // A page that could not reach its site, or the worker seeing the proxy fail
+  // Chrome's tunnels in a row, puts the exit in doubt: it is checked again
+  // now, however fresh its last check, and moved only when that check fails
+  // — then even under a kept page or for a follow-up, whose page has no
+  // network either. 20.10 the owner's sticky exit died, every Yandex call
+  // failed on it, and only a message of theirs that happened to find the
+  // check stale moved it. A person waits on most of these paths, so the
+  // search stops as a turn's does.
+  const doubted = renewExit || exitStoppedCarrying(health);
+  if (doubted) {
+    console.warn("[browser-vm] the exit stopped carrying the browser", {
+      failing: health.tunnel?.failing ?? null,
+      lastStatus: health.tunnel?.lastStatus ?? null,
+      renewExit,
+      workspaceId: vm.workspaceId,
+    });
+  }
+  const doubtedUntil = searchUntil ?? Date.now() + turnExitBudgetMs;
   const movable =
     (rotate || freshExit) &&
     (await listWorkspacesHoldingBrowsers([vm.workspaceId], now)).length === 0;
   if (!movable) {
+    if (doubted) {
+      return routeThroughRussia(vm, now, {
+        rotations: exitRotations,
+        searchUntil: doubtedUntil,
+      });
+    }
     return health.proxy && vm.proxyExit !== null
       ? vm
       : routeThroughRussia(vm, now, { rotations: 0 });
@@ -649,11 +708,31 @@ async function prepareAfterWarmUp(
   }
   const checkedAt =
     vm.proxyExit === null ? Number.NaN : Date.parse(vm.proxyExit.at);
-  if (health.proxy && checkedAt > now.getTime() - exitCheckMs) return vm;
+  if (!doubted && health.proxy && checkedAt > now.getTime() - exitCheckMs) {
+    return vm;
+  }
   return routeThroughRussia(vm, now, {
     rotations: exitRotations,
-    searchUntil,
+    searchUntil: doubted ? doubtedUntil : searchUntil,
   });
+}
+
+/**
+ * The worker saw the proxy fail Chrome's tunnels `deadExitTunnels` in a row,
+ * the last of them lately: an old run of failures says nothing of the exit
+ * now (a page left on a dead site keeps it until a tunnel opens).
+ */
+function exitStoppedCarrying(
+  health: Awaited<ReturnType<typeof readBrowserVmWorkerHealth>>
+) {
+  const { tunnel } = health;
+  return (
+    health.proxy &&
+    tunnel !== undefined &&
+    tunnel.failing >= deadExitTunnels &&
+    tunnel.sinceLastFailure !== null &&
+    tunnel.sinceLastFailure <= deadExitWindowSeconds
+  );
 }
 
 /**

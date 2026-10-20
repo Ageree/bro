@@ -107,7 +107,14 @@ export interface CdpBrowserFixture {
     readonly answer?: z.infer<ReturnType<typeof z.json>>;
     /** How long the called function runs before it answers. */
     readonly answerAfterMs?: number;
+    /** Chrome's error for a navigation the network did not carry. */
+    readonly navigationError?: string;
     readonly password?: boolean;
+    /** What the called function throws instead of answering. */
+    readonly thrown?: {
+      readonly className: string;
+      readonly description: string;
+    };
     /**
      * Documents the page asks for after `Page.navigate` — a redirect, an
      * embedded frame — each paused for the client once `Fetch.enable` is on.
@@ -327,8 +334,14 @@ export async function startFakeCdpBrowser(
     if (method === "Runtime.evaluate" && params.expression === "globalThis") {
       return { result: { objectId: "global-1" } };
     }
+    if (method === "Page.navigate" && fixture.page?.navigationError) {
+      return { errorText: fixture.page.navigationError, frameId: "top" };
+    }
     if (method === "Runtime.callFunctionOn") {
-      return { result: { value: fixture.page?.answer ?? null } };
+      const thrown = fixture.page?.thrown;
+      return thrown === undefined
+        ? { result: { value: fixture.page?.answer ?? null } }
+        : { exceptionDetails: { exception: thrown, text: "Uncaught" } };
     }
     if (method === "Input.insertText") {
       // Typed text goes to the field focused last on the session it was sent
