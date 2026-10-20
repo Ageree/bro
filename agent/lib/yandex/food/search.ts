@@ -116,7 +116,7 @@ export const edaSearchOperation = defineYandexOperation({
  */
 export const lavkaSearchOperation = defineYandexOperation({
   about:
-    "Search Yandex Lavka grocery products for a text, at the delivery address chosen in the person's Lavka account. Arguments: query (text), limit (1-20, default 10). Each product's image is the direct HTTPS URL of its photo: to show the products, attach the images of up to 10 of them (kind image, skipping a product whose image is null) to one send_message whose text lists those same products, numbered in the same order; Lavka's pages do not open for find_images.",
+    "Search Yandex Lavka grocery products for a text, at the delivery address chosen in the person's Lavka account. Arguments: query (text), limit (1-20, default 10). Each product's image is the direct HTTPS URL of its photo: to show the products, attach the images of up to 10 of them (kind image, skipping a product whose image is null) to one send_message whose text lists those same products, numbered in the same order, and holds no image URL itself (no ![…](…), which Telegram shows as a bare link): that one message is the answer, sent once; Lavka's pages do not open for find_images.",
   access: "read",
   args: z.object({
     limit: z.number().int().min(1).max(20).default(10),

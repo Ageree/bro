@@ -50,6 +50,12 @@ const attachmentSchema = z.object({
 
 export type MessageAttachment = z.infer<typeof attachmentSchema>;
 
+/**
+ * Ten is the Telegram album limit, the narrowest cap of the channels that
+ * upload attachments natively.
+ */
+export const maximumMessageAttachments = 10;
+
 const nativeLinkSchema = z.url().max(2048).refine(isHttpsUrl, {
   message: "Native links must use HTTPS.",
 });
@@ -67,9 +73,11 @@ const messageOutputSchema = z
     kind: z.literal("message"),
     replyTo: replyReferenceSchema.optional(),
     text: z.string().trim().min(1).max(20_000).optional(),
-    // Ten is the Telegram album limit, the narrowest cap of the channels
-    // that upload attachments natively.
-    attachments: z.array(attachmentSchema).min(1).max(10).optional(),
+    attachments: z
+      .array(attachmentSchema)
+      .min(1)
+      .max(maximumMessageAttachments)
+      .optional(),
   })
   .superRefine((message, context) => {
     if (!message.text && !message.attachments) {
