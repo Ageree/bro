@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { spokenText } from "./retell";
+import { asksPerson, spokenText } from "./retell";
 
 describe("Bro's message as the voice gets it", () => {
   it("keeps the words of links and drops pictures, addresses and markup", () => {
@@ -15,5 +15,17 @@ describe("Bro's message as the voice gets it", () => {
 
     expect(text.length).toBeLessThan(1300);
     expect(text).toMatch(/\(дальше — в чате\)$/u);
+  });
+
+  it("knows a message that waits on the person's answer, wherever the question stands", () => {
+    // 20.10: «Что берём?» stood mid-message, and the owner's choice never
+    // reached Bro.
+    expect(
+      asksPerson(
+        "Нашёл: филе индейки, 589 ₽. Что берём? Могу и то и другое, домой на Мичуринский."
+      )
+    ).toBe(true);
+    expect(asksPerson("Заказал, привезут к 19:00.")).toBe(false);
+    expect(asksPerson("Вот он: https://lavka.yandex.ru/good?id=1")).toBe(false);
   });
 });

@@ -17,6 +17,15 @@ export function spokenText(message: string) {
     : plain;
 }
 
+/**
+ * Bro's message asks the person something («Что берём?» in the middle of a
+ * list): their next words are the answer, whether or not the voice hands
+ * them over itself.
+ */
+export function asksPerson(message: string) {
+  return spokenText(message).includes("?");
+}
+
 export function replyCommentary(message: string) {
   return `Результат по делу — это сообщение уже ушло человеку в чат от твоего имени: «${spokenText(message)}». Перескажи его вслух коротко своими словами. Если это лишь «уже занимаюсь» или «скоро пришлю», вслух этого не повторяй: ты уже сказал, что занялся.`;
 }
