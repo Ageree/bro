@@ -141,8 +141,15 @@ describe("a person's request to buy, read in code", () => {
     "Не покупай корм",
     "Найди корм и спроси меня перед оплатой",
     "[переслано] Оплати счёт за интернет",
+    "[голосом] Подбери корм\n(ты: «Купи сначала пробник?»)\nхорошо",
   ])("reads no request in «%s»", async (said) => {
     expect(await requestOf([said])).toBeUndefined();
+  });
+
+  it("reads a request said aloud on the voice page like a typed one", async () => {
+    expect(await requestOf(["[голосом] Купи корм до 3 000 ₽"])).toMatchObject({
+      budgetRub: 3000,
+    });
   });
 
   it("reads no request from a message the channel marked forwarded", async () => {

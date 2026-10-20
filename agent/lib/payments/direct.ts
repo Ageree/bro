@@ -12,6 +12,7 @@ import { env } from "@shared/environment";
 import type { AccessScope } from "@shared/identity/access-scope";
 import { directModelActive } from "@shared/model/provider";
 import { decideAutoPayment, type SpendTarget } from "@shared/spending/limit";
+import { voiceLinePattern } from "@shared/voice/marker";
 
 /**
  * The person's own request is their consent to pay (owner 15.10, pilot
@@ -167,7 +168,9 @@ export function writtenBudgetRub(request: string) {
  * turn of theirs (DIRECT_PURCHASE_WORKSPACES): undefined outside the pilot,
  * in a turn they did not open, after a compaction inside it, for a message
  * they forwarded, and for words that ask nothing to be bought now — a
- * question, a negation, «только найди», «спроси меня».
+ * question, a negation, «только найди», «спроси меня». Said aloud on /talk,
+ * a request counts like a typed one (owner 20.10); the voice's own lines
+ * between the person's words there are not theirs.
  */
 export function purchaseRequestOf(
   scope: { readonly workspaceId: string },
@@ -185,8 +188,11 @@ export function purchaseRequestOf(
     said.some((text) => text.includes(forwardedMarker))
   )
     return undefined;
-  const request = said.join("\n").trim();
-  const asking = said.some(
+  const own = said
+    .map((text) => text.replaceAll(voiceLinePattern, "").trim())
+    .filter((text) => text.length > 0);
+  const request = own.join("\n").trim();
+  const asking = own.some(
     (text) => purchaseVerbPattern.test(text) && !/[?？]\s*$/u.test(text.trim())
   );
   if (!asking || negatedPattern.test(request) || askFirstPattern.test(request))
