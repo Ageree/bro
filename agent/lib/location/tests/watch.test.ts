@@ -208,7 +208,7 @@ describe("following a live share", () => {
     ).resolves.toBe("arrive:queued");
     expect(capture.queue.mock.calls[0]?.[0]).toMatchObject({
       perDay: 12,
-      sameMove: { keyPrefix: "share-a#arrive@", withinMs: 30 * 60_000 },
+      sameMove: { keyPrefix: "share-a#arrive@", toleranceMs: 5 * 60_000 },
       signal: {
         dedupeKey: `share-a#arrive@${String(stopped.start.getTime())}`,
         source: "location",
