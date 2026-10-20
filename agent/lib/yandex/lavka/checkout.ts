@@ -160,13 +160,15 @@ const pageSource = String.raw`
     if (a.doorcodeExtra || a.companyName || a.buildingType) block("address_unsupported");
     return { selected, position, countryIso3: text(startup.state.data.countryIso3, "address_unavailable"), currency: startup.state.data.currency };
   };
+  // Only spending Plus points changes what the card pays; a Plus account's
+  // cart carries the gain flow (points earned) on every order (20.10).
   const validateCart = (cart) => {
     if (!Array.isArray(cart.items) || cart.items.length === 0) block("empty_cart");
     if (cart.items.length > 100 || cart.availableForCheckout !== true || cart.checkoutUnavailableReason) block("cart_unavailable");
     if (cart.orderFlowVersion !== "grocery_flow_v1" || cart.deliveryType !== "eats_dispatch" ||
         cart.deliveryTimeInfo?.kind !== "on_demand" || cart.deliveryTimeInfo?.tariff !== "default" ||
         cart.logisticMethod !== "onDemand" || cart.secondaryPaymentMethod || cart.timeslot || cart.loyalty ||
-        cart.cashback?.flow || cart.promocode ||
+        cart.cashback?.flow && cart.cashback.flow !== "gain" || cart.promocode ||
         cart.tips && money(cart.tips.amount) !== 0 || cart.charity || cart.subscription || cart.subscriptions ||
         cart.statuses?.hasWeighedItems || cart.statuses?.hasRetailItems || cart.statuses?.hasPackages ||
         cart.statuses?.hasRestrictionsItems || cart.statuses?.isRover || cart.statuses?.isDrone || cart.statuses?.isPickup) block("cart_unsupported");

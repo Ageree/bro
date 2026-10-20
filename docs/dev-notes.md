@@ -1759,6 +1759,11 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   2 с: карта с `verifyStrategy: card_antifraud` даёт `init`, затем
   `wait_user_action` со ссылкой trust.yandex.ru (3-D Secure) — её Бро отдаёт
   человеку (`agent/lib/yandex/lavka/checkout.ts`). Страница оформления — `/check`.
+- Аккаунт с Плюсом (20.10): корзина Лавки всегда несёт `cashback.flow: "gain"` (баллы начисляются,
+  карта платит весь итог), а `validateCart` отвергал любой `flow` как `cart_unsupported`: ни один
+  заказ владельца не оформлялся, Бро пересказывал это как «не доставляет на адрес». Отказ —
+  только `flow`, отличный от `gain` (оплата баллами). Проверка корзины — проба `yandex-probe.py`
+  режимом `page` с запросом `cart/v1/retrieve` (`agent/lib/yandex/lavka/checkout.ts`).
 - Двухминутный TTL котировки Лавки — не срок согласия человека. После его
   «да» истёкшую котировку перечитываем: только служебные offer/version/expiry
   могут обновиться, товары, цены, адрес, cartId и карта должны совпасть.
