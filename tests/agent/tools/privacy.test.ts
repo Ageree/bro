@@ -61,6 +61,7 @@ const optionalServices = [
   "CROSS_CHANNEL_WORKSPACES",
   "IMESSAGE_PROJECT_ID",
   "IMESSAGE_PROJECT_SECRET",
+  "LOCATION_WATCH_WORKSPACES",
   "LOCATION_WORKSPACES",
   "MAIL_WORKSPACES",
   "MEMORY_DIGEST_MODEL",
@@ -263,6 +264,17 @@ describe("privacy", () => {
       "координаты присланных точек"
     );
     expect(pilot.remove.join("\n")).toContain("«забудь, где я был»");
+    expect(pilot.kept.join("\n")).not.toContain("Пока вы транслируете");
+    // Bro following a live share says so, and that it tells nobody else.
+    const watching = await overview(
+      (
+        await withServices({
+          LOCATION_WATCH_WORKSPACES: "*",
+          LOCATION_WORKSPACES: "*",
+        })
+      ).tool
+    );
+    expect(watching.kept.join("\n")).toContain("никому другому");
   });
 
   it("names RouterAI, not OpenRouter, once the model runs there", async () => {

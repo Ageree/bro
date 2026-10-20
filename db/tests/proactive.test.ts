@@ -902,7 +902,7 @@ describe("moves of a live location", { timeout: 30_000 }, () => {
       proactive.queueLocationRun({
         now: at,
         perDay: 2,
-        sameMove: { keyPrefix: "4242:77#leave@", withinMs: 20 * 60_000 },
+        sameMove: { keyPrefix: "4242:77#arrive@", toleranceMs: 0 },
         signal: move(key),
         spacingMs: 10 * 60_000,
         workspaceId: alice.workspaceId,
@@ -939,22 +939,83 @@ describe("moves of a live location", { timeout: 30_000 }, () => {
   });
 
   it("takes a departure whose key shifted by a point as the move already handed over", async () => {
-    const { proactive } = await openDatabase();
+    const { jobs, proactive } = await openDatabase();
     await proactive.recordProactiveTarget(alice, telegram, now);
-    const leave = (key: string, at: Date) =>
+    const leave = (keyMs: number, at: Date) =>
       proactive.queueLocationRun({
         now: at,
         perDay: 12,
-        sameMove: { keyPrefix: "4242:77#leave@", withinMs: 20 * 60_000 },
-        signal: { ...move(key), dedupeKey: `4242:77#leave@${key}` },
+        sameMove: { keyPrefix: "4242:77#leave@", toleranceMs: 5 * 60_000 },
+        signal: { ...move("x"), dedupeKey: `4242:77#leave@${String(keyMs)}` },
         spacingMs: 0,
         workspaceId: alice.workspaceId,
       });
-    expect(await leave("100", now)).toMatchObject({ status: "queued" });
+    const left = now.getTime() - 60_000;
+    expect(await leave(left, now)).toMatchObject({ status: "queued" });
+    const [claim] = await jobs.claimReadyScheduledAgentRuns({
+      kind: "proactive",
+      leaseForMs: 60_000,
+      limit: 10,
+      now,
+    });
+    if (!claim?.run.leaseToken) throw new Error("Expected a run.");
+    await jobs.completeScheduledAgentRun(
+      claim.run.id,
+      claim.run.leaseToken,
+      "turn",
+      { kind: "nothing_to_report", reason: "Nothing new." },
+      now
+    );
     const soon = new Date(now.getTime() + 11 * 60_000);
-    expect(await leave("160", soon)).toEqual({ status: "seen" });
-    const later = new Date(now.getTime() + 21 * 60_000);
-    expect(await leave("160", later)).not.toEqual({ status: "seen" });
+    expect(await leave(left + 60_000, soon)).toEqual({ status: "seen" });
+    // Another departure, from the next stop, is its own move.
+    expect(await leave(left + 10 * 60_000, soon)).toMatchObject({
+      status: "queued",
+    });
+  });
+
+  it("lets a departure right after a stop through the spacing, not a stop right after a departure", async () => {
+    const { jobs, proactive } = await openDatabase();
+    await proactive.recordProactiveTarget(alice, telegram, now);
+    const finish = async (at: Date) => {
+      const [claim] = await jobs.claimReadyScheduledAgentRuns({
+        kind: "proactive",
+        leaseForMs: 60_000,
+        limit: 10,
+        now: at,
+      });
+      if (!claim?.run.leaseToken) throw new Error("Expected a run.");
+      await jobs.completeScheduledAgentRun(
+        claim.run.id,
+        claim.run.leaseToken,
+        "turn",
+        { kind: "nothing_to_report", reason: "Nothing new." },
+        at
+      );
+    };
+    const queue = (kind: "arrive" | "leave", key: number, at: Date) =>
+      proactive.queueLocationRun({
+        ...(kind === "leave" && { notSpacedAfter: "#arrive@" }),
+        now: at,
+        perDay: 12,
+        sameMove: { keyPrefix: `4242:77#${kind}@`, toleranceMs: 5 * 60_000 },
+        signal: { ...move("x"), dedupeKey: `4242:77#${kind}@${String(key)}` },
+        spacingMs: 10 * 60_000,
+        workspaceId: alice.workspaceId,
+      });
+    const at = (minutes: number) => now.getTime() + minutes * 60_000;
+    expect(await queue("arrive", at(-6), now)).toMatchObject({
+      status: "queued",
+    });
+    await finish(now);
+    // Prod 20.10: the stop at 08:35, the departure at 08:37 waited to 08:46.
+    const left = new Date(now.getTime() + 2 * 60_000);
+    expect(await queue("leave", at(1), left)).toMatchObject({
+      status: "queued",
+    });
+    await finish(left);
+    const stopped = new Date(now.getTime() + 8 * 60_000);
+    expect(await queue("arrive", at(3), stopped)).toEqual({ status: "spaced" });
   });
 
   it("queues nothing when the person turned proactive messages off", async () => {
@@ -965,7 +1026,7 @@ describe("moves of a live location", { timeout: 30_000 }, () => {
       await proactive.queueLocationRun({
         now,
         perDay: 12,
-        sameMove: { keyPrefix: "4242:77#arrive@", withinMs: 30 * 60_000 },
+        sameMove: { keyPrefix: "4242:77#arrive@", toleranceMs: 5 * 60_000 },
         signal: move("1"),
         spacingMs: 10 * 60_000,
         workspaceId: alice.workspaceId,

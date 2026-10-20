@@ -26,6 +26,8 @@ export function keptData(
     readonly conversationLog?: boolean;
     /** The workspace is in the geolocation pilot (`location_points`). */
     readonly location?: boolean;
+    /** Bro follows a live share by itself (`locationWatchPilot`). */
+    readonly locationWatch?: boolean;
     readonly phone?: boolean;
     /** Signing with the person's signature is on (`signEnabled`). */
     readonly signature?: boolean;
@@ -64,6 +66,11 @@ export function keptData(
     ...(options.location === true
       ? [
           "Геопозицию, которой вы сами поделились (точка, место или трансляция в Telegram, карточка геопозиции в iMessage, кнопка в веб-чате), Бро хранит до 90 дней в базе Postgres Selectel (Россия), чтобы отвечать «где я припарковался» и напоминать у мест. «Забудь, где я был» удаляет эти точки сразу; то, что уже было в переписке (адрес в ответах Бро, сама присланная точка), остаётся в истории чатов, пока живёт сессия, и до 14 дней — в ночных зашифрованных резервных копиях.",
+          ...(options.locationWatch === true
+            ? [
+                "Пока вы транслируете геопозицию в Telegram, Бро сам замечает, где вы остановились и откуда ушли, сверяет это с вашим календарём и тем, что помнит, и пишет первым, только если это что-то меняет (например, вы опаздываете на встречу), — не ночью и никому другому. Остановите трансляцию — перестанет.",
+              ]
+            : []),
         ]
       : []),
     ...(options.conversationLog === true

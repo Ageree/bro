@@ -55,6 +55,11 @@ const leaveWithinMs = 20 * 60_000;
  * this far. Walking round a mall or a park is not a move.
  */
 const movedM = 500;
+/**
+ * Two keys of one kind this close in time are one move: the end of a stay
+ * longer than the window read can shift by a point between reads.
+ */
+const sameMoveMs = 5 * 60_000;
 /** A share is read for moves at most this often by its own time. */
 const watchEveryMs = 60_000;
 /** A live location's runs a day, and the spacing between them. */
@@ -174,11 +179,13 @@ export async function noticeLiveMove(
     const move = latest && liveMove(readHistory(track), latest, now);
     if (!move) return "still";
     const queued = await queueLocationRun({
+      // Leaving right after a stop is when lateness shows: it does not wait.
+      ...(move.kind === "leave" && { notSpacedAfter: "#arrive@" }),
       now,
       perDay: locationRunsPerDay,
       sameMove: {
         keyPrefix: `${liveKey}#${move.kind}@`,
-        withinMs: move.kind === "arrive" ? arriveWithinMs : leaveWithinMs,
+        toleranceMs: sameMoveMs,
       },
       signal: liveMoveSignal(liveKey, move),
       spacingMs: locationRunSpacingMs,

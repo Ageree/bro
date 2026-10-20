@@ -564,17 +564,28 @@ async function activeWatch(workspaceId: string) {
  * moves keep a cap of their own, apart from the mail's: at most `perDay` in
  * any 24 hours and one per `spacingMs` (`spaced`), so a day of walking from
  * shop to shop is a few runs, not one per stop. `no-watch` and `seen` as
- * for a follow-up; a move of the same share and kind handed over within
- * `sameMove.withinMs` is `seen` too: the key of a departure from a stay
- * longer than the window read can shift by a point between reads. A busy
- * job leaves the move to the next point, which finds it again while it is
- * fresh.
+ * for a follow-up; a move of the same share and kind whose key time is within
+ * `sameMove.toleranceMs` of one handed over is `seen` too: the key of a
+ * departure from a stay longer than the window read can shift by a point
+ * between reads, while another stop or departure is minutes apart. A run
+ * whose key holds `notSpacedAfter` does not space this one: a departure
+ * right after a stop is the move that says «late», and waited ten minutes
+ * behind it on prod (20.10). A busy job leaves the move to the next point,
+ * which finds it again while it is fresh.
  */
 export async function queueLocationRun(input: {
   readonly now: Date;
   readonly perDay: number;
-  /** The key's start for the same share and kind, and how long it holds. */
-  readonly sameMove: { readonly keyPrefix: string; readonly withinMs: number };
+  /**
+   * The key's start for the same share and kind (the time follows it), and
+   * how far apart two key times may be and still be one move.
+   */
+  readonly sameMove: {
+    readonly keyPrefix: string;
+    readonly toleranceMs: number;
+  };
+  /** A part of the keys of runs that do not space this one. */
+  readonly notSpacedAfter?: string;
   readonly signal: ProactiveSignal;
   readonly spacingMs: number;
   readonly workspaceId: string;
@@ -601,19 +612,28 @@ export async function queueLocationRun(input: {
         )
       )
     );
-  const sameSince = input.now.getTime() - input.sameMove.withinMs;
+  const { keyPrefix, toleranceMs } = input.sameMove;
+  const keyTime = (key: string) =>
+    key.startsWith(keyPrefix) ? Number(key.slice(keyPrefix.length)) : NaN;
+  const ownTime = keyTime(input.signal.dedupeKey);
   if (
     recent.some(
-      (row) =>
-        row.dedupeKey.startsWith(input.sameMove.keyPrefix) &&
-        row.createdAt.getTime() > sameSince
+      (row) => Math.abs(keyTime(row.dedupeKey) - ownTime) <= toleranceMs
     )
   ) {
     return { status: "seen" as const };
   }
   if (recent.length >= input.perDay) return { status: "capped" as const };
   const spacedUntil = input.now.getTime() - input.spacingMs;
-  if (recent.some((row) => row.createdAt.getTime() > spacedUntil)) {
+  const { notSpacedAfter } = input;
+  if (
+    recent.some(
+      (row) =>
+        row.createdAt.getTime() > spacedUntil &&
+        (notSpacedAfter === undefined ||
+          !row.dedupeKey.includes(notSpacedAfter))
+    )
+  ) {
     return { status: "spaced" as const };
   }
   return queueProactiveRun({
