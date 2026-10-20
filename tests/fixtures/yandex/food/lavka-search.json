@@ -47,7 +47,12 @@
       "currentPrice": 91,
       "currentPriceSigned": "91 ₽",
       "available": true,
-      "comingSoon": false
+      "comingSoon": false,
+      "snippetImage": {
+        "url": "https://avatars.mds.yandex.net/get-grocery-goods/1/test-milk/{w}x{h}",
+        "substrated": false
+      },
+      "oldPrice": 91
     },
     {
       "type": "good",
@@ -62,7 +67,11 @@
       "currentPriceSigned": "139 ₽",
       "available": true,
       "comingSoon": false,
-      "fullPrice": 159
+      "oldPrice": 159,
+      "snippetImage": {
+        "url": "https://images.example/milk/{w}x{h}",
+        "substrated": false
+      }
     }
   ]
 }

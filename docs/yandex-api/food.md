@@ -314,14 +314,19 @@ const products = ids
     name: p.longTitle || p.title,
     amount: p.amount,
     price: p.currentPrice,
-    oldPrice: p.fullPrice || null,
+    oldPrice: p.oldPrice > p.currentPrice ? p.oldPrice : null,
+    image: p.snippetImage?.url.replace("{w}x{h}", "600x600") ?? null,
     available: p.available !== false,
   }));
 return { found: ids.length, products };
 ```
 
-Ответ: `{found, products: [{id, name, amount, price, oldPrice|null, available}]}`
+Ответ: `{found, products: [{id, name, amount, price, oldPrice|null, image|null, available}]}`
 (`id` — id продукта Лавки, длинная строка). Фикстура `lavka-search.json`.
+Старая цена — `oldPrice` (20.10 поля `fullPrice` в ответе нет). Фото —
+`snippetImage.url`, шаблон `https://avatars.mds.yandex.net/get-grocery-goods/…/{w}x{h}`:
+CDN отвечает без cookies, размеры 100…1000 (`640x640` — 404) и `orig`; PNG с
+прозрачным фоном.
 Замер: 695/671/648 → **671 мс**. Пустой результат: Лавка — `layoutItems` без
 `good`; Еда — `Найден 1 результат` с блоком `places` из ближайшего «похожего»
 (проверено на бессмысленной строке: 200, `filters`+`places`).

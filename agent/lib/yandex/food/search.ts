@@ -29,6 +29,7 @@ const lavkaProduct = z.object({
   amount: z.string(),
   available: z.boolean(),
   id: z.string(),
+  image: z.url().nullable(),
   name: z.string(),
   oldPrice: z.number().nullable(),
   price: z.number(),
@@ -106,10 +107,16 @@ export const edaSearchOperation = defineYandexOperation({
 /**
  * Grocery products on Lavka for a text. Lavka takes the address the person
  * chose on its own page, so there is no location argument.
+ *
+ * A product's photo is a template on Yandex's image CDN
+ * (`avatars.mds.yandex.net/get-grocery-goods/…/{w}x{h}`), which answers
+ * without cookies: the photo goes out as its 600×600 size, a direct URL
+ * `send_message` attaches. The product's page is no way to it: Lavka answers
+ * a server's request for it with a check (`find_images`, 20.10).
  */
 export const lavkaSearchOperation = defineYandexOperation({
   about:
-    "Search Yandex Lavka grocery products for a text, at the delivery address chosen in the person's Lavka account. Arguments: query (text), limit (1-20, default 10).",
+    "Search Yandex Lavka grocery products for a text, at the delivery address chosen in the person's Lavka account. Arguments: query (text), limit (1-20, default 10). Each product's image is the direct HTTPS URL of its photo: to show the products, attach the images of up to 10 of them (kind image, skipping a product whose image is null) to one send_message whose text lists those same products, numbered in the same order; Lavka's pages do not open for find_images.",
   access: "read",
   args: z.object({
     limit: z.number().int().min(1).max(20).default(10),
@@ -158,6 +165,19 @@ export const lavkaSearchOperation = defineYandexOperation({
   const body = await response.json();
   const byId = new Map((body.cacheProducts || []).map((product) => [product.id, product]));
   const ids = (body.layoutItems || []).filter((item) => item.type === "good").map((item) => item.id);
+  const image = (product) => {
+    const template = product.snippetImage && product.snippetImage.url;
+    return typeof template === "string" &&
+      template.startsWith("https://avatars.mds.yandex.net/") &&
+      template.includes("{w}x{h}")
+      ? template.replace("{w}x{h}", "600x600")
+      : null;
+  };
+  // One odd value must not fail the whole search's schema.
+  const oldPrice = (product) => {
+    const old = Number(product.oldPrice);
+    return Number.isFinite(old) && old > Number(product.currentPrice) ? old : null;
+  };
   const products = ids
     .slice(0, args.limit)
     .map((id) => byId.get(id))
@@ -167,7 +187,8 @@ export const lavkaSearchOperation = defineYandexOperation({
       name: product.longTitle || product.title,
       amount: product.amount,
       price: Number(product.currentPrice),
-      oldPrice: product.fullPrice ? Number(product.fullPrice) : null,
+      oldPrice: oldPrice(product),
+      image: image(product),
       available: product.available !== false,
     }));
   return { status: "ok", data: { found: ids.length, products } };

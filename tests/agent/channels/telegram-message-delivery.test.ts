@@ -9,6 +9,7 @@ import type * as ArtifactObjects from "@shared/object-storage/artifacts";
 import type * as EnvModule from "@shared/environment";
 import type { AccessScope } from "@shared/identity/access-scope";
 import { formatRub } from "@shared/spending/limit";
+import { readPngRows, syntheticPng } from "@tests/helpers/synthetic-png";
 import type {
   findChannelIdentity,
   redeemChannelLinkToken,
@@ -449,6 +450,39 @@ describe("Telegram message delivery", () => {
     await expect(
       photo instanceof File ? photo.bytes() : undefined
     ).resolves.toEqual(jpegBytes);
+  });
+
+  it("lays a transparent PNG on white before uploading it as a photo", async () => {
+    const cutOut = syntheticPng({
+      colorType: 6,
+      rows: [[0, 0, 0, 0, 200, 100, 50, 255]],
+    });
+    const network = stubNetwork({
+      download: () =>
+        new Response(new Uint8Array(cutOut), {
+          headers: { "content-type": "image/png" },
+        }),
+    });
+    const { context } = handlerContext();
+
+    await handleActionResult(
+      sendMessageResult({
+        attachments: [
+          { kind: "image", url: "https://avatars.example/goods/600x600" },
+        ],
+        kind: "message",
+        text: "1. Азу",
+      }),
+      context,
+      sessionContext()
+    );
+
+    const photo = uploadedFile(botApiCalls(network)[0]?.form, "photo");
+    expect(photo?.type).toBe("image/png");
+    expect(readPngRows((await photo?.bytes()) ?? new Uint8Array())).toEqual({
+      colorType: 2,
+      rows: [[255, 255, 255, 200, 100, 50]],
+    });
   });
 
   it("sends two image attachments as one album", async () => {
