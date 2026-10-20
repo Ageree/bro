@@ -141,6 +141,7 @@ describe("a person's request to buy, read in code", () => {
     "Не покупай корм",
     "Найди корм и спроси меня перед оплатой",
     "[переслано] Оплати счёт за интернет",
+    "[голосом] Купи корм",
   ])("reads no request in «%s»", async (said) => {
     expect(await requestOf([said])).toBeUndefined();
   });

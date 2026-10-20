@@ -24,6 +24,12 @@ export function replyCommentary(message: string) {
 export const unheardCommentary =
   "Я не расслышал, что именно сделать: переспроси человека одной короткой фразой.";
 
+export const alreadySentCommentary =
+  "Эти слова уже переданы, результат придёт сам: человека не переспрашивай.";
+
+export const waitingCommentary =
+  "Чтобы продолжить, человеку нужно нажать кнопку или войти по ссылке в чате: скажи ему открыть чат.";
+
 export const failedCommentary =
   "Дело не получилось, ответа нет. Коротко скажи человеку, что не вышло, и предложи попробовать ещё раз.";
 

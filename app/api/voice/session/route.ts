@@ -93,7 +93,9 @@ export async function POST(request: Request) {
     });
     return new Response("Voice unavailable", { status: 502 });
   }
-  const parsed = answerSchema.safeParse(await answer.json());
+  const parsed = answerSchema.safeParse(
+    await answer.json().catch(() => undefined)
+  );
   if (!parsed.success) {
     console.warn("[voice] GPT-Live answered without SDP");
     return new Response("Voice unavailable", { status: 502 });

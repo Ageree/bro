@@ -74,7 +74,7 @@ describe("words from the voice page", { timeout: 60_000 }, () => {
 
     const result = await onMessage(context, "[голосом] что у меня завтра?");
 
-    expect(result.context?.at(-1)).toContain("услышит голосом");
+    expect(result.context).toHaveLength(1);
   });
 
   it("are an ordinary message outside the pilot", async () => {

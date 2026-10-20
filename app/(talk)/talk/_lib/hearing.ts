@@ -1,7 +1,8 @@
 // GPT-Live's delegation event carries no words (docs: «does not contain the
 // user's utterance or task text»), so the page keeps both transcripts on the
-// session's timeline and gives Bro the person's words since the voice last
-// finished speaking before them.
+// session's timeline and gives Bro what the person said since the last
+// request, with the voice's own lines between their words: «Напомни мне
+// завтра» — «О чём напомнить?» — «Позвонить маме» is one request.
 
 interface Piece {
   readonly text: string;
@@ -9,8 +10,16 @@ interface Piece {
   readonly endMs: number;
 }
 
-/** Silence that ends one utterance of the person and starts the next. */
+interface Utterance {
+  readonly by: "person" | "voice";
+  readonly text: string;
+  readonly startMs: number;
+}
+
+/** Silence that ends one utterance and starts the next. */
 const utteranceGapMs = 1200;
+/** The person's utterances a request carries at most: older talk stays out. */
+const keptUtterances = 4;
 
 export class Hearing {
   readonly #heard: Piece[] = [];
@@ -22,42 +31,53 @@ export class Hearing {
     this.#heard.push(piece);
   }
 
-  /** A piece of what the voice said: only its timing matters. */
+  /** A piece of what the voice said. */
   speak(piece: Piece) {
     this.#spoken.push(piece);
   }
 
   /**
-   * The person's words not yet given to Bro: their latest utterance and
-   * whatever they said before it after the voice last finished speaking.
-   * Words the voice already answered itself (small talk) stay out.
+   * The person's words not yet given to Bro, their last few utterances, with
+   * the voice's lines between them in brackets (`(ты: «…»)`, which the web
+   * channel explains to the model). The voice's line after their last words
+   * («Сейчас гляну») is not part of the request.
    */
   takeRequest() {
     const pending = this.#heard.slice(this.#sent);
     this.#sent = this.#heard.length;
-    // The person's final utterance: the pieces after the last silence.
-    let startedAt = Number.POSITIVE_INFINITY;
-    for (const piece of pending.toReversed()) {
-      if (
-        startedAt !== Number.POSITIVE_INFINITY &&
-        startedAt - piece.endMs >= utteranceGapMs
-      )
-        break;
-      startedAt = piece.startMs;
-    }
-    // The voice's last speech that ended before that utterance began. Speech
-    // the person talked over ends after it, so it does not cut their words.
-    const voiceEnded = this.#spoken.reduce(
-      (latest, piece) =>
-        piece.endMs <= startedAt ? Math.max(latest, piece.endMs) : latest,
-      Number.NEGATIVE_INFINITY
+    const person = utterances(pending, "person").slice(-keptUtterances);
+    const first = person[0];
+    const last = person.at(-1);
+    if (first === undefined || last === undefined) return undefined;
+    const voice = utterances(
+      this.#spoken.filter(
+        (piece) => piece.startMs > first.startMs && piece.startMs < last.startMs
+      ),
+      "voice"
     );
-    const words = pending
-      .filter((piece) => piece.startMs >= voiceEnded)
-      .map((piece) => piece.text)
-      .join("")
-      .replaceAll(/\s+/gu, " ")
-      .trim();
-    return words.length > 0 ? words : undefined;
+    return [...person, ...voice]
+      .toSorted((a, b) => a.startMs - b.startMs)
+      .map((line) =>
+        line.by === "person" ? line.text : `(ты: «${line.text}»)`
+      )
+      .join("\n");
   }
+}
+
+function utterances(pieces: readonly Piece[], by: Utterance["by"]) {
+  const grouped: { text: string; startMs: number; endMs: number }[] = [];
+  for (const piece of pieces) {
+    const open = grouped.at(-1);
+    if (open !== undefined && piece.startMs - open.endMs < utteranceGapMs) {
+      open.text += piece.text;
+      open.endMs = Math.max(open.endMs, piece.endMs);
+    } else grouped.push({ ...piece });
+  }
+  return grouped
+    .map((group): Utterance => ({
+      by,
+      startMs: group.startMs,
+      text: group.text.replaceAll(/\s+/gu, " ").trim(),
+    }))
+    .filter((line) => line.text.length > 0);
 }

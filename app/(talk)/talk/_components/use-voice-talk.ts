@@ -7,10 +7,12 @@ import { sendMessageToolResultSchema } from "@shared/chat/message-delivery";
 import { voiceTalkMarker } from "@shared/voice/marker";
 import { Hearing } from "../_lib/hearing";
 import {
+  alreadySentCommentary,
   failedCommentary,
   replyCommentary,
   unheardCommentary,
   unsentCommentary,
+  waitingCommentary,
 } from "../_lib/retell";
 
 const client = new Client({ host: "" });
@@ -42,8 +44,8 @@ const liveEvent = z
   .pipe(z.looseObject({ type: z.string() }));
 const transcriptDelta = z.object({
   delta: z.string(),
-  start_ms: z.number().optional(),
-  end_ms: z.number().optional(),
+  start_ms: z.number().nullish(),
+  end_ms: z.number().nullish(),
 });
 const delegationCreated = z.object({
   delegation: z.object({ id: z.string() }),
@@ -55,6 +57,8 @@ const liveError = z.object({
 /** How long the person's transcript may still arrive after a delegation. */
 const settleMs = 700;
 const settleLimitMs = 2500;
+/** Words sent this recently answer a second delegation for them too. */
+const recentSendMs = 8000;
 /** A conversation with nothing said and nothing in work ends by itself. */
 const idleLimitMs = 90_000;
 const connectLimitMs = 15_000;
@@ -104,21 +108,29 @@ export function useVoiceTalk() {
         setWorking(false);
         setState({ kind: "failed", detail });
       };
-      const opened = openCall({
-        microphone,
-        bro,
-        onChat: setChatId,
-        onRequest: setLastRequest,
-        onSilentAudio: () => {
-          setSilentAudio(true);
-        },
-        onSpeaking: setSpeaking,
-        onWorking: setWorking,
-        onIdle: () => {
-          end("idle");
-        },
-        onFailure: fail,
-      });
+      let opened: ReturnType<typeof openCall>;
+      try {
+        opened = openCall({
+          microphone,
+          bro,
+          onChat: setChatId,
+          onRequest: setLastRequest,
+          onSilentAudio: () => {
+            setSilentAudio(true);
+          },
+          onSpeaking: setSpeaking,
+          onWorking: setWorking,
+          onIdle: () => {
+            end("idle");
+          },
+          onFailure: fail,
+        });
+      } catch {
+        // No WebRTC in this browser (iOS Lockdown Mode turns it off).
+        for (const track of microphone.getTracks()) track.stop();
+        fail("Этот браузер не умеет голосовую связь (WebRTC).");
+        return;
+      }
       call.current = opened;
       try {
         await opened.connected;
@@ -213,10 +225,14 @@ function openCall(input: {
   let speakingUntil = 0;
   let latestDelegation: string | undefined;
   let commentaryCount = 0;
+  let lastSentAt = Number.NEGATIVE_INFINITY;
   // Bro's turns since the last boundary: a turn the person's words opened
-  // that ends without a message is a failure the voice should say.
+  // that failed, or ended with no message and no card waiting in the chat,
+  // is a failure the voice should say.
   let sentSinceBoundary = 0;
   let deliveredSinceBoundary = 0;
+  let turnFailed = false;
+  let waitsOnChat = false;
 
   for (const track of input.microphone.getAudioTracks())
     peer.addTrack(track, input.microphone);
@@ -267,25 +283,49 @@ function openCall(input: {
         lastActivityAt = clock();
         comment(latestDelegation, replyCommentary(text));
       }
+      if (
+        event.type === "input.requested" ||
+        event.type === "authorization.required"
+      ) {
+        waitsOnChat = true;
+        comment(latestDelegation, waitingCommentary);
+      }
+      // A heads-up may have gone out before the turn failed.
+      if (event.type === "turn.failed" || event.type === "session.failed")
+        turnFailed = true;
       if (isCurrentTurnBoundaryEvent(event)) {
-        if (sentSinceBoundary > 0 && deliveredSinceBoundary === 0)
+        if (
+          sentSinceBoundary > 0 &&
+          (turnFailed || (deliveredSinceBoundary === 0 && !waitsOnChat))
+        )
           comment(latestDelegation, failedCommentary);
         sentSinceBoundary = 0;
         deliveredSinceBoundary = 0;
+        turnFailed = false;
+        waitsOnChat = false;
         input.onWorking(false);
       }
     }
   };
 
+  // A stream eve's client gives up on (Safari's «Load failed» on a network
+  // switch, a long restart of eve) is followed again from its cursor.
   let followed: BroChat | undefined;
-  const followChat = (chat: BroChat) => {
-    if (followed === chat) return;
+  const followChat = (chat: BroChat, retry = 0) => {
+    if (followed === chat && retry === 0) return;
     followed = chat;
-    void follow(chat).catch(() => {
-      if (following.signal.aborted) return;
-      console.warn("[voice] Bro's stream stopped");
-      if (followed === chat) followed = undefined;
-    });
+    const again = () => {
+      if (following.signal.aborted || followed !== chat) return;
+      console.warn("[voice] Bro's stream stopped; following it again");
+      setTimeout(
+        () => {
+          if (!following.signal.aborted && followed === chat)
+            followChat(chat, retry + 1);
+        },
+        Math.min(30_000, 1000 * 2 ** retry)
+      );
+    };
+    void follow(chat).then(again, again);
   };
   // Before the first delegation, so what came between conversations is read
   // past while there is nothing to retell it as.
@@ -328,9 +368,15 @@ function openCall(input: {
 
   const delegate = async (delegationId: string) => {
     await settled();
+    if (following.signal.aborted) return;
     const words = hearing.takeRequest();
     if (words === undefined) {
-      comment(delegationId, unheardCommentary);
+      comment(
+        delegationId,
+        clock() - lastSentAt < recentSendMs
+          ? alreadySentCommentary
+          : unheardCommentary
+      );
       return;
     }
     input.onRequest(words);
@@ -341,6 +387,7 @@ function openCall(input: {
         turnPolicy: "steer",
       });
       sentSinceBoundary += 1;
+      lastSentAt = clock();
     } catch {
       console.warn("[voice] the request did not reach Bro");
       input.onWorking(false);
