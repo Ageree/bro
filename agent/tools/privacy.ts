@@ -10,7 +10,7 @@ import { resolveModeValue } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { signEnabled } from "@agent/lib/signatures/pilot";
 import { agentMailboxEnabled } from "@db/services/agent-mail";
-import { locationPilot } from "@db/services/location";
+import { locationPilot, locationWatchPilot } from "@db/services/location";
 import { phonePilot, readPhoneNumber } from "@db/services/phone";
 import { env } from "@shared/environment";
 import {
@@ -92,6 +92,7 @@ export const privacy = defineTool({
       kept: keptData({
         conversationLog,
         ...(location && { location }),
+        ...(locationWatchPilot(scope) && { locationWatch: true }),
         phone,
         signature,
       }),
