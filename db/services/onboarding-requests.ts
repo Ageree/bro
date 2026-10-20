@@ -35,3 +35,21 @@ export async function recordOnboardingRequest(request: {
     });
   return stored?.assignedPhoneNumber ?? request.assignedPhoneNumber;
 }
+
+/**
+ * Stores the line Photon itself answered for this phone, replacing an older
+ * one: Photon is the source of truth for which line a user is on.
+ */
+export async function storeOnboardingLine(request: {
+  readonly assignedPhoneNumber: string;
+  readonly ipHash: string;
+  readonly phoneNumber: string;
+}) {
+  await db
+    .insert(onboardingRequests)
+    .values(request)
+    .onConflictDoUpdate({
+      set: { assignedPhoneNumber: request.assignedPhoneNumber },
+      target: onboardingRequests.phoneNumber,
+    });
+}
