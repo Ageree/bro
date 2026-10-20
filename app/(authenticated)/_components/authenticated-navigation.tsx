@@ -18,6 +18,9 @@ const adminItem: CapsuleItem = {
   label: "Владелец",
 };
 
+/** The voice conversation, for a workspace that has it (`voiceTalkEnabled`). */
+const voiceItem: CapsuleItem = { href: "/talk", id: "talk", label: "Голос" };
+
 /**
  * The frame of the cabinet: the capsule on top and the page under it. A
  * document page scrolls with the footer at its foot; the chat owns the whole
@@ -28,14 +31,20 @@ export function CabinetFrame({
   account,
   children,
   showAdmin = false,
+  showVoice = false,
 }: {
   readonly account: ReactNode;
   readonly children: ReactNode;
   readonly showAdmin?: boolean;
+  readonly showVoice?: boolean;
 }) {
   const pathname = usePathname();
   const active = activeRoute(pathname);
-  const items = showAdmin ? [...navigation, adminItem] : navigation;
+  const items = [
+    ...navigation,
+    ...(showVoice ? [voiceItem] : []),
+    ...(showAdmin ? [adminItem] : []),
+  ];
   const ownsScreen = active === "chat";
 
   if (ownsScreen) {
