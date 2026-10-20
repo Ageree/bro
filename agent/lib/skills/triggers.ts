@@ -235,10 +235,11 @@ const wordSignals: Partial<Record<SkillName, RegExp>> = {
  * The markers a channel puts for what is not text
  * (`agent/lib/inbound-media/turn-content.ts`): a file's label, the word
  * «фото» or a shared location's marker (`agent/lib/location/markers.ts`) is
- * not the person's. A voice message's transcript after `[голосовое]` is.
+ * not the person's. A voice message's transcript after `[голосовое]` is, and
+ * so are the words after the voice page's `[голосом]`.
  */
 export const mediaMarkers =
-  /\[(?:фото|документ|голосовое не распозналось|геопозиция|место|файл:[^\]]*)\]|\[голосовое\]/giu;
+  /\[(?:фото|документ|голосовое не распозналось|геопозиция|место|файл:[^\]]*)\]|\[голосовое\]|\[голосом\]/giu;
 
 /**
  * A file's marker of any type but a picture, which the model reads itself:

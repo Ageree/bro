@@ -28,6 +28,8 @@ import {
 import { getAuthSession } from "@db/services/auth/session";
 import { sendMessageToolResultSchema } from "@shared/chat/message-delivery";
 import { webMessageBodyBytes } from "@shared/chat/web-files";
+import { voiceTalkMarker } from "@shared/voice/marker";
+import { voiceTalkEnabled } from "@shared/voice/pilot";
 import {
   finalizeScheduledReportDelivery,
   releaseScheduledReportDelivery,
@@ -102,6 +104,12 @@ const arrivals = new Map<
 >();
 const maximumArrivals = 500;
 
+// The voice page (/talk) sends what the person said, transcribed by GPT-Live,
+// and its voice retells the reply aloud: the model hears so, since only this
+// line tells it apart from a typed message.
+const voiceTalkContext =
+  "Это сообщение — расшифровка живого голосового разговора (пометка [голосом]): твой ответ человек услышит голосом, который перескажет его своими словами. Отвечай коротко и разговорно: главное — в первой фразе, без списков, таблиц и разметки; ссылки и подробности — в конце, они останутся в чате. Расшифровка может ошибаться в словах, именах и числах: если смысл неясен, переспроси одной фразой. Вопрос задавай обычным сообщением, не карточкой ask_question: на карточку голосом не ответить.";
+
 const channel = eveChannel({
   auth: authenticate,
   // A file the person attaches may be as large as one Telegram or iMessage
@@ -146,6 +154,10 @@ const channel = eveChannel({
         ? await webLocationContext(scope, messageWords(message))
         : []),
       ...(notes.length > 0 ? [notes.join("\n")] : []),
+      ...(text?.startsWith(voiceTalkMarker) === true &&
+      voiceTalkEnabled(scope.workspaceId)
+        ? [voiceTalkContext]
+        : []),
     ];
     if (sessionId !== undefined) {
       arrivals.set(sessionId, {
