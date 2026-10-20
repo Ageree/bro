@@ -5,6 +5,7 @@ import { turnCompaction } from "@agent/lib/compaction/mid-turn";
 import { compactionMarker, messageDigest } from "@agent/lib/compaction/summary";
 import { sendReachedPerson, startsTurn } from "@agent/lib/delivery/turn-sends";
 import { type StepIdentity, turnMemory } from "@agent/lib/turn-kind/step";
+import { voiceLinePattern, voiceTalkMarker } from "@shared/voice/marker";
 
 const taggedMessageSchema = z.object({ kind: z.string() });
 
@@ -364,6 +365,9 @@ const yesWords = new Set([
   "ага",
   "бери",
   "бро",
+  "заказывай",
+  "оформляй",
+  "хорошо",
   "go",
   "ahead",
   "да",
@@ -426,7 +430,7 @@ function plainAnswer(
   }
 ): "no" | "yes" | undefined {
   const tokens = (words ?? []).flatMap((text) =>
-    comparable(text).split(" ").filter(Boolean)
+    comparable(spokenWords(text)).split(" ").filter(Boolean)
   );
   if (tokens.length === 0) return undefined;
   if (
@@ -436,6 +440,21 @@ function plainAnswer(
     return "yes";
   }
   return tokens.every((token) => sets.no.has(token)) ? "no" : undefined;
+}
+
+/**
+ * A message from the voice page without its marker and the voice's own
+ * lines between the person's words (`shared/voice/marker.ts`): «да» said
+ * aloud answers like a typed one (owner 20.10), and «(ты: «…Оплачиваю?»)»
+ * is Bro's question, not part of the answer.
+ */
+function spokenWords(text: string) {
+  return text.startsWith(voiceTalkMarker)
+    ? text
+        .slice(voiceTalkMarker.length)
+        .trimStart()
+        .replaceAll(voiceLinePattern, "")
+    : text;
 }
 
 const paymentSets = {

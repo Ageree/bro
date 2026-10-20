@@ -14,6 +14,7 @@ import {
   sendPhotonText,
 } from "./photon";
 import { claimSignInCodeSend, releaseSignInCodeSend } from "./code-sends";
+import { photonLineFor } from "@db/services/photon-users";
 import { phoneUserEmail, phoneUserName } from "./phone-user";
 import { isE164PhoneNumber } from "@shared/identity/phone-number";
 
@@ -59,10 +60,18 @@ async function initializeAuth() {
     hooks: {
       before: createAuthMiddleware(async (ctx) => {
         if (localPhoneAuthBypassEnabled || ctx.path !== sendCodePath) return;
-        const to = sendCodeBodySchema.safeParse(ctx.body).data?.phoneNumber;
+        const to = phoneNumberBodySchema.safeParse(ctx.body).data?.phoneNumber;
         // The endpoint itself refuses a malformed number; that sends nothing.
         if (to === undefined || !isE164PhoneNumber(to)) return;
         await limitSignInCodes({ address: requestAddress(ctx), to });
+      }),
+      after: createAuthMiddleware(async (ctx) => {
+        if (ctx.path !== verifyCodePath || ctx.context.newSession === null)
+          return;
+        const verified = phoneNumberBodySchema.safeParse(ctx.body).data;
+        // Registered with Photon right away, so their first iMessage to Bro
+        // is delivered; sign-in does not wait for it.
+        if (verified !== undefined) void photonLineFor(verified.phoneNumber);
       }),
     },
     plugins: [
@@ -101,6 +110,7 @@ async function initializeAuth() {
 }
 
 const sendCodePath = "/phone-number/send-otp";
+const verifyCodePath = "/phone-number/verify";
 
 /**
  * Caddy sets `x-forwarded-for` to the client alone, and Next keeps it, so
@@ -116,7 +126,7 @@ function requestAddress(ctx: {
     ctx.context.options
   );
 }
-const sendCodeBodySchema = z.object({ phoneNumber: z.string() });
+const phoneNumberBodySchema = z.object({ phoneNumber: z.string() });
 
 /**
  * Better Auth's own limit counts requests per address in each process's

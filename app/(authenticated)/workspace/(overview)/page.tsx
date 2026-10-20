@@ -18,6 +18,7 @@ import { mailEnabled } from "@shared/mail/providers";
 import { mailProviderNames, mailProviderSchema } from "@shared/mail/schema";
 import { paidPeriodDays, readBillingState } from "@db/services/billing";
 import { readChannelIdentity } from "@db/services/channel-identities";
+import { photonLineFor } from "@db/services/photon-users";
 import { wakeProactiveWatch } from "@db/services/proactive";
 import {
   getGoogleWorkspaceAccess,
@@ -99,6 +100,7 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
     [spendEntries, standingEntries],
     appConnections,
     memories,
+    imessageLine,
   ] = await Promise.all([
     requestSession(),
     mailEnabled(scope)
@@ -133,6 +135,10 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
     ),
     readCabinetMemoryScopeKey(scope.workspaceId).then(async (scopeKey) =>
       scopeKey === null ? [] : listCurrentMemories(scope, scopeKey)
+    ),
+    // Their own line: Photon answers only phones registered on it.
+    requestSession().then(async (read) =>
+      read?.user.phoneNumber ? photonLineFor(read.user.phoneNumber) : undefined
     ),
   ]);
   if (google === "connected" && googleWorkspace.state === "connected") {
@@ -178,7 +184,7 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
 
       <ChannelsSection
         imessageConfigured={photonConfigured()}
-        imessagePhoneNumber={env.IMESSAGE_PHONE_NUMBER}
+        imessagePhoneNumber={imessageLine ?? env.IMESSAGE_PHONE_NUMBER}
       />
 
       {google === "unavailable" ? (

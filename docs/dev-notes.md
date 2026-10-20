@@ -158,6 +158,16 @@ s3put:<ключ>`; без звонка её гоняют локально: `sip.
   говорит «Так, смотрю», ответ через 4 с пересказывает. ICE-кандидаты OpenAI — Azure, UDP 3478 и TCP 443; из
   облачной сессии ICE не проходит (нет UDP), звук проверяйте с телефона. Не пройдёт из России — мост через
   маршрут `WS()` из `eve/channels` (Nitro eve включает WebSocket сам, Caddy `/eve/*` его пропускает).
+- iMessage Photon (20.10): линия принимает входящие лишь от телефонов — пользователей проекта
+  (`POST spectrum.photon.codes/projects/<id>/users/`, `type: shared`), иначе отвечает «This number
+  didn't recognize yours». Вход на сайте заводит телефон (`photonLineFor`, хук `after` в
+  `db/services/auth/index.ts`), «Написать Bro» кабинета ведёт на назначенную Photon линию
+  (`onboarding_requests`), лендинг — на вход. `IMESSAGE_PHONE_NUMBER` — только запасной номер (лист
+  кода, сбой Photon); 20.10 в проде стоял старый +1 415. API Photon за Cloudflare: Python urllib без
+  своего `User-Agent` получает 1010, `fetch` Node и curl проходят.
+- «Да» голосом (`/talk`) приходит как `[голосом] (ты: «…Оплачиваю?»)\nда`: метка и строки голоса
+  ломали `paymentAnswer`/`signAnswer`: «да» на оплату голосом не засчитывалось. Их снимает `spokenWords` в
+  `agent/lib/browser-use/said.ts`; новый разбор слов человека — тоже без них.
 - Результат инструмента, который eve отдаёт модели, — строго JSON: `Date` из
   строки drizzle валит его (`ToolOutputSerializationError`), как было у
   `phone-status` на проде 11.10. Даты — `toISOString()` на границе инструмента

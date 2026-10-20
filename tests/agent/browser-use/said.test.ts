@@ -511,6 +511,23 @@ describe("the person's answer to the payment question", () => {
     expect(paymentAnswer(null)).toBeUndefined();
   });
 
+  it("takes a yes said aloud on the voice page like a typed one", () => {
+    // The page sends the person's words after `[голосом]`, with the voice's
+    // own lines between them: Lavka's «Оплачиваю?» answered aloud stayed
+    // unconfirmed.
+    const words = wordsOf([
+      person("[голосом] закажи молоко в лавке"),
+      ...sent(question),
+      person(`[голосом] (ты: «${question}»)\nда, заказывай`),
+    ]);
+    expect(words.paymentAsked).toBe(question);
+    expect(paymentAnswer(words.said)).toBe("yes");
+    expect(paymentAnswer(["[голосом] нет"])).toBe("no");
+    expect(paymentAnswer(["[голосом] а дешевле нет?"])).toBeUndefined();
+    // Bro's own question alone, with nothing of the person's, answers nothing.
+    expect(paymentAnswer([`[голосом] (ты: «${question}»)`])).toBeUndefined();
+  });
+
   it("knows the question the person's message answers", () => {
     expect(
       wordsOf([person("купи сапсан"), ...sent(question), person("да")])
