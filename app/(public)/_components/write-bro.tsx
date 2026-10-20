@@ -1,21 +1,22 @@
-import Link from "next/link";
 import { Button } from "@web/components/ui/button";
 import styles from "../landing.module.css";
 
 /**
- * Bro's iMessage line answers only phones registered with Photon («This
- * number didn't recognize yours»), so a visitor starts at sign-in: the code
- * comes by iMessage, the sign-in registers their phone, and the cabinet's
- * «Написать Bro» opens the line they are on (`photonLineFor`).
+ * iOS wants `&body=` after an `sms:` address, not the `?body=` a URL would
+ * take: with a question mark Messages opens an empty draft.
  */
-export function WriteBro({ open }: { readonly open: boolean }) {
-  if (!open) {
+export function imessageLink(phoneNumber: string) {
+  return `sms:${phoneNumber}&body=${encodeURIComponent("Привет")}`;
+}
+
+export function WriteBro({ phoneNumber }: { readonly phoneNumber?: string }) {
+  if (!phoneNumber) {
     return (
       <Button
-        aria-label="Пока закрыто: iMessage этого деплоя не настроен."
+        aria-label="Пока закрыто: iMessage-номер этого деплоя не настроен."
         className={styles.primaryAction}
         disabled
-        title="iMessage этого деплоя не настроен."
+        title="iMessage-номер этого деплоя не настроен."
       >
         Написать bro
       </Button>
@@ -25,7 +26,12 @@ export function WriteBro({ open }: { readonly open: boolean }) {
     <Button
       className={styles.primaryAction}
       nativeButton={false}
-      render={<Link aria-label="Написать бро" href="/sign-in" />}
+      render={
+        <a
+          aria-label="Написать бро в iMessage"
+          href={imessageLink(phoneNumber)}
+        />
+      }
     >
       Написать bro
     </Button>

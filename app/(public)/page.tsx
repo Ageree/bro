@@ -3,7 +3,7 @@ import { Geist, Source_Serif_4 } from "next/font/google";
 import Link from "next/link";
 import { Button } from "@web/components/ui/button";
 import { cn } from "@web/components/class-names";
-import { photonConfigured } from "@shared/photon/credentials";
+import { env } from "@shared/environment";
 import { PortraitWallpaper } from "./_components/portrait-wallpaper";
 import { WriteBro } from "./_components/write-bro";
 import styles from "./landing.module.css";
@@ -56,7 +56,7 @@ export default function Page() {
           <h1 className="type-product-title" id="bro-title">
             bro — твой последний ИИ-агент
           </h1>
-          <WriteBro open={photonConfigured()} />
+          <WriteBro phoneNumber={env.IMESSAGE_PHONE_NUMBER} />
           <Link className={styles.offer} href="/oferta">
             Оферта
           </Link>
