@@ -57,13 +57,13 @@ describe("dashboard", { tags: ["smoke"] }, () => {
   );
 
   describe("on the shared person", { session: "person" }, () => {
-    test("«Открыть чат» opens an empty chat", async ({
+    test("«Открыть чат в вебе» opens an empty chat", async ({
       app,
       browser,
       screen,
     }) => {
       await app.open("/workspace");
-      await screen.getByRole("button", "Открыть чат").tap();
+      await screen.getByRole("button", "Открыть чат в вебе").tap();
       await expect(browser).toHaveURL("/chat");
       await expect(screen.getByRole("textbox", "Напиши Bro…")).toBeVisible();
     });

@@ -34,6 +34,47 @@ describe("workspace Photon channel", () => {
     expect(html).toContain("iMessage откроет +12025550123.");
   });
 
+  it("makes writing to Bro the primary action and the web chat secondary", () => {
+    const html = renderToStaticMarkup(
+      createElement(ChannelsSection, {
+        imessageConfigured: true,
+        imessagePhoneNumber: "+12025550123",
+      })
+    );
+
+    const write = html.indexOf("Написать Bro</a>");
+    const web = html.indexOf("Открыть чат в вебе</a>");
+    expect(write).toBeGreaterThan(-1);
+    expect(web).toBeGreaterThan(write);
+    expect(html).toMatch(/href="sms:[^"]*"[^>]*data-variant="paper"/u);
+    expect(html).not.toContain("Напиши Bro</h2>");
+  });
+
+  it("greets an account that has not written to Bro yet", () => {
+    const html = renderToStaticMarkup(
+      createElement(ChannelsSection, {
+        imessageConfigured: true,
+        imessagePhoneNumber: "+12025550123",
+        welcome: true,
+      })
+    );
+
+    expect(html).toContain("Напиши Bro</h2>");
+    expect(html).toContain("sms:+12025550123");
+  });
+
+  it("does not greet with a line it cannot open", () => {
+    const html = renderToStaticMarkup(
+      createElement(ChannelsSection, {
+        imessageConfigured: true,
+        imessagePhoneNumber: undefined,
+        welcome: true,
+      })
+    );
+
+    expect(html).not.toContain("Напиши Bro</h2>");
+  });
+
   it("reports a connected Photon line without requiring its number", () => {
     const html = renderToStaticMarkup(
       createElement(ChannelsSection, {

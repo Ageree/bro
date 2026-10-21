@@ -6,7 +6,10 @@ import { migrate } from "drizzle-orm/pglite/migrator";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import * as Database from "@db";
 import * as schema from "@db/schema";
-import { claimWorkspaceIntroduction } from "@db/services/scope";
+import {
+  claimWorkspaceIntroduction,
+  workspaceIntroduced,
+} from "@db/services/scope";
 
 const client = new PGlite();
 const database = drizzle(client, { schema });
@@ -92,5 +95,15 @@ describe("workspace introduction", () => {
       .from(schema.workspaces)
       .where(eq(schema.workspaces.id, scope.workspaceId));
     expect(row?.introducedAt?.toISOString()).toBe("2026-01-01T00:00:00.000Z");
+  });
+
+  // The cabinet greets a new account with «Напиши Bro» until its first
+  // message to Bro, wherever it was written.
+  it("reads as introduced only after the first message claims it", async () => {
+    const scope = { userId: "carol", workspaceId: "workspace-carol" };
+
+    expect(await workspaceIntroduced(scope)).toBe(false);
+    await claimWorkspaceIntroduction(scope);
+    expect(await workspaceIntroduced(scope)).toBe(true);
   });
 });

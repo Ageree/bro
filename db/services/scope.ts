@@ -72,3 +72,17 @@ export async function claimWorkspaceIntroduction(scope: AccessScope) {
     .returning({ id: workspaces.id });
   return claimed.length > 0;
 }
+
+/**
+ * Whether Bro has introduced itself to this workspace, that is, whether the
+ * person has written to Bro at all. The cabinet greets a new account with
+ * «Напиши Bro» until then; a workspace with no row yet has not been.
+ */
+export async function workspaceIntroduced(scope: AccessScope) {
+  const rows = await db
+    .select({ introducedAt: workspaces.introducedAt })
+    .from(workspaces)
+    .where(eq(workspaces.id, scope.workspaceId))
+    .limit(1);
+  return (rows[0]?.introducedAt ?? null) !== null;
+}
