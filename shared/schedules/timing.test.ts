@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   computeLatestRun,
   computeNextRun,
@@ -7,6 +7,8 @@ import {
   resolveScheduleTiming,
   scheduleTimingInputSchema,
   scheduleTimingSchema,
+  shortEventScheduleTimingInputSchema,
+  shortScheduleTimingInputSchema,
   storedScheduleTimingSchema,
   type ScheduleTiming,
 } from "@shared/schedules/timing";
@@ -480,6 +482,67 @@ describe("what the schedule tools accept", () => {
       scheduleTimingInputSchema.safeParse({ at: "завтра в 9", kind: "once" })
         .success
     ).toBe(false);
+  });
+
+  // 21.10: «напомни через 5 минут» at 14:10:40 became «at 14:15» — the model
+  // reads the clock to the minute and counted the moment itself, so the
+  // reminder came 40 seconds early. Code counts «через N минут» instead.
+  it("counts «через N минут» from the call and never runs it early", () => {
+    const relative = (inMinutes: number, now: string) => {
+      vi.setSystemTime(new Date(now));
+      return resolveScheduleTiming(
+        scheduleTimingInputSchema.parse({ inMinutes, kind: "relative" }),
+        moscow
+      );
+    };
+    vi.useFakeTimers();
+    try {
+      // 14:10:51 in Moscow + 5 minutes is 14:15:51: the run waits for 14:16.
+      expect(relative(5, "2026-10-21T11:10:51.000Z")).toEqual({
+        at: "2026-10-21T11:16:00.000Z",
+        kind: "once",
+      });
+      // On the minute there is nothing to round.
+      expect(relative(5, "2026-10-21T11:10:00.000Z")).toEqual({
+        at: "2026-10-21T11:15:00.000Z",
+        kind: "once",
+      });
+      expect(relative(120, "2026-10-21T11:10:00.001Z")).toEqual({
+        at: "2026-10-21T13:11:00.000Z",
+        kind: "once",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("takes a relative one-off of a minute to a day, in every pilot's words", () => {
+    for (const schema of [
+      scheduleTimingInputSchema,
+      eventScheduleTimingInputSchema,
+      shortScheduleTimingInputSchema,
+      shortEventScheduleTimingInputSchema,
+    ]) {
+      expect(schema.safeParse({ inMinutes: 1, kind: "relative" }).success).toBe(
+        true
+      );
+      expect(
+        schema.safeParse({ inMinutes: 1440, kind: "relative" }).success
+      ).toBe(true);
+      for (const inMinutes of [0, -5, 1441, 2.5]) {
+        expect(schema.safeParse({ inMinutes, kind: "relative" }).success).toBe(
+          false
+        );
+      }
+      // A weak model fills `at` as well: neither guess is kept.
+      expect(
+        schema.safeParse({
+          at: "2026-10-21T14:15",
+          inMinutes: 5,
+          kind: "relative",
+        }).success
+      ).toBe(false);
+    }
   });
 
   // The pilot of event zones. The run leads the event by whole hours, as an
