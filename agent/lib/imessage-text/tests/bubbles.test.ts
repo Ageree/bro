@@ -50,6 +50,31 @@ describe("iMessage bubble splitting", () => {
     expect(bubbles[2]).toContain("Сапсан");
   });
 
+  it("keeps the address of a link in the bubble of its paragraph", () => {
+    const dump = [
+      "Живой концерт в Питере, Газпром Арена, начало в 20:00 ([Афиша](https://a.b/1)).",
+      "Билеты от 21 000 ₽, из Москвы Сапсан от 4600 ₽ ([Ж/Д](https://a.b/2)).",
+      "Жильё рядом от 2000 ₽, ближайший отель в десяти минутах пешком ([Отели](https://a.b/3)).",
+    ].join("\n\n");
+
+    expect(toIMessageBubbles(dump)).toEqual([
+      "Живой концерт в Питере, Газпром Арена, начало в 20:00 (Афиша).\nhttps://a.b/1",
+      "Билеты от 21 000 ₽, из Москвы Сапсан от 4600 ₽ (Ж/Д).\nhttps://a.b/2",
+      "Жильё рядом от 2000 ₽, ближайший отель в десяти минутах пешком (Отели).\nhttps://a.b/3",
+    ]);
+  });
+
+  it("keeps the address of a numbered item inside that item's bubble", () => {
+    const first = `1. ${"Автоматизация браузера и скриптов на твоём столе ".repeat(2)}([Док](https://a.b/1))`;
+    const second = `2. ${"Локальные CLI, git и пайплайны без ручных кликов ".repeat(2)}([Док](https://a.b/2))`;
+
+    const bubbles = toIMessageBubbles(`${first}\n${second}`);
+
+    expect(bubbles).toHaveLength(2);
+    expect(bubbles[0]).toMatch(/\(Док\)\nhttps:\/\/a\.b\/1$/u);
+    expect(bubbles[1]).toMatch(/\(Док\)\nhttps:\/\/a\.b\/2$/u);
+  });
+
   it("keeps a short two-paragraph message in one bubble", () => {
     expect(toIMessageBubbles("Коротко.\n\nИ ещё.")).toHaveLength(1);
   });
