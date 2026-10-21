@@ -51,7 +51,8 @@ import { isAdminScope } from "@web/auth/admin";
 import { createTRPCRouter, protectedProcedure } from "./init";
 
 /**
- * The owner's pages. Anyone else gets NOT_FOUND, as if there were no such
+ * The owner's pages and the deployment's own settings (which model Bro runs
+ * on, and what it costs). Anyone else gets NOT_FOUND, as if there were no such
  * route: a probe learns nothing about whether the page exists.
  */
 const adminProcedure = protectedProcedure.use(async ({ ctx, next }) => {
@@ -266,7 +267,7 @@ export const appRouter = createTRPCRouter({
     })),
   },
   settings: {
-    selectModel: protectedProcedure
+    selectModel: adminProcedure
       .input(z.object({ modelId: modelIdSchema }))
       .mutation(({ ctx, input }) =>
         selectWorkspaceModel(ctx.scope, input.modelId)

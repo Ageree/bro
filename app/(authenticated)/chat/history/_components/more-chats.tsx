@@ -14,9 +14,11 @@ import { ChatRow } from "./chat-row";
 export function MoreChats({
   cursor,
   mainThreads,
+  showUsage,
 }: {
   readonly cursor: ChatCursor;
   readonly mainThreads: Readonly<Record<string, string>>;
+  readonly showUsage: boolean;
 }) {
   const utils = api.useUtils();
   const [chats, setChats] = useState<readonly ChatSummary[]>([]);
@@ -63,6 +65,7 @@ export function MoreChats({
               chat={chat}
               key={chat.sessionId}
               mainThread={mainThreads[chat.sessionId]}
+              showUsage={showUsage}
             />
           ))}
         </ul>
