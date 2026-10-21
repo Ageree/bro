@@ -13,7 +13,7 @@ import {
 
 export const directWebSearch = defineTool({
   description:
-    "Search the web for real-time information: current events, prices, places, services, schedules and anything that may have changed since the knowledge cutoff. Returns a handful of pages, each with its title, URL and an excerpt of what the page says; the excerpt often already shows a price, an average bill, opening hours or an address. Read a page with web_fetch when its excerpt is not enough. When you give the person a result, link the page itself as [word](its URL, with https://) — the product's own page, not a promo, a search or a home page. Search pages show timetables and typical fares, not what is on sale: for tickets, seats or rooms on given dates use browser_task when it is offered.",
+    "Search the web for real-time information: current events, prices, places, services, schedules and anything that may have changed since the knowledge cutoff. Returns a handful of pages, each with its title, URL and an excerpt of what the page says; the excerpt often already shows a price, an average bill, opening hours or an address. Read a page with web_fetch when its excerpt is not enough. A page you give the person is the product's own page (with https://), not a promo, a search or a home page: the note under the results says how it is linked. Search pages show timetables and typical fares, not what is on sale: for tickets, seats or rooms on given dates use browser_task when it is offered.",
   inputSchema: webSearchInputSchema,
   async execute(input, ctx) {
     try {
@@ -138,7 +138,7 @@ const weatherWords =
  * were, and «wind if it matters» got a wind nobody had found (prod, 21.10).
  */
 const weatherSearchNote =
-  "Note for weather: write plainly — the day and night temperature in degrees; precipitation and wind only when a result above shows them for that day, never filled in from memory or the season; never a vague «по ощущениям» or a bare difference. Name the source of the forecast as the site one of the results above is from, with its link — not a service no result shows.";
+  "Note for weather: write plainly — the day and night temperature in degrees; precipitation and wind only when a result above shows them for that day, never filled in from memory or the season; never a vague «по ощущениям» or a bare difference. The source of the forecast is the site one of the results above is from — not a service no result shows.";
 
 /**
  * What an answer taken from a search is held to, in the result the model
@@ -147,11 +147,15 @@ const weatherSearchNote =
  * Погоды» and no link, or with no source at all; wind and rain no result
  * showed were added; a June article stood for today's price beside an October
  * one in the same results. The same asks in the tool description and in the
- * prompt did not hold, a result's note does. A result carries a «date:» line
- * only where the engine printed one (`formatResults`).
+ * prompt did not hold, a result's note does. Once linked, the sources sat in
+ * brackets mid-sentence («([финмаркет](…))», lower case, an AMP address): the
+ * note now fixes where they go (the last line, «Источник: [Интерфакс](URL)»),
+ * how they are named, and that a pick has no such line since each option's
+ * name is its link. A result carries a «date:» line only where the engine
+ * printed one (`formatResults`).
  */
 const sourceNote =
-  "Note for the answer: link the one or two pages it is taken from (in a pick of places, each option's own page), each as [a word](its URL from the list above, with https://) — not every page, and not just «по данным <site>» without a link. Say only what these results show: a detail none of them shows (wind, rain, a price, a time, a name) is searched for or left out, never added from memory. A result may carry a «date:» line, the page's date as the search engine printed it: when pages differ in date, answer from the freshest one and name its day (not «8 часов назад»); an older page is not today's state, and when even the freshest is old for the question, say so.";
+  "Note for the answer: link in one of two ways. An answer taken from these pages ends with its source as the last line of the message, on its own and after anything else the message says, a question or an offer included — «Источник: [Название сайта](its URL from the list above, with https://)», or for two pages «Источники: [Название](URL), [Название](URL)» («Source:» in an English reply): the one or two pages it really rests on, not every page and not just «по данным <site>» without a link; never in brackets inside a sentence or after a fact, and no other link above that line. The name is how the outlet or service writes itself, with a capital letter — never the bare domain and never lower case (interfax.ru is «Интерфакс», pogoda.mail.ru is «Погода Mail.ru»). A pick of places, events or goods is linked the other way and has no source line: each option's name is its own link, «• [Название](URL) — facts», and nothing repeats the links below the list. Say only what these results show: a detail none of them shows (wind, rain, a price, a time, a name) is searched for or left out, never added from memory. A result may carry a «date:» line, the page's date as the search engine printed it: when pages differ in date, answer from the freshest one and name its day (not «8 часов назад»); an older page is not today's state, and when even the freshest is old for the question, say so.";
 
 /**
  * How a pick of places is put together, in the result the model reads just

@@ -60,6 +60,11 @@ export const afishaSearchOperation = defineYandexOperation({
   about:
     "Events on Yandex Afisha: title, kind (theatre, concert…), venue, dates as Afisha words them, the lowest ticket price in rubles and the link. By title or name: query (for example «джаз»), never a kind of event. By kind and days: category (concert, theatre, cinema, standup, kids, art for exhibitions, excursions, sport, show, musical, quest, lectures, masterclass, circus_show) with from and to (YYYY-MM-DD, calendar days of the city, both included; to defaults to from) and the most popular first: «концерты на следующей неделе» is category concert and that week's dates, no query; «кино в выходные» is category cinema with the Saturday and Sunday. If the result has queryDropped, no title had those words and the events are all of that kind for those days: say so. Leave an unused argument empty. Also takes an optional city slug (default moscow) and limit (1 to 10, default 10).",
   access: "read",
+  // Prod, 21.10: the events went out as a list and, below it, one line
+  // «Ссылки: …» with the links of some of them. The same ask in the prompt
+  // and in `about` did not hold, a result's note does.
+  answerNote:
+    "Note for the answer: write the events as a list, one line each — «• [Название](its url from the list above) — Площадка, 31 окт, 19:00, от 3 700 ₽» (title as it is, the venue, the date as Afisha words it, the lowest price; leave out what is null). The event's own name is its link, and every event above has its url, so every line carries one. No line of links at the end, no «Источник:» line, and nothing the list does not show.",
   args: z.object({
     category: z.enum(["", ...categories]).default(""),
     city: z

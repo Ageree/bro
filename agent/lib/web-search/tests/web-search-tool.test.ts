@@ -143,7 +143,7 @@ describe("web_search tool selection", () => {
    * out with no link, with details no result showed, and a June article for
    * today's price. The rule is in the result, where the weak model reads it.
    */
-  it("asks for one or two linked sources, nothing the results do not show, and the freshest date", async () => {
+  it("asks for the source as a last line, nothing the results do not show, and the freshest date", async () => {
     vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
     fetchMock.mockResolvedValue(
       new Response(
@@ -174,7 +174,7 @@ describe("web_search tool selection", () => {
       toolContext()
     );
 
-    expect(answer).toContain("link the one or two pages it is taken from");
+    expect(answer).toContain("«Источник: [Название сайта](");
     expect(answer).toContain("none of them shows");
     expect(answer).toContain("answer from the freshest one");
     // OpenRouter's engines print no date, and none is made up.
@@ -495,9 +495,7 @@ describe("web_search tool selection", () => {
         { query: "погода в Москве на выходные" },
         toolContext()
       )
-    ).toContain(
-      "Name the source of the forecast as the site one of the results"
-    );
+    ).toContain("The source of the forecast is the site one of the results");
     expect(
       await directWebSearch.execute(
         { query: "ключевая ставка ЦБ сегодня" },

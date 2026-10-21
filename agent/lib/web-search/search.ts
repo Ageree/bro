@@ -375,6 +375,36 @@ function readResults(
   return pagesToResults(citations, limit);
 }
 
+/**
+ * Query parameters that only record where a click came from: UTM tags and
+ * the click ids of Yandex (`yclid`, `ysclid`), Google (`gclid`, `srsltid`),
+ * Facebook and Microsoft. Probe of 21.10 (TinyFish, 12 queries, 159 pages):
+ * `srsltid`, a long Google token, trailed 4 of them. Not `from` or `ref`: a
+ * site may read them as its own filter.
+ */
+const trackingParameter =
+  /^(?:utm_.*|yclid|ysclid|gclid|srsltid|fbclid|msclkid|_openstat)$/iu;
+
+/**
+ * The address without its tracking marks, for the person to be shown: the
+ * parameters above and a text fragment (`#:~:text=…`, the highlight a
+ * search engine adds), every other parameter as it came. An address with
+ * neither is returned as it is.
+ */
+function withoutTracking(address: string) {
+  const url = URL.parse(address);
+  if (url === null) return address;
+  const parameters = url.search.slice(1).split("&");
+  const kept = parameters.filter(
+    (parameter) => !trackingParameter.test(parameter.split("=")[0] ?? "")
+  );
+  const directive = url.hash.indexOf(":~:");
+  if (kept.length === parameters.length && directive === -1) return address;
+  url.search = kept.join("&");
+  if (directive !== -1) url.hash = url.hash.slice(1, directive);
+  return url.href;
+}
+
 /** Pages with a valid URL, each once, their excerpts cleaned. */
 function pagesToResults(
   pages: readonly {
@@ -388,14 +418,16 @@ function pagesToResults(
   const seen = new Set<string>();
   const results: WebSearchResult[] = [];
   for (const page of pages) {
-    const url = z.url().safeParse(page.url.trim());
-    if (!url.success || seen.has(url.data)) continue;
-    seen.add(url.data);
+    const found = z.url().safeParse(page.url.trim());
+    if (!found.success) continue;
+    const url = withoutTracking(found.data);
+    if (seen.has(url)) continue;
+    seen.add(url);
     results.push({
       date: oneLine(page.date ?? "").slice(0, maxDateCharacters),
       snippet: excerpt(page.content ?? ""),
-      title: oneLine(page.title ?? "") || url.data,
-      url: url.data,
+      title: oneLine(page.title ?? "") || url,
+      url,
     });
     if (results.length === limit) break;
   }

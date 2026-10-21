@@ -225,6 +225,30 @@ describe("OpenRouter web search", () => {
     ]);
   });
 
+  it("drops the text fragment a search engine adds to a cited address", async () => {
+    fetchMock.mockResolvedValue(
+      completion({
+        annotations: [
+          {
+            type: "url_citation",
+            url_citation: {
+              title: "Wiki",
+              url: "https://ru.wikipedia.example/wiki/SpaceX#:~:text=IPO",
+            },
+          },
+        ],
+      })
+    );
+
+    const searchWeb = await loadSearchWeb();
+
+    expect(
+      (await searchWeb({ query: "spacex" }, turnSignal())).map(
+        (result) => result.url
+      )
+    ).toEqual(["https://ru.wikipedia.example/wiki/SpaceX"]);
+  });
+
   it("reads an answer that carries `error: null` as a success", async () => {
     fetchMock.mockResolvedValue(
       new Response(
@@ -627,6 +651,49 @@ describe("Composio Instant web search", () => {
       "",
       "21 сент. 2026 г.",
     ]);
+  });
+
+  it("hands the model addresses without tracking marks, every other parameter as it came", async () => {
+    fetchMock.mockResolvedValue(
+      instantAnswer([
+        {
+          title: "Интерфакс",
+          url: "https://www.interfax.ru/business/1062367?utm_source=yandex&UTM_medium=cpc&id=7&ysclid=lx1",
+        },
+        {
+          title: "Phone",
+          url: "https://store.example/phone/?srsltid=AU7gw4Xx&color=black&size=m%20l",
+        },
+        {
+          title: "The same page, tagged by another click",
+          url: "https://www.interfax.ru/business/1062367?id=7&yclid=55",
+        },
+        {
+          title: "Highlight",
+          url: "https://news.example/a#intro:~:text=Курс%20доллара",
+        },
+        { title: "Only marks", url: "https://shop.example/?fbclid=1&gclid=2" },
+        {
+          title: "Own filters",
+          url: "https://shop.example/list?from=2026-10-01&ref=top#reviews",
+        },
+        { url: "https://untitled.example/x?utm_campaign=a" },
+      ])
+    );
+
+    const searchWeb = await loadSearchWeb();
+    const results = await searchWeb({ query: "новости" }, turnSignal());
+
+    expect(results.map((result) => result.url)).toEqual([
+      "https://www.interfax.ru/business/1062367?id=7",
+      "https://store.example/phone/?color=black&size=m%20l",
+      "https://news.example/a#intro",
+      "https://shop.example/",
+      "https://shop.example/list?from=2026-10-01&ref=top#reviews",
+      "https://untitled.example/x",
+    ]);
+    // A page with no title is named by its clean address.
+    expect(results.at(-1)?.title).toBe("https://untitled.example/x");
   });
 
   it("hands the query to Tavily when TinyFish refuses it", async () => {

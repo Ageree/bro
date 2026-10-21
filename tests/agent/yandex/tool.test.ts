@@ -185,6 +185,30 @@ describe("the Yandex tool", () => {
     expect(services.run.mock.calls[0]?.[2]).toEqual({});
   });
 
+  it("sends the answer note of an operation last in its result, and none for an operation without one", async () => {
+    services.run.mockResolvedValue({
+      data: {
+        events: [
+          {
+            title: "Концерт",
+            url: "https://afisha.yandex.ru/moscow/concert/x",
+          },
+        ],
+      },
+      kind: "ok",
+    });
+    const found = await tool([{ content: "концерты на неделе", role: "user" }]);
+    if (!found) throw new Error("Expected yandex.");
+    const result = await found.execute(
+      { category: "concert", operation: "afisha.search" },
+      callContext()
+    );
+
+    expect(result).toHaveProperty("note", expect.any(String));
+    expect(Object.keys(result).at(-1)).toBe("note");
+    expect(await call(asked)).not.toHaveProperty("note");
+  });
+
   it.each(["user", "workspace", "session", "missing-current"])(
     "refuses a previously resolved tool after the %s boundary changes",
     async (boundary) => {
