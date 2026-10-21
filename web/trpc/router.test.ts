@@ -6,8 +6,10 @@ import * as Settings from "@db/services/settings";
 import * as ConnectedApps from "@shared/composio/connected-apps";
 import * as GoogleWorkspace from "@shared/google-workspace/connection";
 import type { AccessScope } from "@shared/identity/access-scope";
+import * as Admin from "@web/auth/admin";
 import { appRouter } from "./router";
 
+const adminMock = vi.spyOn(Admin, "isAdminScope");
 const saveChatMock = vi.spyOn(Chats, "saveChat");
 const selectModelMock = vi.spyOn(Settings, "selectWorkspaceModel");
 const googleAccessMock = vi.spyOn(Settings, "getGoogleWorkspaceAccess");
@@ -75,8 +77,9 @@ describe("appRouter", () => {
     });
   });
 
-  it("stores a model id from either routing mode", async () => {
+  it("stores the owner's model id from either routing mode", async () => {
     selectModelMock.mockResolvedValue(undefined);
+    adminMock.mockResolvedValue(true);
 
     await appRouter
       .createCaller({ origin: "https://example.com", scope })
@@ -86,6 +89,17 @@ describe("appRouter", () => {
       scope,
       "deepseek/deepseek-v4.1-flash"
     );
+  });
+
+  it("does not let anyone but the owner switch the model", async () => {
+    adminMock.mockResolvedValue(false);
+
+    await expect(
+      appRouter
+        .createCaller({ origin: "https://example.com", scope })
+        .settings.selectModel({ modelId: "deepseek/deepseek-v4.1-flash" })
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(selectModelMock).not.toHaveBeenCalled();
   });
 
   it("stores the web chat's point only in the geolocation pilot, once per 10 s", async () => {
