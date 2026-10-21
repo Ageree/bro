@@ -20,6 +20,7 @@ import { paidPeriodDays, readBillingState } from "@db/services/billing";
 import { readChannelIdentity } from "@db/services/channel-identities";
 import { photonLineFor } from "@db/services/photon-users";
 import { wakeProactiveWatch } from "@db/services/proactive";
+import { workspaceIntroduced } from "@db/services/scope";
 import {
   getGoogleWorkspaceAccess,
   getWorkspaceModelId,
@@ -57,6 +58,7 @@ import { PersonalMailAction } from "./_components/personal-mail-action";
 import { ModelSelector } from "./_components/model-selector";
 import { SpendLimitSection } from "./_components/spend-limit-section";
 import { TelegramLinkAction } from "./_components/telegram-link-action";
+import { WelcomeDialog } from "./_components/welcome-dialog";
 import { CabinetVault } from "./_components/vault/cabinet";
 
 export const metadata: Metadata = { title: "Кабинет" };
@@ -101,6 +103,7 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
     appConnections,
     memories,
     imessageLine,
+    introduced,
   ] = await Promise.all([
     requestSession(),
     mailEnabled(scope)
@@ -140,6 +143,7 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
     requestSession().then(async (read) =>
       read?.user.phoneNumber ? photonLineFor(read.user.phoneNumber) : undefined
     ),
+    workspaceIntroduced(scope),
   ]);
   if (google === "connected" && googleWorkspace.state === "connected") {
     // Connect sends the person back here after consent. Bro's own mail and
@@ -185,6 +189,7 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
       <ChannelsSection
         imessageConfigured={photonConfigured()}
         imessagePhoneNumber={imessageLine ?? env.IMESSAGE_PHONE_NUMBER}
+        welcome={!introduced}
       />
 
       {google === "unavailable" ? (
@@ -411,13 +416,19 @@ function connectedAppDescription(
   return `Не подключён. ${connectedAppPurposes[app]} Отключить можно в любой момент.`;
 }
 
-/** The lead actions under the title: the chat is the primary pill. */
+/**
+ * The lead actions under the title. Bro lives in iMessage, so writing to it
+ * is the primary pill and the web chat the secondary one. Until the person
+ * has written to Bro at all (`welcome`), a dialog over the cabinet says so.
+ */
 export function ChannelsSection({
   imessageConfigured,
   imessagePhoneNumber,
+  welcome = false,
 }: {
   readonly imessageConfigured: boolean;
   readonly imessagePhoneNumber?: string;
+  readonly welcome?: boolean;
 }) {
   const imessageHref =
     imessageConfigured && imessagePhoneNumber
@@ -426,29 +437,32 @@ export function ChannelsSection({
 
   return (
     <>
+      {welcome && imessageHref ? (
+        <WelcomeDialog imessageHref={imessageHref} />
+      ) : null}
       <Actions className="items-center">
-        <Button
-          nativeButton={false}
-          render={<Link href="/chat" />}
-          variant="paper"
-        >
-          Открыть чат
-        </Button>
         {imessageHref ? (
           <Button
             nativeButton={false}
             render={
               <a aria-label="Написать Bro в iMessage" href={imessageHref} />
             }
-            variant="outline"
+            variant="paper"
           >
             Написать Bro
           </Button>
         ) : (
-          <Button disabled variant="outline">
+          <Button disabled variant="paper">
             Написать Bro
           </Button>
         )}
+        <Button
+          nativeButton={false}
+          render={<Link href="/chat" />}
+          variant="outline"
+        >
+          Открыть чат в вебе
+        </Button>
       </Actions>
       <StatusLine className="mt-2">
         {channelAvailabilityMessage({
@@ -468,12 +482,12 @@ function channelAvailabilityMessage({
   readonly imessagePhoneNumber?: string;
 }) {
   return [
-    "Чат в браузере готов.",
     imessageConfigured && imessagePhoneNumber
       ? `iMessage откроет ${imessagePhoneNumber}.`
       : imessageConfigured
         ? "Photon подключён — напиши на его линию iMessage, чтобы начать."
         : "Подключи Photon, чтобы включить iMessage.",
+    "Чат в вебе тоже готов.",
   ].join(" ");
 }
 

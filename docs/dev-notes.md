@@ -937,6 +937,8 @@ user-data`, `sandbox/README.md`); runsc едет на хост объектом 
   глобальный `fetch`: `isBlockedHost` смотрит лишь имя.
 - `first-contact` решает `workspaces.introduced_at`
   (`claimWorkspaceIntroduction`), а не `chats`: переезд из Convex их не пишет.
+  Пока он пуст, кабинет закрывает окно «Напиши Bro» со ссылкой на iMessage
+  (`workspaceIntroduced`); код входа приходит с линии Бро, но знакомства не ставит.
 - Любой сбой модели (и переполнение контекста) — `turn.failed`
   `MODEL_CALL_FAILED`; «скоро вернусь» — только при 402/429/5xx в `details`.
 - Telegram на Cloud.ru — не вебхуком: мост `scripts/cloudru-app-host/tg-bridge/`
