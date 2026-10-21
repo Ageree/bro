@@ -33,6 +33,8 @@ const openRouterMaxResults = 8;
 const instantMaxResults = 8;
 /** Enough of a page excerpt to carry a price, an average bill, hours or an address. */
 const maxSnippetCharacters = 500;
+/** «21 сент. 2026 г.» and «8 часов назад» are far shorter. */
+const maxDateCharacters = 40;
 const maxSites = 5;
 
 /**
@@ -109,8 +111,13 @@ const responseSchema = z.object({
     .transform((error) => error ?? undefined),
 });
 
-/** A page the model can cite or read with `web_fetch`. */
+/**
+ * A page the model can cite or read with `web_fetch`. `date` is the
+ * engine's own dating of the page (TinyFish gives one, as «8 часов назад» or
+ * «21 сент. 2026 г.»), empty when the engine gave none: nothing is made up.
+ */
 export interface WebSearchResult {
+  readonly date: string;
   readonly snippet: string;
   readonly title: string;
   readonly url: string;
@@ -372,6 +379,7 @@ function readResults(
 function pagesToResults(
   pages: readonly {
     readonly content?: string | undefined;
+    readonly date?: string | undefined;
     readonly title?: string | undefined;
     readonly url: string;
   }[],
@@ -384,6 +392,7 @@ function pagesToResults(
     if (!url.success || seen.has(url.data)) continue;
     seen.add(url.data);
     results.push({
+      date: oneLine(page.date ?? "").slice(0, maxDateCharacters),
       snippet: excerpt(page.content ?? ""),
       title: oneLine(page.title ?? "") || url.data,
       url: url.data,
