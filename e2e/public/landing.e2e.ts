@@ -10,7 +10,7 @@ describe("public pages", { tags: ["smoke"] }, () => {
     await app.open("/");
     // The heading is for screen readers only (`sr-only`).
     await expect(
-      screen.getByRole("heading", "bro — твой личный ИИ-агент", { level: 1 })
+      screen.getByRole("heading", "bro — твой последний ИИ-агент", { level: 1 })
     ).toBeAttached();
 
     await screen

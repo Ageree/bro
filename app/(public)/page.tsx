@@ -19,7 +19,7 @@ const body = Geist({
   subsets: ["cyrillic", "latin"],
   variable: "--font-landing-body",
 });
-const title = "bro — твой личный ИИ-агент";
+const title = "bro — твой последний ИИ-агент";
 
 export const metadata: Metadata = {
   title: { absolute: title },

@@ -24,7 +24,7 @@ const geist = Geist({
 export const metadata: Metadata = {
   metadataBase: new URL(applicationOrigin()),
   title: {
-    default: "bro — твой личный ИИ-агент",
+    default: "bro — твой последний ИИ-агент",
     template: "bro — %s",
   },
   description:
