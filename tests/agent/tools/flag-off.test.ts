@@ -372,32 +372,32 @@ const deployments = {
     environment: {},
     hashes: {
       "browser-report":
-        "c3aa4c0496c269341bc1123184243fa63c36e7b7c0545f37d5ec1b32f0e1b7db",
+        "aeb39ea4d5a7c553cf24abf84b32d815664238254ddc5c63a1bcf8c12f05a5ad",
       "proactive-worker":
         "6578f08bf581df3bfe73a4337b7b34a5a4367aef476e5088053e6f490396b283",
       "scheduled-report":
         "84b6c93b5f69b1e65b6e053cdf356926c6d739af7cd3c138609b7488ae902c40",
       "scheduled-worker":
-        "755a85bd72c853243d2e023c0c6524910f482fa5ab09e62d697c742251759df5",
+        "94205b4c2f8e4a7f6b74205463df8168a8a709d99aee6922ed00ae007d3b9c05",
       telegram:
-        "14691d42cf630d60f6008c3b0bc8c0073b51b09df617e288aa9cdc9df63c8009",
-      web: "4ba259bbdccf2f09f7d20f8ef4208d2eb06ee5ab6d0081cbac251727bd364a15",
+        "faab292d9823f513fcc0cea39486f699587778402da856972a6bd4f357096970",
+      web: "14a514cf7974a728639005a3f7550724b58e677a59c26d9b88945a3a33aca20c",
     } satisfies Record<Kind, string>,
   },
   full: {
     environment: fullDeployment,
     hashes: {
       "browser-report":
-        "8540ad3d8c586a1f64b428f759172ed4b64b46203b67506edf1f436340bb8072",
+        "1be069f7faba524a41763338defc65854b344cae1ddd19f831b69870d998afcb",
       "proactive-worker":
         "b91af917ead6214fddadc0a64d8ee6ad3cf141416c46e92fe479d938bacd5fe1",
       "scheduled-report":
         "15f6762fe666f2324b3f6ec90b4ca91c7578402a16a4a445c7374f9e49fa333b",
       "scheduled-worker":
-        "1c1b0e58338a005d3a2201a13d3097025d74adcd39af2ca33acad230dc80ab1d",
+        "f83fb1a1acf750d8568634a8c9aa06284b26568c54c027263b47f9fab4a3ac5d",
       telegram:
-        "d2656d79c48205766cd6a1f84ebdfdd354548927b141c5c740b76bb08d3e4a80",
-      web: "60f916cb1d206febcd0185bc14d8ea657d56a21578376bf8c33c0ee55dcf32ca",
+        "d295ab5e5d17cb33fe07dbaf990bdb64089a082b62582ba6e223f1e77fe6ec51",
+      web: "e8a574272a14a0a829a92a6a7e92bdfa4fa655ec3e04ed96431d2fb36e22137a",
     } satisfies Record<Kind, string>,
   },
 };

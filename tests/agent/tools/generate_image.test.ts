@@ -383,7 +383,7 @@ describe("generate_image", () => {
     );
 
     const result = await execute(tool, {
-      aspectRatio: "4:5",
+      aspectRatio: "3:4",
       photos: [1],
       prompt:
         'Birthday card for Sam with the dog in a party hat, text "С днём рождения, Сэм!"',
@@ -395,7 +395,7 @@ describe("generate_image", () => {
     expect(init?.headers.authorization).toBe("Bearer openrouter-test-key");
     const body = requestBodySchema.parse(JSON.parse(init?.body ?? "{}"));
     expect(body).toMatchObject({
-      aspect_ratio: "4:5",
+      aspect_ratio: "3:4",
       model: "test/image-model",
       n: 1,
     });
@@ -551,6 +551,8 @@ describe("generate_image", () => {
       execute(tool, { images: ["/artifacts/not-an-id"], prompt: "Brighter" })
     ).rejects.toThrow("is not a picture from this conversation");
 
+    // A refusal is neutral too: the provider's words go to the log only.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     fetchMock.mockResolvedValueOnce(
       Response.json(
         { error: { message: "Request blocked by content policy" } },
@@ -558,7 +560,11 @@ describe("generate_image", () => {
       )
     );
     await expect(execute(tool, { prompt: "Something" })).rejects.toThrow(
-      "The image model refused the request (400): Request blocked by content policy"
+      /^The image model declined this request\. (?!.*(?:blocked|400))/u
+    );
+    expect(warn).toHaveBeenCalledWith(
+      "[generate_image] the image model failed",
+      { reason: "Request blocked by content policy", status: 400 }
     );
 
     // The owner's problems never reach the person in the provider's words.
@@ -631,7 +637,7 @@ describe("generate_image", () => {
       })
     );
     await expect(execute(tool, { prompt: "Something" })).rejects.toThrow(
-      "The image model refused the request (400): Request blocked by content policy"
+      /^The image model declined this request\. (?!.*(?:blocked|400))/u
     );
 
     fetchMock.mockResolvedValueOnce(
@@ -641,9 +647,53 @@ describe("generate_image", () => {
       )
     );
     await expect(execute(tool, { prompt: "Something" })).rejects.toThrow(
-      "The image model refused the request (400): Model 'nosuch/model' not found"
+      /^The image model declined this request\. (?!.*nosuch)/u
     );
     expect(mocks.save).not.toHaveBeenCalled();
+  });
+
+  // 21.10: the model drew «4:5» first, RouterAI's drawing model answered 400
+  // and the card came out on the second try, with the provider's words in
+  // the error the model reads.
+  it("offers only shapes RouterAI's drawing model accepts and never repeats its refusal", async () => {
+    useRouterAi();
+    const tool = await resolveTool(dynamicContext([request]));
+    const schema = tool.inputSchema;
+    if (!(schema instanceof z.ZodType)) {
+      throw new TypeError("Expected an authored Zod input schema.");
+    }
+    const accepted = ["1:1", "4:3", "3:4", "16:9", "9:16", "3:2", "2:3"];
+    const offered = [
+      "1:1",
+      "4:5",
+      "5:4",
+      "3:4",
+      "4:3",
+      "2:3",
+      "3:2",
+      "9:16",
+      "16:9",
+      "21:9",
+    ].filter(
+      (aspectRatio) =>
+        schema.safeParse({ aspectRatio, prompt: "A card" }).success
+    );
+    expect(offered.toSorted()).toEqual(accepted.toSorted());
+    expect(JSON.stringify(z.toJSONSchema(schema))).not.toContain("4:5");
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const refusal =
+      'Azure microsoft/mai-image-2.6-flash: aspect_ratio "4:5" not supported. Accepted: 1:1, 4:3, 3:4, 16:9, 9:16, 3:2, 2:3, auto';
+    fetchMock.mockResolvedValueOnce(
+      Response.json({ error: refusal }, { status: 400 })
+    );
+    await expect(execute(tool, { prompt: "A card" })).rejects.toThrow(
+      /^The image model declined this request\. (?!.*(?:azure|microsoft|mai-image|4:5|400))/isu
+    );
+    expect(warn).toHaveBeenCalledWith(
+      "[generate_image] the image model failed",
+      { reason: refusal, status: 400 }
+    );
   });
 });
 

@@ -30,6 +30,7 @@ export function SubagentPanel({
   initialUsage,
   onTraceViewChange,
   sessionId,
+  showInternals,
   traceView,
 }: {
   readonly events: readonly MessageStreamEvent[];
@@ -37,6 +38,7 @@ export function SubagentPanel({
   readonly initialUsage?: ChatUsage;
   readonly onTraceViewChange: (view: TraceView) => void;
   readonly sessionId?: string;
+  readonly showInternals: boolean;
   readonly traceView: TraceView;
 }) {
   const [selectedId, setSelectedId] = useState<string>();
@@ -113,6 +115,7 @@ export function SubagentPanel({
       onSelect={openTask}
       onTraceViewChange={onTraceViewChange}
       sessions={sessions}
+      showInternals={showInternals}
       statuses={statuses}
       traceView={traceView}
       usage={usage}
