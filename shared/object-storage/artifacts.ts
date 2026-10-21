@@ -1,4 +1,5 @@
 import { Agent } from "undici";
+import * as z from "zod";
 import {
   objectStorageConfigured,
   presignStoredObject,
@@ -43,13 +44,47 @@ export class ArtifactStorageError extends Error {
 }
 
 /**
- * How long the retry of an upload gives each of the store's addresses before
- * it races the next. Node's own 250 ms drops an IPv4 handshake that is merely
- * slow for the store's IPv6 address (it has both): 19.10 on production every
- * report screenshot failed that way in 0.3 s, «AggregateError [ETIMEDOUT]».
+ * How an upload dials the store. TCP and TLS take 40 ms from the VM, yet some
+ * connections hang, and the one that hung cost the whole of its bound: 19.10
+ * a fresh process's connect ended «AggregateError [ETIMEDOUT]» at Node's
+ * 250 ms per address; 21.10 three report screenshots took 10.3 s, undici's
+ * own 10 s bound for a connection plus the 0.3 s the next socket needed.
+ * So the first tries give a connection a second and a bit to come up, past
+ * the first retransmit of a lost SYN (1 s) and far short of 10 s (undici
+ * checks its bound twice a second: 1.5 s in effect), and then go on to a fresh
+ * socket; only the last waits out a slow one, as Node's 250 ms also dropped a
+ * handshake that was merely slow.
  */
+const quickConnectMs = 1200;
+const quickTries = 3;
 const patientAttemptMs = 2500;
+let quickDialer: Agent | undefined;
 let patientDialer: Agent | undefined;
+
+/** The `fetch` option that makes the connection the quick way or the patient one. */
+function dialing(quick: boolean) {
+  if (quick) {
+    quickDialer ??= new Agent({
+      autoSelectFamily: true,
+      autoSelectFamilyAttemptTimeout: quickConnectMs,
+      connect: { timeout: quickConnectMs },
+    });
+    return { dispatcher: quickDialer };
+  }
+  patientDialer ??= new Agent({
+    autoSelectFamily: true,
+    autoSelectFamilyAttemptTimeout: patientAttemptMs,
+  });
+  return { dispatcher: patientDialer };
+}
+
+/** A picture or a page that takes the store longer than this is logged. */
+const smallUploadBytes = 1024 * 1024;
+const slowSmallUploadMs = 1500;
+/** The code undici or Node gave a failed connection (`UND_ERR_CONNECT_TIMEOUT`). */
+const connectionFailureSchema = z.object({
+  cause: z.object({ code: z.string() }).optional(),
+});
 
 /** Stores an artifact's bytes, replacing what was under its path before. */
 export async function putArtifactObject(input: {
@@ -58,9 +93,9 @@ export async function putArtifactObject(input: {
   readonly pathname: string;
   readonly signal?: AbortSignal;
 }) {
-  const upload = (init?: { dispatcher: Agent }) =>
+  const upload = (quick: boolean) =>
     fetch(presignArtifact(input.pathname, "PUT"), {
-      ...init,
+      ...dialing(quick),
       body: Buffer.from(input.bytes),
       headers: { "content-type": input.mediaType },
       method: "PUT",
@@ -70,21 +105,48 @@ export async function putArtifactObject(input: {
         uploadTimeoutMs(input.bytes.byteLength)
       ),
     });
-  // A connection that failed («fetch failed», a TypeError) is tried once
-  // more, patiently: the same bytes under the same key change nothing. A
-  // timeout or a refusal is not.
-  let response: Response;
+  // A connection that failed («fetch failed», a TypeError) is tried again on
+  // a fresh socket: the same bytes under the same key change nothing. A
+  // timeout or a refusal is not. The tries that failed are logged: the
+  // retry would otherwise hide what the store does to a connection.
+  const startedAt = performance.now();
+  const failures: string[] = [];
+  let response: Response | undefined;
   try {
-    response = await upload();
-  } catch (error) {
-    if (!(error instanceof TypeError) || input.signal?.aborted === true) {
-      throw error;
+    for (let attempt = 1; response === undefined; attempt += 1) {
+      const quick = attempt <= quickTries;
+      const attemptStartedAt = performance.now();
+      try {
+        // oxlint-disable-next-line eslint/no-await-in-loop -- A try starts only once the one before has failed.
+        response = await upload(quick);
+      } catch (error) {
+        if (
+          !(error instanceof TypeError) ||
+          !quick ||
+          input.signal?.aborted === true
+        ) {
+          throw error;
+        }
+        const code =
+          connectionFailureSchema.safeParse(error).data?.cause?.code ??
+          "unknown";
+        failures.push(
+          `${code} after ${String(Math.round(performance.now() - attemptStartedAt))} ms`
+        );
+      }
     }
-    patientDialer ??= new Agent({
-      autoSelectFamily: true,
-      autoSelectFamilyAttemptTimeout: patientAttemptMs,
-    });
-    response = await upload({ dispatcher: patientDialer });
+  } finally {
+    const ms = Math.round(performance.now() - startedAt);
+    if (
+      failures.length > 0 ||
+      (input.bytes.byteLength < smallUploadBytes && ms > slowSmallUploadMs)
+    ) {
+      console.warn("[object-storage] slow upload", {
+        bytes: input.bytes.byteLength,
+        failures,
+        ms,
+      });
+    }
   }
   if (!response.ok) {
     throw new ArtifactStorageError(
