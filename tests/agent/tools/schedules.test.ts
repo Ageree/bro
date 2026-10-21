@@ -471,6 +471,45 @@ describe("schedule tools", () => {
     });
   });
 
+  // 21.10: asked at 14:10:40, «через 5 минут» was set to 14:15 and came after
+  // 4 minutes 20 seconds. The model's clock has no seconds, so code counts it.
+  it("sets «через 5 минут» five minutes from the call, never earlier", async () => {
+    vi.useFakeTimers({ now: new Date("2026-10-21T11:10:51.000Z") });
+    try {
+      services.create.mockImplementation((_scope, input) =>
+        Promise.resolve({
+          ...scheduledJob(),
+          nextRunAt:
+            input.timing.kind === "once" ? new Date(input.timing.at) : null,
+          timing: input.timing,
+        })
+      );
+
+      const result = await createSchedule.execute(
+        {
+          missedRunPolicy: "run_latest",
+          prompt: "Напомнить выпить воды.",
+          timing: { inMinutes: 5, kind: "relative" },
+        },
+        toolContext("schedules-create")
+      );
+
+      expect(services.create).toHaveBeenCalledWith(
+        { userId: "user-1", workspaceId: "workspace-1" },
+        expect.objectContaining({
+          timing: { at: "2026-10-21T11:16:00.000Z", kind: "once" },
+        })
+      );
+      // 16:16 in Yekaterinburg (UTC+5): the reply names the minute it runs.
+      expect(result).toMatchObject({
+        nextRunLocal: "2026-10-21 16:16, Wednesday (Asia/Yekaterinburg)",
+        timing: { at: "2026-10-21T11:16:00.000Z", kind: "once" },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps a changed rule in its own zone and off holidays", async () => {
     // «Каждый будний день в 9 по Нью-Йорку, кроме праздников», then
     // «сдвинь на 9:30» sent without the zone or the flag.
