@@ -103,7 +103,7 @@ export type SkillName = (typeof skillNames)[number];
  * (`triggers.ts`), and nothing the model reads would make it load one.
  */
 export const skillUses: Partial<Record<SkillName, string>> = {
-  "about-bro": "устройство, где данные, сейф, импорт паролей",
+  "about-bro": "кто ты и что умеешь, где данные, сейф, импорт паролей",
   apps: "Notion, Slack, Google Таблицы и другие приложения",
   browser:
     "купить, заказать, забронировать, записать на сайте; билеты, отели, такси, доставка; отчёт запуска",

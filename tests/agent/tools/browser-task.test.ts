@@ -4456,6 +4456,64 @@ describe("browser_task starts per turn", () => {
   });
 });
 
+// 21.10, prod: to «👍» in a new chat Bro started an errand on an application
+// of another chat that its memory named, and to «ты дурак» one that changed
+// it.
+describe("browser_task in a conversation where nothing was asked", () => {
+  const start = {
+    action: "start",
+    personWants: "look",
+    site: "https://productradar.ru",
+    task: "Проверить статус заявки на Product Radar",
+  } as const;
+
+  it.each(["👍", "?", "…", "[фото]"])(
+    "starts nothing for «%s» in a new conversation",
+    async (said) => {
+      const tool = await resolvedBrowserTask([], said);
+
+      await expect(
+        tool.execute(start, toolContext("better-auth:alice"))
+      ).rejects.toThrow("Nothing was started");
+      await expect(
+        tool.execute(
+          { ...start, personWants: "done" },
+          toolContext("better-auth:alice")
+        )
+      ).rejects.toThrow("only signs");
+      expect(createBrowserUseRun).not.toHaveBeenCalled();
+    }
+  );
+
+  it("starts as usual once the person asked for something", async () => {
+    createBrowserUseRun.mockResolvedValue({
+      id: runId,
+      model: "hosted-agent",
+      sessionId,
+      status: "running",
+    });
+
+    for (const [said, earlier] of [
+      ["проверь статус заявки на Product Radar", []],
+      // An emoji answers a question of Bro's in a conversation he spoke in.
+      [
+        "👍",
+        [
+          { content: "найди отель в Сочи", role: "user" },
+          { content: "Нашёл три, смотреть?", role: "assistant" },
+        ],
+      ],
+    ] as const) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Each start resolves its own tool.
+      const tool = await resolvedBrowserTask([], said, earlier);
+      // oxlint-disable-next-line eslint/no-await-in-loop -- One start at a time.
+      await tool.execute(start, toolContext("better-auth:alice"));
+    }
+
+    expect(createBrowserUseRun).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe("browser_task consent boundaries", () => {
   const taxi: BrowserSubmission = {
     amount: "около 900 ₽ по тарифу «Комфорт»",
