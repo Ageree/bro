@@ -8,7 +8,7 @@ import {
 import type { BetterAuthPlugin } from "better-auth";
 import { APIError, createAuthEndpoint } from "better-auth/api";
 import { setSessionCookie } from "better-auth/cookies";
-import { eq } from "drizzle-orm";
+import { and, eq, like, lt } from "drizzle-orm";
 import * as z from "zod";
 import { db, verification } from "@db";
 import {
@@ -46,9 +46,20 @@ function identifierOf(token: string) {
   return `telegram-login:${digest(token)}`;
 }
 
-/** Starts a login and returns the token the bot link carries, shown once. */
+/**
+ * Starts a login and returns the token the bot link carries, shown once.
+ * Logins nobody finished are swept here: nothing else would delete them.
+ */
 export async function startTelegramLogin(now = new Date()) {
   const token = randomBytes(24).toString("base64url");
+  await db
+    .delete(verification)
+    .where(
+      and(
+        like(verification.identifier, "telegram-login:%"),
+        lt(verification.expiresAt, now)
+      )
+    );
   await db.insert(verification).values({
     expiresAt: new Date(now.getTime() + loginLifetimeMs),
     id: randomUUID(),
@@ -61,7 +72,8 @@ export async function startTelegramLogin(now = new Date()) {
 /**
  * The bot's half: binds the login to the Telegram account that pressed Start
  * and returns the code to send it. Pressing Start again sends a new code and
- * forgets the old one.
+ * forgets the old one, but keeps the wrong guesses and the deadline, and a
+ * login another Telegram account already took gives this one nothing.
  */
 export async function approveTelegramLogin(
   token: string,
@@ -76,30 +88,49 @@ export async function approveTelegramLogin(
       .where(eq(verification.identifier, identifier))
       .limit(1)
       .for("update");
-    if (!row) return { kind: "unknown" as const };
+    const value = loginValueOf(row?.value);
+    if (!row || !value) return { kind: "unknown" as const };
     if (row.expiresAt.getTime() <= now.getTime()) {
       await transaction
         .delete(verification)
         .where(eq(verification.identifier, identifier));
       return { kind: "expired" as const };
     }
+    if (value.userId !== undefined && value.userId !== userId) {
+      return { kind: "unknown" as const };
+    }
     const code = String(randomInt(0, 1_000_000)).padStart(6, "0");
     await transaction
       .update(verification)
       .set({
-        expiresAt: new Date(
-          Math.max(row.expiresAt.getTime(), now.getTime() + codeLifetimeMs)
-        ),
-        value: JSON.stringify({ attempts: 0, codeHash: digest(code), userId }),
+        expiresAt:
+          value.userId === undefined
+            ? new Date(
+                Math.max(
+                  row.expiresAt.getTime(),
+                  now.getTime() + codeLifetimeMs
+                )
+              )
+            : row.expiresAt,
+        value: JSON.stringify({ ...value, codeHash: digest(code), userId }),
       })
       .where(eq(verification.identifier, identifier));
     return { code, kind: "code" as const };
   });
 }
 
+function loginValueOf(stored: string | undefined) {
+  if (stored === undefined) return undefined;
+  try {
+    return loginValueSchema.safeParse(JSON.parse(stored)).data;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * The page's half: the account whose bot sent this code, once. Three wrong
- * codes end the login, so guessing a code means pressing Start each time.
+ * codes end the login; pressing Start again does not give more.
  */
 async function finishTelegramLogin(
   token: string,
@@ -114,9 +145,7 @@ async function finishTelegramLogin(
       .where(eq(verification.identifier, identifier))
       .limit(1)
       .for("update");
-    const value = loginValueSchema.safeParse(
-      row === undefined ? undefined : JSON.parse(row.value)
-    ).data;
+    const value = loginValueOf(row?.value);
     if (!row || !value || row.expiresAt.getTime() <= now.getTime()) {
       return { kind: "unknown" as const };
     }

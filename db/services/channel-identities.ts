@@ -1,7 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { and, eq } from "drizzle-orm";
-import { channelIdentities, channelLinkTokens, db, user } from "@db";
-import { isTelegramUserEmail } from "@db/services/auth/telegram-user";
+import { channelIdentities, channelLinkTokens, db } from "@db";
 import type { AccessScope } from "@shared/identity/access-scope";
 
 /** A conversation channel an account can bind after it already exists. */
@@ -77,13 +76,9 @@ export async function redeemChannelLinkToken(
       )
       .limit(1);
     // An account the bot made on a first message (`ensureTelegramUser`)
-    // gives its Telegram up to the phone account that asks: a person who
-    // wrote to the bot before binding would otherwise be stuck in it.
-    if (
-      boundExternalUser &&
-      boundExternalUser.userId !== claim.userId &&
-      !(await madeByTelegram(transaction, boundExternalUser.userId))
-    ) {
+    // keeps its Telegram too: a link anyone can mint and send would
+    // otherwise move a stranger's Telegram into the sender's cabinet.
+    if (boundExternalUser && boundExternalUser.userId !== claim.userId) {
       return "already_linked_other_user" as const;
     }
 
@@ -119,9 +114,7 @@ export async function redeemChannelLinkToken(
         set: {
           chatId: externalUser.chatId,
           linkedAt: now,
-          userId: claim.userId,
           username: externalUser.username ?? null,
-          workspaceId: claim.workspaceId,
         },
         target: [channelIdentities.channel, channelIdentities.externalUserId],
       });
@@ -168,18 +161,6 @@ export async function readChannelIdentity(
     )
     .limit(1);
   return identity;
-}
-
-async function madeByTelegram(
-  transaction: Pick<typeof db, "select">,
-  userId: string
-) {
-  const [owner] = await transaction
-    .select({ email: user.email })
-    .from(user)
-    .where(eq(user.id, userId))
-    .limit(1);
-  return owner !== undefined && isTelegramUserEmail(owner.email);
 }
 
 function hashChannelLinkToken(token: string) {

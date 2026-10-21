@@ -161,6 +161,29 @@ describe("signing in through the Telegram bot", () => {
     expect((await verify(token, approved.code)).status).toBe(400);
   });
 
+  it("gives another Telegram account nothing and keeps the wrong guesses", async () => {
+    const { start, verify } = await website();
+    const { token } = await start();
+    const { approveTelegramLogin } =
+      await import("@db/services/auth/telegram-login");
+    const first = await approveTelegramLogin(token, "user-1");
+    if (first.kind !== "code") throw new Error("The bot must get a code.");
+    const wrong = first.code === "111111" ? "222222" : "111111";
+    await verify(token, wrong);
+    await verify(token, wrong);
+
+    await expect(approveTelegramLogin(token, "user-2")).resolves.toEqual({
+      kind: "unknown",
+    });
+    // Start pressed again: a new code, but no fresh guesses.
+    const again = await approveTelegramLogin(token, "user-1");
+    if (again.kind !== "code") throw new Error("The bot must get a code.");
+    const wrongAgain = again.code === "111111" ? "222222" : "111111";
+    await expect(refusalCode(await verify(token, wrongAgain))).resolves.toBe(
+      "TELEGRAM_LOGIN_EXPIRED"
+    );
+  });
+
   it("gives no code for a login that ran out of time", async () => {
     await withDatabase();
     const { approveTelegramLogin, startTelegramLogin } =

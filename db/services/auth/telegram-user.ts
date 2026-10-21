@@ -21,11 +21,12 @@ function telegramUserEmail(telegramUserId: string) {
 /**
  * The account behind a Telegram user, created on their first message or
  * sign-in when there is none: Telegram is Bro's main channel, and writing to
- * the bot is all it takes to start (owner, 21.10). Someone who already has a
- * phone account binds Telegram to it with «Привязать Telegram», which also
- * takes the identity over from an account made here
- * (`redeemChannelLinkToken`). Two first messages at once converge on one
- * account through the unique email; `created` is true for one of them.
+ * the bot is all it takes to start (owner, 21.10). Someone with a phone
+ * account binds Telegram to it with «Привязать Telegram» before writing to
+ * the bot; an account made here keeps its Telegram until it is unbound in
+ * its own cabinet (`redeemChannelLinkToken`). Two first messages at once
+ * converge on one account through the unique email; `created` is true for
+ * one of them.
  */
 export async function ensureTelegramUser({
   chatId,
@@ -66,8 +67,8 @@ export async function ensureTelegramUser({
 
   const scope = accessScopeForUser(`better-auth:${userId}`);
   await ensureScope(scope);
-  // The identity of an account whose Telegram was taken over by a phone
-  // account stays with that phone account: nothing is overwritten here.
+  // An identity that is already someone's stays theirs: nothing is
+  // overwritten here.
   await db
     .insert(channelIdentities)
     .values({
@@ -82,11 +83,6 @@ export async function ensureTelegramUser({
   const owner = await boundUser(telegramUserId);
   if (owner === undefined) return undefined;
   return { created: created !== undefined && owner === userId, userId: owner };
-}
-
-/** Whether an account began in Telegram, so nothing but Telegram reaches it. */
-export function isTelegramUserEmail(email: string) {
-  return email.endsWith(`@${telegramUserEmailDomain}`);
 }
 
 async function boundUser(telegramUserId: string) {

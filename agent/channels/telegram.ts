@@ -92,6 +92,7 @@ import {
 } from "@shared/chat/reaction";
 import { accessScopeForUser } from "@shared/identity/access-scope";
 import { env } from "@shared/environment";
+import { applicationOrigin } from "@shared/environment/origin";
 import {
   imageArtifactFailureText,
   prepareImageArtifactDelivery,
@@ -620,7 +621,9 @@ function loginOutcomeText(
 ) {
   switch (outcome.kind) {
     case "code": {
-      return `Код для входа на сайт: ${outcome.code}\n\nВведи его на странице входа. Никому его не сообщай — даже если попросят от имени Bro.`;
+      // The site is named: a look-alike page could show the same bot link.
+      const site = new URL(applicationOrigin()).host;
+      return `Код для входа на ${site}: ${outcome.code}\n\nВводи его только на ${site}. Никому его не сообщай — даже если попросят от имени Bro. Если ты не входил на сайт, просто не отвечай.`;
     }
     case "expired": {
       return "Этот вход устарел. Вернись на сайт и нажми «Войти через Telegram» ещё раз.";
