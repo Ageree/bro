@@ -238,7 +238,10 @@ const writeFirstSchema = z.object({
 });
 
 /** The line to write to, when the server refused the code for want of it. */
-export function writeFirstLine(error: { readonly code?: string }) {
+export function writeFirstLine(error: {
+  readonly code?: string;
+  readonly line?: string;
+}) {
   return writeFirstSchema.safeParse(error).data?.line;
 }
 
