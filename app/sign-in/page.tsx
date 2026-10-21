@@ -5,6 +5,8 @@ import { Capsule } from "@web/components/paper/capsule";
 import { SiteFooter } from "@web/components/paper/footer";
 import { LocalPhoneAuthForm } from "@app/sign-in/_components/local-form";
 import { PhoneOtpAuthForm } from "@app/sign-in/_components/otp-form";
+import { TelegramAuthForm } from "@app/sign-in/_components/telegram-form";
+import { telegramLinkConfigured } from "@shared/identity/telegram-link";
 import { ownCallbackUrl } from "@app/sign-in/_lib/callback";
 import { localPhoneAuthBypassEnabled } from "@shared/environment";
 import { requestSession } from "@web/auth/request-scope";
@@ -27,6 +29,7 @@ export default async function SignInPage({
     : callbackValue;
   const callbackUrl = ownCallbackUrl(requestedCallback);
   const imessageConfigured = photonConfigured();
+  const telegramConfigured = telegramLinkConfigured();
 
   return (
     <div className="flex min-h-svh flex-col">
@@ -40,21 +43,36 @@ export default async function SignInPage({
           <h1 className="type-doc-heading mb-2" id="login-title">
             Вход
           </h1>
-          <p className="type-fine text-muted-foreground">
-            Введи телефон, с которого пишешь Bro.
-            {!localPhoneAuthBypassEnabled && imessageConfigured
-              ? " Код придёт в iMessage."
-              : null}
-          </p>
-          {!localPhoneAuthBypassEnabled && !imessageConfigured ? (
-            <p className="type-fine mt-4 text-muted-foreground">
-              Вход через iMessage на этом деплое не настроен: задай переменные
-              проекта Photon.
-            </p>
-          ) : localPhoneAuthBypassEnabled ? (
-            <LocalPhoneAuthForm callbackUrl={callbackUrl} />
+          {localPhoneAuthBypassEnabled ? (
+            <>
+              <p className="type-fine text-muted-foreground">
+                Введи телефон, с которого пишешь Bro.
+              </p>
+              <LocalPhoneAuthForm callbackUrl={callbackUrl} />
+            </>
           ) : (
-            <PhoneOtpAuthForm callbackUrl={callbackUrl} />
+            <>
+              {telegramConfigured ? (
+                <>
+                  <p className="type-fine text-muted-foreground">
+                    Bro живёт в Telegram: войди через него — код пришлёт бот.
+                  </p>
+                  <TelegramAuthForm callbackUrl={callbackUrl} />
+                </>
+              ) : null}
+              {imessageConfigured ? (
+                <PhoneSignIn
+                  callbackUrl={callbackUrl}
+                  secondary={telegramConfigured}
+                />
+              ) : null}
+              {telegramConfigured || imessageConfigured ? null : (
+                <p className="type-fine mt-4 text-muted-foreground">
+                  Вход на этом деплое не настроен: задай TELEGRAM_BOT_USERNAME
+                  или переменные проекта Photon.
+                </p>
+              )}
+            </>
           )}
           <p className="type-fine mt-6 text-center text-muted-foreground">
             Продолжая, вы соглашаетесь на обработку персональных данных по{" "}
@@ -75,5 +93,37 @@ export default async function SignInPage({
 
       <SiteFooter />
     </div>
+  );
+}
+
+/**
+ * The iMessage code, for a phone account made before Telegram became the
+ * main channel: signing in to it through an unbound Telegram would open a
+ * new, empty cabinet. Under the Telegram button it stays folded away.
+ */
+function PhoneSignIn({
+  callbackUrl,
+  secondary,
+}: {
+  readonly callbackUrl: string;
+  readonly secondary: boolean;
+}) {
+  if (!secondary) {
+    return (
+      <>
+        <p className="type-fine text-muted-foreground">
+          Введи телефон, с которого пишешь Bro. Код придёт в iMessage.
+        </p>
+        <PhoneOtpAuthForm callbackUrl={callbackUrl} />
+      </>
+    );
+  }
+  return (
+    <details className="mt-6 border-t pt-4">
+      <summary className="type-fine cursor-pointer text-muted-foreground">
+        Уже пишешь Bro в iMessage? Войти по номеру телефона
+      </summary>
+      <PhoneOtpAuthForm callbackUrl={callbackUrl} />
+    </details>
   );
 }

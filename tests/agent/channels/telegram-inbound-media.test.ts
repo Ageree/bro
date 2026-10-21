@@ -62,6 +62,17 @@ vi.mock("@db/services/channel-identities", () => ({
   findChannelIdentity: capture.findIdentity,
   redeemChannelLinkToken: vi.fn<typeof redeemChannelLinkToken>(),
 }));
+// The sender's account, as the bot finds or makes it; none means it failed.
+vi.mock("@db/services/auth/telegram-user", () => ({
+  ensureTelegramUser: async ({
+    telegramUserId,
+  }: {
+    readonly telegramUserId: string;
+  }) => {
+    const identity = await capture.findIdentity("telegram", telegramUserId);
+    return identity && { created: false, userId: identity.userId };
+  },
+}));
 vi.mock("@db/services/scope", async (importOriginal) => ({
   ...(await importOriginal<typeof ScopeService>()),
   claimWorkspaceIntroduction: capture.claimIntroduction,
@@ -351,7 +362,7 @@ describe("Telegram inbound media", () => {
     ]);
   });
 
-  it("does not resolve media for a sender that is not linked", async () => {
+  it("does not resolve media for a sender without an account", async () => {
     capture.findIdentity.mockResolvedValue(undefined);
     const { context } = inboundContext("777");
 

@@ -4,6 +4,10 @@ import Link from "next/link";
 import { Button } from "@web/components/ui/button";
 import { cn } from "@web/components/class-names";
 import { photonConfigured } from "@shared/photon/credentials";
+import {
+  telegramLinkConfigured,
+  telegramStartUrl,
+} from "@shared/identity/telegram-link";
 import { PortraitWallpaper } from "./_components/portrait-wallpaper";
 import { WriteBro } from "./_components/write-bro";
 import styles from "./landing.module.css";
@@ -56,7 +60,12 @@ export default function Page() {
           <h1 className="type-product-title" id="bro-title">
             bro — твой последний ИИ-агент
           </h1>
-          <WriteBro open={photonConfigured()} />
+          <WriteBro
+            imessage={photonConfigured()}
+            telegramHref={
+              telegramLinkConfigured() ? telegramStartUrl() : undefined
+            }
+          />
           <Link className={styles.offer} href="/oferta">
             Оферта
           </Link>

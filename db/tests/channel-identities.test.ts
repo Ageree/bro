@@ -125,6 +125,49 @@ describe("channel identities", () => {
     ).resolves.toMatchObject({ chatId: "5150", username: "ada_l" });
   }, 30_000);
 
+  // A person who wrote to the bot before binding Telegram to their phone
+  // account got an account from the bot; binding moves Telegram over.
+  it("takes Telegram over from an account the bot made, not from a person's", async () => {
+    const identities = await migratedService();
+    const ada = { userId: "better-auth:ada", workspaceId: "personal:ada" };
+    await Database.db.insert(schema.user).values({
+      email: "telegram-x@telegram.local-vault.invalid",
+      emailVerified: true,
+      id: "tg",
+      name: "Ada",
+    });
+    await Database.db.insert(schema.channelIdentities).values({
+      channel: "telegram",
+      chatId: "4242",
+      externalUserId: "9001",
+      userId: "tg",
+      workspaceId: "personal:tg",
+    });
+
+    await expect(
+      identities.redeemChannelLinkToken(
+        "telegram",
+        await identities.mintChannelLinkToken(ada, "telegram"),
+        adaTelegram
+      )
+    ).resolves.toBe("linked");
+    await expect(
+      identities.findChannelIdentity("telegram", "9001")
+    ).resolves.toMatchObject({ userId: "ada", workspaceId: "personal:ada" });
+
+    const grace = {
+      userId: "better-auth:grace",
+      workspaceId: "personal:grace",
+    };
+    await expect(
+      identities.redeemChannelLinkToken(
+        "telegram",
+        await identities.mintChannelLinkToken(grace, "telegram"),
+        adaTelegram
+      )
+    ).resolves.toBe("already_linked_other_user");
+  }, 30_000);
+
   it("requires a Better Auth principal", async () => {
     const identities = await migratedService();
 

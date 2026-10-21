@@ -3,19 +3,37 @@ import { Button } from "@web/components/ui/button";
 import styles from "../landing.module.css";
 
 /**
- * Bro's iMessage line answers only phones registered with Photon («This
- * number didn't recognize yours»), so a visitor starts at sign-in: the code
- * comes by iMessage, the sign-in registers their phone, and the cabinet's
- * «Написать Bro» opens the line they are on (`photonLineFor`).
+ * Where a visitor starts. Bro lives in Telegram, and the bot makes an
+ * account on the first message, so the button opens the bot itself. Without
+ * Telegram it leads to sign-in: Bro's iMessage line answers only phones
+ * registered with Photon («This number didn't recognize yours»), and asking
+ * for the sign-in code registers the phone.
  */
-export function WriteBro({ open }: { readonly open: boolean }) {
-  if (!open) {
+export function WriteBro({
+  imessage,
+  telegramHref,
+}: {
+  readonly imessage: boolean;
+  readonly telegramHref?: string;
+}) {
+  if (telegramHref) {
     return (
       <Button
-        aria-label="Пока закрыто: iMessage этого деплоя не настроен."
+        className={styles.primaryAction}
+        nativeButton={false}
+        render={<a aria-label="Написать бро в Telegram" href={telegramHref} />}
+      >
+        Написать bro
+      </Button>
+    );
+  }
+  if (!imessage) {
+    return (
+      <Button
+        aria-label="Пока закрыто: Telegram и iMessage этого деплоя не настроены."
         className={styles.primaryAction}
         disabled
-        title="iMessage этого деплоя не настроен."
+        title="Telegram и iMessage этого деплоя не настроены."
       >
         Написать bro
       </Button>

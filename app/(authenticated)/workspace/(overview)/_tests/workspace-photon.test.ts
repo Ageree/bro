@@ -94,6 +94,24 @@ describe("workspace Photon channel", () => {
     expect(html).not.toContain("Напиши Bro</h2>");
   });
 
+  it("opens Bro in Telegram first when the bot is set up", () => {
+    const html = renderToStaticMarkup(
+      createElement(ChannelsSection, {
+        imessageConfigured: true,
+        imessagePhoneNumber: "+12025550123",
+        telegramHref: "https://t.me/bro_test_bot",
+        welcome: true,
+      })
+    );
+
+    expect(html).toMatch(
+      /href="https:\/\/t\.me\/bro_test_bot"[^>]*data-variant="paper"/u
+    );
+    expect(html).toContain("Bro живёт в Telegram");
+    expect(html).not.toContain('href="sms:');
+    expect(html).toContain("В iMessage Bro по-прежнему на +12025550123.");
+  });
+
   it("reports a connected Photon line without requiring its number", () => {
     const html = renderToStaticMarkup(
       createElement(ChannelsSection, {

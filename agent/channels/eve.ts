@@ -46,12 +46,14 @@ const authenticate: Parameters<typeof routeAuth>[1] = [
 
     await requireOwnedRouteSubject(scope, request);
 
+    const attributes = {
+      conversationChannel: "eve",
+      workspaceId: scope.workspaceId,
+    };
     return {
-      attributes: {
-        conversationChannel: "eve",
-        phoneNumber,
-        workspaceId: scope.workspaceId,
-      },
+      // An account that began in Telegram has no phone.
+      attributes:
+        phoneNumber === undefined ? attributes : { ...attributes, phoneNumber },
       authenticator: "authjs",
       principalId: scope.userId,
       principalType: "user",
@@ -473,11 +475,9 @@ function decodePathSegment(segment: string) {
 async function requestIdentityFromRequest(request: Request) {
   const session = await getAuthSession(request.headers);
   if (!session) return undefined;
-  const phoneNumber = z.string().safeParse(session.user.phoneNumber);
-  if (!phoneNumber.success) return undefined;
 
   return {
-    phoneNumber: phoneNumber.data,
+    phoneNumber: session.user.phoneNumber,
     scope: accessScopeForUser(`better-auth:${session.user.id}`),
   };
 }
