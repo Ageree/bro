@@ -58,7 +58,7 @@ const event = z.object({
  */
 export const afishaSearchOperation = defineYandexOperation({
   about:
-    "Events on Yandex Afisha: title, kind (theatre, concert…), venue, dates as Afisha words them, the lowest ticket price in rubles and the link. By title or name: query (for example «джаз»), never a kind of event. By kind and days: category (concert, theatre, cinema, standup, kids, art for exhibitions, excursions, sport, show, musical, quest, lectures, masterclass, circus_show) with from and to (YYYY-MM-DD, calendar days of the city, both included; to defaults to from) and the most popular first: «концерты на следующей неделе» is category concert and that week's dates, no query; «кино в выходные» is category cinema with the Saturday and Sunday. Leave an unused argument empty. Also takes an optional city slug (default moscow) and limit (1 to 10, default 10).",
+    "Events on Yandex Afisha: title, kind (theatre, concert…), venue, dates as Afisha words them, the lowest ticket price in rubles and the link. By title or name: query (for example «джаз»), never a kind of event. By kind and days: category (concert, theatre, cinema, standup, kids, art for exhibitions, excursions, sport, show, musical, quest, lectures, masterclass, circus_show) with from and to (YYYY-MM-DD, calendar days of the city, both included; to defaults to from) and the most popular first: «концерты на следующей неделе» is category concert and that week's dates, no query; «кино в выходные» is category cinema with the Saturday and Sunday. If the result has queryDropped, no title had those words and the events are all of that kind for those days: say so. Leave an unused argument empty. Also takes an optional city slug (default moscow) and limit (1 to 10, default 10).",
   access: "read",
   args: z.object({
     category: z.enum(["", ...categories]).default(""),
@@ -74,7 +74,11 @@ export const afishaSearchOperation = defineYandexOperation({
   id: "afisha.search",
   origin: "https://afisha.yandex.ru/robots.txt",
   result: z.union([
-    z.object({ events: z.array(event).max(10) }),
+    z.object({
+      events: z.array(event).max(10),
+      // The words that matched no title and were left out of the answer.
+      queryDropped: z.string().optional(),
+    }),
     z.object({ error: z.string() }),
   ]),
   run: `async function (args) {
@@ -93,7 +97,28 @@ export const afishaSearchOperation = defineYandexOperation({
     if (j.errors) return { error: "gql", message: String(j.errors[0].message).slice(0, 120) };
     return j.data;
   };
+  const listed = (data) => {
+    const out = [];
+    for (const x of data.actualEvents.items) {
+      const o = x.event;
+      const s = x.scheduleInfo;
+      const t = o.tickets && o.tickets[0];
+      if (!o.title) continue;
+      out.push({
+        id: o.id,
+        kind: o.type ? o.type.name : null,
+        minPrice: t && t.minPrice ? t.minPrice.value / 100 : null,
+        sale: t ? t.saleStatus ?? null : null,
+        title: o.title,
+        url: "https://afisha.yandex.ru" + o.url,
+        venue: s ? s.placePreview ?? null : null,
+        when: s && s.preview ? s.preview.text ?? null : null,
+      });
+    }
+    return out;
+  };
   let d;
+  let asked = null;
   if (args.category || args.from || args.to || !args.query) {
     // Afisha takes the first day and how many days; 2026-02-30 is no day.
     const stamp = (text) => {
@@ -109,16 +134,13 @@ export const afishaSearchOperation = defineYandexOperation({
       }
       dates = { date: args.from, period: Math.min(Math.round((last - first) / 86400000) + 1, 366) };
     }
-    d = await gql(
-      "BroListing",
-      ${JSON.stringify(afishaListingGraphql)},
-      {
-        dates,
-        paging: { limit: args.limit, offset: 0 },
-        search: args.query || null,
-        tags: args.category ? [args.category] : null,
-      }
-    );
+    asked = {
+      dates,
+      paging: { limit: args.limit, offset: 0 },
+      search: args.query || null,
+      tags: args.category ? [args.category] : null,
+    };
+    d = await gql("BroListing", ${JSON.stringify(afishaListingGraphql)}, asked);
   } else {
     d = await gql(
       "BroSearch",
@@ -128,41 +150,35 @@ export const afishaSearchOperation = defineYandexOperation({
   }
   if (d.wall) return { status: "signed_out" };
   if (d.error || !(d.search || d.actualEvents)) return { status: "ok", data: { error: d.error || "gql" } };
-  const events = [];
   if (d.actualEvents) {
-    for (const x of d.actualEvents.items) {
-      const o = x.event;
-      const s = x.scheduleInfo;
-      const t = o.tickets && o.tickets[0];
-      if (!o.title) continue;
+    const events = listed(d);
+    if (events.length === 0 && asked.search) {
+      // The words match titles only. Nothing has them (a model puts the kind of
+      // event there): once more without them, and the answer says so.
+      const again = await gql("BroListing", ${JSON.stringify(afishaListingGraphql)}, { ...asked, search: null });
+      const shown = again.actualEvents ? listed(again) : [];
+      if (shown.length > 0) {
+        return { status: "ok", data: { events: shown.slice(0, args.limit), queryDropped: asked.search } };
+      }
+    }
+    return { status: "ok", data: { events: events.slice(0, args.limit) } };
+  }
+  const events = [];
+  for (const g of d.search.groups)
+    for (const x of g.documents) {
+      const o = x.object;
+      if (o.__typename !== "SearchObjectEvent") continue;
       events.push({
         id: o.id,
-        kind: o.type ? o.type.name : null,
-        minPrice: t && t.minPrice ? t.minPrice.value / 100 : null,
-        sale: t ? t.saleStatus ?? null : null,
+        kind: o.type ? o.type.name : g.title || null,
+        minPrice: o.minPrice ? o.minPrice.value / 100 : null,
+        sale: o.tickets && o.tickets[0] ? o.tickets[0].saleStatus : null,
         title: o.title,
         url: "https://afisha.yandex.ru" + o.url,
-        venue: s ? s.placePreview ?? null : null,
-        when: s && s.preview ? s.preview.text ?? null : null,
+        venue: o.placeTitle || null,
+        when: o.datePreview ? o.datePreview.text : null,
       });
     }
-  } else {
-    for (const g of d.search.groups)
-      for (const x of g.documents) {
-        const o = x.object;
-        if (o.__typename !== "SearchObjectEvent") continue;
-        events.push({
-          id: o.id,
-          kind: o.type ? o.type.name : g.title || null,
-          minPrice: o.minPrice ? o.minPrice.value / 100 : null,
-          sale: o.tickets && o.tickets[0] ? o.tickets[0].saleStatus : null,
-          title: o.title,
-          url: "https://afisha.yandex.ru" + o.url,
-          venue: o.placeTitle || null,
-          when: o.datePreview ? o.datePreview.text : null,
-        });
-      }
-  }
   return { status: "ok", data: { events: events.slice(0, args.limit) } };
 }`,
   service: "afisha",

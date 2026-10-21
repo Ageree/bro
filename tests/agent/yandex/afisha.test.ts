@@ -20,6 +20,34 @@ async function afishaPage(answer: FakeResponse) {
   };
 }
 
+/**
+ * A page whose listing answers by the words asked for: the fixture's events,
+ * none, or a GraphQL error. `searches` are the words of each request, in order.
+ */
+async function searchingPage(
+  answerFor: (search: string | null) => "empty" | "error" | "listing"
+) {
+  const answers = {
+    empty: { body: await fixture("afisha/listing-empty.json") },
+    error: { body: await fixture("afisha/error-validation.json") },
+    listing: { body: await fixture("afisha/listing.json") },
+  };
+  const searches: (string | null)[] = [];
+  return {
+    page: {
+      origin,
+      respond(_url: URL, init: { body?: string | null }) {
+        const { variables } = z
+          .object({ variables: z.object({ search: z.string().nullable() }) })
+          .parse(JSON.parse(init.body ?? "{}"));
+        searches.push(variables.search);
+        return answers[answerFor(variables.search)];
+      },
+    },
+    searches,
+  };
+}
+
 describe("afisha.search", () => {
   it("lists the events of a query with their kind, venue, dates and lowest price", async () => {
     const { page, requests } = await afishaPage({
@@ -197,6 +225,52 @@ describe("afisha.search", () => {
       }))
     );
     expect(requests).toEqual([]);
+  });
+
+  it("asks once more without the words when no title has them, and says which words", async () => {
+    const { page, searches } = await searchingPage((search) =>
+      search === null ? "listing" : "empty"
+    );
+    const args = afishaSearchOperation.args.parse({
+      category: "concert",
+      from: "2026-10-24",
+      query: "концерт",
+    });
+    const answer = await runInPage(afishaSearchOperation.run, args, page);
+    expect(searches).toEqual(["концерт", null]);
+    expect(dataOf(answer)).toMatchObject({
+      events: [{ title: "Тестовый джаз" }, { title: "Вымышленный фильм" }],
+      queryDropped: "концерт",
+    });
+    expect(afishaSearchOperation.result.parse(dataOf(answer))).toBeDefined();
+  });
+
+  it("does not ask again when the first ask failed, when there were no words, or when the kind has nothing either", async () => {
+    const asked = async (
+      args: z.input<typeof afishaSearchOperation.args>,
+      answerFor: (search: string | null) => "empty" | "error" | "listing"
+    ) => {
+      const { page, searches } = await searchingPage(answerFor);
+      const answer = await runInPage(
+        afishaSearchOperation.run,
+        afishaSearchOperation.args.parse(args),
+        page
+      );
+      return { data: dataOf(answer), searches };
+    };
+    const words = { category: "concert", query: "концерт" } as const;
+    expect(await asked(words, () => "error")).toEqual({
+      data: { error: "gql" },
+      searches: ["концерт"],
+    });
+    expect(await asked({ category: "concert" }, () => "empty")).toEqual({
+      data: { events: [] },
+      searches: [null],
+    });
+    expect(await asked(words, () => "empty")).toEqual({
+      data: { events: [] },
+      searches: ["концерт", null],
+    });
   });
 
   it("takes a model's blank fields as no filter", () => {

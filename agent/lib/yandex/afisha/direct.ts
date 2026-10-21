@@ -218,16 +218,18 @@ async function searchDirect(args: SearchArgs): Promise<JsonValue | undefined> {
   return { events: events.slice(0, args.limit) };
 }
 
-async function listingDirect(args: SearchArgs): Promise<JsonValue | undefined> {
-  const variables = listingVariables(args);
-  if (variables === undefined) return { error: "bad_dates" };
+/** The events of the listing for these days and words, or nothing when Afisha did not answer as needed. */
+async function listedEvents(
+  args: SearchArgs,
+  variables: Exclude<ReturnType<typeof listingVariables>, undefined>
+) {
   const body = await answerOf(
     await afishaPost(args.city, "BroListing", afishaListingGraphql, variables),
     listingResponseSchema
   );
   if (!body?.data) return undefined;
-  const events = body.data.actualEvents.items.flatMap(
-    ({ event: item, scheduleInfo }) => {
+  return body.data.actualEvents.items
+    .flatMap(({ event: item, scheduleInfo }) => {
       const ticket = item.tickets?.[0];
       return item.title
         ? [
@@ -243,9 +245,24 @@ async function listingDirect(args: SearchArgs): Promise<JsonValue | undefined> {
             },
           ]
         : [];
+    })
+    .slice(0, args.limit);
+}
+
+async function listingDirect(args: SearchArgs): Promise<JsonValue | undefined> {
+  const variables = listingVariables(args);
+  if (variables === undefined) return { error: "bad_dates" };
+  const events = await listedEvents(args, variables);
+  if (events === undefined) return undefined;
+  if (events.length === 0 && variables.search !== null) {
+    // The words match titles only. Nothing has them (a model puts the kind of
+    // event there): once more without them, and the answer says so.
+    const shown = await listedEvents(args, { ...variables, search: null });
+    if (shown?.length) {
+      return { events: shown, queryDropped: variables.search };
     }
-  );
-  return { events: events.slice(0, args.limit) };
+  }
+  return { events };
 }
 
 /**

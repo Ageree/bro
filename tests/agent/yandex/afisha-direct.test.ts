@@ -6,6 +6,12 @@ import { dataOf, fixture, runInPage } from "./page";
 
 const args = afishaSearchOperation.args.parse({ query: "джаз" });
 
+/** The words a request of the listing was made with. */
+const searchOf = (body: BodyInit | null | undefined) =>
+  z
+    .object({ variables: z.object({ search: z.string().nullable() }) })
+    .parse(JSON.parse(z.string().parse(body))).variables.search;
+
 beforeEach(() => {
   vi.useFakeTimers();
 });
@@ -80,6 +86,32 @@ describe("afisha.search without a browser", () => {
     expect(week.asked).toMatchObject({
       variables: { dates: { date: "2026-10-24", period: 2 } },
     });
+  });
+
+  it("asks once more without the words when no title has them, as the page does", async () => {
+    const listing = await fixture("afisha/listing.json");
+    const empty = await fixture("afisha/listing-empty.json");
+    const fetchSpy = vi.fn<typeof fetch>(async (_, init) =>
+      Response.json(searchOf(init?.body) === null ? listing : empty)
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+    const asked = afishaSearchOperation.args.parse({
+      category: "concert",
+      from: "2026-10-24",
+      query: "концерт",
+    });
+    const direct = await afishaSearchDirect(asked);
+    const page = await runInPage(afishaSearchOperation.run, asked, {
+      origin: "https://afisha.yandex.ru/robots.txt",
+      respond: (_, init) => ({
+        body: searchOf(init.body) === null ? listing : empty,
+      }),
+    });
+    expect(direct).toEqual(dataOf(page));
+    expect(direct).toMatchObject({ queryDropped: "концерт" });
+    expect(fetchSpy.mock.calls.map(([, init]) => searchOf(init?.body))).toEqual(
+      ["концерт", null]
+    );
   });
 
   it("answers days that are none as the page does, without asking Afisha", async () => {
