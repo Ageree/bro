@@ -229,7 +229,8 @@ describe("missing-info questions", () => {
     expect(markup).toContain("Когда забронировать столик?");
     expect(markup).toContain("Завтра");
     expect(markup).toContain("<textarea");
-    expect(markup).toContain("Answer");
+    expect(markup).toContain("Ответить");
+    expect(markup).toContain("Напиши ответ…");
     expect(onInputResponses).not.toHaveBeenCalled();
   });
 
@@ -247,7 +248,7 @@ describe("missing-info questions", () => {
     );
 
     expect(markup).toContain("Когда забронировать столик?");
-    expect(markup).toContain("Responded: Завтра");
+    expect(markup).toContain("Ответ: Завтра");
     expect(markup).toContain("disabled=");
   });
 });

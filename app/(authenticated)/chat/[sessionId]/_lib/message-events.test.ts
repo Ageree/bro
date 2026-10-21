@@ -1,5 +1,6 @@
 import type { MessageStreamEvent } from "eve/client";
 import { describe, expect, it } from "vitest";
+import { messageDataOf } from "./message-data";
 import {
   imessageTimestamps,
   messageTimestamps,
@@ -10,6 +11,56 @@ type ToolResultOutput = Extract<
   Extract<MessageStreamEvent, { type: "action.result" }>["data"]["result"],
   { kind: "tool-result" }
 >["output"];
+
+describe("the time of a person's message", () => {
+  const sentAt = "2026-10-21T11:14:00.000Z";
+  const steeredAt = "2026-10-21T11:14:09.000Z";
+
+  it("is when eve received it, under the id the chat draws the message by", () => {
+    const events = [
+      received("turn_0", "привет", sentAt, "event-1"),
+      completedMessage("Ответ", "2026-10-21T11:14:05.000Z"),
+    ];
+    const [message] = messageDataOf(events).messages;
+
+    // The chat looks a message's time up by its id: the reducer's, not a turn's.
+    expect(message?.role).toBe("user");
+    expect(imessageTimestamps(events).get(message?.id ?? "")).toBe(sentAt);
+    expect(messageTimestamps(events).get(message?.id ?? "")).toBe(sentAt);
+  });
+
+  it("is its own when a message joins a turn that is running", () => {
+    const events = [
+      received("turn_0", "привет", sentAt, "event-1"),
+      received("turn_0", "и ещё", steeredAt, "event-2", 3),
+    ];
+    const people = messageDataOf(events).messages.filter(
+      (message) => message.role === "user"
+    );
+
+    expect(people).toHaveLength(2);
+    expect(
+      people.map((message) => imessageTimestamps(events).get(message.id))
+    ).toEqual([sentAt, steeredAt]);
+  });
+
+  it("is not made up for the input of a background task", () => {
+    const events = [
+      {
+        data: {
+          kind: "execution.background_task",
+          message: "итог задачи",
+          sequence: 0,
+          turnId: "turn_1",
+        },
+        meta: { at: sentAt, id: "event-bg" },
+        type: "message.received",
+      } satisfies MessageStreamEvent,
+    ];
+
+    expect(imessageTimestamps(events).size).toBe(0);
+  });
+});
 
 describe("iMessage event projection", () => {
   it("keeps a sent message's parts as the history grows", () => {
@@ -220,6 +271,20 @@ function toolResult(
     },
     meta: { at, id: `event-${toolName}` },
     type: "action.result",
+  };
+}
+
+function received(
+  turnId: string,
+  message: string,
+  at: string,
+  id: string,
+  sequence = 0
+): MessageStreamEvent {
+  return {
+    data: { message, sequence, turnId },
+    meta: { at, id },
+    type: "message.received",
   };
 }
 

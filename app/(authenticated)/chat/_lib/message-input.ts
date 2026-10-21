@@ -1,5 +1,6 @@
 import type { FilePart, FileUIPart, UserContent } from "ai";
 import type { PromptInputMessage } from "@web/components/ai-elements/prompt-input";
+import { defaultChatTitle } from "@shared/chat/title";
 
 export function messageContent(message: PromptInputMessage) {
   const text = message.text.trim();
@@ -58,5 +59,5 @@ function decodedBytes(base64: string) {
 export function chatTitle(message: PromptInputMessage) {
   const text = message.text.trim();
   if (text) return text.slice(0, 240);
-  return message.files[0]?.filename?.slice(0, 240) ?? "New chat";
+  return message.files[0]?.filename?.slice(0, 240) ?? defaultChatTitle;
 }

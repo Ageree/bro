@@ -24,8 +24,10 @@ export function ChatSession({
   const agent = useSessionAgent(sessionId);
 
   return (
-    <div className="relative flex h-full min-h-0 overflow-hidden bg-background text-foreground">
-      <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
+    // On a phone the root stacks: the activity button takes a row of its own
+    // above the conversation, so it never lies over a message.
+    <div className="relative flex h-full min-h-0 flex-col overflow-hidden bg-background text-foreground md:flex-row">
+      <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <ChatConversation
           agent={agent}
           initial={false}

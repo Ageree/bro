@@ -25,31 +25,31 @@ type ToolStatus = DynamicToolUIPart["state"];
 const statusPresentation = {
   "approval-requested": {
     icon: <ClockIcon className="size-4" />,
-    label: "Awaiting approval",
+    label: "Ждёт подтверждения",
   },
   "approval-responded": {
     icon: <CheckCircleIcon className="size-4" />,
-    label: "Responded",
+    label: "Ответ получен",
   },
   "input-available": {
     icon: <CircleIcon className="size-4 animate-pulse" />,
-    label: "Running",
+    label: "Выполняется",
   },
   "input-streaming": {
     icon: <CircleIcon className="size-4" />,
-    label: "Pending",
+    label: "Ожидает",
   },
   "output-available": {
     icon: <CheckCircleIcon className="size-4" />,
-    label: "Completed",
+    label: "Готово",
   },
   "output-denied": {
     icon: <XIcon className="size-4" />,
-    label: "Denied",
+    label: "Отклонено",
   },
   "output-error": {
     icon: <CircleAlertIcon className="size-4" />,
-    label: "Error",
+    label: "Ошибка",
   },
 } satisfies Record<ToolStatus, { icon: ReactNode; label: string }>;
 
@@ -150,7 +150,7 @@ interface ToolInputProps extends ComponentProps<"div"> {
 function ToolInput({ className, input, ...props }: ToolInputProps) {
   return (
     <div className={cn("space-y-2 overflow-hidden", className)} {...props}>
-      <p className="type-label text-muted-foreground">Parameters</p>
+      <p className="type-label text-muted-foreground">Параметры</p>
       <pre className="type-code overflow-x-auto rounded-xl bg-muted/60 p-3">
         <code>{JSON.stringify(input, null, 2)}</code>
       </pre>
@@ -181,7 +181,7 @@ function ToolOutput({
   return (
     <div className={cn("space-y-2", className)} {...props}>
       <p className="type-label text-muted-foreground">
-        {errorText ? "Error" : "Result"}
+        {errorText ? "Ошибка" : "Результат"}
       </p>
       <div
         className={cn(

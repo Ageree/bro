@@ -40,7 +40,7 @@ export function AuthorizationPrompt({
         {shouldShowInstructions ? <p>{instructions}</p> : null}
         {part.state === "required" && part.authorization?.userCode ? (
           <div className="flex flex-wrap items-center gap-2">
-            <span>Code</span>
+            <span>Код</span>
             <Badge variant="outline">
               <code className="type-compact-code">
                 {part.authorization.userCode}
@@ -52,7 +52,7 @@ export function AuthorizationPrompt({
           <Button
             render={
               <a
-                aria-label={`Sign in with ${part.displayName}`}
+                aria-label={`Войти через ${part.displayName}`}
                 href={part.authorization.url}
                 rel="noreferrer"
                 target="_blank"
@@ -62,7 +62,7 @@ export function AuthorizationPrompt({
             variant="paper"
           >
             <ExternalLinkIcon />
-            Sign in with {part.displayName}
+            Войти через {part.displayName}
           </Button>
         ) : null}
       </AlertDescription>
@@ -71,16 +71,16 @@ export function AuthorizationPrompt({
 }
 
 function authorizationTitle(part: EveAuthorizationPart): string {
-  if (part.state === "required") return `Connect ${part.displayName}`;
-  if (part.outcome === "authorized") return `${part.displayName} connected`;
-  return `${part.displayName} authorization ${formatAuthorizationOutcome(part.outcome)}`;
+  if (part.state === "required") return `Подключи ${part.displayName}`;
+  if (part.outcome === "authorized") return `${part.displayName} подключён`;
+  return `${part.displayName} не подключён`;
 }
 
 function authorizationDescription(part: EveAuthorizationPart): string {
   if (part.state === "required") return part.description;
-  if (part.outcome === "authorized") return `${part.displayName} connected.`;
+  if (part.outcome === "authorized") return `${part.displayName} подключён.`;
   const tail = part.reason !== undefined ? ` (${part.reason})` : "";
-  return `${part.displayName} authorization ${formatAuthorizationOutcome(part.outcome)}${tail}.`;
+  return `Вход в ${part.displayName}: ${formatAuthorizationOutcome(part.outcome)}${tail}.`;
 }
 
 function formatAuthorizationOutcome(
@@ -88,13 +88,13 @@ function formatAuthorizationOutcome(
 ): string {
   switch (outcome) {
     case "authorized":
-      return "authorized";
+      return "выполнен";
     case "declined":
-      return "declined";
+      return "отклонён";
     case "failed":
-      return "failed";
+      return "не удался";
     case "timed-out":
-      return "timed out";
+      return "время вышло";
   }
   throw new Error("Unsupported authorization outcome.");
 }

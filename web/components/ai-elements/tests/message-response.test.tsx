@@ -24,6 +24,21 @@ describe("message response rendering", () => {
     });
   });
 
+  it("words the external link window of Streamdown in Russian", () => {
+    // The translations are typed whole, so a control added by a newer
+    // Streamdown fails the type check until it is worded here.
+    expect(
+      MessageResponse({ children: "[сайт](https://e.com)" }).props
+    ).toMatchObject({
+      translations: {
+        copyLink: "Скопировать ссылку",
+        externalLinkWarning: "Ты переходишь на внешний сайт.",
+        openExternalLink: "Открыть внешнюю ссылку?",
+        openLink: "Открыть",
+      },
+    });
+  });
+
   it("renders only authenticated artifact images inline", () => {
     const artifactMarkup = renderToStaticMarkup(
       createElement(ArtifactMessageImage, {
@@ -41,7 +56,9 @@ describe("message response rendering", () => {
     expect(artifactMarkup).toContain("<img");
     expect(artifactMarkup).toContain('loading="lazy"');
     expect(artifactMarkup).toContain("/artifacts/0d01e667");
-    expect(externalMarkup).toContain("Image not displayed: External product");
+    expect(externalMarkup).toContain(
+      "Изображение не показано: External product"
+    );
     expect(externalMarkup).not.toContain("https://example.com/product.png");
   });
 });

@@ -75,18 +75,18 @@ export function QuestionRequest({
         </QuestionOptions>
       ) : null}
       {acceptsFreeform ? (
-        <QuestionInput aria-label="Answer" placeholder="Type your answer…" />
+        <QuestionInput aria-label="Ответ" placeholder="Напиши ответ…" />
       ) : null}
       {inputResponse ? (
         <QuestionDescription>
-          Responded:{" "}
+          Ответ:{" "}
           {selectedOption?.label ??
             inputResponse.text ??
             inputResponse.optionId}
         </QuestionDescription>
       ) : (
         <QuestionActions>
-          <QuestionSubmit>Answer</QuestionSubmit>
+          <QuestionSubmit>Ответить</QuestionSubmit>
         </QuestionActions>
       )}
     </Question>

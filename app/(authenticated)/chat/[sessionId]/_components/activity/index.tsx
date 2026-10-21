@@ -145,8 +145,8 @@ export function SubagentPanel({
       </aside>
 
       <Button
-        aria-label="Open activity panel"
-        className="absolute top-3 right-3 z-30 md:hidden"
+        aria-label="Открыть панель активности"
+        className="order-first mr-4 mb-1 self-end sm:mr-6 md:hidden"
         onClick={() => {
           setMobileOpen(true);
         }}

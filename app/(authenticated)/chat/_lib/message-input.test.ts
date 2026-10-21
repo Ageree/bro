@@ -82,4 +82,19 @@ describe("chat message input", () => {
       })
     ).toBe("receipt.png");
   });
+
+  it("calls a chat that has neither text nor a file name a new chat, in Russian", () => {
+    expect(
+      chatTitle({
+        files: [
+          {
+            mediaType: "image/png",
+            type: "file",
+            url: "data:image/png;base64,example",
+          },
+        ],
+        text: "   ",
+      })
+    ).toBe("Новый чат");
+  });
 });

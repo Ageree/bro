@@ -8,6 +8,7 @@ import {
   type ChatUsage,
   type SaveChat,
 } from "@shared/chat/schema";
+import { defaultChatTitle, shownChatTitle } from "@shared/chat/title";
 import { chats, db } from "@db";
 import { ensureScope } from "./scope";
 import { waitForSessionOwnership } from "./sessions";
@@ -24,10 +25,18 @@ const chatRowSchema = z.object({
 });
 
 function toChatSummary(row: z.infer<typeof chatRowSchema>): ChatSummary {
-  const { costUsd, createdAt, inputTokens, outputTokens, updatedAt, ...chat } =
-    row;
+  const {
+    costUsd,
+    createdAt,
+    inputTokens,
+    outputTokens,
+    title,
+    updatedAt,
+    ...chat
+  } = row;
   return {
     ...chat,
+    title: shownChatTitle(title),
     createdAt: createdAt.toISOString(),
     updatedAt: updatedAt.toISOString(),
     usage: { costUsd, inputTokens, outputTokens },
@@ -200,7 +209,7 @@ export async function saveChat(
       inputTokens: chat.usage?.inputTokens ?? 0,
       outputTokens: chat.usage?.outputTokens ?? 0,
       sessionId: chat.sessionId,
-      title: chat.title ?? "New chat",
+      title: chat.title ?? defaultChatTitle,
       updatedAt: now,
       workspaceId: scope.workspaceId,
     });
