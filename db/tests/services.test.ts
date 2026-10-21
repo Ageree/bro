@@ -143,7 +143,7 @@ describe("database services", () => {
     ).toEqual(aliceChat);
     expect(
       indexedChats.find((chat) => chat.sessionId === "session-imessage")
-    ).toMatchObject({ channel: "channel:photon", title: "New chat" });
+    ).toMatchObject({ channel: "channel:photon", title: "Новый чат" });
     expect((await chats.listChatsPage(bob)).chats).toEqual([]);
 
     await chats.saveChat(bob, {

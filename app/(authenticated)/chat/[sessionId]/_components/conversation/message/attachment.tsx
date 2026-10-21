@@ -6,7 +6,7 @@ import { Card, CardContent } from "@web/components/ui/card";
 type EveFilePart = Extract<EveMessagePart, { type: "file" }>;
 
 export function AttachmentPart({ part }: { readonly part: EveFilePart }) {
-  const label = part.filename ?? "Attachment";
+  const label = part.filename ?? "Вложение";
   const detail = [part.mediaType, formatBytes(part.size)]
     .filter(Boolean)
     .join(" · ");
@@ -46,7 +46,7 @@ export function AttachmentPart({ part }: { readonly part: EveFilePart }) {
       nativeButton={false}
       render={
         <a
-          aria-label={`Open ${label}`}
+          aria-label={`Открыть ${label}`}
           href={part.url}
           rel="noreferrer"
           target="_blank"
@@ -65,7 +65,7 @@ export function AttachmentPart({ part }: { readonly part: EveFilePart }) {
 
 function formatBytes(size: number | undefined): string | undefined {
   if (size === undefined) return undefined;
-  if (size < 1024) return `${String(size)} B`;
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
-  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+  if (size < 1024) return `${String(size)} Б`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} КБ`;
+  return `${(size / (1024 * 1024)).toFixed(1)} МБ`;
 }

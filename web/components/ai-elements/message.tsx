@@ -22,7 +22,7 @@ import {
   useMemo,
   useState,
 } from "react";
-import type { Components } from "streamdown";
+import type { Components, StreamdownTranslations } from "streamdown";
 import { z } from "zod";
 import { isBrowserImageArtifactUrl } from "@shared/browser/artifact";
 import { LazyStreamdown } from "./streamdown";
@@ -338,7 +338,7 @@ export function ArtifactMessageImage({
   if (!parsedSource.success || !isBrowserImageArtifactUrl(parsedSource.data)) {
     return (
       <span className="text-muted-foreground">
-        Image not displayed: {alt ?? "external image"}
+        Изображение не показано: {alt ?? "внешнее изображение"}
       </span>
     );
   }
@@ -353,7 +353,7 @@ export function ArtifactMessageImage({
         target="_blank"
       >
         <FileIcon className="size-4 shrink-0 text-muted-foreground" />
-        <span className="truncate">{alt ?? "Attachment"}</span>
+        <span className="truncate">{alt ?? "Вложение"}</span>
       </a>
     );
   }
@@ -363,7 +363,7 @@ export function ArtifactMessageImage({
       {/* oxlint-disable-next-line nextjs/no-img-element -- validated runtime browser image URL */}
       <img
         {...props}
-        alt={alt ?? "Browser image"}
+        alt={alt ?? "Изображение из браузера"}
         className={cn(
           "my-3 max-h-[32rem] w-auto max-w-full rounded-2xl border border-border bg-card object-contain",
           className
@@ -396,6 +396,43 @@ const streamdownLinkSafety = {
   },
 };
 
+// What Streamdown says in its own controls (the external link window, the code
+// and table buttons), which it words in English unless told otherwise.
+const streamdownTranslations: StreamdownTranslations = {
+  close: "Закрыть",
+  copied: "Скопировано",
+  copyCode: "Скопировать код",
+  copyLink: "Скопировать ссылку",
+  copyTable: "Скопировать таблицу",
+  copyTableAsCsv: "Скопировать как CSV",
+  copyTableAsMarkdown: "Скопировать как Markdown",
+  copyTableAsTsv: "Скопировать как TSV",
+  downloadDiagram: "Скачать диаграмму",
+  downloadDiagramAsMmd: "Скачать как MMD",
+  downloadDiagramAsPng: "Скачать как PNG",
+  downloadDiagramAsSvg: "Скачать как SVG",
+  downloadFile: "Скачать файл",
+  downloadImage: "Скачать изображение",
+  downloadTable: "Скачать таблицу",
+  downloadTableAsCsv: "Скачать как CSV",
+  downloadTableAsMarkdown: "Скачать как Markdown",
+  exitFullscreen: "Выйти из полноэкранного режима",
+  externalLinkWarning: "Ты переходишь на внешний сайт.",
+  imageNotAvailable: "Изображение недоступно",
+  mermaidFormatMmd: "MMD",
+  mermaidFormatPng: "PNG",
+  mermaidFormatSvg: "SVG",
+  openExternalLink: "Открыть внешнюю ссылку?",
+  openLink: "Открыть",
+  resetView: "Сбросить вид",
+  tableFormatCsv: "CSV",
+  tableFormatMarkdown: "Markdown",
+  tableFormatTsv: "TSV",
+  viewFullscreen: "Во весь экран",
+  zoomIn: "Увеличить",
+  zoomOut: "Уменьшить",
+};
+
 // Streamdown already memoizes its own output. Once a response settles, switch
 // out of its incremental block renderer so the completed text is committed
 // synchronously instead of retaining an earlier streamed render.
@@ -414,6 +451,7 @@ export const MessageResponse = ({
     isAnimating={isAnimating}
     linkSafety={streamdownLinkSafety}
     mode={mode ?? (isAnimating ? "streaming" : "static")}
+    translations={streamdownTranslations}
     {...props}
   />
 );

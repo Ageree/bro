@@ -217,7 +217,7 @@ export const ConversationScrollButton = ({
     isReady &&
     !isAtBottom && (
       <Button
-        aria-label="Scroll to bottom"
+        aria-label="Прокрутить вниз"
         className={cn(
           "absolute bottom-32 left-[50%] size-11 translate-x-[-50%] rounded-full shadow-[0_8px_30px_rgb(20_21_16/12%)]",
           className

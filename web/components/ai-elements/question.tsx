@@ -316,7 +316,7 @@ export type QuestionSubmitProps = ComponentProps<typeof Button> & {
 };
 
 export const QuestionSubmit = ({
-  children = "Submit",
+  children = "Отправить",
   disabled,
   ...props
 }: QuestionSubmitProps) => {

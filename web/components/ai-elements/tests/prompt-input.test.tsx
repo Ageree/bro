@@ -78,9 +78,22 @@ describe("prompt input", () => {
     );
 
     expect(markup).toContain("Composer tools");
-    expect(markup).toContain('aria-label="Submit"');
+    expect(markup).toContain('aria-label="Отправить"');
     expect(markup).toContain("absolute");
     expect(markup).toContain("right-1");
     expect(markup).toContain("bottom-1");
   });
+
+  it("names the submit button for a screen reader by what it does now", () => {
+    expect(submitButton()).toContain('aria-label="Отправить"');
+    expect(submitButton("streaming")).toContain('aria-label="Остановить"');
+  });
 });
+
+function submitButton(status?: "streaming") {
+  return renderToStaticMarkup(
+    <PromptInput onSubmit={() => undefined}>
+      <PromptInputSubmit onStop={() => undefined} status={status} />
+    </PromptInput>
+  );
+}

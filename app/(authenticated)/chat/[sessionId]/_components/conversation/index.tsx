@@ -84,6 +84,9 @@ export function ChatConversation({
     () => sentMessages(agent.events),
     [agent.events]
   );
+  const showPendingReply =
+    traceView === "imessage" &&
+    awaitsFirstReply(agent.status, messages, deliveredMessages);
 
   return (
     <Conversation
@@ -96,11 +99,11 @@ export function ChatConversation({
           : `eve:web-chat-scroll:${sessionId}`
       }
     >
-      <ConversationContent className="mx-auto w-full max-w-3xl gap-6 px-4 pt-6 pb-36 sm:px-6">
+      <ConversationContent className="mx-auto w-full max-w-3xl gap-6 px-4 pt-3 pb-36 sm:px-6 md:pt-6">
         {history ? <OlderHistory history={history} /> : null}
         {isRestoring && messages.length === 0 ? (
           <Shimmer className="type-supporting-body self-center" duration={1}>
-            Loading recent messages
+            Загружаем сообщения…
           </Shimmer>
         ) : null}
         {messages.map((message, index) => {
@@ -166,6 +169,7 @@ export function ChatConversation({
           );
         })}
         {showPendingThinking ? <PendingThinking /> : null}
+        {showPendingReply ? <PendingReply /> : null}
         {traceView === "trace" && errorMessage ? (
           <ErrorMessage message={errorMessage} />
         ) : null}
@@ -289,6 +293,45 @@ function isBackgroundTurnMessage(message: EveMessage) {
   return text?.type === "text" && isBackgroundTurnText(text.text);
 }
 
+/**
+ * Whether the person's latest message has nothing of Bro's below it yet: it
+ * has just left, or a turn is running and no message of Bro's (or card to
+ * answer) shows. The turn's own steps stay out of this view, so without a
+ * sign the chat looks idle for the seconds Bro takes to think.
+ */
+function awaitsFirstReply(
+  status: ChatAgent["status"],
+  messages: readonly EveMessage[],
+  deliveries: ReturnType<typeof sentMessages>
+) {
+  if (status === "submitted") return true;
+  if (status !== "streaming") return false;
+  const last = messages.at(-1);
+  if (last === undefined) return false;
+  if (last.role === "user") return !isBackgroundTurnMessage(last);
+  const before = messages.at(-2);
+  return (
+    before?.role === "user" &&
+    !isBackgroundTurnMessage(before) &&
+    !showsBro(last, deliveries)
+  );
+}
+
+/** Whether the iMessage view draws anything of Bro's for this turn. */
+function showsBro(
+  message: EveMessage,
+  deliveries: ReturnType<typeof sentMessages>
+) {
+  return (
+    (deliveries.get(message.id)?.length ?? 0) > 0 ||
+    message.parts.some(
+      (part) =>
+        part.type === "dynamic-tool" &&
+        part.toolMetadata?.eve?.inputRequest !== undefined
+    )
+  );
+}
+
 // The row of a notice keeps its message and parts while the history grows.
 const noticeByMessage = new WeakMap<
   EveMessage,
@@ -334,6 +377,19 @@ function ErrorMessage({ message }: { readonly message: string }) {
           <AlertTitle>Запрос не прошёл</AlertTitle>
           <AlertDescription>{message}</AlertDescription>
         </Alert>
+      </MessageContent>
+    </Message>
+  );
+}
+
+/** Bro is on the answer: in the iMessage view, the one sign of it. */
+function PendingReply() {
+  return (
+    <Message aria-live="polite" from="assistant">
+      <MessageContent>
+        <Shimmer className="type-supporting-body" duration={1}>
+          Bro печатает…
+        </Shimmer>
       </MessageContent>
     </Message>
   );

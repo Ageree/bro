@@ -51,10 +51,10 @@ async function replyAfter(browser: Browser, text: string, copy: number) {
 
 /**
  * Sends a message from the composer and waits for Bro's turn to end. A
- * running turn shows «Stop» in the composer, but the page may never show it:
+ * running turn shows «Остановить» in the composer, but the page may never show it:
  * the first message moves the chat to `/chat/<id>`, which `next dev` may
  * still be compiling when a short turn ends. So the turn counts as over once
- * a reply follows the message, «Stop» is gone and the reply holds still for
+ * a reply follows the message, «Остановить» is gone and the reply holds still for
  * one poll. Waiting for one bubble is not enough — Bro answers in several,
  * and a message sent mid-turn steers the running turn instead of starting
  * the next one. Returns the reply: what the log shows after the message.
@@ -63,12 +63,12 @@ export async function sendToBro(
   { browser, screen }: { browser: Browser; screen: Screen },
   text: string
 ) {
-  const stop = screen.getByRole("button", "Stop");
+  const stop = screen.getByRole("button", "Остановить");
   await expect(stop).toHaveCount(0, { timeout: turnTimeout });
   const copy = await copiesOf(browser, text);
 
   await screen.getByRole("textbox", "Напиши Bro…").fill(text);
-  await screen.getByRole("button", "Submit").tap();
+  await screen.getByRole("button", "Отправить").tap();
 
   let lastReply = "";
   await expect

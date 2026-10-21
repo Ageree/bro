@@ -3,7 +3,41 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { AgentMessage } from ".";
 
+function draw(message: EveMessage, timestamp?: string) {
+  return renderToStaticMarkup(
+    <AgentMessage
+      canRespond
+      isStreaming={false}
+      message={message}
+      onInputResponses={() => undefined}
+      timestamp={timestamp}
+      userVisibleOnly
+    />
+  );
+}
+
 describe("agent messages", () => {
+  it("never makes up the time of a message eve has echoed", () => {
+    const person = {
+      id: "event-1:user",
+      metadata: { status: "complete", turnId: "turn_0" },
+      parts: [{ state: "done", text: "привет", type: "text" }],
+      role: "user",
+    } satisfies EveMessage;
+    expect(draw(person, "2026-10-21T11:14:00.000Z")).toContain(
+      'dateTime="2026-10-21T11:14:00.000Z"'
+    );
+    // Without a time of its own it shows none, not the moment it was drawn.
+    expect(draw(person)).not.toContain("<time");
+    // A message not yet echoed has no event: it is stamped when drawn.
+    expect(
+      draw({
+        ...person,
+        metadata: { optimistic: true, status: "submitted" },
+      })
+    ).toContain("<time");
+  });
+
   it("renders only channel-delivered content in the iMessage view", () => {
     const message = {
       id: "turn-1:assistant",

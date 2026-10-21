@@ -32,8 +32,11 @@ export const AgentMessage = memo(function AgentMessage({
   readonly userVisibleOnly?: boolean;
 }) {
   const [optimisticTimestamp] = useState(() => new Date().toISOString());
+  // Only a message eve has not yet echoed is stamped with the moment it was
+  // drawn: a sent message without a time of its own shows none, not "now".
   const displayedTimestamp =
-    timestamp ?? (message.role === "user" ? optimisticTimestamp : undefined);
+    timestamp ??
+    (message.metadata?.optimistic ? optimisticTimestamp : undefined);
   const visibleParts = userVisibleOnly
     ? userVisibleParts(message, sentMessageParts, showInputRequests)
     : message.parts;

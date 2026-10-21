@@ -1,4 +1,4 @@
-import type { MessageStreamEvent } from "eve/client";
+import { defaultMessageReducer, type MessageStreamEvent } from "eve/client";
 import type { EveMessagePart } from "eve/react";
 import {
   reactionTextFor,
@@ -6,12 +6,25 @@ import {
 } from "@shared/chat/reaction";
 import { sendMessageToolResultSchema } from "@shared/chat/message-delivery";
 
+const messageReducer = defaultMessageReducer();
+
+/**
+ * The id eve's reducer gives the user message a `message.received` event adds
+ * (none for a background task's input). It names the message after its event,
+ * not its turn: a message sent into a running turn repeats the turn's id.
+ */
+function receivedMessageId(event: MessageStreamEvent) {
+  return messageReducer.reduce(messageReducer.initial(), event).messages.at(0)
+    ?.id;
+}
+
 export function messageTimestamps(events: readonly MessageStreamEvent[]) {
   const timestamps = new Map<string, string>();
 
   for (const event of events) {
     if (event.type === "message.received") {
-      timestamps.set(`${event.data.turnId}:user`, event.meta.at);
+      const id = receivedMessageId(event);
+      if (id !== undefined) timestamps.set(id, event.meta.at);
     }
 
     if (
@@ -30,7 +43,8 @@ export function imessageTimestamps(events: readonly MessageStreamEvent[]) {
 
   for (const event of events) {
     if (event.type === "message.received") {
-      timestamps.set(`${event.data.turnId}:user`, event.meta.at);
+      const id = receivedMessageId(event);
+      if (id !== undefined) timestamps.set(id, event.meta.at);
     }
   }
 
