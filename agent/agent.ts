@@ -36,6 +36,7 @@ import {
 } from "@agent/lib/delivery/pending";
 import { reportedBrowserRunId } from "@agent/lib/browser-use/report-caller";
 import { bareOpening } from "@agent/lib/browser-use/said";
+import { firstContactMarked } from "@agent/lib/skills/triggers";
 import {
   browserFilesEnabled,
   personBrowserFiles,
@@ -427,8 +428,12 @@ export default defineAgent({
           turnReportsTaskCorrection(ctx.messages)
             ? taskCorrectionNote
             : undefined,
-          // A greeting, thanks or nonsense starts nothing.
-          kind === "person" && bareOpening(ctx.messages)
+          // A greeting, thanks or nonsense starts nothing. The workspace's
+          // first message ever is the introduction's, not a bare opening:
+          // «привет» there gets the whole `first-contact`, not one line.
+          kind === "person" &&
+          bareOpening(ctx.messages) &&
+          !firstContactMarked(ctx.messages)
             ? bareOpeningNote
             : undefined,
           // The task agent's «working» is not its result.

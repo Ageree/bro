@@ -416,6 +416,19 @@ describe("interactive delivery enforcement", () => {
 
       expect(lastReplyNote()).not.toContain("start no work");
     });
+
+    it("leaves the workspace's first message to the introduction", async () => {
+      const firstContact = Object.assign(
+        { content: "Знакомство: `first-contact`", role: "user" as const },
+        { kind: "context.first-contact" }
+      );
+      await agent.model.events["step.started"]?.(
+        {},
+        interactiveContext([firstContact, humanMessage("привет")])
+      );
+
+      expect(lastReplyNote()).not.toContain("start no work");
+    });
   });
 
   describe("after the task agent took the work", () => {
