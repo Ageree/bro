@@ -37,6 +37,7 @@ export default {
     // Bundled into a release by scripts/cloudru-app-host/host.py and run on the VM.
     "scripts/cloudru-app-host/ops/migrate.ts",
     "scripts/cloudru-app-host/ops/agent-mail.ts",
+    "scripts/cloudru-app-host/ops/owner-login.ts",
     "scripts/cloudru-app-host/ops/yandex-probe.ts",
     "scripts/cloudru-app-host/ops/yandex-session-probe.ts",
     "taze.config.ts",

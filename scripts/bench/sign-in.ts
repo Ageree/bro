@@ -39,6 +39,26 @@ async function post(
   return response;
 }
 
+/**
+ * Signs in with a one-time link to `/api/auth/telegram-login/open`: the
+ * bot's «Войти в кабинет» button, or `owner-login.py` on the operator's
+ * side. A GET that spends the link, so it never goes twice.
+ */
+export async function openSignInLink(link: URL, cookieFile: string) {
+  const response = await fetch(link, { redirect: "manual" });
+  const location = response.headers.get("location") ?? "";
+  if (
+    response.status !== 302 ||
+    new URL(location, link).pathname !== "/workspace"
+  ) {
+    throw new Error(
+      `The link did not sign in (${String(response.status)} → ${location}): it works once and for ten minutes.`
+    );
+  }
+  await mkdir(dirname(cookieFile), { mode: 0o700, recursive: true });
+  await writeCookieJar(cookieFile, link, response.headers.getSetCookie());
+}
+
 export async function sendSignInCode(host: URL, phoneNumber: string) {
   await post(host, "/api/auth/phone-number/send-otp", { phoneNumber });
 }

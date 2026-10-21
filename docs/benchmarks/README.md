@@ -45,6 +45,12 @@ pnpm bench verify --phone +7XXXXXXXXXX --code 123456
 echo 123456 | pnpm bench verify --phone +7XXXXXXXXXX
 ```
 
+С 21.10 iMessage выключен, и кода нет. Оператор входит в аккаунт владельца без
+него: `python3 scripts/cloudru-app-host/owner-login.py bro-app-sel-2` (одноразовая
+ссылка аккаунту из `ADMIN_USER_IDS` через S3, затем `pnpm bench link`). Ссылку с
+кнопки бота («Войти в кабинет») можно подать и руками: `pnpm bench link` читает её
+из stdin.
+
 `verify` сохраняет cookie `__Secure-better-auth.*` в `~/.bro-bench/cookies.txt`
 (права 600, вне репозитория; другой путь — `--cookie-file`) и печатает, до
 какого времени действует сессия. Код никуда не пишется. Хост по умолчанию

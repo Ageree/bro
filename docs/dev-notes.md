@@ -2494,6 +2494,10 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   считайте по токенам `usage_costs` и `shared/costs/prices.ts`. Кэш внутри
   хода отстаёт от промпта на 6–14 тыс. и с флагом `STEP_CONTEXT_WORKSPACES`
   (`docs/agent-costs.md`, 3.2): сравнивайте по видам шагов.
+- Вход в аккаунт владельца без него (21.10, iMessage выключен — кода нет):
+  `scripts/cloudru-app-host/owner-login.py bro-app-sel-2` — ops-скрипт выдаёт одноразовую
+  ссылку бота аккаунту из `ADMIN_USER_IDS` через S3 (не в журнал), `pnpm bench link`
+  сохраняет cookie. Ту же ссылку с кнопки бота можно подать в `pnpm bench link` руками.
 - Драйвер `scripts/bench/` держит курсор сам: `eve/client` двигает `streamIndex`
   только по дочитанному ходу, `session.stream()` сдаётся рано.
 - `eve/client` зовёт глобальный `fetch` (свой не передать) и сам повторяет
