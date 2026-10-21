@@ -1,0 +1,60 @@
+{
+  "status": 200,
+  "data": {
+    "actualEvents": {
+      "items": [
+        {
+          "event": {
+            "id": "000000000000000000000003",
+            "url": "/moscow/concert/testovyj-dzhaz",
+            "title": "Тестовый джаз",
+            "type": {
+              "name": "Концерт"
+            },
+            "tickets": [
+              {
+                "minPrice": {
+                  "value": 150000
+                },
+                "saleStatus": "available"
+              }
+            ]
+          },
+          "scheduleInfo": {
+            "placePreview": "Тестовый зал",
+            "preview": {
+              "text": "сб 24 окт, 19:00"
+            }
+          }
+        },
+        {
+          "event": {
+            "id": "000000000000000000000004",
+            "url": "/moscow/cinema/vymyshlennyj-film",
+            "title": "Вымышленный фильм",
+            "type": {
+              "name": "Кино"
+            },
+            "tickets": []
+          },
+          "scheduleInfo": {
+            "placePreview": "в 3 кинотеатрах",
+            "preview": {
+              "text": null
+            }
+          }
+        },
+        {
+          "event": {
+            "id": "000000000000000000000005",
+            "url": "/moscow/other/bez-nazvaniya",
+            "title": null,
+            "type": null,
+            "tickets": null
+          },
+          "scheduleInfo": null
+        }
+      ]
+    }
+  }
+}
