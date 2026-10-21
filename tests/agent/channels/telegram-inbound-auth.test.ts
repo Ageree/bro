@@ -4,11 +4,14 @@ import {
   type TelegramChannelConfig,
   type TelegramContext,
   type TelegramMessage,
+  type TelegramMessageBody,
 } from "eve/channels/telegram";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import * as z from "zod";
+import { applicationOrigin } from "@shared/environment/origin";
 import type * as EnvModule from "@shared/environment";
 import type { redeemChannelLinkToken } from "@db/services/channel-identities";
-import type { approveTelegramLogin } from "@db/services/auth/telegram-login";
+import type { mintTelegramLoginLink } from "@db/services/auth/telegram-login";
 import type { ensureTelegramUser } from "@db/services/auth/telegram-user";
 import type * as ScopeService from "@db/services/scope";
 // oxlint-disable-next-line import/no-unassigned-import -- Loads the production module so the mocked channel factory can capture its configuration.
@@ -17,7 +20,7 @@ import "@agent/channels/telegram";
 const capture = vi.hoisted(() => ({
   // SAFETY: The mocked channel factory replaces this value during module loading.
   config: undefined as TelegramChannelConfig | undefined,
-  approveLogin: vi.fn<typeof approveTelegramLogin>(),
+  mintLink: vi.fn<typeof mintTelegramLoginLink>(),
   ensureUser: vi.fn<typeof ensureTelegramUser>(),
   claimIntroduction: vi.fn<typeof ScopeService.claimWorkspaceIntroduction>(),
   messageQuotaGate: vi.fn<
@@ -58,8 +61,8 @@ vi.mock("@db/services/auth/telegram-user", () => ({
   ensureTelegramUser: capture.ensureUser,
 }));
 vi.mock("@db/services/auth/telegram-login", () => ({
-  approveTelegramLogin: capture.approveLogin,
-  telegramLoginPayloadPrefix: "login_",
+  mintTelegramLoginLink: capture.mintLink,
+  telegramLoginPath: "/telegram-login/open",
 }));
 vi.mock("@db/services/scope", async (importOriginal) => ({
   ...(await importOriginal<typeof ScopeService>()),
@@ -210,31 +213,32 @@ describe("Telegram inbound authentication", () => {
     expect(sent).not.toHaveBeenCalled();
   });
 
-  it("answers the website's sign-in link with a code and no turn", async () => {
-    capture.approveLogin.mockResolvedValue({ code: "042917", kind: "code" });
-    const { context, sent } = inboundContext();
+  // «Войти через Telegram» on the site, an older login_ link, or /login:
+  // the bot answers with a one-time button into the cabinet, no turn.
+  it.each(["/start login", "/start login_old-token", "/login"])(
+    "answers %s with a sign-in button",
+    async (text) => {
+      capture.mintLink.mockResolvedValue("tok-1_A");
+      const { context, sent } = inboundContext();
 
-    await expect(
-      onMessage(context, telegramMessage({ text: "/start login_tok-1_A" }))
-    ).resolves.toBeNull();
+      await expect(
+        onMessage(context, telegramMessage({ text }))
+      ).resolves.toBeNull();
 
-    expect(capture.approveLogin).toHaveBeenCalledExactlyOnceWith(
-      "tok-1_A",
-      "user-1"
-    );
-    expect(sent).toHaveBeenCalledTimes(1);
-    expect(sent.mock.calls[0]?.[0]).toContain("042917");
-    expect(sent.mock.calls[0]?.[0]).toContain("Никому его не сообщай");
-  });
-
-  it("sends a stale sign-in link back to the website", async () => {
-    capture.approveLogin.mockResolvedValue({ kind: "expired" });
-    const { context, sent } = inboundContext();
-
-    await onMessage(context, telegramMessage({ text: "/start login_old" }));
-
-    expect(sent.mock.calls[0]?.[0]).toContain("Войти через Telegram");
-  });
+      expect(capture.mintLink).toHaveBeenCalledExactlyOnceWith("user-1");
+      expect(sent).toHaveBeenCalledTimes(1);
+      const message = signInMessageSchema.parse(sent.mock.calls[0]?.[0]);
+      expect(message.text).toContain("никому её не пересылай");
+      expect(message.reply_markup.inline_keyboard).toEqual([
+        [
+          {
+            text: "Войти в кабинет",
+            url: `${new URL(applicationOrigin()).origin}/api/auth/telegram-login/open?t=tok-1_A`,
+          },
+        ],
+      ]);
+    }
+  );
 
   it("redeems a start payload and confirms the link", async () => {
     capture.redeemToken.mockResolvedValue("linked");
@@ -287,8 +291,18 @@ describe("Telegram inbound authentication", () => {
   });
 });
 
+const signInMessageSchema = z.object({
+  reply_markup: z.object({
+    inline_keyboard: z.array(
+      z.array(z.object({ text: z.string(), url: z.string() }))
+    ),
+  }),
+  text: z.string(),
+});
+
 function inboundContext(chatId = "4242") {
-  const sent = vi.fn<(text: string) => Promise<{ id: string }>>();
+  const sent =
+    vi.fn<(message: string | TelegramMessageBody) => Promise<{ id: string }>>();
   sent.mockResolvedValue({ id: "sent-1" });
   const typing = vi.fn<() => Promise<void>>();
   typing.mockResolvedValue(undefined);

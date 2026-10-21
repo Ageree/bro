@@ -5,8 +5,11 @@ import { Capsule } from "@web/components/paper/capsule";
 import { SiteFooter } from "@web/components/paper/footer";
 import { LocalPhoneAuthForm } from "@app/sign-in/_components/local-form";
 import { PhoneOtpAuthForm } from "@app/sign-in/_components/otp-form";
-import { TelegramAuthForm } from "@app/sign-in/_components/telegram-form";
-import { telegramLinkConfigured } from "@shared/identity/telegram-link";
+import { Button } from "@web/components/ui/button";
+import {
+  telegramLinkConfigured,
+  telegramStartUrl,
+} from "@shared/identity/telegram-link";
 import { ownCallbackUrl } from "@app/sign-in/_lib/callback";
 import { localPhoneAuthBypassEnabled } from "@shared/environment";
 import { requestSession } from "@web/auth/request-scope";
@@ -23,7 +26,10 @@ export default async function SignInPage({
 }: PageProps<"/sign-in">) {
   if (await requestSession()) redirect("/workspace");
 
-  const callbackValue = (await searchParams).callbackUrl;
+  const query = await searchParams;
+  const callbackValue = query.callbackUrl;
+  // The bot's sign-in button sends a used or stale link back here.
+  const telegramExpired = query.telegram === "expired";
   const requestedCallback = Array.isArray(callbackValue)
     ? callbackValue[0]
     : callbackValue;
@@ -53,12 +59,7 @@ export default async function SignInPage({
           ) : (
             <>
               {telegramConfigured ? (
-                <>
-                  <p className="type-fine text-muted-foreground">
-                    Bro живёт в Telegram: войди через него — код пришлёт бот.
-                  </p>
-                  <TelegramAuthForm callbackUrl={callbackUrl} />
-                </>
+                <TelegramSignIn expired={telegramExpired} />
               ) : null}
               {imessageConfigured ? (
                 <PhoneSignIn
@@ -93,6 +94,40 @@ export default async function SignInPage({
 
       <SiteFooter />
     </div>
+  );
+}
+
+/**
+ * Signing in through the bot (`telegramLogin`): the link opens the chat with
+ * `/start login`, and the bot answers with a button that opens the cabinet
+ * already signed in — nothing to type here.
+ */
+function TelegramSignIn({ expired }: { readonly expired: boolean }) {
+  return (
+    <>
+      <p className="type-fine text-muted-foreground">
+        Bro живёт в Telegram. Открой бота — он пришлёт кнопку входа в кабинет.
+      </p>
+      {expired ? (
+        <p className="type-fine mt-4" role="alert">
+          Эта кнопка входа уже не действует: она работает 10 минут и один раз.
+          Открой бота ещё раз — он пришлёт новую.
+        </p>
+      ) : null}
+      <Button
+        className="mt-5 w-full"
+        nativeButton={false}
+        render={
+          <a
+            aria-label="Войти через Telegram"
+            href={telegramStartUrl("login")}
+          />
+        }
+        variant="paper"
+      >
+        Войти через Telegram
+      </Button>
+    </>
   );
 }
 
