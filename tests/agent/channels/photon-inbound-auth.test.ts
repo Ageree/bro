@@ -1,6 +1,6 @@
 import type { PhotonIMessageChannelConfig } from "eve/channels/photon";
 import { Message } from "chat";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import type * as EnvModule from "@shared/environment";
 import type * as ScopeService from "@db/services/scope";
 // oxlint-disable-next-line import/no-unassigned-import -- Loads the production module so the mocked channel factory can capture its configuration.
@@ -208,6 +208,35 @@ describe("Photon inbound authentication", () => {
     );
 
     expect(result?.context).toEqual([]);
+  });
+
+  // While Telegram is Bro's channel, iMessage only says where Bro moved.
+  it("answers with the bot's link instead of a turn while iMessage is off", async () => {
+    const { env } = await import("@shared/environment");
+    const before = {
+      IMESSAGE_CHANNEL: env.IMESSAGE_CHANNEL,
+      TELEGRAM_BOT_USERNAME: env.TELEGRAM_BOT_USERNAME,
+    };
+    Object.assign(env, {
+      IMESSAGE_CHANNEL: "off",
+      TELEGRAM_BOT_USERNAME: "bro_test_bot",
+    });
+    onTestFinished(() => {
+      Object.assign(env, before);
+    });
+    const chat = threadContext("imessage:iMessage;-;+15550100099");
+
+    await expect(
+      onMessage(chat, photonMessage("+15550100099"))
+    ).resolves.toBeNull();
+    await expect(
+      onMessage(chat, photonMessage("+15550100099"))
+    ).resolves.toBeNull();
+
+    expect(capture.post).toHaveBeenCalledExactlyOnceWith({
+      raw: "Я переехал в Telegram и здесь больше не отвечаю. Пиши мне там: https://t.me/bro_test_bot",
+    });
+    expect(capture.ensureUser).not.toHaveBeenCalled();
   });
 });
 

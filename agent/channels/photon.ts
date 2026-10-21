@@ -41,6 +41,10 @@ import { reactToMessageToolResultSchema } from "@shared/chat/reaction";
 import { accessScopeForUser } from "@shared/identity/access-scope";
 import { normalizeAuthPhoneNumber } from "@shared/identity/phone-number";
 import { photonProjectCredentials } from "@shared/photon/credentials";
+import {
+  telegramLinkConfigured,
+  telegramStartUrl,
+} from "@shared/identity/telegram-link";
 import { env } from "@shared/environment";
 import {
   imageArtifactFailureText,
@@ -246,6 +250,15 @@ export default photonIMessageChannel({
       return null;
     }
 
+    // iMessage switched off (`IMESSAGE_CHANNEL`): no account, no turn — the
+    // person learns where Bro is now, at most once an hour per chat.
+    if (env.IMESSAGE_CHANNEL === "off") {
+      if (shouldTellAboutMove(context.thread.id)) {
+        await context.thread.post({ raw: movedToTelegramText() });
+      }
+      return null;
+    }
+
     const auth = defaultPhotonAuth(message);
     const phoneNumber = normalizeAuthPhoneNumber(message.author.userName);
     if (!phoneNumber) {
@@ -343,6 +356,35 @@ export default photonIMessageChannel({
     return { auth: sessionAuth, context: turnContext, message: media.message };
   },
 });
+
+const moveNoticeIntervalMs = 60 * 60_000;
+const maximumMoveNoticeChats = 500;
+/**
+ * When each chat last heard that Bro moved. No session exists for such a
+ * chat, so the throttle lives with the serving instance, as the Telegram
+ * channel's hint once did; a restart costs one extra notice at most.
+ */
+const moveNoticeSentAt = new Map<string, number>();
+
+function shouldTellAboutMove(threadId: string, now = Date.now()) {
+  const sentAt = moveNoticeSentAt.get(threadId);
+  if (sentAt !== undefined && now - sentAt < moveNoticeIntervalMs) {
+    return false;
+  }
+  if (moveNoticeSentAt.size >= maximumMoveNoticeChats) {
+    for (const [thread, at] of moveNoticeSentAt) {
+      if (now - at >= moveNoticeIntervalMs) moveNoticeSentAt.delete(thread);
+    }
+  }
+  moveNoticeSentAt.set(threadId, now);
+  return true;
+}
+
+function movedToTelegramText() {
+  return telegramLinkConfigured()
+    ? `Я переехал в Telegram и здесь больше не отвечаю. Пиши мне там: ${telegramStartUrl()}`
+    : "Я здесь больше не отвечаю. Пиши мне в веб-чате на сайте.";
+}
 
 /** The iMessage adapter's read receipt, which the base Chat SDK adapter does not declare. */
 const readReceiptSchema = z.object({
