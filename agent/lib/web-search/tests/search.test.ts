@@ -210,12 +210,18 @@ describe("OpenRouter web search", () => {
 
     expect(await searchWeb({ query: "авокадо" }, turnSignal())).toEqual([
       {
+        date: "",
         snippet:
           "Кафе Авокадо … Чистопрудный бул., 12 · Чистые пруды 7 мин. пешком … Средний чек ~1200₽",
         title: "Кафе Авокадо",
         url: "https://restoran.example/avokado",
       },
-      { snippet: "", title: "Second", url: "https://news.example/two" },
+      {
+        date: "",
+        snippet: "",
+        title: "Second",
+        url: "https://news.example/two",
+      },
     ]);
   });
 
@@ -243,7 +249,7 @@ describe("OpenRouter web search", () => {
     const searchWeb = await loadSearchWeb();
 
     expect(await searchWeb({ query: "кафе" }, turnSignal())).toEqual([
-      { snippet: "", title: "A", url: "https://a.example/one" },
+      { date: "", snippet: "", title: "A", url: "https://a.example/one" },
     ]);
     expect(fetchMock).toHaveBeenCalledOnce();
   });
@@ -582,10 +588,44 @@ describe("Composio Instant web search", () => {
     });
     expect(results).toEqual([
       {
+        date: "",
         snippet: "Курс доллара на 14 октября 2026 ЦБ РФ установил 83.8675 руб.",
         title: "Курс доллара ЦБ РФ",
         url: "https://ru.myfin.by/currency/cb-rf/usd/14-10-2026",
       },
+    ]);
+  });
+
+  it("keeps the date TinyFish printed for a page, and none for a page without", async () => {
+    fetchMock.mockResolvedValue(
+      instantAnswer([
+        {
+          date: "8 часов назад",
+          snippet: "ЦБ оставил курс доллара ниже ₽83.",
+          title: "Курс доллара",
+          url: "https://www.rbc.ru/quote/20/10/2026/1",
+        },
+        {
+          date: null,
+          snippet: "Динамика курса.",
+          title: "ЦБ",
+          url: "https://cbr.ru/currency_base/dynamics/",
+        },
+        {
+          date: "  21 сент.\n2026 г.  ",
+          title: "Архив",
+          url: "https://ppt.example/usd",
+        },
+      ])
+    );
+
+    const searchWeb = await loadSearchWeb();
+    const results = await searchWeb({ query: "курс доллара" }, turnSignal());
+
+    expect(results.map((result) => result.date)).toEqual([
+      "8 часов назад",
+      "",
+      "21 сент. 2026 г.",
     ]);
   });
 

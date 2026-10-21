@@ -19,15 +19,17 @@ export const directWebSearch = defineTool({
     try {
       const results = formatResults(await searchWeb(input, ctx.abortSignal));
       if (ticketSearch(input)) {
+        // The ticket note stays last: it is the step the model takes next.
         return browserUseConfigured()
-          ? `${results}\n\n${ticketSearchNote}`
-          : results;
+          ? `${results}\n\n${sourceNote}\n\n${ticketSearchNote}`
+          : `${results}\n\n${sourceNote}`;
       }
       const notes = [
         pickWords.test(input.query) ? pickSearchNote : undefined,
         weatherWords.test(input.query) ? weatherSearchNote : undefined,
+        sourceNote,
       ].filter((note) => note !== undefined);
-      return notes.length > 0 ? `${results}\n\n${notes.join("\n\n")}` : results;
+      return `${results}\n\n${notes.join("\n\n")}`;
     } catch (error) {
       if (ctx.abortSignal.aborted) throw error;
       // The backend's name, status and words are for the log: the model
@@ -131,10 +133,25 @@ const weatherWords =
 
 /**
  * A weather answer built from a vague «по ощущениям на +3–4 градуса» told
- * the person nothing (prod, 12.10): it needs the source and plain numbers.
+ * the person nothing (prod, 12.10): it needs plain numbers. Its old example
+ * «по данным Яндекс Погоды» was copied as the source whatever the results
+ * were, and «wind if it matters» got a wind nobody had found (prod, 21.10).
  */
 const weatherSearchNote =
-  "Note for weather: name the source of the forecast («по данным Яндекс Погоды»), and write plainly — the day and night temperature in degrees, precipitation, wind if it matters — never a vague «по ощущениям» or a bare difference.";
+  "Note for weather: write plainly — the day and night temperature in degrees; precipitation and wind only when a result above shows them for that day, never filled in from memory or the season; never a vague «по ощущениям» or a bare difference. Name the source of the forecast as the site one of the results above is from, with its link — not a service no result shows.";
+
+/**
+ * What an answer taken from a search is held to, in the result the model
+ * reads just before it writes. Prod, 21.10: weather, a rate, five news items,
+ * a phone's price and a train timetable went out with «по данным Яндекс
+ * Погоды» and no link, or with no source at all; wind and rain no result
+ * showed were added; a June article stood for today's price beside an October
+ * one in the same results. The same asks in the tool description and in the
+ * prompt did not hold, a result's note does. A result carries a «date:» line
+ * only where the engine printed one (`formatResults`).
+ */
+const sourceNote =
+  "Note for the answer: link the one or two pages it is taken from (in a pick of places, each option's own page), each as [a word](its URL from the list above, with https://) — not every page, and not just «по данным <site>» without a link. Say only what these results show: a detail none of them shows (wind, rain, a price, a time, a name) is searched for or left out, never added from memory. A result may carry a «date:» line, the page's date as the search engine printed it: when pages differ in date, answer from the freshest one and name its day (not «8 часов назад»); an older page is not today's state, and when even the freshest is old for the question, say so.";
 
 /**
  * How a pick of places is put together, in the result the model reads just
@@ -178,7 +195,11 @@ const siteTakesNoBookingsNote =
 function formatResults(results: readonly WebSearchResult[]) {
   return results
     .map((result, index) => {
-      const heading = `${String(index + 1)}. ${result.title}\n${result.url}`;
+      const heading = [
+        `${String(index + 1)}. ${result.title}`,
+        result.url,
+        ...(result.date ? [`date: ${result.date}`] : []),
+      ].join("\n");
       if (!result.snippet) return heading;
       const chain = chainMarker.exec(result.snippet)?.[0];
       return [

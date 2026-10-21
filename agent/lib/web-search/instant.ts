@@ -32,6 +32,10 @@ export function instantSearchEnabled() {
 
 const pageSchema = z.object({
   content: z.string().nullish(),
+  // TinyFish's own dating of the page, as the engine printed it: «8 часов
+  // назад», «21 сент. 2026 г.», «2 hours ago»; null when it shows none.
+  // Tavily's basic search has no such field (probes of 21.10).
+  date: z.string().nullish(),
   snippet: z.string().nullish(),
   title: z.string().nullish(),
   url: z.string(),
@@ -57,8 +61,9 @@ export class InstantSearchError extends Error {
 
 /**
  * Runs one search on one Instant engine and returns its pages as found,
- * excerpt in `content`. Composio's own refusals (an empty balance is 402
- * `Metering_WalletBalanceExhausted`) throw its `ComposioError`.
+ * excerpt in `content`, the engine's date for the page in `date`. Composio's
+ * own refusals (an empty balance is 402 `Metering_WalletBalanceExhausted`)
+ * throw its `ComposioError`.
  */
 export async function searchInstant(
   engine: InstantEngine,
@@ -87,6 +92,7 @@ export async function searchInstant(
   }
   const found = (execution.data?.results ?? []).map((page) => ({
     content: page.content ?? page.snippet ?? "",
+    date: page.date ?? "",
     title: page.title ?? "",
     url: page.url,
   }));

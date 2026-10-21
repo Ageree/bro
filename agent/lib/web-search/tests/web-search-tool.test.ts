@@ -122,17 +122,166 @@ describe("web_search tool selection", () => {
 
     const { directWebSearch } = await loadTool();
 
-    expect(
-      await directWebSearch.execute({ query: "ставка" }, toolContext())
-    ).toBe(
-      [
-        "1. Rate decision",
-        "https://bank.example/rates",
-        "The key rate stayed at 16 percent.",
-        "",
-        "2. Coverage",
-        "https://news.example/two",
-      ].join("\n")
+    const listing = [
+      "1. Rate decision",
+      "https://bank.example/rates",
+      "The key rate stayed at 16 percent.",
+      "",
+      "2. Coverage",
+      "https://news.example/two",
+    ].join("\n");
+    const answer = await directWebSearch.execute(
+      { query: "ставка" },
+      toolContext()
+    );
+    expect(answer).toMatch(/^1\. Rate decision\n/u);
+    expect(answer).toContain(`${listing}\n\nNote for the answer: `);
+  });
+
+  /**
+   * Prod 21.10: weather, a rate, news, a phone's price and a timetable went
+   * out with no link, with details no result showed, and a June article for
+   * today's price. The rule is in the result, where the weak model reads it.
+   */
+  it("asks for one or two linked sources, nothing the results do not show, and the freshest date", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                annotations: [
+                  {
+                    type: "url_citation",
+                    url_citation: {
+                      content: "Курс доллара ЦБ на 21 октября: 82,8879.",
+                      title: "Курс доллара",
+                      url: "https://bank.example/usd",
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        })
+      )
+    );
+    const { directWebSearch } = await loadTool();
+
+    const answer = await directWebSearch.execute(
+      { query: "курс доллара ЦБ сегодня" },
+      toolContext()
+    );
+
+    expect(answer).toContain("link the one or two pages it is taken from");
+    expect(answer).toContain("none of them shows");
+    expect(answer).toContain("answer from the freshest one");
+    // OpenRouter's engines print no date, and none is made up.
+    expect(answer).not.toContain("date: ");
+  });
+
+  it("keeps the backend's failure out of a result that carries the source note", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: "upstream" }), { status: 503 })
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  annotations: [
+                    {
+                      type: "url_citation",
+                      url_citation: {
+                        content: "Ставка 16 процентов.",
+                        title: "Ставка",
+                        url: "https://bank.example/rates",
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          })
+        )
+      );
+    const { directWebSearch } = await loadTool();
+
+    const pending = directWebSearch.execute({ query: "ставка" }, toolContext());
+    await vi.runAllTimersAsync();
+    const answer = await pending;
+
+    expect(answer).toContain("Note for the answer");
+    expect(answer).not.toMatch(/OpenRouter|RouterAI|503|upstream|failed/u);
+  });
+
+  /**
+   * TinyFish dates its pages («8 часов назад», «15 июн. 2026 г.»): the line
+   * lets the model take October's price over June's from one result list.
+   */
+  it("shows the date an engine gave a page, and puts the ticket note last", async () => {
+    vi.stubEnv("WEB_SEARCH_INSTANT", "on");
+    vi.stubEnv("COMPOSIO_API_KEY", "test-composio-key");
+    vi.stubEnv("BROWSER_USE_API_KEY", "browser-use-test-key");
+    fetchMock.mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({
+            data: {
+              results: [
+                {
+                  date: "6 окт. 2026 г.",
+                  snippet:
+                    "iPhone 17 Pro Max нашли в Уфе за 87,4 тысячи рублей.",
+                  title: "iPhone 17 Pro рекордно подешевел",
+                  url: "https://lenta.ru/news/2026/10/06/17pro-podeshevel/",
+                },
+                {
+                  date: "15 июн. 2026 г.",
+                  title: "iPhone 17 Pro подешевел до 82 тыс.",
+                  url: "https://hi-tech.mail.ru/news/149786/",
+                },
+                {
+                  date: null,
+                  snippet: "Цены на iPhone 17 Pro.",
+                  title: "Каталог",
+                  url: "https://shop.example/iphone",
+                },
+              ],
+            },
+            error: null,
+            successful: true,
+          })
+        )
+    );
+    const { directWebSearch } = await loadTool();
+
+    const price = await directWebSearch.execute(
+      { query: "iPhone 17 Pro цена в России октябрь 2026" },
+      toolContext()
+    );
+    expect(price).toContain(
+      "1. iPhone 17 Pro рекордно подешевел\nhttps://lenta.ru/news/2026/10/06/17pro-podeshevel/\ndate: 6 окт. 2026 г.\niPhone 17 Pro Max нашли"
+    );
+    // Without a snippet the date still follows the link; with no date, nothing.
+    expect(price).toContain(
+      "2. iPhone 17 Pro подешевел до 82 тыс.\nhttps://hi-tech.mail.ru/news/149786/\ndate: 15 июн. 2026 г.\n\n3. Каталог\nhttps://shop.example/iphone\nЦены на iPhone 17 Pro."
+    );
+
+    // A timetable on a date is a ticket search: the source note comes first,
+    // and the note that sends the model to a browser run stays the last word.
+    const sapsan = await directWebSearch.execute(
+      {
+        query: "расписание Сапсан Санкт-Петербург Москва 22 октября 2026 утро",
+      },
+      toolContext()
+    );
+    expect(sapsan).toMatch(
+      /Note for the answer[\s\S]*Note: these pages show timetables[\s\S]*Do not hand the person a timetable link instead of that search\.$/u
     );
   });
 
@@ -314,7 +463,7 @@ describe("web_search tool selection", () => {
     );
   });
 
-  it("asks for the source and plain numbers in a weather answer", async () => {
+  it("asks for plain numbers and a source from the results in a weather answer", async () => {
     vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
     fetchMock.mockImplementation(
       async () =>
@@ -346,7 +495,9 @@ describe("web_search tool selection", () => {
         { query: "погода в Москве на выходные" },
         toolContext()
       )
-    ).toContain("name the source of the forecast");
+    ).toContain(
+      "Name the source of the forecast as the site one of the results"
+    );
     expect(
       await directWebSearch.execute(
         { query: "ключевая ставка ЦБ сегодня" },
