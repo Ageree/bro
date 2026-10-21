@@ -126,6 +126,11 @@ function VerificationCodeForm({
       }}
     >
       <FieldGroup className="gap-4">
+        {/* The number as it was sent: a typo shows here, not in a code
+            that never comes. */}
+        <p className="type-fine text-muted-foreground">
+          Код отправлен в iMessage на {phoneNumber}.
+        </p>
         <Field className="gap-[0.35rem]">
           <FieldLabel
             className="type-field-label text-muted-foreground"

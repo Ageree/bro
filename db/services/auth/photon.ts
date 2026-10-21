@@ -66,21 +66,21 @@ export function photonOtpFailure(error: PhotonDeliveryError) {
       return {
         code: "IMESSAGE_PROJECT_NOT_AUTHORIZED",
         message:
-          "Photon rejected this deployment's project credentials. Check IMESSAGE_PROJECT_ID and IMESSAGE_PROJECT_SECRET, then try again.",
+          "Не вышло отправить код: вход через iMessage сейчас не работает. Попробуй позже.",
       };
     }
     case "NotFoundError": {
       return {
         code: "IMESSAGE_RECIPIENT_UNKNOWN",
         message:
-          "Photon could not open an iMessage conversation with this number. Use a number that is registered with iMessage.",
+          "Не вышло написать на этот номер в iMessage. Проверь номер: на нём должен быть включён iMessage.",
       };
     }
     case "ConnectionError": {
       return {
         code: "IMESSAGE_SERVICE_UNAVAILABLE",
         message:
-          "Photon's iMessage service did not respond. Wait a moment, then request another code.",
+          "iMessage сейчас не отвечает. Подожди немного и запроси код ещё раз.",
       };
     }
     case "AdapterRateLimitError":
@@ -95,7 +95,7 @@ export function photonOtpFailure(error: PhotonDeliveryError) {
       return {
         code: "IMESSAGE_RECIPIENT_UNREACHABLE",
         message:
-          "This number is not reachable on iMessage. Use a number that can receive iMessage, or sign in from another phone.",
+          "Этот номер не принимает iMessage. Нужен номер с включённым iMessage — например, номер iPhone.",
       };
     }
     default: {

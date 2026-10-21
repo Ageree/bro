@@ -18,4 +18,11 @@ describe("multi-user request identity", () => {
     expect(normalizeAuthPhoneNumber("+44 7911 123456")).toBe("+447911123456");
     expect(normalizeAuthPhoneNumber("not-a-number")).toBeUndefined();
   });
+
+  it("reads a number typed the Russian way as +7", () => {
+    expect(normalizeAuthPhoneNumber("8 999 123-45-67")).toBe("+79991234567");
+    expect(normalizeAuthPhoneNumber("7 (999) 123-45-67")).toBe("+79991234567");
+    expect(normalizeAuthPhoneNumber("999 123 45 67")).toBe("+79991234567");
+    expect(normalizeAuthPhoneNumber("+7 999 123-45-67")).toBe("+79991234567");
+  });
 });

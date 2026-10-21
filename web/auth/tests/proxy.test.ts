@@ -25,6 +25,7 @@ describe("auth proxy matcher", () => {
       "/brand/bro-og.png",
       "/icon.svg?icon.3ji5cuvunvd-i.svg",
       "/apple-icon.png?apple-icon.1vp36n672fqmo.png",
+      "/robots.txt",
     ]) {
       expect(
         unstable_doesMiddlewareMatch({ config, nextConfig: {}, url })

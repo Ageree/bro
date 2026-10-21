@@ -49,9 +49,9 @@ describe("Photon delivery", () => {
   });
 
   it.each([
-    ["AuthenticationError", "IMESSAGE_PROJECT_NOT_AUTHORIZED", "credentials"],
-    ["NotFoundError", "IMESSAGE_RECIPIENT_UNKNOWN", "registered with iMessage"],
-    ["ValidationError", "IMESSAGE_RECIPIENT_UNREACHABLE", "not reachable"],
+    ["AuthenticationError", "IMESSAGE_PROJECT_NOT_AUTHORIZED", "не работает"],
+    ["NotFoundError", "IMESSAGE_RECIPIENT_UNKNOWN", "Проверь номер"],
+    ["ValidationError", "IMESSAGE_RECIPIENT_UNREACHABLE", "не принимает"],
     ["IMessageError", "IMESSAGE_DELIVERY_FAILED", "Не удалось отправить"],
   ])("maps %s to actionable OTP copy", (kind, expectedCode, copy) => {
     const failure = photonOtpFailure(new PhotonDeliveryError({ kind }));

@@ -67,9 +67,10 @@ export async function proxy(request: NextRequest) {
 // the body above: a request the matcher catches is redirected to /sign-in,
 // and that is what once hid the hero film and the og image, both of which
 // live under /brand, and the tab and home-screen icons Next serves from the
-// root (`app/icon.svg`, `app/apple-icon.png`) from search and signed-out tabs.
+// root (`app/icon.svg`, `app/apple-icon.png`) from search and signed-out tabs,
+// and robots.txt, which a crawler got as the sign-in page.
 export const config = {
   matcher: [
-    "/((?!_next/static|_next/image|brand|fonts|favicon.ico|icon.svg|apple-icon.png).*)",
+    "/((?!_next/static|_next/image|brand|fonts|favicon.ico|icon.svg|apple-icon.png|robots.txt|sitemap.xml).*)",
   ],
 };
