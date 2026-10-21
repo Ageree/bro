@@ -187,7 +187,7 @@ export async function sendPhoneCode({
     throw new APIError("BAD_GATEWAY", {
       code: "IMESSAGE_PROJECT_UNAVAILABLE",
       message:
-        "This deployment cannot reach its Photon project. Check IMESSAGE_PROJECT_ID and IMESSAGE_PROJECT_SECRET.",
+        "Не вышло отправить код: вход через iMessage сейчас не работает. Попробуй позже.",
     });
   }
 }

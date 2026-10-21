@@ -5,6 +5,7 @@ import { Capsule } from "@web/components/paper/capsule";
 import { SiteFooter } from "@web/components/paper/footer";
 import { LocalPhoneAuthForm } from "@app/sign-in/_components/local-form";
 import { PhoneOtpAuthForm } from "@app/sign-in/_components/otp-form";
+import { ownCallbackUrl } from "@app/sign-in/_lib/callback";
 import { env, localPhoneAuthBypassEnabled } from "@shared/environment";
 import { requestSession } from "@web/auth/request-scope";
 import { photonConfigured } from "@shared/photon/credentials";
@@ -24,10 +25,7 @@ export default async function SignInPage({
   const requestedCallback = Array.isArray(callbackValue)
     ? callbackValue[0]
     : callbackValue;
-  const callbackUrl =
-    requestedCallback?.startsWith("/") && !requestedCallback.startsWith("//")
-      ? requestedCallback
-      : "/workspace";
+  const callbackUrl = ownCallbackUrl(requestedCallback);
   const imessageConfigured = photonConfigured();
   const imessagePhoneNumber =
     localPhoneAuthBypassEnabled || !imessageConfigured

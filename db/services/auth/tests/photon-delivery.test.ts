@@ -84,7 +84,7 @@ describe("Photon phone authentication", () => {
         message: "Handle is not on iMessage",
       },
     });
-    expect(body.message).toContain("not reachable on iMessage");
+    expect(body.message).toContain("не принимает iMessage");
   });
 
   it("reports an unreachable Photon project separately from a rejected send", async () => {

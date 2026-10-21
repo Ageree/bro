@@ -23,6 +23,9 @@ describe("auth proxy matcher", () => {
       "/fonts/vault-variable.woff2",
       "/brand/hero-portrait.mp4",
       "/brand/bro-og.png",
+      "/icon.svg",
+      "/apple-icon.png",
+      "/robots.txt",
     ]) {
       expect(
         unstable_doesMiddlewareMatch({ config, nextConfig: {}, url })

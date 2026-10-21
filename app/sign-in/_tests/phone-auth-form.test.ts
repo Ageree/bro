@@ -25,9 +25,9 @@ describe("phone OTP errors", () => {
     expect(
       phoneOtpErrorMessage({
         code: "IMESSAGE_RECIPIENT_UNREACHABLE",
-        message: "This number is not reachable on iMessage.",
+        message: "Этот номер не принимает iMessage.",
       })
-    ).toBe("This number is not reachable on iMessage.");
+    ).toBe("Этот номер не принимает iMessage.");
   });
 
   it.each([
@@ -61,10 +61,9 @@ describe("phone OTP errors", () => {
     expect(html).not.toContain("Написать Bro");
     const error = phoneOtpErrorMessage({
       code: "IMESSAGE_RECIPIENT_UNKNOWN",
-      message:
-        "Photon could not open an iMessage conversation with this number.",
+      message: "Не вышло написать на этот номер в iMessage.",
     });
-    expect(error).toContain("iMessage conversation");
+    expect(error).toContain("написать на этот номер");
     expect(error).not.toContain("button");
   });
 

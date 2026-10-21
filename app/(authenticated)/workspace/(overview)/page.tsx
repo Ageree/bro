@@ -158,7 +158,7 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
   }
   const directProvider = directModelProviderName();
   const imageStorageReady = artifactStorageConfigured();
-  const browserReady = env.BROWSER_USE_API_KEY !== undefined;
+  const browserReady = browserErrandsReady(env);
   const timeZone = resolveTimeZone(profile.timezone);
   const when = new Intl.DateTimeFormat("ru-RU", {
     dateStyle: "long",
@@ -654,4 +654,17 @@ function TimeZoneSection({ timeZone }: { readonly timeZone: string }) {
       </Actions>
     </Section>
   );
+}
+
+/**
+ * Whether errands on sites can run here: the deployment's own browsers (the
+ * pool or Cloud.ru VMs, as on prod since 15.10, with no Browser Use key) or
+ * Browser Use Cloud. The key alone once decided it, and the cabinet told
+ * every person on prod their browser was not set up.
+ */
+export function browserErrandsReady({
+  BROWSER_BACKEND,
+  BROWSER_USE_API_KEY,
+}: Pick<typeof env, "BROWSER_BACKEND" | "BROWSER_USE_API_KEY">) {
+  return BROWSER_BACKEND !== "browser-use" || BROWSER_USE_API_KEY !== undefined;
 }
