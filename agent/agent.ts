@@ -35,6 +35,8 @@ import {
   turnTookNoStep,
 } from "@agent/lib/delivery/pending";
 import { reportedBrowserRunId } from "@agent/lib/browser-use/report-caller";
+import { bareOpening } from "@agent/lib/browser-use/said";
+import { firstContactMarked } from "@agent/lib/skills/triggers";
 import {
   browserFilesEnabled,
   personBrowserFiles,
@@ -51,6 +53,7 @@ import {
 import { browserRunReportDelivered } from "@db/services/browser-runs";
 import { earlyReplySplitPilot, fastReplyPilot } from "@agent/lib/delivery/fast";
 import { earlyReplyPilot } from "@agent/lib/delivery/pilot";
+import { taskAtWorkNote, taskHandoff } from "@agent/lib/delivery/task-handoff";
 import {
   approvedResendOwed,
   earlyReplyNote,
@@ -107,6 +110,14 @@ import { env } from "@shared/environment";
  */
 const staleReportNote =
   "This browser report already reached the person in an earlier turn. Do not tell them again and do not act on it: end this turn now, without a word.";
+
+/**
+ * What a chat's first step reads when the person's whole message is a few
+ * words (`bareOpening`). 21.10: to «ты дурак» and «спасибо» in a new chat
+ * Bro answered with an application from another one.
+ */
+const bareOpeningNote =
+  "The person's first message in this chat is only a few words. If it asks for nothing — a greeting, thanks, an emoji, rudeness, nonsense — answer it as what it is, briefly, and start no work: no browser_task, no task, no schedule. Whatever the notes, memory or recap of other chats mention is background, not their request. If it does ask for something, do that.";
 
 export default defineAgent({
   defaultTools: false,
@@ -199,6 +210,9 @@ export default defineAgent({
           (outcomeToldEarlier(ctx.messages, reportRunId) ||
             (await browserRunReportDelivered(reportRunId)));
         const pastAnswer = turnMustEnd(ctx.messages);
+        // The task agent works in the background: its call answers only
+        // «working». Once the person knows it was taken, the turn is over.
+        const task = taskHandoff(ctx.messages);
         const sends = turnSends(ctx.messages);
         const reportPastAnswer =
           pastAnswer && reportRunId !== undefined && !sends.workAfterSkip;
@@ -414,6 +428,16 @@ export default defineAgent({
           turnReportsTaskCorrection(ctx.messages)
             ? taskCorrectionNote
             : undefined,
+          // A greeting, thanks or nonsense starts nothing. The workspace's
+          // first message ever is the introduction's, not a bare opening:
+          // «привет» there gets the whole `first-contact`, not one line.
+          kind === "person" &&
+          bareOpening(ctx.messages) &&
+          !firstContactMarked(ctx.messages)
+            ? bareOpeningNote
+            : undefined,
+          // The task agent's «working» is not its result.
+          writesToPerson && task.atWork ? taskAtWorkNote : undefined,
           // A group open without its skill's block: load it first.
           routed === undefined
             ? undefined
@@ -484,6 +508,7 @@ export default defineAgent({
           toolChoice:
             staleReport ||
             (pastAnswer && !reportPastAnswer) ||
+            (writesToPerson && task.told) ||
             readsMustEnd(ctx.messages)
               ? "none"
               : requireToolCall

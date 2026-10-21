@@ -227,7 +227,14 @@ const wordSignals: Partial<Record<SkillName, RegExp>> = {
     String.raw`сервер|облак|данн\p{L}* (обо|про) мне|мои данные|моих данных`,
     String.raw`сейф|парол|логин|импорт|chrome|vault|privacy|how do you work`,
     String.raw`stored|what do you (store|keep)|login|password|guardrails?`,
-    String.raw`share my data|who (sees|reads)`
+    String.raw`share my data|who (sees|reads)`,
+    // «Кто ты и что умеешь» (21.10): the answer is a few examples to ask
+    // for, not a line of verbs.
+    String.raw`кто ты(?!\p{L})|что (ты )?(вообще |ещ[её] )?(умеешь|можешь)`,
+    String.raw`чем (ты )?(можешь )?(помо|быть полез)|с чего начать|что ты такое`,
+    String.raw`расскажи (о|про) (себе|себя)|представься`,
+    String.raw`who are you|what (can|do) you (do|help)|what are you`,
+    String.raw`how can you help|introduce yourself`
   ),
 };
 

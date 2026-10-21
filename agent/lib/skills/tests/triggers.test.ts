@@ -241,6 +241,12 @@ const synthetic = [
   ["translation", "переведи на английский этот текст", []],
   ["privacy-third", "вы передаёте мою переписку третьим лицам?", ["about-bro"]],
   ["forget-address", "удали мой адрес", ["memory"]],
+  // «Кто ты и что умеешь» brings the answer's examples at once (21.10).
+  ["who-ru", "привет! кто ты и что умеешь?", ["about-bro"]],
+  ["what-ru", "а что ты вообще можешь?", ["about-bro"]],
+  ["start-ru", "расскажи о себе, с чего начать", ["about-bro"]],
+  ["who-en", "hi! can you answer in English? what can you do?", ["about-bro"]],
+  ["умеешь-готовить", "ты умеешь готовить борщ?", []],
   ["standing", "заказывай такси сам, не спрашивая", ["browser", "money"]],
   [
     "launch-login",

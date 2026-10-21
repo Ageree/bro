@@ -1,7 +1,9 @@
 import type { ModelMessage } from "ai";
 import { describe, expect, it } from "vitest";
 import {
+  bareOpening,
   codesNotFromPerson,
+  nothingAskedYet,
   oneTimeCodesIn,
   onlyAsksHowItStands,
   paymentAnswer,
@@ -445,6 +447,115 @@ describe("a quote of the person", () => {
       expect(onlyAsksHowItStands(words)).toBe(false);
     }
     expect(onlyAsksHowItStands("Готово?")).toBe(true);
+  });
+});
+
+describe("a conversation where nothing was asked yet", () => {
+  it.each(["👍", "?", "...", "🙂🙂", "[фото]", "[голосовое не распозналось]"])(
+    "holds «%s» alone",
+    (text) => {
+      expect(nothingAskedYet([person(text)])).toBe(true);
+    }
+  );
+
+  it("holds a run of signs, and eve's context before the first of them", () => {
+    const context = Object.assign(
+      { content: "Контекст: время", role: "user" as const },
+      { kind: "context.time" }
+    );
+
+    expect(nothingAskedYet([context, person("👍"), person("?")])).toBe(true);
+  });
+
+  it.each([
+    "ты дурак",
+    "ыврапролджэ",
+    "спасибо",
+    "7",
+    "[голосовое] привет",
+    "https://example.com",
+  ])("is over once a word or a number came: «%s»", (text) => {
+    expect(nothingAskedYet([person(text)])).toBe(false);
+  });
+
+  it("is over once a photo or a file came", () => {
+    const photo = Object.assign(
+      {
+        content: [
+          { text: "👍", type: "text" as const },
+          { data: "AAAA", mediaType: "image/png", type: "file" as const },
+        ],
+        role: "user" as const,
+      },
+      { kind: "user" }
+    );
+
+    expect(nothingAskedYet([photo])).toBe(false);
+  });
+
+  it("is over once Bro has answered, for an emoji then answers him", () => {
+    expect(nothingAskedYet([person("👍"), replied(), person("👍")])).toBe(
+      false
+    );
+    expect(
+      nothingAskedYet([person("👍"), ...sent("Заказать?"), person("👍")])
+    ).toBe(false);
+  });
+
+  it("is not a turn Bro opened, nor an empty conversation", () => {
+    const report = Object.assign(
+      { content: `${backgroundTurnMarker}\n\nГотово.`, role: "user" as const },
+      { kind: "user" }
+    );
+
+    expect(nothingAskedYet([report])).toBe(false);
+    expect(nothingAskedYet([])).toBe(false);
+  });
+});
+
+describe("a conversation that opened with a few words", () => {
+  it.each([
+    "привет",
+    "ты дурак",
+    "ыврапролджэ",
+    "спасибо, ты лучший",
+    "👍",
+    "ну? 🙂",
+  ])("holds «%s»", (text) => {
+    expect(bareOpening([person(text)])).toBe(true);
+  });
+
+  it.each([
+    "найди мне крем для рук",
+    "сделай презентацию про космос",
+    "[голосовое] запиши меня к терапевту на пятницу",
+  ])("is more than that once there is a request: «%s»", (text) => {
+    expect(bareOpening([person(text)])).toBe(false);
+  });
+
+  it("counts the words of every message so far, not of the last", () => {
+    expect(bareOpening([person("привет"), person("ты тут")])).toBe(true);
+    expect(
+      bareOpening([person("привет"), person("ты тут"), person("ау")])
+    ).toBe(false);
+  });
+
+  it("is over once a photo came, or Bro has spoken", () => {
+    const photo = Object.assign(
+      {
+        content: [
+          { text: "это?", type: "text" as const },
+          { data: "AAAA", mediaType: "image/png", type: "file" as const },
+        ],
+        role: "user" as const,
+      },
+      { kind: "user" }
+    );
+
+    expect(bareOpening([photo])).toBe(false);
+    expect(bareOpening([person("привет"), replied(), person("ок")])).toBe(
+      false
+    );
   });
 });
 

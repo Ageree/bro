@@ -28,6 +28,7 @@ import {
 import workstreamMemory from "@agent/memory/workstreams";
 import { afterForgetting } from "@agent/lib/privacy/removal";
 import { withApprovalCard } from "@shared/chat/approval-card";
+import { backgroundTurnMarker } from "@shared/chat/background-turn";
 import {
   saveWorkstreamSchema,
   type WorkstreamContent,
@@ -80,7 +81,9 @@ describe("workstream memory", () => {
     );
     expect(first).toMatchObject({ revision: 1, sessionId: "first" });
 
-    const later = context("later");
+    const later = context("later", "authjs", {
+      said: ["как там Autumn trip?"],
+    });
     const recall =
       await workstreamMemory.provider.recall["turn.started"](later);
     expect(recall?.messages[0]?.content).toContain("Autumn trip");
@@ -169,6 +172,79 @@ describe("workstream memory", () => {
     const index = recall?.messages[0]?.content ?? "";
     expect(index).toContain("never mention, report on, or continue it here");
     expect(index).not.toContain("tracker page is ready");
+  });
+
+  // 21.10, prod: to «👍», «ты дурак», «ыврапролджэ» and «спасибо» in a new
+  // chat Bro answered with the title of a live application in another one,
+  // and started a browser errand on it.
+  describe("the work of other conversations in a new chat", () => {
+    beforeEach(async () => {
+      await saveWorkstream(
+        alice,
+        "key-a",
+        {
+          id: "capital-tracker",
+          expectedRevision: 0,
+          content: { ...content, title: "Capital tracker" },
+        },
+        "save-tracker",
+        "tracker-session"
+      );
+    });
+
+    async function indexFor(words: Parameters<typeof context>[2]) {
+      const recall = await workstreamMemory.provider.recall["turn.started"](
+        context("new-chat", "authjs", words)
+      );
+      return recall?.messages[0]?.content ?? "";
+    }
+
+    it.each(["👍", "?", "ты дурак", "ыврапролджэ", "спасибо, ты лучший", "hi"])(
+      "is not named to «%s»",
+      async (said) => {
+        const index = await indexFor({ said: [said] });
+
+        expect(index).not.toContain("Capital tracker");
+        expect(index).toContain("workstreams__find");
+      }
+    );
+
+    it("is named once the person's words share a word with its title", async () => {
+      expect(await indexFor({ said: ["как там Capital tracker?"] })).toContain(
+        "Capital tracker"
+      );
+      expect(await indexFor({ said: ["что с трекером?"] })).not.toContain(
+        "Capital tracker"
+      );
+    });
+
+    it("is named to a request to go on with earlier work, and stays named", async () => {
+      expect(await indexFor({ said: ["продолжим то, что делали?"] })).toContain(
+        "Capital tracker"
+      );
+      expect(
+        await indexFor({
+          earlier: ["продолжим то, что делали?"],
+          said: ["ок"],
+        })
+      ).toContain("Capital tracker");
+    });
+
+    it("is not named by what Bro wrote to itself or a page said", async () => {
+      const index = await indexFor({
+        said: [
+          `${backgroundTurnMarker}\n\nBrowser run finished. Capital tracker page is ready.`,
+        ],
+      });
+
+      expect(index).not.toContain("Capital tracker");
+    });
+
+    it("has no note about cut work when none is cut", async () => {
+      await database.delete(schema.workspaces);
+
+      expect(await indexFor({ said: ["👍"] })).not.toContain("on purpose");
+    });
   });
 
   it("forgets another conversation's work at the person's word only by its title, even after saving it here", async () => {
@@ -792,7 +868,22 @@ async function forgetDecision(
   });
 }
 
-function context(sessionId: string, authenticator = "authjs") {
+/**
+ * A message of the person's, as eve tags the history it keeps. `said` is what
+ * they wrote in the turn; `earlier` what they wrote before it.
+ */
+function personSaid(text: string) {
+  return Object.assign(
+    { content: text, role: "user" as const },
+    { kind: "user" }
+  );
+}
+
+function context(
+  sessionId: string,
+  authenticator = "authjs",
+  words: { earlier?: readonly string[]; said?: readonly string[] } = {}
+) {
   return {
     abortSignal: new AbortController().signal,
     model: null,
@@ -817,7 +908,7 @@ function context(sessionId: string, authenticator = "authjs") {
       },
       slot: "workstreams",
     },
-    messages: [],
+    messages: (words.earlier ?? []).map(personSaid),
     operationId: `${sessionId}-recall`,
     session: {
       turn: { id: "turn", sequence: 1 },
@@ -832,7 +923,11 @@ function context(sessionId: string, authenticator = "authjs") {
         initiator: null,
       },
     },
-    turn: { id: "turn", input: [], sequence: 1 },
+    turn: {
+      id: "turn",
+      input: (words.said ?? []).map(personSaid),
+      sequence: 1,
+    },
   } satisfies MemoryTurnStartedContext &
     MemoryToolsContext &
     MemoryScopeContext &

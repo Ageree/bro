@@ -794,12 +794,16 @@ describe("adopting the workstreams saved after the move", () => {
       "vm:1",
       "vm-session"
     );
+    // The work of another session is named once the person's words reach it.
     const recalled = await workstreamMemory.provider.recall["turn.started"](
-      recallContext({
-        key: pinnedWorkstreamsKey,
-        namespace: pinnedMemoryNamespaces.workstreams,
-        slot: "workstreams",
-      })
+      recallContext(
+        {
+          key: pinnedWorkstreamsKey,
+          namespace: pinnedMemoryNamespaces.workstreams,
+          slot: "workstreams",
+        },
+        "что с Autumn trip?"
+      )
     );
     expect(recalled?.messages[0]?.content).toContain("Autumn trip");
     expect(
@@ -828,11 +832,14 @@ function workstream(title: string): WorkstreamContent {
 }
 
 /** A person's turn as recall sees it, under the given scope. */
-function recallContext(memory: {
-  key: string;
-  namespace: string;
-  slot: string;
-}) {
+function recallContext(
+  memory: {
+    key: string;
+    namespace: string;
+    slot: string;
+  },
+  said = ""
+) {
   return {
     abortSignal: new AbortController().signal,
     channel: {},
@@ -871,7 +878,11 @@ function recallContext(memory: {
       id: "session",
       turn: { id: "turn", sequence: 1 },
     },
-    turn: { id: "turn", input: [], sequence: 1 },
+    turn: {
+      id: "turn",
+      input: said === "" ? [] : [{ content: said, role: "user" as const }],
+      sequence: 1,
+    },
   } satisfies MemoryTurnStartedContext &
     MemoryScopeContext &
     Pick<ToolContext, "getToken" | "requireAuth">;

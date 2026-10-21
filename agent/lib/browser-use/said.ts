@@ -110,6 +110,85 @@ function carriesPhoto(message: ModelMessage) {
   );
 }
 
+/** A bracketed note a channel puts for what is not text: «[фото]», «[файл: …]». */
+const channelNotes = /\[[^\]]*\]/gu;
+
+/**
+ * What the person wrote in a conversation Bro has not spoken in yet, oldest
+ * first, or nothing once he has (or once eve compacted it): there an emoji
+ * may answer a question of his, and a short message may go on with the talk.
+ */
+function saidBeforeBroSpoke(messages: readonly ModelMessage[]) {
+  const opening = messages.findLastIndex(startsTurn);
+  if (opening === -1 || messages.some(compactionMarker)) return undefined;
+  if (
+    messages
+      .slice(0, opening)
+      .some(
+        (message) => message.role === "assistant" || message.role === "tool"
+      )
+  ) {
+    return undefined;
+  }
+  const said = messages.filter(
+    (message) => startsTurn(message) && isPersonMessage(message)
+  );
+  return said.length > 0 ? said : undefined;
+}
+
+/** A message with a photo or a file, whatever it says. */
+function carriesAttachment(message: ModelMessage) {
+  return (
+    Array.isArray(message.content) &&
+    message.content.some(
+      (part) => part.type === "image" || part.type === "file"
+    )
+  );
+}
+
+/** The words of a message, without the channel's notes and signs. */
+function wordsIn(message: ModelMessage) {
+  return (
+    messageText(message)
+      .replaceAll(channelNotes, "")
+      .match(/[\p{L}\p{N}][\p{L}\p{N}'’-]*/gu) ?? []
+  );
+}
+
+/**
+ * Whether nothing in the conversation asks for anything yet: Bro has not
+ * answered in it, and all the person wrote is signs — «👍», «?», «…» — with
+ * no word, no number, no photo and no file. 21.10, prod: to «👍» in a new
+ * chat Bro started a browser errand on an application it knew from another
+ * one.
+ */
+export function nothingAskedYet(messages: readonly ModelMessage[]) {
+  const said = saidBeforeBroSpoke(messages);
+  return (
+    said?.every(
+      (message) => !carriesAttachment(message) && wordsIn(message).length === 0
+    ) === true
+  );
+}
+
+/** The most words a first message may have to read as a bare opening. */
+const bareOpeningWords = 3;
+
+/**
+ * Whether a conversation holds only a few words of the person's and Bro has
+ * not spoken in it: «привет», «ты дурак», «ыврапролджэ», «спасибо, ты
+ * лучший» (21.10: each of them was answered with another chat's work). A
+ * photo or a file makes it more than that.
+ */
+export function bareOpening(messages: readonly ModelMessage[]) {
+  const said = saidBeforeBroSpoke(messages);
+  return (
+    said !== undefined &&
+    !said.some(carriesAttachment) &&
+    said.flatMap(wordsIn).length <= bareOpeningWords
+  );
+}
+
 /**
  * The person's last `count` messages, oldest first, never a turn Bro opened
  * for itself: what they wrote, and whether a photo came with it.

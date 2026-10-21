@@ -117,6 +117,7 @@ import {
 } from "@agent/lib/delivery/browser-report";
 import { declinedErrandNote } from "@agent/lib/delivery/declined-cards";
 import { replyDirective } from "@agent/lib/delivery/language";
+import { taskAtWorkNote } from "@agent/lib/delivery/task-handoff";
 import {
   earlyReplyNote,
   earlyReplySplitNote,
@@ -388,6 +389,95 @@ describe("interactive delivery enforcement", () => {
         withheldTools: ["task"],
       }
     );
+  });
+
+  describe("a chat that opens with a few words", () => {
+    // 21.10: «ты дурак» in a new chat was answered with another chat's work.
+    const bare = (text: string) => interactiveContext([humanMessage(text)]);
+
+    it("tells the model to answer it as what it is and start no work", async () => {
+      await agent.model.events["step.started"]?.({}, bare("ты дурак"));
+
+      expect(lastReplyNote()).toContain("start no work");
+    });
+
+    it.each([
+      ["a request", bare("найди мне крем для рук")],
+      [
+        "a chat Bro has spoken in",
+        interactiveContext([
+          humanMessage("найди мне крем для рук"),
+          ...sent("call-1", "Нашёл три.", "submitted"),
+          humanMessage("ок"),
+        ]),
+      ],
+    ])("says nothing of it for %s", async (_case, context) => {
+      await agent.model.events["step.started"]?.({}, context);
+
+      expect(lastReplyNote()).not.toContain("start no work");
+    });
+
+    it("leaves the workspace's first message to the introduction", async () => {
+      const firstContact = Object.assign(
+        { content: "Знакомство: `first-contact`", role: "user" as const },
+        { kind: "context.first-contact" }
+      );
+      await agent.model.events["step.started"]?.(
+        {},
+        interactiveContext([firstContact, humanMessage("привет")])
+      );
+
+      expect(lastReplyNote()).not.toContain("start no work");
+    });
+  });
+
+  describe("after the task agent took the work", () => {
+    // 21.10: «working» read as a result, and a second message told one that
+    // nobody had seen. The call is in the turn; the person has no word yet.
+    const handedOn = [
+      humanMessage("сделай из этого чека таблицу расходов"),
+      toolCallStep("task", "call-t", { message: "Собери таблицу." }),
+      toolResultStep("task", "call-t", {
+        agentId: "ag_task:1",
+        status: "working",
+      }),
+    ];
+
+    it("tells the model its call answered no result, and lets it say it took the work", async () => {
+      await agent.model.events["step.started"]?.(
+        {},
+        interactiveContext(handedOn)
+      );
+
+      const [, options] = services.modelSelection.mock.lastCall ?? [];
+      expect(options?.replyNote).toContain(taskAtWorkNote);
+      expect(options?.toolChoice).toBe("required");
+    });
+
+    it("ends the turn once the person was told", async () => {
+      await agent.model.events["step.started"]?.(
+        {},
+        interactiveContext([
+          ...handedOn,
+          ...sent("call-s", "Взял чек в работу, пришлю таблицу.", "submitted"),
+        ])
+      );
+
+      const [, options] = services.modelSelection.mock.lastCall ?? [];
+      expect(options?.replyNote).toContain(taskAtWorkNote);
+      expect(options?.toolChoice).toBe("none");
+      expect(options?.delivered).toBe(true);
+    });
+
+    it("leaves a turn that did not hand work on alone", async () => {
+      await agent.model.events["step.started"]?.(
+        {},
+        interactiveContext([...delivered])
+      );
+
+      const [, options] = services.modelSelection.mock.lastCall ?? [];
+      expect(options?.replyNote).not.toContain(taskAtWorkNote);
+    });
   });
 
   it("offers ask_question no more once the turn asked the person", async () => {

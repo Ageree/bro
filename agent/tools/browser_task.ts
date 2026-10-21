@@ -143,6 +143,7 @@ import { reportedBrowserRunId } from "@agent/lib/browser-use/report-caller";
 import { outcomesHeardThisTurn } from "@agent/lib/browser-use/heard";
 import {
   codesNotFromPerson,
+  nothingAskedYet,
   oneTimeCodesIn,
   onlyAsksHowItStands,
   paymentAnswer,
@@ -2533,6 +2534,8 @@ type PersonTurn = ReturnType<typeof personWordsThisTurn> & {
   readonly step?: StepIdentity;
   /** The person's recent messages, which may withdraw a recorded request. */
   readonly personTexts?: readonly string[];
+  /** Nothing they wrote asks for anything yet (`nothingAskedYet`). */
+  readonly nothingAsked?: boolean;
 };
 
 /**
@@ -4470,6 +4473,14 @@ async function runWithGivenLogin(
 }
 
 /**
+ * What a start in a conversation where nothing was asked is told. 21.10 to
+ * «👍» in a new chat Bro started an errand on an application of another chat
+ * that its memory named.
+ */
+const nothingAskedRefusal =
+  "Nothing was started: so far the person's messages in this conversation are only signs, such as an emoji or a question mark, so no errand of theirs exists, whatever other conversations, memory or notes hold. Answer them in one short line as a person would, or ask what they need, and start nothing.";
+
+/**
  * What a `browser_task` call does. `heard` names the runs whose settled
  * outcome this conversation already told the person (`outcomesHeardThisTurn`): a
  * follow-up on one of them is theirs to give, not a «ну что там?» to answer
@@ -4495,6 +4506,10 @@ async function runBrowserTask(
       .string()
       .min(1, "A start action needs the errand text.")
       .parse(input.task);
+    // «👍» in a new chat asks for no errand, whatever else is known.
+    if (byPerson && turn.nothingAsked === true) {
+      throw new Error(nothingAskedRefusal);
+    }
     const inventedCode = inventedCodeRefusal([errand], false, words);
     if (inventedCode) throw new Error(inventedCode);
     // In the autonomy pilot the numbers of a car's СТС and of a driving
@@ -5874,7 +5889,7 @@ export default defineDynamic({
             }
           : said;
       // In the direct-purchase pilot the step names the request that pays.
-      const turn: PersonTurn =
+      const directed: PersonTurn =
         scope !== undefined && directPurchasePilot(scope)
           ? {
               ...autonomous,
@@ -5882,6 +5897,9 @@ export default defineDynamic({
               step,
             }
           : autonomous;
+      const turn: PersonTurn = nothingAskedYet(context.messages)
+        ? { ...directed, nothingAsked: true }
+        : directed;
       const tool = defineTool({
         approval: async (ctx) => {
           const decision = await browserTaskApproval(ctx.toolInput, ctx, turn);
