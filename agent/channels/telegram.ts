@@ -13,8 +13,8 @@ import type { SessionAuth, SessionContext } from "eve/context";
 import { z } from "zod";
 import { redeemChannelLinkToken } from "@db/services/channel-identities";
 import {
-  approveTelegramLogin,
-  telegramLoginPayloadPrefix,
+  mintTelegramLoginLink,
+  telegramLoginPath,
 } from "@db/services/auth/telegram-login";
 import { ensureTelegramUser } from "@db/services/auth/telegram-user";
 import { messageQuotaGate } from "@agent/lib/billing/quota";
@@ -122,11 +122,12 @@ const albumSizeRange = { maximum: 10, minimum: 2 } as const;
 const telegramPhotoBytes = 10 * 1024 * 1024;
 const startLinkPattern =
   /^\/start(?:@[A-Za-z0-9_]+)?\s+link_(?<token>[\w-]+)$/u;
-/** The website's «Войти через Telegram» (`telegramLogin`). */
-const startLoginPattern = new RegExp(
-  `^/start(?:@[A-Za-z0-9_]+)?\\s+${telegramLoginPayloadPrefix}(?<token>[\\w-]+)$`,
-  "u"
-);
+/**
+ * The website's «Войти через Telegram» (`/start login`, and the `login_…`
+ * links the site gave before the button) or a typed `/login`.
+ */
+const loginCommandPattern =
+  /^\/(?:start(?:@[A-Za-z0-9_]+)?\s+login(?:_[\w-]*)?|login(?:@[A-Za-z0-9_]+)?)$/u;
 const bugCommandPattern = /^\/bug(?:@[A-Za-z0-9_]+)?(?:\s|$)/u;
 const maximumThrottledChats = 500;
 
@@ -447,14 +448,11 @@ export default telegramChannel({
       return null;
     }
 
-    const loginToken = startLoginPattern.exec(message.text || message.caption)
-      ?.groups?.token;
-    if (loginToken) {
+    if (loginCommandPattern.test(message.text.trim())) {
       const account = await telegramAccount(message.chat.id, from);
-      const outcome = account
-        ? await approveTelegramLogin(loginToken, account.userId)
-        : ({ kind: "unknown" } as const);
-      await context.telegram.sendMessage(loginOutcomeText(outcome));
+      if (!account) return null;
+      const link = await mintTelegramLoginLink(account.userId);
+      await context.telegram.sendMessage(loginButtonMessage(link));
       return null;
     }
 
@@ -616,22 +614,19 @@ function bugHintText(botUsername: string) {
   return `Нашли ошибку? Напишите @${botUsername}: опишите, что сломалось, можно со скриншотом.`;
 }
 
-function loginOutcomeText(
-  outcome: Awaited<ReturnType<typeof approveTelegramLogin>>
-) {
-  switch (outcome.kind) {
-    case "code": {
-      // The site is named: a look-alike page could show the same bot link.
-      const site = new URL(applicationOrigin()).host;
-      return `Код для входа на ${site}: ${outcome.code}\n\nВводи его только на ${site}. Никому его не сообщай — даже если попросят от имени Bro. Если ты не входил на сайт, просто не отвечай.`;
-    }
-    case "expired": {
-      return "Этот вход устарел. Вернись на сайт и нажми «Войти через Telegram» ещё раз.";
-    }
-    default: {
-      return "Ссылка для входа не подходит. Вернись на сайт и нажми «Войти через Telegram» ещё раз.";
-    }
-  }
+/**
+ * The one-time sign-in link, as a button: Telegram fetches no preview for a
+ * button, so nothing opens the link before the person does.
+ */
+function loginButtonMessage(token: string) {
+  const link = new URL(`/api/auth${telegramLoginPath}`, applicationOrigin());
+  link.searchParams.set("t", token);
+  return {
+    reply_markup: {
+      inline_keyboard: [[{ text: "Войти в кабинет", url: link.toString() }]],
+    },
+    text: `Вход в кабинет на ${link.host}: нажми кнопку. Она действует 10 минут и один раз — никому её не пересылай.`,
+  };
 }
 
 function linkOutcomeText(
