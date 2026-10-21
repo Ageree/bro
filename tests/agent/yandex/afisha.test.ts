@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import * as z from "zod";
 import { afishaSearchOperation } from "@agent/lib/yandex/afisha/search";
 import { afishaTicketsOperation } from "@agent/lib/yandex/afisha/tickets";
 import { type FakeResponse, dataOf, fixture, runInPage } from "./page";
@@ -75,6 +76,144 @@ describe("afisha.search", () => {
         page
       )
     ).toEqual({ data: { error: "gql" }, status: "ok" });
+  });
+
+  it("lists a kind of event for days, with the dates worded for those days", async () => {
+    const { page, requests } = await afishaPage({
+      body: await fixture("afisha/listing.json"),
+    });
+    const answer = await runInPage(
+      afishaSearchOperation.run,
+      afishaSearchOperation.args.parse({
+        category: "concert",
+        from: "2026-10-24",
+        to: "2026-10-25",
+      }),
+      page
+    );
+    expect(answer).toEqual({
+      data: {
+        events: [
+          {
+            id: "000000000000000000000003",
+            kind: "Концерт",
+            minPrice: 1500,
+            sale: "available",
+            title: "Тестовый джаз",
+            url: "https://afisha.yandex.ru/moscow/concert/testovyj-dzhaz",
+            venue: "Тестовый зал",
+            when: "сб 24 окт, 19:00",
+          },
+          {
+            id: "000000000000000000000004",
+            kind: "Кино",
+            minPrice: null,
+            sale: null,
+            title: "Вымышленный фильм",
+            url: "https://afisha.yandex.ru/moscow/cinema/vymyshlennyj-film",
+            venue: "в 3 кинотеатрах",
+            when: null,
+          },
+        ],
+      },
+      status: "ok",
+    });
+    expect(afishaSearchOperation.result.parse(dataOf(answer))).toBeDefined();
+    expect(JSON.parse(requests[0]?.body ?? "{}")).toMatchObject({
+      operationName: "BroListing",
+      variables: {
+        dates: { date: "2026-10-24", period: 2 },
+        paging: { limit: 10, offset: 0 },
+        search: null,
+        tags: ["concert"],
+      },
+    });
+  });
+
+  it("counts the days from the first to the last, both included, and keeps words and no days apart", async () => {
+    const askedFor = async (
+      args: z.input<typeof afishaSearchOperation.args>
+    ) => {
+      const { page, requests } = await afishaPage({
+        body: await fixture("afisha/listing.json"),
+      });
+      await runInPage(
+        afishaSearchOperation.run,
+        afishaSearchOperation.args.parse(args),
+        page
+      );
+      return z
+        .object({ variables: z.json() })
+        .parse(JSON.parse(requests[0]?.body ?? "{}"));
+    };
+    expect(
+      await askedFor({ category: "cinema", from: "2026-10-26" })
+    ).toMatchObject({
+      variables: { dates: { date: "2026-10-26", period: 1 }, tags: ["cinema"] },
+    });
+    expect(
+      await askedFor({
+        category: "theatre",
+        from: "2026-10-26",
+        to: "2026-11-01",
+      })
+    ).toMatchObject({
+      variables: {
+        dates: { date: "2026-10-26", period: 7 },
+        tags: ["theatre"],
+      },
+    });
+    expect(
+      await askedFor({ category: "concert", query: "джаз" })
+    ).toMatchObject({
+      variables: { dates: null, search: "джаз", tags: ["concert"] },
+    });
+    expect(await askedFor({})).toMatchObject({
+      variables: { dates: null, search: null, tags: null },
+    });
+  });
+
+  it("answers days that are none without asking Afisha", async () => {
+    const { page, requests } = await afishaPage({
+      body: await fixture("afisha/listing.json"),
+    });
+    const answers = await Promise.all(
+      [
+        { to: "2026-10-25" },
+        { from: "2026-10-25", to: "2026-10-24" },
+        { from: "2026-02-30" },
+      ].map((days) =>
+        runInPage(
+          afishaSearchOperation.run,
+          afishaSearchOperation.args.parse({ category: "concert", ...days }),
+          page
+        )
+      )
+    );
+    expect(answers).toEqual(
+      Array.from({ length: 3 }, () => ({
+        data: { error: "bad_dates" },
+        status: "ok",
+      }))
+    );
+    expect(requests).toEqual([]);
+  });
+
+  it("takes a model's blank fields as no filter", () => {
+    expect(
+      afishaSearchOperation.args.parse({
+        category: "",
+        from: "",
+        query: "джаз",
+        to: "",
+      })
+    ).toMatchObject({ category: "", from: "", query: "джаз", to: "" });
+    expect(
+      afishaSearchOperation.args.safeParse({ category: "концерты" }).success
+    ).toBe(false);
+    expect(
+      afishaSearchOperation.args.safeParse({ from: "в субботу" }).success
+    ).toBe(false);
   });
 
   it("refuses a city that is not a slug", () => {

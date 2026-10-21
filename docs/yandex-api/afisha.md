@@ -37,10 +37,37 @@
 рубрики (концерты, театр, …), документы — события. Выбираем `SearchObjectEvent`: `id url title placeTitle
 minPrice{value} datePreview{text} type{name} tickets{saleStatus}`. Город — параметр `city` в URL
 (`moscow`, `saint-petersburg`, …). Даты: `datePreview.text` — готовая строка («15 окт», «Октябрь —
-декабрь»); точный список сеансов — отдельным запросом `eventSchedule`/`actualEvents(dates:{date,period})`
-(не включён). Фильтр по дате поиск `search` не принимает; для «что на выходных» — `actualEvents`
-(`dates:{date:"2026-10-10",period:7}, paging:{limit,offset}, sort:rank`, элемент `ActualEvent.event` — `EventPreview`
-с `title`, `url`, `tickets`), его поля сняты из состояния страницы, но отдельным запросом не прогонялись.
+декабрь»); точный список сеансов — отдельным запросом `eventSchedule` (не включён). Фильтра по дате и
+рубрике `search` не принимает: «концерты на следующей неделе», «кино в выходные» — режим `actualEvents` ниже.
+
+### Рубрика и дни — `actualEvents` (снят вживую 21.10.2026, без cookies)
+
+Операция включает этот режим, когда заданы `category`, `from`/`to` или нет ни слов, ни рубрики
+(`BroListing` в `agent/lib/yandex/afisha/search.ts`; с сервера — `direct.ts`, 0,5–0,7 с):
+
+```text
+query BroListing($search: String, $tags: [String], $dates: DaysIntervalInput, $paging: PagingInput!) {
+  actualEvents(search: $search, tags: $tags, dates: $dates, paging: $paging, sort: rank) {
+    items { event { id url title type { name } tickets(dates: $dates) { minPrice { value } saleStatus } }
+            scheduleInfo { placePreview preview { text } } } } }
+variables: {"dates":{"date":"2026-10-26","period":7},"tags":["concert"],"search":null,"paging":{"limit":10,"offset":0}}
+```
+
+- `dates: {date, period}` — первый день `YYYY-MM-DD` и **число дней, включая первый** (`2026-10-26`+7 — по 1 ноября).
+  Календарные дни города, часовой пояс не нужен. Невозможная дата (`2026-02-30`) — `Validation error`; `period`
+  ≤ 0 или прошлое — пустой список без ошибки; 365 принимает. Пресеты сайта — `datePresets` (`weekend`: суббота, 2 дня).
+- `tags: ["concert"]` — рубрика, коды меню города (`cityInfo(id){ eventsMenu { code name } }`, во всех городах одни):
+  `concert`, `theatre`, `kids`, `sport`, `standup`, `circus_show`, `cinema`, `art`, `excursions`, `show`, `quest`,
+  `musical`, `lectures`, `masterclass`, `attractions`, `ny_matinee`, `pushkin-card`, `discount-event`, `certificates`.
+  Неизвестный код — пустой список без ошибки. `tags: []`/`null` — без рубрики. Даёт тот же набор, что
+  `rubricEvents(tag)` (проверено: 478 концертов недели).
+- `search` — **по заголовкам**, слова через И: слово-рубрика «концерт» находит только названия со словом «концерт» (6 за
+  неделю при 478 концертах в рубрике), «концерты» — 0, «рок концерт» — 0. Поэтому рубрику задаёт `tags`, а не текст. `""` — без фильтра.
+- `preview.text` слова для запрошенных дней («24 и 25 октября», «сб 24 окт, 19:00»), у `search` — для всех дат;
+  у кино `null` или «Премьера», `placePreview` — «в 65 кинотеатрах». `tickets` — не больше одного элемента, `[]`
+  у события без продажи; `tickets(dates:)` даёт цену тех дней (Пенкин: 3000 ₽ в субботу, 2800 ₽ в пятницу). `sort: rank` — популярные первыми.
+- Интроспекция: `ActualEvent{event: EventPreview, scheduleInfo: EventScheduleInfo, rank}`, `EventScheduleInfo.dates` —
+  все будущие даты события, а не только окно: для окна берите `preview`.
 
 **JS:**
 
