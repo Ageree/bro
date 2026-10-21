@@ -41,6 +41,9 @@ export function isYandexHost(host: string) {
  *   answers with `status: "ok"`, which is all the model gets.
  * - `about`: one or two sentences for the model: what the operation does
  *   and what its arguments are. The tool's description lists them all.
+ * - `answerNote`: how the answer made of the result is put together. It
+ *   rides after the data of every result, since a rule the model does not
+ *   keep from the prompt is kept when the result it reads last repeats it.
  * - `access`: `read` looks, `cart` changes the person's cart and only on a
  *   turn where they asked for it in their own words.
  * - `loaded`: whether the page must have finished loading before `run`
@@ -53,6 +56,7 @@ export function defineYandexOperation<
 >(spec: {
   readonly about: string;
   readonly access: "cart" | "purchase" | "read";
+  readonly answerNote?: string;
   readonly args: Arguments;
   readonly id: Id;
   readonly loaded?: "complete" | "interactive";

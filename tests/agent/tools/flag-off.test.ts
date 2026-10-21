@@ -388,16 +388,16 @@ const deployments = {
     environment: fullDeployment,
     hashes: {
       "browser-report":
-        "1be069f7faba524a41763338defc65854b344cae1ddd19f831b69870d998afcb",
+        "ea8b633b0dd3287bb77dc1fc12c8e59b6d5b726d60e5df804b42612da9648105",
       "proactive-worker":
         "b91af917ead6214fddadc0a64d8ee6ad3cf141416c46e92fe479d938bacd5fe1",
       "scheduled-report":
         "15f6762fe666f2324b3f6ec90b4ca91c7578402a16a4a445c7374f9e49fa333b",
       "scheduled-worker":
-        "f83fb1a1acf750d8568634a8c9aa06284b26568c54c027263b47f9fab4a3ac5d",
+        "b7f291e4cb87b5a860aefe79dedb8dc753b13f732cf068bddc1ee132e381b74d",
       telegram:
-        "d295ab5e5d17cb33fe07dbaf990bdb64089a082b62582ba6e223f1e77fe6ec51",
-      web: "e8a574272a14a0a829a92a6a7e92bdfa4fa655ec3e04ed96431d2fb36e22137a",
+        "f502c288afeda57f2dbb23f8b2b3f64af5c2b80bbb50e2a8a8dbea9f07ac4d05",
+      web: "2c0e6598afa5ec2dcef43f7c24916eaf141c7c89a6fc47a3ed26aa04c7528207",
     } satisfies Record<Kind, string>,
   },
 };

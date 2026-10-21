@@ -144,9 +144,12 @@ async function callYandex(
     }
   }
   if (outcome.kind === "ok") {
-    return located
-      ? { data: outcome.data, ok: true as const, positionNear: located.said }
-      : { data: outcome.data, ok: true as const };
+    const answer = { data: outcome.data, ok: true as const };
+    const placed = located ? { ...answer, positionNear: located.said } : answer;
+    // The note comes last: it is what the model reads just before it writes.
+    return operation.answerNote === undefined
+      ? placed
+      : { ...placed, note: operation.answerNote };
   }
   return { ok: false as const, reply: refusals[outcome.kind] };
 }
