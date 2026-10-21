@@ -340,6 +340,16 @@ s3put:<ключ>`; без звонка её гоняют локально: `sip.
   без спроса. Новое поведение — флагом сначала владельцу, затем бенчмарк,
   затем всем. Лимиты подписки дороги: без мутационных прогонов, больших ревью
   и недельных наблюдений внутри сессии.
+- Проверять Бро вживую можно самим, в аккаунте владельца на проде, без его участия
+  (владелец 21.10; кода из iMessage больше нет). Вход: после `host.py state restore` и с
+  env выката (`BRO_CLOUD`, `BRO_APP_HOST_DIR`, `S3_*`, `PROBE_BUCKET`, Node 24,
+  `NODE_USE_ENV_PROXY=1`) — `python3 scripts/cloudru-app-host/owner-login.py bro-app-sel-2`:
+  ops-скрипт выдаёт одноразовую ссылку бота аккаунту из `ADMIN_USER_IDS` через S3 (не в
+  журнал), `pnpm bench link` кладёт cookie в `~/.bro-bench/cookies.txt` на неделю. Дальше
+  пишите Бро как человек: `pnpm bench run/send` (`docs/benchmarks/README.md`) или
+  `scripts/bench/latency.ts --cookie-file`. Правила выше в силе: поручения — только чтение,
+  без брони и оплаты, тестовые следы убрать. Ссылку с кнопки бота можно подать в `pnpm bench
+link` и руками.
 - Ревьюит cubic и только PR не в черновике; на merge-коммит в голове PR
   он ставит зелёную проверку без ревью — кладите сверху обычный коммит. С
   03.10 до 01.11 его квота кончилась (`neutral`, «AI review line limit
@@ -2494,10 +2504,6 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   считайте по токенам `usage_costs` и `shared/costs/prices.ts`. Кэш внутри
   хода отстаёт от промпта на 6–14 тыс. и с флагом `STEP_CONTEXT_WORKSPACES`
   (`docs/agent-costs.md`, 3.2): сравнивайте по видам шагов.
-- Вход в аккаунт владельца без него (21.10, iMessage выключен — кода нет):
-  `scripts/cloudru-app-host/owner-login.py bro-app-sel-2` — ops-скрипт выдаёт одноразовую
-  ссылку бота аккаунту из `ADMIN_USER_IDS` через S3 (не в журнал), `pnpm bench link`
-  сохраняет cookie. Ту же ссылку с кнопки бота можно подать в `pnpm bench link` руками.
 - Драйвер `scripts/bench/` держит курсор сам: `eve/client` двигает `streamIndex`
   только по дочитанному ходу, `session.stream()` сдаётся рано.
 - `eve/client` зовёт глобальный `fetch` (свой не передать) и сам повторяет
