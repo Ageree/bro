@@ -16,8 +16,15 @@ export function photonProjectCredentials() {
   return { projectId, projectSecret };
 }
 
+/**
+ * Whether iMessage is one of Bro's channels: the sign-in code, the cabinet,
+ * the landing and what Bro says about its data all ask this. With
+ * `IMESSAGE_CHANNEL=off` the keys stay, so the channel can still answer a
+ * message with where Bro moved (`agent/channels/photon.ts`).
+ */
 export function photonConfigured() {
   return (
+    env.IMESSAGE_CHANNEL === "on" &&
     env.IMESSAGE_PROJECT_ID !== undefined &&
     env.IMESSAGE_PROJECT_SECRET !== undefined
   );

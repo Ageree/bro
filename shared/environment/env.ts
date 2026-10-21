@@ -785,6 +785,10 @@ export const env = createEnv({
       .positive()
       .default(10),
     FREE_MESSAGES_PER_DAY: z.coerce.number().int().positive().default(30),
+    // `off` takes iMessage out of Bro while Telegram is its channel (owner,
+    // 21.10): no sign-in code, no line in the cabinet, and a message to the
+    // line is answered with the bot's link. The Photon keys stay set.
+    IMESSAGE_CHANNEL: z.enum(["on", "off"]).default("on"),
     IMESSAGE_PHONE_NUMBER: requiredValue
       .refine(
         (value) => isE164PhoneNumber(value),
