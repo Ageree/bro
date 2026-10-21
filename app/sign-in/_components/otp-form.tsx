@@ -3,9 +3,13 @@
 import { useMutation } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import type { SubmitEvent } from "react";
+import * as z from "zod";
 import { authClient } from "@web/auth/client";
 import { formValue, verifyPhoneNumber } from "@app/sign-in/_lib/phone-auth";
-import { normalizeAuthPhoneNumber } from "@shared/identity/phone-number";
+import {
+  isE164PhoneNumber,
+  normalizeAuthPhoneNumber,
+} from "@shared/identity/phone-number";
 import { Button } from "@web/components/ui/button";
 import {
   Field,
@@ -15,6 +19,17 @@ import {
 } from "@web/components/ui/field";
 import { Input } from "@web/components/ui/input";
 import { PhoneNumberField } from "./phone-field";
+
+/** A refused code that a message to the named line would let through. */
+class SendCodeError extends Error {
+  readonly line: string | undefined;
+
+  constructor(message: string, line?: string) {
+    super(message);
+    this.name = "SendCodeError";
+    this.line = line;
+  }
+}
 
 const sendCodeFallbackMessage = "Не вышло отправить код. Попробуй ещё раз.";
 const codeLimitMessage = "Слишком много кодов подряд. Попробуй через 10 минут.";
@@ -34,7 +49,12 @@ export function PhoneOtpAuthForm({
         .catch(() => {
           throw new Error(sendCodeFallbackMessage);
         });
-      if (result.error) throw new Error(phoneOtpErrorMessage(result.error));
+      if (result.error) {
+        throw new SendCodeError(
+          phoneOtpErrorMessage(result.error),
+          writeFirstLine(result.error)
+        );
+      }
       return phoneNumber;
     },
   });
@@ -68,6 +88,9 @@ export function PhoneOtpAuthForm({
             className="type-fine"
             errors={sendOtp.error ? [sendOtp.error] : undefined}
           />
+          {sendOtp.error instanceof SendCodeError && sendOtp.error.line ? (
+            <WriteBroFirst line={sendOtp.error.line} />
+          ) : null}
           <Button
             className="w-full"
             disabled={sendOtp.isPending}
@@ -177,10 +200,10 @@ function VerificationCodeForm({
 /**
  * The code comes from the iMessage line Photon picks (`adapter.openDM`), not
  * from `IMESSAGE_PHONE_NUMBER`, which is only a fallback and has named a stale
- * line: the sheet names no number. A «Написать Bro» link here would send a
- * newcomer to a line that answers «This number didn't recognize yours» until
- * signing in has put their phone into the Photon project (`photonLineFor`);
- * the link lives in the cabinet.
+ * line: the sheet names no number. Before the first code the line answers a
+ * newcomer «This number didn't recognize yours»: asking for a code puts the
+ * phone into the Photon project (`photonLineFor`), and only then the line
+ * Photon bound it to is named (`WriteBroFirst`).
  */
 function IMessageCodeNotice() {
   return (
@@ -188,6 +211,35 @@ function IMessageCodeNotice() {
       Код придёт с iMessage-номера этого сервиса.
     </p>
   );
+}
+
+/**
+ * A shared Photon line can refuse a phone that never wrote to it, even once
+ * it is in the project: the person writes to the line the server named, then
+ * asks again. Opens Messages on the phone they are signing in from.
+ */
+function WriteBroFirst({ line }: { readonly line: string }) {
+  return (
+    <Button
+      className="w-full"
+      nativeButton={false}
+      render={<a aria-label="Написать Bro в iMessage" href={`sms:${line}`} />}
+      size="paper"
+      variant="outline"
+    >
+      Написать Bro в iMessage
+    </Button>
+  );
+}
+
+const writeFirstSchema = z.object({
+  code: z.literal("IMESSAGE_WRITE_FIRST"),
+  line: z.string().refine(isE164PhoneNumber),
+});
+
+/** The line to write to, when the server refused the code for want of it. */
+export function writeFirstLine(error: { readonly code?: string }) {
+  return writeFirstSchema.safeParse(error).data?.line;
 }
 
 export function phoneOtpErrorMessage(error: {

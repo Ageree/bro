@@ -87,6 +87,8 @@ async function signIn() {
   return {
     send: async (phoneNumber: string, address: string) =>
       (await post("/phone-number/send-otp", { phoneNumber }, address)).status,
+    sendAnswer: async (phoneNumber: string, address: string) =>
+      post("/phone-number/send-otp", { phoneNumber }, address),
     verify: async (phoneNumber: string, code: string, address: string) =>
       (await post("/phone-number/verify", { code, phoneNumber }, address))
         .status,
@@ -211,24 +213,51 @@ describe("sign-in code limit", () => {
   });
 });
 
-describe("a verified sign-in", () => {
-  it("registers the phone on Bro's iMessage line, a refused code does not", async () => {
-    // Photon delivers iMessage only from its project's users: a phone that
-    // signed in on the web was never one, and its first message bounced.
+describe("a newcomer's sign-in", () => {
+  it("puts the phone on Bro's iMessage line before the code goes out", async () => {
+    // A shared Photon line refuses a phone outside its project: the phone
+    // joined only after signing in, so no newcomer ever got a code (21.10).
     mocks.sendPhotonText.mockResolvedValue(undefined);
     mocks.photonLineFor.mockResolvedValue("+16465792868");
     const { send, verify } = await signIn();
-    await send("+79990000005", "198.51.100.4");
 
-    await expect(
-      verify("+79990000005", "000000", "198.51.100.4")
-    ).resolves.toBe(400);
-    expect(mocks.photonLineFor).not.toHaveBeenCalled();
-
+    await expect(send("+79990000005", "198.51.100.4")).resolves.toBe(200);
+    expect(mocks.photonLineFor).toHaveBeenCalledExactlyOnceWith("+79990000005");
+    expect(mocks.photonLineFor.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.sendPhotonText.mock.invocationCallOrder[0] ?? 0
+    );
     await expect(
       verify("+79990000005", lastCode(), "198.51.100.4")
     ).resolves.toBe(200);
-    expect(mocks.photonLineFor).toHaveBeenCalledExactlyOnceWith("+79990000005");
+  });
+
+  it("asks for a message to the line Photon named when it still refuses the phone", async () => {
+    mocks.photonLineFor.mockResolvedValue("+16465792868");
+    const { send, sendAnswer } = await signIn();
+    const { PhotonDeliveryError } = await import("@db/services/auth/photon");
+    mocks.sendPhotonText.mockRejectedValue(
+      new PhotonDeliveryError({
+        code: "internalError",
+        kind: "AuthenticationError",
+        photonMessage:
+          "[spectrum-imessage] Target not allowed for this project",
+      })
+    );
+
+    const answer = await sendAnswer("+79990000006", "198.51.100.5");
+
+    expect(answer.status).toBe(502);
+    await expect(answer.json()).resolves.toMatchObject({
+      code: "IMESSAGE_WRITE_FIRST",
+      line: "+16465792868",
+    });
+    // Writing first and asking again must not run into the code limit.
+    mocks.sendPhotonText.mockResolvedValue(undefined);
+    await expect(
+      inTurn(["198.51.100.5", "198.51.100.5", "198.51.100.5"], (address) =>
+        send("+79990000006", address)
+      )
+    ).resolves.toEqual([200, 200, 200]);
   });
 });
 

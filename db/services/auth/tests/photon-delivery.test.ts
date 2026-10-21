@@ -14,6 +14,12 @@ const mocks = vi.hoisted(() => ({
     >(),
 }));
 
+// The phone joins the Photon project before its code; that call is not
+// what these tests are about.
+vi.mock("@db/services/photon-users", () => ({
+  photonLineFor: async () => undefined,
+}));
+
 vi.mock("@photon-ai/chat-adapter-imessage", () => ({
   createiMessageAdapter: () => ({
     openDM: mocks.openDM,

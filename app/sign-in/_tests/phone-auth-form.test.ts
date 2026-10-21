@@ -6,6 +6,7 @@ import { LocalPhoneAuthForm } from "@app/sign-in/_components/local-form";
 import {
   PhoneOtpAuthForm,
   phoneOtpErrorMessage,
+  writeFirstLine,
 } from "@app/sign-in/_components/otp-form";
 
 vi.mock("next/navigation", () => ({
@@ -63,6 +64,18 @@ describe("phone OTP errors", () => {
     });
     expect(error).toContain("написать на этот номер");
     expect(error).not.toContain("button");
+  });
+
+  it("names the line to write to only when the server asks for a message first", () => {
+    expect(
+      writeFirstLine({ code: "IMESSAGE_WRITE_FIRST", line: "+16465792868" })
+    ).toBe("+16465792868");
+    expect(
+      writeFirstLine({ code: "IMESSAGE_DELIVERY_FAILED", line: "+16465792868" })
+    ).toBeUndefined();
+    expect(
+      writeFirstLine({ code: "IMESSAGE_WRITE_FIRST", line: "javascript:x" })
+    ).toBeUndefined();
   });
 
   it("does not mention iMessage during local sign-in", () => {
