@@ -143,6 +143,66 @@ describe("calculate", () => {
     ]);
   });
 
+  it("counts the days between dates by the calendar, not in the head", async () => {
+    // «How many days to New Year?» from 21.10.2026 was answered 69 from
+    // 8 + 30 + 31; it is 72.
+    expect((await value("date(2027, 1, 1) - date(2026, 10, 21)")).value).toBe(
+      "72"
+    );
+    const results = await run(
+      "today = date(2026, 10, 21)",
+      "date(2027, 1, 1) - today"
+    );
+    expect(results[1]).toMatchObject({ exact: true, value: "72" });
+    // A date is its day number from 1970-01-01, before it too.
+    expect((await value("date(2026, 10, 21)")).value).toBe("20747");
+    expect((await value("date(1970, 1, 1)")).value).toBe("0");
+    expect((await value("date(1969, 12, 31)")).value).toBe("-1");
+    expect((await value("date(1, 1, 1)")).value).toBe("-719162");
+    expect((await value("date(9999, 12, 31)")).value).toBe("2932896");
+  });
+
+  it("knows which Februaries have 29 days", async () => {
+    const february = (year: number) =>
+      value(`date(${String(year)}, 3, 1) - date(${String(year)}, 2, 1)`);
+    expect((await february(2026)).value).toBe("28");
+    expect((await february(2028)).value).toBe("29");
+    // Centuries leap only every fourth one.
+    expect((await february(1900)).value).toBe("28");
+    expect((await february(2000)).value).toBe("29");
+    expect((await value("date(2029, 1, 1) - date(2028, 1, 1)")).value).toBe(
+      "366"
+    );
+    expect((await value("date(2027, 1, 1) - date(2026, 1, 1)")).value).toBe(
+      "365"
+    );
+    // Across the leap day: 21.10.2027 to 01.03.2028 is 132 days.
+    expect((await value("date(2028, 3, 1) - date(2027, 10, 21)")).value).toBe(
+      "132"
+    );
+  });
+
+  it("refuses a date that does not exist instead of rolling it over", async () => {
+    expect((await value("date(2026, 2, 31)")).error).toBe(
+      "Not a real date: year 2026, month 2, day 31."
+    );
+    for (const expression of [
+      "date(2027, 2, 29)",
+      "date(2026, 4, 31)",
+      "date(2026, 13, 1)",
+      "date(2026, 0, 5)",
+      "date(2026, 5, 0)",
+      "date(2026, -1, 5)",
+      "date(2026, 1.5, 1)",
+      "date(0, 1, 1)",
+      "date(10000, 1, 1)",
+    ]) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Each case is a separate refusal.
+      expect((await value(expression)).error).toMatch(/^Not a real date: /u);
+    }
+    expect((await value("date(2026, 10)")).error).toBe("date takes 3 values.");
+  });
+
   it("asks for a dot rather than guessing a decimal comma", async () => {
     expect(await value("12,5 * 2")).toMatchObject({ error: "Unexpected «,»." });
   });

@@ -97,10 +97,10 @@ export default defineDynamic({
         description: `Draw a new picture, or change one, and get it back as a private artifact: birthday and holiday cards, invitations, posters, stickers, memes, illustrations, a pet or a person from the person's photos placed into a scene. Put the returned markdown line, exactly as returned, into the text of one send_message call and the chat receives a real photo. To change a picture («brighter», «add a hat», «bigger letters») call again with a prompt describing the whole result and pass that picture's artifact in images; never start over from scratch for an edit. ${describeDrawnPictures(context.messages)}${describePhotos(photos)}`,
         inputSchema: z.object({
           aspectRatio: z
-            .enum(["1:1", "4:5", "3:4", "2:3", "9:16", "16:9", "3:2", "4:3"])
+            .enum(["1:1", "3:4", "2:3", "9:16", "16:9", "3:2", "4:3"])
             .optional()
             .describe(
-              "Shape of the picture. Default 1:1; 4:5 or 9:16 suits a phone screen, 16:9 a banner."
+              "Shape of the picture. Default 1:1; 3:4 or 9:16 suits a phone screen, 16:9 a banner."
             ),
           images: z
             .array(z.string().min(1).max(200))
@@ -218,8 +218,14 @@ async function generateImage(
       ? (failureStatus(error?.code) ?? 502)
       : response.status;
     const reason = error?.message?.trim().slice(0, 300);
-    // Credit, key and outage failures are the owner's to fix, and the model
-    // repeats what it reads to the person: they are told only that it is down.
+    // The model repeats what it reads to the person, so no failure carries
+    // the provider's words: the details stay in the log.
+    console.warn("[generate_image] the image model failed", {
+      reason,
+      status,
+    });
+    // Credit, key and outage failures are the owner's to fix: the person is
+    // told only that it is down.
     if (
       status === 401 ||
       status === 402 ||
@@ -227,16 +233,12 @@ async function generateImage(
       status === 429 ||
       status >= 500
     ) {
-      console.warn("[generate_image] the image model failed", {
-        reason,
-        status,
-      });
       throw new Error(
         "The image service is not available right now. Never quote a provider, a status code or an error text to the person."
       );
     }
     throw new Error(
-      `The image model refused the request (${String(status)}): ${reason !== undefined && reason.length > 0 ? reason : "no details"}`
+      "The image model declined this request. Change the prompt or leave out the reference pictures if you can see why; otherwise tell the person this picture cannot be made. Never quote a provider, a status code or an error text to the person."
     );
   }
   const image = answer?.data?.[0];

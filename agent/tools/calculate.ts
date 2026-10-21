@@ -214,6 +214,41 @@ function wholeNumber(a: Rational, what: string) {
   return Number(a.n);
 }
 
+const millisecondsPerDay = 86_400_000;
+
+/** A whole number from 1 to 9999, or 0 for anything else. */
+function calendarPart(part: Rational) {
+  return isInteger(part) && part.n >= 1n && part.n <= 9999n
+    ? Number(part.n)
+    : 0;
+}
+
+/**
+ * A calendar date as a day number: whole days since 1970-01-01 on the
+ * Gregorian calendar, with no clock and no time zone, so two day numbers
+ * differ by exactly the days between the dates. A month or day that does not
+ * exist, such as 31 February, is refused rather than rolled into the next
+ * month.
+ */
+function dayNumber(year: Rational, month: Rational, day: Rational) {
+  const y = calendarPart(year);
+  const m = calendarPart(month);
+  const d = calendarPart(day);
+  const date = new Date(0);
+  date.setUTCFullYear(y, m - 1, d);
+  const real =
+    y > 0 &&
+    date.getUTCFullYear() === y &&
+    date.getUTCMonth() === m - 1 &&
+    date.getUTCDate() === d;
+  if (!real) {
+    throw new CalculationError(
+      `Not a real date: year ${describe(year).value}, month ${describe(month).value}, day ${describe(day).value}.`
+    );
+  }
+  return rational(BigInt(date.getTime() / millisecondsPerDay));
+}
+
 function rounding(mode: Rounding) {
   return (args: Rational[]) => {
     const [value, places] = args;
@@ -257,6 +292,13 @@ const functions = new Map<string, (args: Rational[]) => Rational>([
     },
   ],
   ["ceil", rounding("ceil")],
+  [
+    "date",
+    (args) => {
+      const [year = one, month = one, day = one] = exactly("date", 3, args);
+      return dayNumber(year, month, day);
+    },
+  ],
   ["floor", rounding("floor")],
   [
     "max",
@@ -581,7 +623,7 @@ function calculateLines(lines: readonly string[]) {
 
 export const calculate = defineTool({
   description:
-    "Compute numbers exactly: totals, bill splits and tips, shares, discounts, taxes and deductions, interest, unit prices, currency conversion with a rate you looked up. Pass one or more lines in order. A line is an expression, or `name = expression` whose value later lines use by name. Operators + - * / ^ and parentheses; `15%` is 0.15, and `x + 15%` or `x - 15%` adds or takes off 15 % of x. Functions: round(x, places), floor(x, places), ceil(x, places), abs, min, max, sum, sqrt, pow. Arithmetic is exact; `exact: false` marks a value rounded to 10 places or computed by sqrt or a fractional power. Use a dot for decimals. A line that fails returns `error` and the others still compute.",
+    "Compute numbers exactly: totals, bill splits and tips, shares, discounts, taxes and deductions, interest, unit prices, currency conversion with a rate you looked up. Pass one or more lines in order. A line is an expression, or `name = expression` whose value later lines use by name. Operators + - * / ^ and parentheses; `15%` is 0.15, and `x + 15%` or `x - 15%` adds or takes off 15 % of x. Functions: round(x, places), floor(x, places), ceil(x, places), abs, min, max, sum, sqrt, pow. Days between dates: subtract `date(year, month, day)` values, e.g. `date(2027, 1, 1) - date(2026, 10, 21)` is 72; never count days in your head. Arithmetic is exact; `exact: false` marks a value rounded to 10 places or computed by sqrt or a fractional power. Use a dot for decimals. A line that fails returns `error` and the others still compute.",
   inputSchema: z.object({
     lines: z.array(lineSchema).min(1).max(30),
   }),
