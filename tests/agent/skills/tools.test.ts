@@ -27,8 +27,9 @@ const shortened = {
   connect_google: 400,
   "gmail-send": 700,
   route_time: 450,
-  "schedules-create": 1_850,
-  "schedules-update": 1_800,
+  // 1 950 and 1 880 since `relative`: «через 5 минут», counted by code.
+  "schedules-create": 1_950,
+  "schedules-update": 1_880,
   standing_permission: 650,
 } as const;
 

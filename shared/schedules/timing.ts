@@ -195,6 +195,27 @@ function onceFields(personZone: typeof personZoneSchema) {
   };
 }
 
+/** The longest «через N минут» counted in minutes: a day. */
+const longestRelativeMinutes = 1_440;
+
+/**
+ * A one-off «через 5 минут», «через час»: the model reads the clock only to
+ * the minute and gave `at` from it, so a reminder asked at 14:10:40 came at
+ * 14:15, 40 seconds early. Code counts it from the call instead
+ * (`resolveScheduleTiming`).
+ */
+const relativeOnceSchema = z.strictObject({
+  inMinutes: z
+    .number()
+    .int()
+    .min(1)
+    .max(longestRelativeMinutes)
+    .describe(
+      "Minutes from now, 1 to 1440: «через час» is 60. Code counts it from this moment; never work out the clock time yourself."
+    ),
+  kind: z.literal("relative"),
+});
+
 /** The longest lead before an event: a month. */
 const longestLeadMinutes = 44_640;
 
@@ -250,6 +271,7 @@ function timingInputSchemaWith<OneOff extends z.ZodObject>(
 ) {
   return z.discriminatedUnion("kind", [
     once,
+    relativeOnceSchema,
     newIntervalTimingSchema,
     calendarTimingSchemaFor(personZone, words).refine(
       yearlyDayExists,
@@ -652,7 +674,10 @@ function skipsHolidays(timing: ScheduleTiming | undefined) {
  * clears the holiday flag. A one-off that leads an event (`minutesBefore`,
  * the pilot of event zones) runs that much before the event's instant, as
  * `flightFacts` counts check-in: whole hours, whatever a clock change
- * between them does to the wall clock.
+ * between them does to the wall clock. A relative one-off («через 5 минут»)
+ * is counted from the call and rounded up to the minute, the grain of the
+ * schedule clock: a reminder never comes before the time asked, and the
+ * minute the reply names is the minute it runs.
  */
 export function resolveScheduleTiming(
   timing: z.infer<typeof eventScheduleTimingInputSchema>,
@@ -660,6 +685,10 @@ export function resolveScheduleTiming(
   current?: ScheduleTiming
 ): z.infer<typeof scheduleTimingSchema> {
   if (timing.kind === "interval") return timing;
+  if (timing.kind === "relative") {
+    const minutes = Math.ceil(Date.now() / 60_000) + timing.inMinutes;
+    return { at: new Date(minutes * 60_000).toISOString(), kind: "once" };
+  }
   const zone =
     timing.timezone ??
     (current?.kind === "calendar" ? current.timezone : personTimeZone);
