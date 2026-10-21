@@ -26,6 +26,116 @@ describe("iMessage text compilation", () => {
     );
   });
 
+  it("keeps a link's word in the sentence and its address on the next line", () => {
+    expect(
+      toIMessageText(
+        "Курс почти не изменился, условий пока нет ([Интерфакс](https://www.interfax.ru/amp/1123917)). Плюс он заявил…"
+      )
+    ).toBe(
+      "Курс почти не изменился, условий пока нет (Интерфакс). Плюс он заявил…\nhttps://www.interfax.ru/amp/1123917"
+    );
+    expect(
+      toIMessageText(
+        "• [Король и Шут](https://a.b/kish) — ЦСКА Арена, 31 октября"
+      )
+    ).toBe("• Король и Шут — ЦСКА Арена, 31 октября\nhttps://a.b/kish");
+    // The closing full stop belongs to the sentence, not to the address.
+    expect(
+      toIMessageText(
+        "Прогноз — [Погода Mail](https://pogoda.mail.ru/moskva/22-october/)."
+      )
+    ).toBe("Прогноз — Погода Mail.\nhttps://pogoda.mail.ru/moskva/22-october/");
+    expect(toIMessageText("Источник: [Интерфакс](https://a.b/1)")).toBe(
+      "Источник: Интерфакс\nhttps://a.b/1"
+    );
+  });
+
+  it("puts the address of each list item right under that item", () => {
+    expect(
+      toIMessageText(
+        "- [Король и Шут](https://a.b/1) — ЦСКА\n- [Куок](https://a.b/2) — Крокус"
+      )
+    ).toBe(
+      "• Король и Шут — ЦСКА\nhttps://a.b/1\n• Куок — Крокус\nhttps://a.b/2"
+    );
+  });
+
+  it("names each address when one line holds several links", () => {
+    expect(
+      toIMessageText(
+        "Курс упал ([Интерфакс](https://a.b/1), [ТАСС](https://a.b/2)), аналитики ждут."
+      )
+    ).toBe(
+      "Курс упал (Интерфакс, ТАСС), аналитики ждут.\nИнтерфакс: https://a.b/1\nТАСС: https://a.b/2"
+    );
+    expect(
+      toIMessageText(
+        "Подробнее у [Интерфакса](https://a.b/1) и [ТАСС](https://a.b/2)."
+      )
+    ).toBe(
+      "Подробнее у Интерфакса и ТАСС.\nИнтерфакса: https://a.b/1\nТАСС: https://a.b/2"
+    );
+  });
+
+  it("turns a line that is only a list of links into name — address lines", () => {
+    expect(
+      toIMessageText(
+        "Ссылки: [Король и Шут](https://a.b/1), [Куок](https://a.b/2), [Halloween Fest](https://a.b/3)."
+      )
+    ).toBe(
+      "Ссылки:\nКороль и Шут — https://a.b/1\nКуок — https://a.b/2\nHalloween Fest — https://a.b/3"
+    );
+    expect(
+      toIMessageText(
+        "**Источники:** [Интерфакс](https://a.b/1); [ТАСС](https://a.b/2)."
+      )
+    ).toBe("Источники:\nИнтерфакс — https://a.b/1\nТАСС — https://a.b/2");
+    expect(
+      toIMessageText("[Интерфакс](https://a.b/1) и [ТАСС](https://a.b/2)")
+    ).toBe("Интерфакс — https://a.b/1\nТАСС — https://a.b/2");
+    expect(
+      toIMessageText(
+        "Источники: [Интерфакс](https://a.b/1), [Интерфакс](https://a.b/1)"
+      )
+    ).toBe("Источники:\nИнтерфакс — https://a.b/1");
+  });
+
+  it("does not take a sentence or a list item for a list of links", () => {
+    expect(
+      toIMessageText(
+        "Вот что нашёл по теме, читай [А](https://a.b/1) и [Б](https://a.b/2)."
+      )
+    ).toBe(
+      "Вот что нашёл по теме, читай А и Б.\nА: https://a.b/1\nБ: https://a.b/2"
+    );
+    expect(toIMessageText("- [А](https://a.b/1), [Б](https://a.b/2)")).toBe(
+      "• А, Б\nА: https://a.b/1\nБ: https://a.b/2"
+    );
+  });
+
+  it("keeps an address once and inline when the link text is the address", () => {
+    expect(toIMessageText("Тут [https://a.b/c](https://a.b/c) всё")).toBe(
+      "Тут https://a.b/c всё"
+    );
+    expect(
+      toIMessageText("Так [А](https://a.b/1) и ещё раз [А](https://a.b/1).")
+    ).toBe("Так А и ещё раз А.\nhttps://a.b/1");
+  });
+
+  it("keeps the address out of the emphasis around its link", () => {
+    expect(toIMessageText("**[Open](https://a.b/c)**")).toBe(
+      `${toIMessageBold("Open")}\nhttps://a.b/c`
+    );
+  });
+
+  it("keeps the blank lines between paragraphs", () => {
+    expect(
+      toIMessageText(
+        "Первое: [А](https://a.b/1).\n\nВторое: [Б](https://a.b/2).\n\nТретье."
+      )
+    ).toBe("Первое: А.\nhttps://a.b/1\n\nВторое: Б.\nhttps://a.b/2\n\nТретье.");
+  });
+
   it("strips inline code and bold markers", () => {
     expect(toIMessageText("Пиши `browser_task` и **жди**")).toBe(
       "Пиши browser_task и жди"

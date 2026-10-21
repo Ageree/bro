@@ -1,11 +1,12 @@
 /**
  * The links in the text of a `send_message`. The model writes a link as
  * `[слово](https://…)`; the channels draw it their own way (Telegram as a
- * tappable word, the web chat as Markdown, iMessage as the word and its
- * address, `agent/lib/imessage-text/compile.ts`). Two things are settled
- * here, before any channel sees the text: an address written without its
- * scheme (`mvideo.ru/products/…`, 12.10) gets `https://` and so is a link in
- * every channel, and in a task agent's report turn a link shows its address.
+ * tappable word, the web chat as Markdown, iMessage as the word in place and
+ * its address on the line after, `agent/lib/imessage-text/compile.ts`). Two
+ * things are settled here, before any channel sees the text: an address
+ * written without its scheme (`mvideo.ru/products/…`, 12.10) gets `https://`
+ * and so is a link in every channel, and in a task agent's report turn a link
+ * shows its address.
  */
 
 // Only a host that ends in a real web zone is an address: `node.js/docs`,

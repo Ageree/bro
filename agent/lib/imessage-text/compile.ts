@@ -30,6 +30,13 @@ const italicPattern = /(^|[^\w*])\*([^*\n]+)\*(?=[^\w*]|$)/gu;
 const strayBoldPattern = /\*\*/gu;
 const alphanumericPattern = /\p{L}|\p{N}/u;
 const nonSpacePattern = /\S/gu;
+// What may stand between the links of a line that is only a list of links:
+// emphasis markers, separators and «и». A lead-in such as `Источники:` may
+// stand before the first one.
+const linkMarkupPattern = /\*{2,}|_{2,}|~~|\+\+|`/gu;
+const linkSeparatorPattern = /[\s,;.|•·]+|(?<![\p{L}\p{N}])и(?![\p{L}\p{N}])/gu;
+const linkLeadInPattern = /^\p{L}[^:]*:$/u;
+const linkLeadInWordLimit = 3;
 /** Field labels an inbox or order summary repeats line after line. */
 const fieldLabelPattern =
   /^(\d+\.\s*)?(От|Тема|Дата|Предварительный текст|From|Subject|Date|To|Preview)\s*:/u;
@@ -56,17 +63,16 @@ export function toIMessageBold(text: string) {
 
 /** Compiles one model message into the text a single iMessage bubble shows. */
 export function toIMessageText(source: string) {
-  const flattened = source
-    .replaceAll("\r\n", "\n")
-    .replaceAll(fencePattern, (_match, body: string) =>
-      body.replace(/\n+$/u, "\n")
-    )
-    .replaceAll(imagePattern, (_match, alt: string, url: string) =>
-      captionedUrl(alt.replaceAll("*", ""), url)
-    )
-    .replaceAll(linkPattern, (_match, label: string, url: string) =>
-      captionedUrl(label.replaceAll(/[*_`]+/gu, ""), url)
-    )
+  const flattened = placeLinks(
+    source
+      .replaceAll("\r\n", "\n")
+      .replaceAll(fencePattern, (_match, body: string) =>
+        body.replace(/\n+$/u, "\n")
+      )
+      .replaceAll(imagePattern, (_match, alt: string, url: string) =>
+        captionedUrl(alt.replaceAll("*", ""), url)
+      )
+  )
     .replaceAll(autoLinkPattern, "$1")
     .replaceAll(autoMailPattern, "$1")
     .replaceAll(containerFencePattern, "")
@@ -102,6 +108,117 @@ function captionedUrl(rawCaption: string, rawUrl: string) {
   const url = rawUrl.trim();
   if (!caption || caption === url) return url;
   return `${caption}\n${url}`;
+}
+
+interface CaptionedLink {
+  readonly caption: string;
+  readonly url: string;
+}
+
+/**
+ * A link keeps its word where the model wrote it, and its address goes on its
+ * own line right after the line that held the link: an address in the middle
+ * of a sentence tears the phrase in two. The address stays inside the line's
+ * paragraph, so `toIMessageBubbles` keeps them in one bubble.
+ */
+function placeLinks(text: string) {
+  return (
+    text
+      .split("\n")
+      .map((line) => placeLineLinks(line))
+      .join("\n")
+      // A label that runs over several lines is no single line's link.
+      .replaceAll(linkPattern, (_match, label: string, url: string) =>
+        captionedUrl(linkCaption(label), url)
+      )
+  );
+}
+
+function linkCaption(label: string) {
+  return label.replaceAll(/[*_`]+/gu, "").trim();
+}
+
+/** A link whose text is its own address has nothing to move. */
+function isNamedLink(link: CaptionedLink) {
+  return link.caption !== "" && link.caption !== link.url;
+}
+
+function distinctAddresses(links: readonly CaptionedLink[]) {
+  return links.filter(
+    (link, index) =>
+      links.findIndex((other) => other.url === link.url) === index
+  );
+}
+
+function placeLineLinks(line: string) {
+  const links = [...line.matchAll(linkPattern)].map((match) => ({
+    caption: linkCaption(match[1] ?? ""),
+    end: match.index + match[0].length,
+    start: match.index,
+    url: (match[2] ?? "").trim(),
+  }));
+  if (links.length === 0) return line;
+
+  const gaps: string[] = [];
+  let inline = "";
+  let cursor = 0;
+  for (const link of links) {
+    const gap = line.slice(cursor, link.start);
+    gaps.push(gap);
+    inline += gap + (isNamedLink(link) ? link.caption : link.url);
+    cursor = link.end;
+  }
+  const tail = line.slice(cursor);
+  gaps.push(tail);
+  inline += tail;
+
+  const list = linkListLines(gaps, links);
+  if (list !== undefined) return list;
+  const addresses = distinctAddresses(links.filter(isNamedLink));
+  const [only, second] = addresses;
+  if (only === undefined) return inline;
+  if (second === undefined) return `${inline}\n${only.url}`;
+  return [
+    inline,
+    ...addresses.map((link) => `${link.caption}: ${link.url}`),
+  ].join("\n");
+}
+
+/**
+ * A line that is only links, such as `Источники: [А](u1), [Б](u2).`, becomes
+ * its lead-in and one `name — address` line per link; the names are not
+ * repeated in the line itself. Anything else in the line — a list marker, a
+ * sentence — is not such a line.
+ */
+function linkListLines(
+  gaps: readonly string[],
+  links: readonly CaptionedLink[]
+) {
+  const [lead = "", ...rest] = gaps;
+  if (links.length < 2 || !links.every(isNamedLink)) return undefined;
+  if (!rest.every((gap) => linkSeparatorsOnly(gap))) return undefined;
+  const leadIn = lead.trim();
+  const leadInText = leadIn.replaceAll(linkMarkupPattern, "").trim();
+  if (leadInText && !isLinkLeadIn(leadInText)) return undefined;
+  const entries = distinctAddresses(links).map(
+    (link) => `${link.caption} — ${link.url}`
+  );
+  return (leadInText ? [leadIn, ...entries] : entries).join("\n");
+}
+
+function linkSeparatorsOnly(gap: string) {
+  return (
+    gap
+      .replaceAll(linkMarkupPattern, "")
+      .replaceAll(linkSeparatorPattern, "") === ""
+  );
+}
+
+function isLinkLeadIn(text: string) {
+  return (
+    linkLeadInPattern.test(text) &&
+    text.split(/\s+/u).length <= linkLeadInWordLimit
+  );
 }
 
 function collapseWhitespace(text: string) {
