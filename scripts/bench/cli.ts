@@ -45,6 +45,7 @@ import { filesFixturesDir } from "./files/suite.ts";
 import { CaseJournal, readRunRecord, type RunRecord } from "./journal.ts";
 import { withRetry } from "./retry.ts";
 import {
+  openSignInLink,
   sendSignInCode,
   signedInSession,
   verifySignInCode,
@@ -56,6 +57,8 @@ const usage = `Бенчмарк Бро: драйвер разговоров че
 Вход (код приходит владельцу; в журналы и файлы он не попадает):
   pnpm bench otp    [--host URL] --phone +7…
   pnpm bench verify [--host URL] --phone +7… [--code C | код в stdin] [--cookie-file PATH]
+  pnpm bench link   [--cookie-file PATH]   (одноразовая ссылка входа в stdin: кнопка бота
+                    или scripts/cloudru-app-host/owner-login.py)
 
 Заготовки в Google-аккаунте тестировщика (письма, события, файл в Диске):
   pnpm bench fixtures list  [отбор как у list]
@@ -948,14 +951,14 @@ async function otpCommand(flags: Values) {
   );
 }
 
-/** Reads the code from stdin: a prompt in a terminal, one line when piped. */
-async function codeFromInput() {
+/** Reads one line from stdin: a prompt in a terminal, one line when piped. */
+async function lineFromInput(question: string) {
   const prompt = createInterface({
     input: process.stdin,
     output: process.stdin.isTTY ? process.stdout : undefined,
   });
   try {
-    return (await prompt.question("Код входа: ")).trim();
+    return (await prompt.question(question)).trim();
   } finally {
     prompt.close();
   }
@@ -963,7 +966,7 @@ async function codeFromInput() {
 
 async function verifyCommand(flags: Values) {
   const host = targetHost(flags);
-  const code = flags.code ?? (await codeFromInput());
+  const code = flags.code ?? (await lineFromInput("Код входа: "));
   if (!/^\d{4,8}$/u.test(code)) throw new Error("The code is 4 to 8 digits.");
   const file = cookieFile(flags);
   await verifySignInCode(host, phoneNumber(flags), code, file);
@@ -976,8 +979,31 @@ async function verifyCommand(flags: Values) {
   );
 }
 
+/**
+ * Signs in with a one-time link from stdin (never argv: it would sit in the
+ * process list): the bot's button, or `owner-login.py`.
+ */
+async function linkCommand(flags: Values) {
+  const link = URL.parse(await lineFromInput("Ссылка входа: "));
+  if (link?.pathname !== "/api/auth/telegram-login/open") {
+    throw new Error(
+      "Pass the sign-in link (…/api/auth/telegram-login/open?t=…) on stdin."
+    );
+  }
+  const file = cookieFile(flags);
+  await openSignInLink(link, file);
+  const { expiresAt, userId } = await signedInSession(
+    link,
+    await readCookieHeader(file, link)
+  );
+  console.log(
+    `Сессия ${userId} сохранена в ${file} (права 600), действует до ${expiresAt.toISOString()}.`
+  );
+}
+
 const commands = {
   follow: followCommand,
+  link: linkCommand,
   list: listCommand,
   next: nextCommand,
   observe: observeCommand,
@@ -991,6 +1017,7 @@ const commands = {
 const commandSchema = z.enum([
   "fixtures",
   "follow",
+  "link",
   "list",
   "next",
   "observe",
