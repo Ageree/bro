@@ -21,10 +21,8 @@ const codeLimitMessage = "Слишком много кодов подряд. П�
 
 export function PhoneOtpAuthForm({
   callbackUrl,
-  imessagePhoneNumber,
 }: {
   readonly callbackUrl: string;
-  readonly imessagePhoneNumber?: string;
 }) {
   const sendOtp = useMutation({
     mutationFn: async (phoneNumberValue: string) => {
@@ -80,7 +78,7 @@ export function PhoneOtpAuthForm({
           </Button>
         </FieldGroup>
       </form>
-      <IMessageCodeNotice phoneNumber={imessagePhoneNumber} />
+      <IMessageCodeNotice />
     </>
   );
 }
@@ -177,21 +175,17 @@ function VerificationCodeForm({
 }
 
 /**
- * The code comes from the deployment's own iMessage line. The sheet only names
- * it. A «Написать Bro» link here would send a newcomer to a line that answers
- * «This number didn't recognize yours» until signing in has put their phone
- * into the Photon project (`photonLineFor`); the link lives in the cabinet.
+ * The code comes from the iMessage line Photon picks (`adapter.openDM`), not
+ * from `IMESSAGE_PHONE_NUMBER`, which is only a fallback and has named a stale
+ * line: the sheet names no number. A «Написать Bro» link here would send a
+ * newcomer to a line that answers «This number didn't recognize yours» until
+ * signing in has put their phone into the Photon project (`photonLineFor`);
+ * the link lives in the cabinet.
  */
-function IMessageCodeNotice({
-  phoneNumber,
-}: {
-  readonly phoneNumber?: string;
-}) {
+function IMessageCodeNotice() {
   return (
     <p className="type-status mt-4 text-center text-muted-foreground">
-      {phoneNumber
-        ? `Код придёт в iMessage с номера ${phoneNumber}.`
-        : "Код придёт с iMessage-номера этого сервиса."}
+      Код придёт с iMessage-номера этого сервиса.
     </p>
   );
 }

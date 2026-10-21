@@ -48,29 +48,13 @@ describe("phone OTP errors", () => {
     ).toBe("Не вышло отправить код. Попробуй ещё раз.");
   });
 
-  it("names the line the code comes from without linking to it", () => {
+  it("says where the code comes from without naming a number or linking to the line", () => {
     const html = renderForm(
-      createElement(PhoneOtpAuthForm, {
-        callbackUrl: "/",
-        imessagePhoneNumber: "+12025550123",
-      })
-    );
-
-    expect(html).toContain("Код придёт в iMessage с номера +12025550123.");
-    // The line answers only phones already in its project, which sign-in adds.
-    expect(html).not.toContain("sms:");
-    expect(html).not.toContain("Написать Bro");
-  });
-
-  it("says where the code comes from without a configured number", () => {
-    const html = renderForm(
-      createElement(PhoneOtpAuthForm, {
-        callbackUrl: "/",
-        imessagePhoneNumber: undefined,
-      })
+      createElement(PhoneOtpAuthForm, { callbackUrl: "/" })
     );
 
     expect(html).toContain("Код придёт с iMessage-номера этого сервиса.");
+    // The line answers only phones already in its project, which sign-in adds.
     expect(html).not.toContain("sms:");
     expect(html).not.toContain("Написать Bro");
     const error = phoneOtpErrorMessage({

@@ -6,7 +6,7 @@ import { SiteFooter } from "@web/components/paper/footer";
 import { LocalPhoneAuthForm } from "@app/sign-in/_components/local-form";
 import { PhoneOtpAuthForm } from "@app/sign-in/_components/otp-form";
 import { ownCallbackUrl } from "@app/sign-in/_lib/callback";
-import { env, localPhoneAuthBypassEnabled } from "@shared/environment";
+import { localPhoneAuthBypassEnabled } from "@shared/environment";
 import { requestSession } from "@web/auth/request-scope";
 import { photonConfigured } from "@shared/photon/credentials";
 
@@ -27,10 +27,6 @@ export default async function SignInPage({
     : callbackValue;
   const callbackUrl = ownCallbackUrl(requestedCallback);
   const imessageConfigured = photonConfigured();
-  const imessagePhoneNumber =
-    localPhoneAuthBypassEnabled || !imessageConfigured
-      ? undefined
-      : env.IMESSAGE_PHONE_NUMBER;
 
   return (
     <div className="flex min-h-svh flex-col">
@@ -58,10 +54,7 @@ export default async function SignInPage({
           ) : localPhoneAuthBypassEnabled ? (
             <LocalPhoneAuthForm callbackUrl={callbackUrl} />
           ) : (
-            <PhoneOtpAuthForm
-              callbackUrl={callbackUrl}
-              imessagePhoneNumber={imessagePhoneNumber}
-            />
+            <PhoneOtpAuthForm callbackUrl={callbackUrl} />
           )}
           <p className="type-fine mt-6 text-center text-muted-foreground">
             Продолжая, вы соглашаетесь на обработку персональных данных по{" "}
