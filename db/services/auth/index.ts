@@ -17,6 +17,7 @@ import {
 import { claimSignInCodeSend, releaseSignInCodeSend } from "./code-sends";
 import { photonLineFor } from "@db/services/photon-users";
 import { phoneUserEmail, phoneUserName } from "./phone-user";
+import { telegramLogin } from "./telegram-login";
 import { isE164PhoneNumber } from "@shared/identity/phone-number";
 
 let authPromise: ReturnType<typeof initializeAuth> | undefined;
@@ -105,6 +106,7 @@ async function initializeAuth() {
           ? ({ phoneNumber: value }) => isE164PhoneNumber(value)
           : undefined,
       }),
+      telegramLogin(),
     ],
     secret: betterAuthSecret,
   });

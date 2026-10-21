@@ -44,7 +44,10 @@ import {
   googleWorkspaceDisconnectNotice,
   readGoogleWorkspaceConnection,
 } from "@shared/google-workspace/connection";
-import { telegramLinkConfigured } from "@shared/identity/telegram-link";
+import {
+  telegramLinkConfigured,
+  telegramStartUrl,
+} from "@shared/identity/telegram-link";
 import { directModelProviderName } from "@shared/model/provider";
 import type { AccessScope } from "@shared/identity/access-scope";
 import { photonConfigured } from "@shared/photon/credentials";
@@ -162,7 +165,7 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
     timeStyle: "short",
     timeZone,
   });
-  const phoneLast4 = session?.user.phoneNumber.slice(-4);
+  const phoneLast4 = session?.user.phoneNumber?.slice(-4);
 
   return (
     <Document>
@@ -174,7 +177,11 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
         <Badge className={statusPill} variant="outline">
           {phoneLast4
             ? `Телефон …${phoneLast4}`
-            : "Телефон ещё не привязан — напиши Bro в iMessage"}
+            : telegramIdentity?.username
+              ? `Telegram @${telegramIdentity.username}`
+              : telegramIdentity
+                ? "Вход через Telegram"
+                : "Телефон ещё не привязан"}
         </Badge>
         <Badge className={statusPill} variant="outline">
           {billing.paidUntil
@@ -186,6 +193,7 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
       <ChannelsSection
         imessageConfigured={photonConfigured()}
         imessagePhoneNumber={imessageLine ?? env.IMESSAGE_PHONE_NUMBER}
+        telegramHref={telegramConfigured ? telegramStartUrl() : undefined}
         welcome={!introduced}
       />
 
@@ -432,35 +440,46 @@ function connectedAppDescription(
 }
 
 /**
- * The lead actions under the title. Bro lives in iMessage, so writing to it
- * is the primary pill and the web chat the secondary one. Until the person
- * has written to Bro at all (`welcome`), a dialog over the cabinet says so.
+ * The lead actions under the title. Bro lives in Telegram (iMessage where
+ * Telegram is not set up), so writing to it is the primary pill and the web
+ * chat the secondary one. Until the person has written to Bro at all
+ * (`welcome`), a dialog over the cabinet says so.
  */
 export function ChannelsSection({
   imessageConfigured,
   imessagePhoneNumber,
+  telegramHref,
   welcome = false,
 }: {
   readonly imessageConfigured: boolean;
   readonly imessagePhoneNumber?: string;
+  readonly telegramHref?: string;
   readonly welcome?: boolean;
 }) {
   const imessageHref =
     imessageConfigured && imessagePhoneNumber
       ? `sms:${imessagePhoneNumber}`
       : undefined;
+  const write = telegramHref
+    ? { channel: "Telegram", href: telegramHref }
+    : imessageHref
+      ? { channel: "iMessage", href: imessageHref }
+      : undefined;
 
   return (
     <>
-      {welcome && imessageHref ? (
-        <WelcomeDialog imessageHref={imessageHref} />
+      {welcome && write ? (
+        <WelcomeDialog channel={write.channel} href={write.href} />
       ) : null}
       <Actions className="items-center">
-        {imessageHref ? (
+        {write ? (
           <Button
             nativeButton={false}
             render={
-              <a aria-label="Написать Bro в iMessage" href={imessageHref} />
+              <a
+                aria-label={`Написать Bro в ${write.channel}`}
+                href={write.href}
+              />
             }
             variant="paper"
           >
@@ -483,6 +502,7 @@ export function ChannelsSection({
         {channelAvailabilityMessage({
           imessageConfigured,
           imessagePhoneNumber,
+          telegram: telegramHref !== undefined,
         })}
       </StatusLine>
     </>
@@ -492,10 +512,23 @@ export function ChannelsSection({
 function channelAvailabilityMessage({
   imessageConfigured,
   imessagePhoneNumber,
+  telegram,
 }: {
   readonly imessageConfigured: boolean;
   readonly imessagePhoneNumber?: string;
+  readonly telegram: boolean;
 }) {
+  if (telegram) {
+    return [
+      "Кнопка откроет Bro в Telegram.",
+      imessageConfigured && imessagePhoneNumber
+        ? `В iMessage Bro по-прежнему на ${imessagePhoneNumber}.`
+        : undefined,
+      "Чат в вебе тоже готов.",
+    ]
+      .filter(Boolean)
+      .join(" ");
+  }
   return [
     imessageConfigured && imessagePhoneNumber
       ? `iMessage откроет ${imessagePhoneNumber}.`

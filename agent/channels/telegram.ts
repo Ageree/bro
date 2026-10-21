@@ -7,13 +7,16 @@ import {
   telegramContinuationToken,
   type TelegramChannelConfig,
   type TelegramEventContext,
+  type TelegramUser,
 } from "eve/channels/telegram";
 import type { SessionAuth, SessionContext } from "eve/context";
 import { z } from "zod";
+import { redeemChannelLinkToken } from "@db/services/channel-identities";
 import {
-  findChannelIdentity,
-  redeemChannelLinkToken,
-} from "@db/services/channel-identities";
+  approveTelegramLogin,
+  telegramLoginPayloadPrefix,
+} from "@db/services/auth/telegram-login";
+import { ensureTelegramUser } from "@db/services/auth/telegram-user";
 import { messageQuotaGate } from "@agent/lib/billing/quota";
 import { bugBotTarget } from "@agent/lib/bug-bot/target";
 import { browserFilesEnabled } from "@agent/lib/browser-use/files";
@@ -89,6 +92,7 @@ import {
 } from "@shared/chat/reaction";
 import { accessScopeForUser } from "@shared/identity/access-scope";
 import { env } from "@shared/environment";
+import { applicationOrigin } from "@shared/environment/origin";
 import {
   imageArtifactFailureText,
   prepareImageArtifactDelivery,
@@ -118,16 +122,13 @@ const albumSizeRange = { maximum: 10, minimum: 2 } as const;
 const telegramPhotoBytes = 10 * 1024 * 1024;
 const startLinkPattern =
   /^\/start(?:@[A-Za-z0-9_]+)?\s+link_(?<token>[\w-]+)$/u;
+/** The website's «Войти через Telegram» (`telegramLogin`). */
+const startLoginPattern = new RegExp(
+  `^/start(?:@[A-Za-z0-9_]+)?\\s+${telegramLoginPayloadPrefix}(?<token>[\\w-]+)$`,
+  "u"
+);
 const bugCommandPattern = /^\/bug(?:@[A-Za-z0-9_]+)?(?:\s|$)/u;
-const unlinkedHintIntervalMs = 60 * 60_000;
 const maximumThrottledChats = 500;
-
-/**
- * eve exposes no durable channel state before a session exists, and an
- * unlinked sender never starts one, so the hint throttle lives with the
- * channel for the lifetime of the serving instance.
- */
-const unlinkedHintSentAt = new Map<string, number>();
 
 /**
  * Telegram shows «печатает…» for five seconds after each chat action, and
@@ -446,6 +447,17 @@ export default telegramChannel({
       return null;
     }
 
+    const loginToken = startLoginPattern.exec(message.text || message.caption)
+      ?.groups?.token;
+    if (loginToken) {
+      const account = await telegramAccount(message.chat.id, from);
+      const outcome = account
+        ? await approveTelegramLogin(loginToken, account.userId)
+        : ({ kind: "unknown" } as const);
+      await context.telegram.sendMessage(loginOutcomeText(outcome));
+      return null;
+    }
+
     // The bug bot is a separate bot: /bug only points to it, before any model.
     if (
       env.BUG_BOT_USERNAME &&
@@ -456,16 +468,14 @@ export default telegramChannel({
       return null;
     }
 
-    const identity = await findChannelIdentity("telegram", from.id);
-    if (!identity) {
-      if (shouldSendUnlinkedHint(message.chat.id)) {
-        await context.telegram.sendMessage(unlinkedHintText);
-      }
-      return null;
-    }
+    // Anyone who writes to the bot has an account from the first message, as
+    // in iMessage: a stranger used to get only «привяжи телеграм в кабинете»,
+    // and a newcomer had no cabinet to bind it in.
+    const account = await telegramAccount(message.chat.id, from);
+    if (!account) return null;
     const auth = defaultTelegramAuth(message);
     if (!auth) return null;
-    const principalId = `better-auth:${identity.userId}`;
+    const principalId = `better-auth:${account.userId}`;
     const scope = accessScopeForUser(principalId);
     // Metering happens before the turn starts, so an over-limit message costs
     // a counter row rather than a model call.
@@ -606,11 +616,23 @@ function bugHintText(botUsername: string) {
   return `Нашли ошибку? Напишите @${botUsername}: опишите, что сломалось, можно со скриншотом.`;
 }
 
-const unlinkedHintText = [
-  "Этот телеграм пока не привязан ни к одному кабинету.",
-  "",
-  "Открой кабинет в браузере и нажми «Привязать Telegram» или попроси меня в iMessage привязать телеграм. И там, и там получится одноразовая ссылка, которая свяжет этот чат с твоим аккаунтом.",
-].join("\n");
+function loginOutcomeText(
+  outcome: Awaited<ReturnType<typeof approveTelegramLogin>>
+) {
+  switch (outcome.kind) {
+    case "code": {
+      // The site is named: a look-alike page could show the same bot link.
+      const site = new URL(applicationOrigin()).host;
+      return `Код для входа на ${site}: ${outcome.code}\n\nВводи его только на ${site}. Никому его не сообщай — даже если попросят от имени Bro. Если ты не входил на сайт, просто не отвечай.`;
+    }
+    case "expired": {
+      return "Этот вход устарел. Вернись на сайт и нажми «Войти через Telegram» ещё раз.";
+    }
+    default: {
+      return "Ссылка для входа не подходит. Вернись на сайт и нажми «Войти через Telegram» ещё раз.";
+    }
+  }
+}
 
 function linkOutcomeText(
   outcome: Awaited<ReturnType<typeof redeemChannelLinkToken>>
@@ -634,18 +656,14 @@ function linkOutcomeText(
   }
 }
 
-function shouldSendUnlinkedHint(chatId: string, now = Date.now()) {
-  const sentAt = unlinkedHintSentAt.get(chatId);
-  if (sentAt !== undefined && now - sentAt < unlinkedHintIntervalMs) {
-    return false;
-  }
-  if (unlinkedHintSentAt.size >= maximumThrottledChats) {
-    for (const [chat, at] of unlinkedHintSentAt) {
-      if (now - at >= unlinkedHintIntervalMs) unlinkedHintSentAt.delete(chat);
-    }
-  }
-  unlinkedHintSentAt.set(chatId, now);
-  return true;
+/** The account a Telegram sender writes as, made on their first message. */
+function telegramAccount(chatId: string, from: TelegramUser) {
+  return ensureTelegramUser({
+    chatId,
+    name: [from.firstName, from.lastName].filter(Boolean).join(" "),
+    telegramUserId: from.id,
+    username: from.username,
+  });
 }
 
 const telegramMessageIdSchema = z.string().min(1);

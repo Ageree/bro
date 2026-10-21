@@ -125,6 +125,38 @@ describe("channel identities", () => {
     ).resolves.toMatchObject({ chatId: "5150", username: "ada_l" });
   }, 30_000);
 
+  // Every Telegram user has an account the bot made on their first message:
+  // a bind link someone else minted and sent must not move them into the
+  // sender's cabinet.
+  it("leaves the Telegram of an account the bot made where it is", async () => {
+    const identities = await migratedService();
+    const ada = { userId: "better-auth:ada", workspaceId: "personal:ada" };
+    await Database.db.insert(schema.user).values({
+      email: "telegram-x@telegram.local-vault.invalid",
+      emailVerified: true,
+      id: "tg",
+      name: "Ada",
+    });
+    await Database.db.insert(schema.channelIdentities).values({
+      channel: "telegram",
+      chatId: "4242",
+      externalUserId: "9001",
+      userId: "tg",
+      workspaceId: "personal:tg",
+    });
+
+    await expect(
+      identities.redeemChannelLinkToken(
+        "telegram",
+        await identities.mintChannelLinkToken(ada, "telegram"),
+        adaTelegram
+      )
+    ).resolves.toBe("already_linked_other_user");
+    await expect(
+      identities.findChannelIdentity("telegram", "9001")
+    ).resolves.toMatchObject({ userId: "tg", workspaceId: "personal:tg" });
+  }, 30_000);
+
   it("requires a Better Auth principal", async () => {
     const identities = await migratedService();
 

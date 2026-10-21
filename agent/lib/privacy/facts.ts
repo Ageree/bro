@@ -289,6 +289,12 @@ function messengers() {
           "Код для входа по номеру телефона приходит через Photon: сервис видит номер и код.",
         ]
       : []),
+    // «Войти через Telegram» (`telegramLogin`): the bot sends the code.
+    ...(env.TELEGRAM_BOT_TOKEN === undefined
+      ? []
+      : [
+          "Код для входа через Telegram присылает бот Бро в Telegram: Telegram видит код, номер телефона ему не нужен.",
+        ]),
   ];
 }
 

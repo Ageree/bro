@@ -75,6 +75,9 @@ export async function redeemChannelLinkToken(
         )
       )
       .limit(1);
+    // An account the bot made on a first message (`ensureTelegramUser`)
+    // keeps its Telegram too: a link anyone can mint and send would
+    // otherwise move a stranger's Telegram into the sender's cabinet.
     if (boundExternalUser && boundExternalUser.userId !== claim.userId) {
       return "already_linked_other_user" as const;
     }

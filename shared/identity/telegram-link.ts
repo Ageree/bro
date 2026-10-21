@@ -7,13 +7,20 @@ import { env } from "@shared/environment";
  * channel redeems.
  */
 export function telegramLinkUrl(token: string) {
+  return telegramStartUrl(`link_${token}`);
+}
+
+/** The bot's chat, opened with `/start <payload>` when one is given. */
+export function telegramStartUrl(payload?: string) {
   const botUsername = env.TELEGRAM_BOT_USERNAME;
   if (!botUsername) {
     throw new Error(
       "Telegram is not configured for this deployment. Set TELEGRAM_BOT_USERNAME."
     );
   }
-  return `https://t.me/${botUsername}?start=link_${token}`;
+  return payload === undefined
+    ? `https://t.me/${botUsername}`
+    : `https://t.me/${botUsername}?start=${payload}`;
 }
 
 export function telegramLinkConfigured() {
