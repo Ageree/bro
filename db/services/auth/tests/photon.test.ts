@@ -59,4 +59,17 @@ describe("Photon delivery", () => {
     expect(failure.code).toBe(expectedCode);
     expect(failure.message).toContain(copy);
   });
+
+  it("asks the person to write first when a shared line refuses the phone", () => {
+    const failure = photonOtpFailure(
+      new PhotonDeliveryError({
+        kind: "AuthenticationError",
+        photonMessage:
+          "[spectrum-imessage] Target not allowed for this project",
+      })
+    );
+
+    expect(failure.code).toBe("IMESSAGE_WRITE_FIRST");
+    expect(failure.message).toContain("сначала напиши Bro");
+  });
 });

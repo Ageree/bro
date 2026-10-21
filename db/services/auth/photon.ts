@@ -60,7 +60,25 @@ export class PhotonDeliveryError extends Error {
   }
 }
 
+/**
+ * Photon's shared lines (Free and Pro) message only phones registered as
+ * project users, and a registered phone that never wrote to its line is
+ * still refused («Target not allowed for this project», 21.10, a newcomer's
+ * every code). Sign-in registers the phone first; a message from the person
+ * is the one thing left, so they are asked for it, not told to come back.
+ */
+export function photonTargetNotAllowed(error: PhotonDeliveryError) {
+  return error.photonMessage?.includes("Target not allowed") === true;
+}
+
 export function photonOtpFailure(error: PhotonDeliveryError) {
+  if (photonTargetNotAllowed(error)) {
+    return {
+      code: "IMESSAGE_WRITE_FIRST",
+      message:
+        "Чтобы код дошёл, сначала напиши Bro в iMessage любое слово, а потом снова нажми «Получить код».",
+    };
+  }
   switch (error.kind) {
     case "AuthenticationError": {
       return {

@@ -11,6 +11,7 @@ import { photonConfigured } from "@shared/photon/credentials";
 import {
   PhotonDeliveryError,
   photonOtpFailure,
+  photonTargetNotAllowed,
   sendPhotonText,
 } from "./photon";
 import { claimSignInCodeSend, releaseSignInCodeSend } from "./code-sends";
@@ -165,16 +166,28 @@ export async function sendPhoneCode({
     });
   }
 
+  // A shared Photon line refuses a phone outside the project, and the phone
+  // used to join it only after signing in: no newcomer ever got a code (21.10).
+  const line = await photonLineFor(to);
   try {
     await sendPhotonText({
       message: `Код входа в Bro: ${code}. Действует 5 минут.`,
       to,
     });
   } catch (error) {
+    // Nothing about the number goes to the log.
+    console.warn("[auth] sign-in code was not sent", {
+      error: error instanceof Error ? error.name : "unknown",
+      kind: error instanceof PhotonDeliveryError ? error.kind : undefined,
+      photonMessage:
+        error instanceof PhotonDeliveryError ? error.photonMessage : undefined,
+    });
     if (error instanceof PhotonDeliveryError) {
       const failure = photonOtpFailure(error);
       throw new APIError("BAD_GATEWAY", {
         code: failure.code,
+        // The line the person writes to before asking again.
+        line: photonTargetNotAllowed(error) ? line : undefined,
         message: failure.message,
         photonError: {
           code: error.code,
