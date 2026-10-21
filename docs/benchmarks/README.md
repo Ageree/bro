@@ -34,26 +34,32 @@ Node 24 и `pnpm install`.
 
 ### Вход
 
-Код входа приходит владельцу. Вход разбит на две команды, потому что код
-может прийти через несколько минут:
+Сессия сама входит в аккаунт владельца, без кода и без него самого (с 21.10,
+iMessage выключен): одноразовая ссылка аккаунту из `ADMIN_USER_IDS` приходит с
+сервера через S3, `pnpm bench link` сохраняет cookie. Нужны операторские ключи
+(`host.py state restore`) и env выката:
+
+```sh
+BRO_CLOUD=selectel BRO_APP_HOST_DIR=/root/.bro-app-host-selectel \
+  S3_ENDPOINT=https://s3.ru-1.storage.selcloud.ru S3_REGION=ru-1 PROBE_BUCKET=bro-bucket \
+  NODE_USE_ENV_PROXY=1 python3 scripts/cloudru-app-host/owner-login.py bro-app-sel-2
+```
+
+Ссылку с кнопки «Войти в кабинет» в боте можно подать и руками:
+`pnpm bench link` читает её из stdin.
+
+Вход по коду (пока на проде включён iMessage): код приходит владельцу, поэтому
+вход разбит на две команды:
 
 ```sh
 pnpm bench otp --phone +7XXXXXXXXXX
 # владелец присылает код, он сразу уходит в verify:
 pnpm bench verify --phone +7XXXXXXXXXX --code 123456
-# или без кода в командной строке:
-echo 123456 | pnpm bench verify --phone +7XXXXXXXXXX
 ```
 
-С 21.10 iMessage выключен, и кода нет. Оператор входит в аккаунт владельца без
-него: `python3 scripts/cloudru-app-host/owner-login.py bro-app-sel-2` (одноразовая
-ссылка аккаунту из `ADMIN_USER_IDS` через S3, затем `pnpm bench link`). Ссылку с
-кнопки бота («Войти в кабинет») можно подать и руками: `pnpm bench link` читает её
-из stdin.
-
-`verify` сохраняет cookie `__Secure-better-auth.*` в `~/.bro-bench/cookies.txt`
-(права 600, вне репозитория; другой путь — `--cookie-file`) и печатает, до
-какого времени действует сессия. Код никуда не пишется. Хост по умолчанию
+`link` и `verify` сохраняют cookie `__Secure-better-auth.*` в `~/.bro-bench/cookies.txt`
+(права 600, вне репозитория; другой путь — `--cookie-file`) и печатают, до
+какого времени действует сессия. Ни ссылка, ни код никуда не пишутся. Хост по умолчанию
 `https://brobro.tech`, другой — `--host`. Перед каждым прогоном драйвер
 проверяет сессию через `/api/auth/get-session` и, если она истекла, просит
 войти заново.
