@@ -158,6 +158,12 @@ s3put:<ключ>`; без звонка её гоняют локально: `sip.
   говорит «Так, смотрю», ответ через 4 с пересказывает. ICE-кандидаты OpenAI — Azure, UDP 3478 и TCP 443; из
   облачной сессии ICE не проходит (нет UDP), звук проверяйте с телефона. Не пройдёт из России — мост через
   маршрут `WS()` из `eve/channels` (Nitro eve включает WebSocket сам, Caddy `/eve/*` его пропускает).
+- Eleven Realtime (21.10, `docs/benchmarks/voice-realtime.md`): Mini и Max против GPT-Live на
+  сценариях `/talk` и звонка — не переходим. Mini в 1 из 3 разговоров не вызвал инструмент и говорил
+  «заказываю», Max путал числа в звонке; дороже в 1,6–1,8 раза. Протокол — OpenAI Realtime;
+  `audio/pcma` не принимает (только pcm 24 кГц и pcmu), `response.create` во время ответа —
+  `conversation_already_has_active_response`. Ключа OpenAI в env облачной сессии нет: он в `prod.json`
+  операторского состояния.
 - iMessage Photon (20.10): линия принимает входящие лишь от телефонов — пользователей проекта
   (`POST spectrum.photon.codes/projects/<id>/users/`, `type: shared`), иначе отвечает «This number
   didn't recognize yours». Вход на сайте заводит телефон (`photonLineFor`, хук `after` в
