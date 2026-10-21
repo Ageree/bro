@@ -1,12 +1,28 @@
-import { createElement } from "react";
+import { createElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   ChannelsSection,
   LimitsSection,
 } from "@app/(authenticated)/workspace/(overview)/page";
 
 const dayMs = 24 * 60 * 60 * 1000;
+
+// The dialog portals into the document, which a static render has not got:
+// its parts render in place here.
+const part = vi.hoisted(
+  () =>
+    ({ children }: { readonly children?: ReactNode }) =>
+      children
+);
+vi.mock("@web/components/ui/dialog", () => ({
+  Dialog: part,
+  DialogClose: part,
+  DialogContent: part,
+  DialogDescription: part,
+  DialogTitle: ({ children }: { readonly children?: ReactNode }) =>
+    createElement("h2", null, children),
+}));
 
 describe("workspace Photon channel", () => {
   it("disables iMessage without advertising another deployment's number", () => {
@@ -50,7 +66,7 @@ describe("workspace Photon channel", () => {
     expect(html).not.toContain("Напиши Bro</h2>");
   });
 
-  it("greets an account that has not written to Bro yet", () => {
+  it("covers the cabinet of an account that has not written to Bro yet", () => {
     const html = renderToStaticMarkup(
       createElement(ChannelsSection, {
         imessageConfigured: true,
@@ -60,6 +76,9 @@ describe("workspace Photon channel", () => {
     );
 
     expect(html).toContain("Напиши Bro</h2>");
+    expect(html).toContain("Позже");
+    // The dialog offers iMessage alone; the web chat stays in the cabinet.
+    expect(html.split("Открыть чат в вебе")).toHaveLength(2);
     expect(html).toContain("sms:+12025550123");
   });
 

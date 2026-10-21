@@ -58,6 +58,7 @@ import { PersonalMailAction } from "./_components/personal-mail-action";
 import { ModelSelector } from "./_components/model-selector";
 import { SpendLimitSection } from "./_components/spend-limit-section";
 import { TelegramLinkAction } from "./_components/telegram-link-action";
+import { WelcomeDialog } from "./_components/welcome-dialog";
 import { CabinetVault } from "./_components/vault/cabinet";
 
 export const metadata: Metadata = { title: "Кабинет" };
@@ -165,19 +166,10 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
     timeZone,
   });
   const phoneLast4 = session?.user.phoneNumber.slice(-4);
-  const welcome = !introduced;
-  const channels = (
-    <ChannelsSection
-      imessageConfigured={photonConfigured()}
-      imessagePhoneNumber={imessageLine ?? env.IMESSAGE_PHONE_NUMBER}
-      welcome={welcome}
-    />
-  );
 
   return (
     <Document>
       <DocumentTitle>Кабинет</DocumentTitle>
-      {welcome ? channels : null}
       <div className="mb-4 flex flex-wrap items-center gap-2">
         <Badge className={statusPill} variant="default">
           {billing.paid ? "Полный доступ" : "Бесплатный режим"}
@@ -194,7 +186,11 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
         </Badge>
       </div>
 
-      {welcome ? null : channels}
+      <ChannelsSection
+        imessageConfigured={photonConfigured()}
+        imessagePhoneNumber={imessageLine ?? env.IMESSAGE_PHONE_NUMBER}
+        welcome={!introduced}
+      />
 
       {google === "unavailable" ? (
         <Flash>
@@ -423,9 +419,7 @@ function connectedAppDescription(
 /**
  * The lead actions under the title. Bro lives in iMessage, so writing to it
  * is the primary pill and the web chat the secondary one. Until the person
- * has written to Bro at all (`welcome`), the actions come as a plate of their
- * own that says so: the landing's «Написать bro» leads through sign-in to
- * here, and this is where the iMessage line opens.
+ * has written to Bro at all (`welcome`), a dialog over the cabinet says so.
  */
 export function ChannelsSection({
   imessageConfigured,
@@ -440,48 +434,36 @@ export function ChannelsSection({
     imessageConfigured && imessagePhoneNumber
       ? `sms:${imessagePhoneNumber}`
       : undefined;
-  const actions = (
-    <Actions className="items-center">
-      {imessageHref ? (
-        <Button
-          nativeButton={false}
-          render={
-            <a aria-label="Написать Bro в iMessage" href={imessageHref} />
-          }
-          variant="paper"
-        >
-          Написать Bro
-        </Button>
-      ) : (
-        <Button disabled variant="paper">
-          Написать Bro
-        </Button>
-      )}
-      <Button
-        nativeButton={false}
-        render={<Link href="/chat" />}
-        variant="outline"
-      >
-        Открыть чат в вебе
-      </Button>
-    </Actions>
-  );
-
-  if (welcome && imessageHref) {
-    return (
-      <Section headingId="welcome-heading" title="Напиши Bro">
-        <p className="type-fine text-muted-foreground">
-          Bro живёт в iMessage. Начни с «привет» или сразу с дела — он
-          представится и возьмётся.
-        </p>
-        {actions}
-      </Section>
-    );
-  }
 
   return (
     <>
-      {actions}
+      {welcome && imessageHref ? (
+        <WelcomeDialog imessageHref={imessageHref} />
+      ) : null}
+      <Actions className="items-center">
+        {imessageHref ? (
+          <Button
+            nativeButton={false}
+            render={
+              <a aria-label="Написать Bro в iMessage" href={imessageHref} />
+            }
+            variant="paper"
+          >
+            Написать Bro
+          </Button>
+        ) : (
+          <Button disabled variant="paper">
+            Написать Bro
+          </Button>
+        )}
+        <Button
+          nativeButton={false}
+          render={<Link href="/chat" />}
+          variant="outline"
+        >
+          Открыть чат в вебе
+        </Button>
+      </Actions>
       <StatusLine className="mt-2">
         {channelAvailabilityMessage({
           imessageConfigured,
