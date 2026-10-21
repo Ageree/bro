@@ -13,6 +13,7 @@ import {
   newestChatsOfChannels,
   summarizeChats,
 } from "@db/services/chats";
+import { isAdminScope } from "@web/auth/admin";
 import { requireRequestScope } from "@web/auth/request-scope";
 import { ChatRow } from "./_components/chat-row";
 import { MoreChats } from "./_components/more-chats";
@@ -28,10 +29,12 @@ export const dynamic = "force-dynamic";
  */
 export default async function AllChatsPage() {
   const scope = await requireRequestScope();
-  const [{ chats, next }, totals, mainThreads] = await Promise.all([
+  const [{ chats, next }, totals, mainThreads, showUsage] = await Promise.all([
     listChatsPage(scope),
     summarizeChats(scope),
     mainThreadLabels(scope),
+    // Tokens and dollars are the owner's lines.
+    isAdminScope(scope),
   ]);
 
   return (
@@ -42,7 +45,8 @@ export default async function AllChatsPage() {
       </p>
       {totals.count > 0 ? (
         <p className="type-fine text-muted-foreground">
-          {chatCount(totals.count)} · Расход — {formatChatUsage(totals.usage)}
+          {chatCount(totals.count)}
+          {showUsage ? ` · Расход — ${formatChatUsage(totals.usage)}` : ""}
         </p>
       ) : null}
       <Actions>
@@ -63,10 +67,17 @@ export default async function AllChatsPage() {
                 chat={chat}
                 key={chat.sessionId}
                 mainThread={mainThreads[chat.sessionId]}
+                showUsage={showUsage}
               />
             ))}
           </ul>
-          {next ? <MoreChats cursor={next} mainThreads={mainThreads} /> : null}
+          {next ? (
+            <MoreChats
+              cursor={next}
+              mainThreads={mainThreads}
+              showUsage={showUsage}
+            />
+          ) : null}
         </>
       ) : (
         <section

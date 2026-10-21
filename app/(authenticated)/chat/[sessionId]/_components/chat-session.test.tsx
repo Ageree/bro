@@ -14,7 +14,11 @@ import { ChatSession } from "./chat-session";
 describe("chat session", () => {
   it("gives the activity button a row of its own above the conversation on a phone", () => {
     const markup = renderToStaticMarkup(
-      <ChatSession filesPilot={false} sessionId="session-1" />
+      <ChatSession
+        filesPilot={false}
+        sessionId="session-1"
+        showInternals={false}
+      />
     );
     const label = markup.indexOf('aria-label="Открыть панель активности"');
     const button = markup.slice(

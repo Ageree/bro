@@ -20,6 +20,7 @@ export function ActivityCard({
   onSelect,
   onTraceViewChange,
   sessions,
+  showInternals,
   statuses,
   traceView,
   usage,
@@ -30,6 +31,8 @@ export function ActivityCard({
   readonly onSelect: (sessionId: string) => void;
   readonly onTraceViewChange: (view: TraceView) => void;
   readonly sessions: readonly SubagentSession[];
+  /** The owner's lines: the full trace switch, tokens and dollars. */
+  readonly showInternals: boolean;
   readonly statuses: ReadonlyMap<string, SubagentStatus>;
   readonly traceView: TraceView;
   readonly usage: ChatUsage;
@@ -42,31 +45,33 @@ export function ActivityCard({
     >
       <CardContent className="min-h-0 overflow-y-auto">
         <p className="type-caption text-muted-foreground">Активность</p>
-        <div className="mt-3 space-y-2">
-          <Field orientation="horizontal">
-            <label
-              className="type-supporting-body flex-1"
-              htmlFor="show-full-trace"
-            >
-              Полная трассировка
-            </label>
-            <Switch
-              checked={traceView === "trace"}
-              id="show-full-trace"
-              onCheckedChange={(checked) => {
-                onTraceViewChange(checked ? "trace" : "imessage");
-              }}
-            />
-          </Field>
-          <div className="flex items-center gap-4">
-            <span className="type-supporting-body">Расход</span>
-            <span className="ml-auto type-caption text-muted-foreground tabular-nums">
-              {formatChatUsage(usage)}
-            </span>
+        {showInternals ? (
+          <div className="mt-3 space-y-2">
+            <Field orientation="horizontal">
+              <label
+                className="type-supporting-body flex-1"
+                htmlFor="show-full-trace"
+              >
+                Полная трассировка
+              </label>
+              <Switch
+                checked={traceView === "trace"}
+                id="show-full-trace"
+                onCheckedChange={(checked) => {
+                  onTraceViewChange(checked ? "trace" : "imessage");
+                }}
+              />
+            </Field>
+            <div className="flex items-center gap-4">
+              <span className="type-supporting-body">Расход</span>
+              <span className="ml-auto type-caption text-muted-foreground tabular-nums">
+                {formatChatUsage(usage)}
+              </span>
+            </div>
           </div>
-        </div>
+        ) : null}
 
-        <section className="mt-4 border-t pt-4">
+        <section className={showInternals ? "mt-4 border-t pt-4" : "mt-3"}>
           <h2 className="type-caption text-muted-foreground">Задачи</h2>
           {sessions.length === 0 ? (
             <p className="type-supporting-body mt-2 text-muted-foreground">

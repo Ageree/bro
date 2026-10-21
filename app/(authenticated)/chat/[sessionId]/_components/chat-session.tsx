@@ -12,10 +12,13 @@ export function ChatSession({
   filesPilot,
   initialUsage,
   sessionId,
+  showInternals,
 }: {
   readonly filesPilot: boolean;
   readonly initialUsage?: ChatUsage;
   readonly sessionId: string;
+  /** The owner's panel lines: the full trace switch, tokens and dollars. */
+  readonly showInternals: boolean;
 }) {
   const [traceView, setTraceView] = useState<TraceView>("imessage");
   const agent = useSessionAgent(sessionId);
@@ -48,6 +51,7 @@ export function ChatSession({
         initialUsage={initialUsage}
         onTraceViewChange={setTraceView}
         sessionId={sessionId}
+        showInternals={showInternals}
         traceView={traceView}
       />
     </div>

@@ -46,11 +46,13 @@ import {
 } from "@shared/google-workspace/connection";
 import { telegramLinkConfigured } from "@shared/identity/telegram-link";
 import { directModelProviderName } from "@shared/model/provider";
+import type { AccessScope } from "@shared/identity/access-scope";
 import { photonConfigured } from "@shared/photon/credentials";
 import { localMonthKey } from "@shared/calendar/local-period";
 import { artifactStorageConfigured } from "@shared/object-storage/artifacts";
 import { resolveTimeZone } from "@shared/user-profile/schema";
 import type { VaultItem } from "@shared/vault/schema";
+import { isAdminScope } from "@web/auth/admin";
 import { requestSession, requireRequestScope } from "@web/auth/request-scope";
 import { ConnectedAppAction } from "./_components/connected-app-action";
 import { GoogleWorkspaceAction } from "./_components/google-workspace-action";
@@ -93,7 +95,6 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
     session,
     mailConnections,
     googleWorkspace,
-    workspaceModel,
     telegramIdentity,
     billing,
     profile,
@@ -116,7 +117,6 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
     getGoogleWorkspaceAccess(scope).then(async (access) =>
       readGoogleWorkspaceConnection(scope.userId, access)
     ),
-    getWorkspaceModelId(scope),
     telegramConfigured ? readChannelIdentity(scope, "telegram") : undefined,
     readBillingState(scope),
     profileRead,
@@ -156,9 +156,6 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
       console.warn("[proactive] could not wake the checks", { cause: error });
     }
   }
-  const directProvider = directModelProviderName();
-  const imageStorageReady = artifactStorageConfigured();
-  const browserReady = browserErrandsReady(env);
   const timeZone = resolveTimeZone(profile.timezone);
   const when = new Intl.DateTimeFormat("ru-RU", {
     dateStyle: "long",
@@ -330,44 +327,62 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
         </Rows>
       </Section>
 
-      <Section headingId="infrastructure-heading" title="Инфраструктура">
-        <Rows>
-          <Row side={imageStorageReady ? "Подключено" : "Нужна настройка"}>
-            <p>Хранилище файлов</p>
-            <p className="type-status text-muted-foreground">
-              {imageStorageReady
-                ? "Картинки и файлы хранятся в приватном хранилище."
-                : "Подключи приватное хранилище файлов, чтобы делиться картинками."}
-            </p>
-          </Row>
-          <Row side={browserReady ? "Настроен" : "Не настроен"}>
-            <p>Браузер</p>
-            <p className="type-status text-muted-foreground">
-              {browserReady
-                ? "Поручения на сайтах выполняются в облачном браузере."
-                : "Задай BROWSER_USE_API_KEY, чтобы выполнять поручения на сайтах."}
-            </p>
-          </Row>
-          <Row
-            side={
-              <ModelSelector
-                modelId={workspaceModel}
-                provider={directProvider}
-              />
-            }
-          >
-            <p>
-              {directProvider === undefined
-                ? "Модель AI Gateway"
-                : `Модель (${directProvider})`}
-            </p>
-            <p className="type-status text-muted-foreground">
-              {workspaceModel}
-            </p>
-          </Row>
-        </Rows>
-      </Section>
+      <InfrastructureSection scope={scope} />
     </Document>
+  );
+}
+
+/**
+ * How the deployment itself is wired: file storage, browsers, the model Bro
+ * runs on. That is the owner's business, and to anyone else a form with an
+ * environment variable name on it looks unfinished: only an account on
+ * `ADMIN_USER_IDS` gets the section (`settings.selectModel` is guarded the
+ * same way). Exported for its test.
+ */
+export async function InfrastructureSection({
+  scope,
+}: {
+  readonly scope: AccessScope;
+}) {
+  if (!(await isAdminScope(scope))) return null;
+  const workspaceModel = await getWorkspaceModelId(scope);
+  const directProvider = directModelProviderName();
+  const imageStorageReady = artifactStorageConfigured();
+  const browserReady = browserErrandsReady(env);
+
+  return (
+    <Section headingId="infrastructure-heading" title="Инфраструктура">
+      <Rows>
+        <Row side={imageStorageReady ? "Подключено" : "Нужна настройка"}>
+          <p>Хранилище файлов</p>
+          <p className="type-status text-muted-foreground">
+            {imageStorageReady
+              ? "Картинки и файлы хранятся в приватном хранилище."
+              : "Подключи приватное хранилище файлов, чтобы делиться картинками."}
+          </p>
+        </Row>
+        <Row side={browserReady ? "Настроен" : "Не настроен"}>
+          <p>Браузер</p>
+          <p className="type-status text-muted-foreground">
+            {browserReady
+              ? "Поручения на сайтах выполняются в облачном браузере."
+              : "Задай BROWSER_USE_API_KEY, чтобы выполнять поручения на сайтах."}
+          </p>
+        </Row>
+        <Row
+          side={
+            <ModelSelector modelId={workspaceModel} provider={directProvider} />
+          }
+        >
+          <p>
+            {directProvider === undefined
+              ? "Модель AI Gateway"
+              : `Модель (${directProvider})`}
+          </p>
+          <p className="type-status text-muted-foreground">{workspaceModel}</p>
+        </Row>
+      </Rows>
+    </Section>
   );
 }
 
