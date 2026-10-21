@@ -66,8 +66,9 @@ export async function proxy(request: NextRequest) {
 // Everything static the public pages need is excluded here, not allowed in
 // the body above: a request the matcher catches is redirected to /sign-in,
 // and that is what once hid the hero film and the og image, both of which
-// live under /brand, and then the tab and home-screen icons (app/icon.svg,
-// app/apple-icon.png) and robots.txt from everyone not signed in.
+// live under /brand, and the tab and home-screen icons Next serves from the
+// root (`app/icon.svg`, `app/apple-icon.png`) from search and signed-out tabs,
+// and robots.txt, which a crawler got as the sign-in page.
 export const config = {
   matcher: [
     "/((?!_next/static|_next/image|brand|fonts|favicon.ico|icon.svg|apple-icon.png|robots.txt|sitemap.xml).*)",
