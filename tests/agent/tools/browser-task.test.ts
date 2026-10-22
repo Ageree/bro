@@ -6217,9 +6217,11 @@ describe("browser_task errand text", () => {
       "Купи 2 билета на концерт «Свидание» 20.11 в Графите, по 4200"
     );
     expect(concert).toContain(
-      "click the zone itself — its area on the map or its name — or its price chip"
+      "click the zone itself — its area on the map or its name"
     );
     expect(concert).not.toContain("from the seat map itself");
+    // RU 22.10: the widget's map is a canvas, its zones named SVG outlines.
+    expect(concert).toContain("querySelectorAll('[data-name]')");
     // The seller's own Site makes it an event errand without an event word.
     expect(start("Купи 2 билета на «Свидание» 20.11", afisha)).toContain(
       "click the zone itself"
