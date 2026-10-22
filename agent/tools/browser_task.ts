@@ -21,7 +21,11 @@ import {
 } from "@agent/lib/payments/direct";
 import { directModelSelection } from "@agent/lib/model/direct";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
-import { yandexPurchasePilot } from "@agent/lib/yandex/pilot";
+import { afishaApiAsked } from "@agent/lib/yandex/afisha/sessions";
+import {
+  afishaPurchasePilot,
+  yandexPurchasePilot,
+} from "@agent/lib/yandex/pilot";
 import { telegramConversationIdSchema } from "@agent/lib/telegram-conversation";
 import {
   type StepIdentity,
@@ -1204,8 +1208,16 @@ function sellsEventTickets(site: string | undefined) {
   const url = site === undefined ? undefined : siteUrl(site);
   if (url === undefined) return false;
   const host = url.hostname.replace(/\.$/u, "");
+  return eventTicketHostPattern.test(host) || onYandexAfisha(site);
+}
+
+/** Whether the run's Site is Яндекс Афиша, its widget or yandex.ru/afisha. */
+function onYandexAfisha(site: string | undefined) {
+  const url = site === undefined ? undefined : siteUrl(site);
+  if (url === undefined) return false;
+  const host = url.hostname.replace(/\.$/u, "");
   return (
-    eventTicketHostPattern.test(host) ||
+    /(?:^|\.)afisha\.yandex\.ru$/u.test(host) ||
     (/(?:^|\.)yandex\.ru$/u.test(host) &&
       /^\/afisha(?:\/|$)/u.test(url.pathname))
   );
@@ -2636,6 +2648,8 @@ type PersonTurn = ReturnType<typeof personWordsThisTurn> & {
   readonly personTexts?: readonly string[];
   /** Nothing they wrote asks for anything yet (`nothingAskedYet`). */
   readonly nothingAsked?: boolean;
+  /** In the Afisha purchase pilot, its API is still untried (`afishaApiAsked`). */
+  readonly afishaUnasked?: boolean;
 };
 
 /**
@@ -4588,6 +4602,19 @@ const nothingAskedRefusal =
   "Nothing was started: so far the person's messages in this conversation are only signs, such as an emoji or a question mark, so no errand of theirs exists, whatever other conversations, memory or notes hold. Answer them in one short line as a person would, or ask what they need, and start nothing.";
 
 /**
+ * What a start on Яндекс Афиша is told in the Afisha purchase pilot before
+ * its API was asked. 22.10 to «найди концерт … и купи 2 билета VIP-входной»
+ * Bro started a browser errand on afisha.yandex.ru, as the rule «купи билет
+ * → browser_task» says, and never read afisha.prices, whose result alone
+ * says to buy a zone without seats with `yandex_purchase`.
+ */
+const afishaApiFirstRefusal =
+  "Nothing was started: Яндекс Афиша's events, sessions, zones and prices come from its API through the yandex tool in seconds — afisha.search for the event, then afisha.prices for its session. A zone without seats is bought with yandex_purchase prepare service afisha (the session's link and when from afisha.prices, the zone's exact name, the count), its confirmationQuestion, and confirm after the person's «да». Start browser_task on Afisha only for a zone with seats, or once the yandex tool refused.";
+
+/** An errand's words naming Яндекс Афиша. */
+const yandexAfishaWords = /(?<!\p{L})яндекс[\s.-]*афиш|afisha\.yandex/iu;
+
+/**
  * What a `browser_task` call does. `heard` names the runs whose settled
  * outcome this conversation already told the person (`outcomesHeardThisTurn`): a
  * follow-up on one of them is theirs to give, not a «ну что там?» to answer
@@ -4616,6 +4643,14 @@ async function runBrowserTask(
     // «👍» in a new chat asks for no errand, whatever else is known.
     if (byPerson && turn.nothingAsked === true) {
       throw new Error(nothingAskedRefusal);
+    }
+    // In the Afisha purchase pilot, Afisha's tickets go through its API first.
+    if (
+      byPerson &&
+      turn.afishaUnasked === true &&
+      (onYandexAfisha(input.site) || yandexAfishaWords.test(errand))
+    ) {
+      throw new Error(afishaApiFirstRefusal);
     }
     const inventedCode = inventedCodeRefusal([errand], false, words);
     if (inventedCode) throw new Error(inventedCode);
@@ -6004,9 +6039,16 @@ export default defineDynamic({
               step,
             }
           : autonomous;
-      const turn: PersonTurn = nothingAskedYet(context.messages)
+      const opened: PersonTurn = nothingAskedYet(context.messages)
         ? { ...directed, nothingAsked: true }
         : directed;
+      // In the Afisha purchase pilot an errand on Afisha waits for its API.
+      const turn: PersonTurn =
+        scope !== undefined &&
+        afishaPurchasePilot(scope) &&
+        !afishaApiAsked(context.messages)
+          ? { ...opened, afishaUnasked: true }
+          : opened;
       const tool = defineTool({
         approval: async (ctx) => {
           const decision = await browserTaskApproval(ctx.toolInput, ctx, turn);

@@ -4514,6 +4514,88 @@ describe("browser_task in a conversation where nothing was asked", () => {
   });
 });
 
+/** Puts the workspaces of `list` in the Afisha purchase pilot, modules afresh. */
+function afishaPilot(list: string) {
+  vi.stubEnv("YANDEX_API_WORKSPACES", "*");
+  vi.stubEnv("YANDEX_PURCHASE_WORKSPACES", "*");
+  vi.stubEnv("YANDEX_AFISHA_PURCHASE_WORKSPACES", list);
+  vi.resetModules();
+}
+
+// 22.10, prod: to «найди концерт … и купи 2 билета VIP-входной» Bro started an
+// errand on afisha.yandex.ru and never read afisha.prices, whose result alone
+// says to buy a zone without seats through the API.
+describe("browser_task on Яндекс Афиша in the Afisha purchase pilot", () => {
+  const asked =
+    "Найди концерт «Свидание» 20 ноября в Графите и купи 2 билета VIP-входной";
+  const start = {
+    action: "start",
+    personWants: "done",
+    site: "https://afisha.yandex.ru",
+    task: "Купить 2 билета VIP-входной на «Свидание» 20 ноября в Графите",
+  } as const;
+  const pricesRead: ModelMessage[] = [
+    {
+      content: [
+        {
+          input: {
+            operation: "afisha.prices",
+            url: "https://afisha.yandex.ru/moscow/concert/svidanie",
+          },
+          toolCallId: "call_prices",
+          toolName: "yandex",
+          type: "tool-call",
+        },
+      ],
+      role: "assistant",
+    },
+  ];
+
+  afterEach(() => {
+    vi.stubEnv("YANDEX_API_WORKSPACES", "");
+    vi.stubEnv("YANDEX_PURCHASE_WORKSPACES", "");
+    vi.stubEnv("YANDEX_AFISHA_PURCHASE_WORKSPACES", "");
+    vi.resetModules();
+  });
+
+  it("sends a start on Afisha to its API until the API was asked", async () => {
+    afishaPilot("*");
+    const tool = await resolvedBrowserTask([], asked);
+
+    await expect(
+      tool.execute(start, toolContext("better-auth:alice"))
+    ).rejects.toThrow("afisha.prices");
+    await expect(
+      tool.execute(
+        {
+          ...start,
+          site: undefined,
+          task: "Купить на Яндекс Афише 2 билета на «Свидание»",
+        },
+        toolContext("better-auth:alice")
+      )
+    ).rejects.toThrow("yandex_purchase prepare service afisha");
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
+  });
+
+  it("starts on Afisha once its API was asked, and outside the pilot", async () => {
+    createBrowserUseRun.mockResolvedValue({
+      id: runId,
+      model: "hosted-agent",
+      sessionId,
+      status: "running",
+    });
+    afishaPilot("*");
+    const asking = await resolvedBrowserTask([], asked, pricesRead);
+    await asking.execute(start, toolContext("better-auth:alice"));
+    afishaPilot("workspace:someone-else");
+    const outside = await resolvedBrowserTask([], asked);
+    await outside.execute(start, toolContext("better-auth:alice"));
+
+    expect(createBrowserUseRun).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe("browser_task consent boundaries", () => {
   const taxi: BrowserSubmission = {
     amount: "около 900 ₽ по тарифу «Комфорт»",

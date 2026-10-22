@@ -61,6 +61,27 @@ export function knownAfishaSessions(
   return [...known.values()];
 }
 
+const afishaCall = z.object({ operation: z.string().startsWith("afisha.") });
+
+/**
+ * Whether Bro asked Afisha's API (`yandex` with an `afisha.*` operation) in
+ * this conversation, whatever it answered: until then an errand on Afisha's
+ * site waits for it (`browser_task`).
+ */
+export function afishaApiAsked(messages: readonly ModelMessage[]) {
+  return messages.some(
+    (message) =>
+      message.role === "assistant" &&
+      Array.isArray(message.content) &&
+      message.content.some(
+        (part) =>
+          part.type === "tool-call" &&
+          part.toolName === "yandex" &&
+          afishaCall.safeParse(part.input).success
+      )
+  );
+}
+
 /**
  * The link of the session the model means: its own when the conversation
  * knows it, else the one known session of that time, else none. Nothing is
