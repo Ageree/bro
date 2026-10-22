@@ -6,6 +6,7 @@ import type { runYandexOperation } from "@agent/lib/yandex/transport";
 import type { latestPosition } from "@db/services/location";
 
 const services = vi.hoisted(() => ({
+  afishaPilot: vi.fn<() => boolean>(() => false),
   latest: vi.fn<typeof latestPosition>(),
   locationPilot: vi.fn<() => boolean>(() => false),
   pilot: vi.fn<typeof yandexPilot>(),
@@ -23,6 +24,7 @@ vi.mock("@db/services/user-profile", () => ({
 }));
 
 vi.mock("@agent/lib/yandex/pilot", () => ({
+  afishaPurchasePilot: services.afishaPilot,
   yandexPilot: services.pilot,
   yandexPurchasePilot: services.pilot,
 }));
@@ -207,6 +209,25 @@ describe("the Yandex tool", () => {
     expect(result).toHaveProperty("note", expect.any(String));
     expect(Object.keys(result).at(-1)).toBe("note");
     expect(await call(asked)).not.toHaveProperty("note");
+  });
+
+  // Out of the Afisha purchase pilot, yandex_purchase takes no tickets.
+  it("tells only the Afisha purchase pilot to buy a zone without seats with yandex_purchase", async () => {
+    services.run.mockResolvedValue({ data: { sessions: [] }, kind: "ok" });
+    const note = async () => {
+      const found = await tool([
+        { content: "билеты на свидание", role: "user" },
+      ]);
+      if (!found) throw new Error("Expected yandex.");
+      const result = await found.execute(
+        { event: "69fcccedecb85d003180b725", operation: "afisha.prices" },
+        callContext()
+      );
+      return JSON.stringify(result);
+    };
+    expect(await note()).not.toContain("yandex_purchase");
+    services.afishaPilot.mockReturnValue(true);
+    expect(await note()).toContain("yandex_purchase prepare service afisha");
   });
 
   it.each(["user", "workspace", "session", "missing-current"])(

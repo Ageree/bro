@@ -109,6 +109,7 @@ vi.mock("@agent/lib/yandex/transport", () => ({
   runYandexOperation: services.run,
 }));
 vi.mock("@agent/lib/yandex/pilot", () => ({
+  afishaPurchasePilot: () => false,
   yandexPurchasePilot: () => true,
 }));
 vi.mock("@agent/lib/yandex/lavka/checkout", async (original) => ({

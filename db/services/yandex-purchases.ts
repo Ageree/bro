@@ -36,7 +36,7 @@ const safePayload = z.record(z.string(), z.json()).refine((payload) => {
 
 const preparedPurchase = z.object({
   rootSessionId: z.string().trim().min(1),
-  service: z.enum(["lavka", "eda"]),
+  service: z.enum(["lavka", "eda", "afisha"]),
   checkoutKey: z.string().trim().min(1),
   fingerprint: z.string().trim().min(1),
   amountMinor: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),

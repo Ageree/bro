@@ -4,13 +4,21 @@ import type { DynamicResolveContext, ToolContext } from "eve/tools";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { YandexPurchase } from "@db/schema/yandex-purchases";
 import type * as purchases from "@db/services/yandex-purchases";
+import type * as afisha from "@agent/lib/yandex/afisha/checkout";
 import type * as eda from "@agent/lib/yandex/eda/checkout";
 import type * as lavka from "@agent/lib/yandex/lavka/checkout";
-import type { yandexPurchasePilot } from "@agent/lib/yandex/pilot";
+import type {
+  afishaPurchasePilot,
+  yandexPurchasePilot,
+} from "@agent/lib/yandex/pilot";
 import type { JsonValue } from "@agent/lib/yandex/operations";
 import type { runYandexOperation } from "@agent/lib/yandex/transport";
 
 const services = vi.hoisted(() => ({
+  afishaPayment: vi.fn<typeof afisha.readAfishaPayment>(),
+  afishaPilot: vi.fn<typeof afishaPurchasePilot>(),
+  afishaPrepare: vi.fn<typeof afisha.prepareAfishaPurchase>(),
+  afishaSubmit: vi.fn<typeof afisha.submitAfishaPurchase>(),
   claim: vi.fn<typeof purchases.claimYandexPurchase>(),
   create: vi.fn<typeof purchases.createYandexPurchase>(),
   edaPrepare: vi.fn<typeof eda.prepareEdaPurchase>(),
@@ -41,7 +49,14 @@ vi.mock("@agent/lib/yandex/transport", () => ({
   runYandexOperation: services.run,
 }));
 vi.mock("@agent/lib/yandex/pilot", () => ({
+  afishaPurchasePilot: services.afishaPilot,
   yandexPurchasePilot: services.pilot,
+}));
+vi.mock("@agent/lib/yandex/afisha/checkout", async (original) => ({
+  ...(await original<typeof afisha>()),
+  prepareAfishaPurchase: services.afishaPrepare,
+  readAfishaPayment: services.afishaPayment,
+  submitAfishaPurchase: services.afishaSubmit,
 }));
 vi.mock("@agent/lib/yandex/eda/checkout", async (original) => ({
   ...(await original<typeof eda>()),
@@ -345,6 +360,235 @@ describe("Yandex purchase consent", () => {
       snapshot: edaSnapshot,
     });
     expect(services.submit).not.toHaveBeenCalled();
+  });
+
+  it("asks about Afisha tickets in Afisha's name and places them through the widget, only in its pilot", async () => {
+    const link =
+      "https://widget.afisha.yandex.ru/w/sessions/MzIzNDJ8ODI5ODU1?widgetName=w1";
+    const target = {
+      cardLast4: null,
+      count: 2,
+      link,
+      zone: "VIP-входной (свободная рассадка)",
+    };
+    const ticketSnapshot = {
+      amountMinor: 924_000,
+      cardId: "card-mir",
+      cartId: "cart",
+      categoryId: 1,
+      contactsHash: "a".repeat(64),
+      count: 2,
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      extSessionId: 2,
+      feeMinor: 84_000,
+      levelId: 8,
+      link,
+      sessionKey: "MzIzNDJ8ODI5ODU1",
+      sourceCategoryId: "c",
+      sourceLevelId: "l",
+      unitMinor: 462_000,
+      x: 1,
+      y: 2,
+      zone: target.zone,
+    };
+    const tickets = {
+      amountMinor: 924_000,
+      currency: "RUB" as const,
+      delivery: "Графит, 20 ноября 2026, 20:00",
+      items: [
+        {
+          quantity: "2",
+          title: "Свидание — VIP-входной (свободная рассадка), без места",
+        },
+      ],
+      payment: "Карта MIR •• 6443",
+    };
+    services.afishaPilot.mockReturnValue(false);
+    expect(
+      await (
+        await resolve()
+      )?.execute(
+        { action: "prepare", service: "afisha", ...target },
+        callContext()
+      )
+    ).toEqual({ kind: "unavailable" });
+    expect(services.afishaPrepare).not.toHaveBeenCalled();
+
+    services.afishaPilot.mockReturnValue(true);
+    services.afishaPrepare.mockResolvedValue({
+      checkoutKey: "MzIzNDJ8ODI5ODU1:8:2",
+      expiresAt: new Date(Date.now() + 600_000).toISOString(),
+      kind: "ready",
+      publicQuote: tickets,
+      snapshot: ticketSnapshot,
+    });
+    await (
+      await resolve()
+    )?.execute(
+      { action: "prepare", service: "afisha", ...target },
+      callContext()
+    );
+    const prepared = services.create.mock.calls[0]?.[1];
+    expect(prepared?.service).toBe("afisha");
+    expect(prepared?.confirmationQuestion).toMatch(
+      /^Яндекс Афиша: «Свидание — VIP-входной \(свободная рассадка\), без места» × 2\. Где и когда: Графит, 20 ноября 2026, 20:00\. .+ Итого 9\s240,00 ₽, включая сервисный сбор\./u
+    );
+    const ticketRow = row({
+      amountMinor: 924_000,
+      confirmationQuestion: prepared?.confirmationQuestion ?? "",
+      providerSnapshot: ticketSnapshot,
+      publicQuote: tickets,
+      service: "afisha",
+    });
+    services.read.mockResolvedValue(ticketRow);
+    services.claim.mockResolvedValue({
+      kind: "claimed",
+      purchase: { ...ticketRow, callId: "call-1", state: "submitting" },
+    });
+    services.afishaSubmit.mockResolvedValue({
+      confirmUrl: "https://trust.yandex.ru/web/open_3ds?purchase_token=x",
+      kind: "placed",
+      orderId: "1792665431815@fac1927e",
+      paymentStatus: "needs_confirmation",
+    });
+    expect(
+      await confirm(answered("да", prepared?.confirmationQuestion ?? ""))
+    ).toMatchObject({ kind: "placed" });
+    expect(services.afishaSubmit).toHaveBeenCalledWith(scope.workspaceId, {
+      amountMinor: 924_000,
+      snapshot: ticketSnapshot,
+    });
+    expect(services.submit).not.toHaveBeenCalled();
+  });
+
+  it("tells the model what to do next on an Afisha refusal, with no card it made up", async () => {
+    services.afishaPilot.mockReturnValue(true);
+    services.afishaPrepare.mockResolvedValue({
+      kind: "blocked",
+      reason: "zone_has_seats",
+    });
+    const tool = await resolve(answered("купи два билета в VIP Lounge"));
+    const result = await tool?.execute(
+      {
+        action: "prepare",
+        cardLast4: "1234",
+        count: 2,
+        link: "https://widget.afisha.yandex.ru/w/sessions/MzIzNDJ8ODI5ODU1",
+        service: "afisha",
+        zone: "VIP Lounge",
+      },
+      callContext()
+    );
+    expect(result).toMatchObject({ kind: "blocked", reason: "zone_has_seats" });
+    expect(JSON.stringify(result)).toContain("browser_task");
+    // The person named no card: the model's digits are not passed on.
+    expect(services.afishaPrepare.mock.calls[0]?.[1]).toMatchObject({
+      cardLast4: null,
+    });
+    await (
+      await resolve(answered("купи два билета, карта 4310"))
+    )?.execute(
+      {
+        action: "prepare",
+        cardLast4: "4310",
+        count: 2,
+        link: "https://widget.afisha.yandex.ru/w/sessions/MzIzNDJ8ODI5ODU1",
+        service: "afisha",
+        zone: "VIP Lounge",
+      },
+      callContext()
+    );
+    expect(services.afishaPrepare.mock.calls[1]?.[1]).toMatchObject({
+      cardLast4: "4310",
+    });
+  });
+
+  it("asks again for Afisha tickets whose earlier order was not paid, and never past a paid one", async () => {
+    services.afishaPilot.mockReturnValue(true);
+    const link = "https://widget.afisha.yandex.ru/w/sessions/MzIzNDJ8ODI5ODU1";
+    const ticketSnapshot = {
+      amountMinor: 924_000,
+      cardId: "card-mir",
+      cartId: "cart",
+      categoryId: 1,
+      contactsHash: "a".repeat(64),
+      count: 2,
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      extSessionId: 2,
+      feeMinor: 84_000,
+      levelId: 8,
+      link,
+      sessionKey: "MzIzNDJ8ODI5ODU1",
+      sourceCategoryId: "c",
+      sourceLevelId: "l",
+      unitMinor: 462_000,
+      x: 1,
+      y: 2,
+      zone: "Танцпол",
+    };
+    const tickets = {
+      amountMinor: 924_000,
+      currency: "RUB" as const,
+      delivery: "Графит, 20 ноября 2026, 20:00",
+      items: [{ quantity: "2", title: "Свидание — Танцпол, без места" }],
+      payment: "Карта MIR •• 6443",
+    };
+    services.afishaPrepare.mockResolvedValue({
+      checkoutKey: "MzIzNDJ8ODI5ODU1:8:2",
+      expiresAt: new Date(Date.now() + 600_000).toISOString(),
+      kind: "ready",
+      publicQuote: tickets,
+      snapshot: ticketSnapshot,
+    });
+    const placed = row({
+      merchantOrderId: "1792665431815@fac1927e",
+      outcome: { kind: "placed", paymentStatus: "needs_confirmation" },
+      providerSnapshot: ticketSnapshot,
+      publicQuote: tickets,
+      service: "afisha",
+      state: "placed",
+    });
+    const input = {
+      action: "prepare" as const,
+      cardLast4: null,
+      count: 2,
+      link,
+      service: "afisha" as const,
+      zone: "Танцпол",
+    };
+    services.create
+      .mockResolvedValueOnce({ kind: "existing", purchase: placed })
+      .mockResolvedValueOnce({
+        kind: "created",
+        purchase: row({ publicQuote: tickets, service: "afisha" }),
+      });
+    services.afishaPayment.mockResolvedValueOnce({ paymentStatus: "failed" });
+    expect(
+      await (
+        await resolve(answered("купи два на танцпол"))
+      )?.execute(input, callContext())
+    ).toMatchObject({ kind: "quoted" });
+    const [first, second] = services.create.mock.calls.map(
+      ([, record]) => record.fingerprint
+    );
+    expect(second).not.toBe(first);
+
+    services.create.mockReset();
+    services.create.mockResolvedValue({ kind: "existing", purchase: placed });
+    services.afishaPayment.mockResolvedValueOnce({ paymentStatus: "paid" });
+    expect(
+      await (
+        await resolve(answered("купи два на танцпол"))
+      )?.execute(input, callContext())
+    ).toMatchObject({ kind: "placed", paymentStatus: "paid" });
+    expect(services.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("buys no Afisha quote once its pilot is off", async () => {
+    services.afishaPilot.mockReturnValue(false);
+    services.read.mockResolvedValue(row({ service: "afisha" }));
+    expect(await confirm()).toEqual({ kind: "unavailable" });
+    expect(services.claim).not.toHaveBeenCalled();
   });
 
   it.each([

@@ -248,9 +248,31 @@ query BroSessions($id: ID!, $dates: DaysIntervalInput) { eventScheduleOtherByDat
 **Замер (из облачной сессии через прокси):** «Свидание» 5,3–6,6 с, театр с тремя сеансами 5,6–11 с; на VM
 прода не мерили.
 
+## Покупка зоны без мест — `yandex_purchase` (22.10.2026, пилот)
+
+В пилоте `YANDEX_AFISHA_PURCHASE_WORKSPACES` билеты зоны без мест покупаются запросами самого виджета из вкладки
+человека, привязанной картой: `agent/lib/yandex/afisha/checkout.ts`, поток и гарантии — `docs/yandex-api/purchases.md`
+(«Афиша»). Запросы виджета 608.0 (пробы 22.10 и код бандла):
+
+- Страница сеанса `GET /w/sessions/<ключ>` рендерит в `window['__config']` `X-CSRF-Token`, `X-Yandex-Uid`,
+  `X-Request-Id` и `clientKey.id`; виджет шлёт их и `timeout`, `x-force-cors-preflight: 1` в каждом запросе.
+- `GET /api/user` — контакты `{fullName, email, phone}` как `{value}`; `GET /api/tickets/v1/sessions/<ключ>?clientKey=`
+  — `saleStatus`, `maxTicketsCount`, требования к данным покупателя; `GET /api/session/<ключ>` — `cart.cart.cartId`
+  (`puid_<uid>_sessionkey_<ключ>`, один на человека и сеанс).
+- `POST /api/session-order-preview/` (`X-Tickets-Client: <clientKey>`, `X-Antibot-Token`) и опрос
+  `GET /api/session-order-preview/<id>` → `orderPreviewResult` (`SUCCESS` или `DONE`): `paymentVariants` с привязанными
+  картами (`card-…`, `pspPaymentMethodId`), `boundPaymentMethod`, `priceInfo.total.preview`. Контакты — строками:
+  объект вместо строки дал HTML 404. Предпросмотр ничего не держит (`reserveTimer` 0).
+- `POST /api/tickets/v2/orders/create` (`X-Antibot-Token`, `timeout: 10000`) — тело как у виджета: `order_preview_id`,
+  `cart_id`, `payment_way: "bound-card"`, `quick_purchase_card_id`, `psp_payment_method_id`, `personal_data`,
+  `items[]` с числовыми `category_id`, `ext_session_id`, `level_id`. Ответ — `result.order.id` вида `<число>@<uuid>`.
+- `GET /api/tickets/v2/orders/<id>/operation/{reserve,pay,sale-approve}?clientKey=` → `{status, statusCode,
+redirectUrl3ds}`; `GET /api/tickets/v2/orders/<id>?clientKey=` — `amountToPay`, `paymentForm.targetUrl` (страница
+  Trust, которую виджет показывает при 3-D Secure). `@` в id — `%40`.
+
 ## Не удалось / что отдать `browser_task`
 
-- Покупка билетов и выбор мест (виджет `widgetUrl`, корзина `cart`, оплата) — через `browser_task` с «да» человека;
+- Выбор мест на схеме и покупка вне пилота (виджет `widgetUrl`, оплата) — через `browser_task` с «да» человека;
   зону без мест браузер берёт количеством (`eventTicketLine` в `agent/tools/browser_task.ts`). Корзина виджета —
   `POST /api/cart/<id>/update` с `admission`, `category_id`, `level_id` (в бандле `widget.js`) — не пробовали.
 - Наполненный заказ вживую не видели (см. выше).
