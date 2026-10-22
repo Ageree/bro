@@ -300,14 +300,19 @@ const pageSource = String.raw`
     } catch { return null; }
   };
   const trusted = (url) => typeof url === "string" && /^https:\/\/trust\.yandex\.(?:ru|com|kz|uz)\//.test(url);
+  const bankCheck = (token, fallback) => typeof token === "string" && /^payment_[0-9a-f]{16,64}$/.test(token)
+    ? "https://trust.yandex.ru/web/open_3ds?purchase_token=" + token
+    : fallback;
   // The widget's order: reserve, the card's payment, then the tickets'
   // issue (sale-approve) — paid is all three. A bank's check is not a
   // moment's step: once it shows for a few rounds it waits for the person,
-  // who gets the check itself (the operation's redirectUrl3ds, Trust's
-  // open_3ds). The order's payment form (paymentForm.targetUrl) is not it:
-  // opened alone on 22.10 it showed an error, and the payment failed
-  // fail-3ds. Reading stops at the deadline, so a placed order's id always
-  // gets back within the call.
+  // who gets the check itself: Trust's open_3ds for the payment's token.
+  // The operation names it only a minute or two in: at first its
+  // redirectUrl3ds is the payment form (/web/payment), as the order's
+  // paymentForm.targetUrl is, and that page, opened alone on 22.10, showed
+  // an error while the payment failed fail-3ds; open_3ds of the same token
+  // brought the bank's push. Reading stops at the deadline, so a placed
+  // order's id always gets back within the call.
   const payment = async (orderId, clientKey, until) => {
     for (let round = 0; ; round += 1) {
       const waitMs = Math.min(4000, Math.max(1000, until - Date.now()));
@@ -322,7 +327,7 @@ const pageSource = String.raw`
       const check = pay?.redirectUrl3ds ?? reserve?.redirectUrl3ds;
       const flagged = pay?.status !== "completed" && trusted(check);
       const last = Date.now() + 1500 >= until;
-      if (flagged && (round >= 2 || last)) return { paymentStatus: "needs_confirmation", confirmUrl: check };
+      if (flagged && (round >= 2 || last)) return { paymentStatus: "needs_confirmation", confirmUrl: bankCheck(pay?.purchaseToken ?? reserve?.purchaseToken, check) };
       if (last) return { paymentStatus: "pending" };
       await wait(1500);
     }
