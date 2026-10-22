@@ -375,7 +375,7 @@ describe("Afisha ticket purchase", () => {
       timeout: 20_000,
     },
     async () => {
-      const token = "payment_0b5a58913c3e4e808e263a3762512a21";
+      const token = `payment_${"ab".repeat(16)}`;
       const check = `https://trust.yandex.ru/web/open_3ds?purchase_token=${token}`;
       answers.set(`${orderPath}/operation/pay`, {
         body: {
