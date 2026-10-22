@@ -772,8 +772,12 @@ export async function askedToSign(
 ) {
   try {
     const modelId = await getWorkspaceModelId(scope);
+    // Without reasoning, which used up the verdict's tokens (`paymentUnanswered`).
     const selection = directModelActive()
-      ? directModelSelection(modelId, { toolChoice: "none" })
+      ? directModelSelection(modelId, {
+          reasoningOff: true,
+          toolChoice: "none",
+        })
       : null;
     const { output } = await generateText({
       abortSignal: AbortSignal.timeout(20_000),

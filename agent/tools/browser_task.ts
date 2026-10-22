@@ -3609,8 +3609,15 @@ async function paymentUnanswered(
     return paymentQuestionRefusal(chargeRub);
   try {
     const modelId = await getWorkspaceModelId(scope);
+    // Without reasoning: with Bro's own effort the judge thought past its
+    // 256 tokens and gave no verdict, and a «да» to 9 240 ₽ for two concert
+    // tickets was refused five times (RU 22.10). Reasoning also took 4–13 s
+    // and once let another date through; without it the verdict took ~1 s.
     const selection = directModelActive()
-      ? directModelSelection(modelId, { toolChoice: "none" })
+      ? directModelSelection(modelId, {
+          reasoningOff: true,
+          toolChoice: "none",
+        })
       : null;
     const { output } = await generateText({
       abortSignal: AbortSignal.timeout(20_000),
