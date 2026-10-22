@@ -238,9 +238,11 @@ query BroSessions($id: ID!, $dates: DaysIntervalInput) { eventScheduleOtherByDat
 мест (операция отдаёт `left: null`). Имена категорий бывают с кириллицей вместо латиницы («VIР lоungе»), имя
 зоны — нормальное. Сеанс с местами в театре — одна категория на зону и десятки цен по рядам.
 
-**Ответ:** `{more, sessions: [{when, venue, address, sale, link, minPrice, maxPrice, maxTickets, zones}]}`, до 8
-сеансов, зоны — у первых трёх в продаже; `zones[]`: `{zone, ticket?, seats, prices: [{price, withFee}], left, rise}`,
-`seats` — «picked on the hall map» или «none: bought by count, no seat to pick». Через вкладку (сервер отказал)
+**Ответ:** `{more, sessions: [{when, venue, address, sale, link, minPrice, maxPrice, maxTickets, zones, zonesMore}]}`,
+до 8 сеансов, зоны — у первых трёх в продаже; `zones[]`: `{zone, ticket, seats, prices: [{price, withFee}], left, rise}`,
+`seats` — «picked on the hall map» или «none: bought by count, no seat to pick»; у зоны больше 8 цен — 7 дешёвых и
+самая дорогая. Больше 40 зон (секторы стадиона) — все зоны без мест и самые дешёвые с местами, остаток в `zonesMore`.
+Весь виджет — за 9 с на вызов; отказ (403/429/5xx) или зависание — 10 минут виджет не спрашиваем, сеансы идут без зон. Через вкладку (сервер отказал)
 — те же сеансы с `zones: null`: виджет на другом origin и без CORS. Код — `agent/lib/yandex/afisha/prices.ts`,
 `hall.ts`, `direct.ts`.
 **Замер (из облачной сессии через прокси):** «Свидание» 5,3–6,6 с, театр с тремя сеансами 5,6–11 с; на VM

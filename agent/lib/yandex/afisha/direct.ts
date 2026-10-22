@@ -332,6 +332,7 @@ const sessionsResponseSchema = z.object({
       ),
     })
     .nullish(),
+  errors: z.array(z.json()).nullish(),
 });
 
 /** Today in Moscow, the day Afisha's schedule starts from when none is asked. */
@@ -369,14 +370,16 @@ export async function afishaPricesDirect(
       }),
       sessionsResponseSchema
     );
-    if (!body?.data) return undefined;
+    if (body === undefined) return undefined;
+    // As the page: an answer with errors is no schedule.
+    if (body.errors != null || !body.data) return { error: "gql" };
     const all = body.data.eventScheduleOtherByDate
       .flatMap((group) => group.sessions ?? [])
       .map(({ place, session }) => {
         const ticket = session?.ticket;
         const link = ticket?.widgetUrl;
         return {
-          address: place?.address || null,
+          address: place?.address ?? null,
           key: ticket?.id ?? null,
           link:
             link?.startsWith("https://widget.afisha.yandex.ru/") === true
@@ -384,29 +387,36 @@ export async function afishaPricesDirect(
               : null,
           maxPrice: ticket?.maxPrice ? ticket.maxPrice.value / 100 : null,
           minPrice: ticket?.minPrice ? ticket.minPrice.value / 100 : null,
-          sale: ticket?.saleStatus || null,
-          venue: place?.title || null,
+          sale: ticket?.saleStatus ?? null,
+          venue: place?.title ?? null,
           when: session?.datetime ? session.datetime.slice(0, 16) : null,
         };
       })
-      .sort((a, b) => (a.when ?? "").localeCompare(b.when ?? ""));
+      .toSorted((a, b) => (a.when ?? "").localeCompare(b.when ?? ""));
     const listed = all.slice(0, sessionsListed);
     const zones = await sessionZones(
       listed
-        .slice(0, sessionsZoned)
         .flatMap(({ key, sale }) =>
           key !== null && sale === "available" ? [key] : []
-        ),
+        )
+        .slice(0, sessionsZoned),
       now
     );
     return {
       more: Math.max(all.length - sessionsListed, 0),
-      sessions: listed.map(({ key, ...shown }) => {
-        const plan = key === null ? undefined : zones.get(key);
+      sessions: listed.map((session) => {
+        const plan = session.key === null ? undefined : zones.get(session.key);
         return {
-          ...shown,
+          address: session.address,
+          link: session.link,
+          maxPrice: session.maxPrice,
           maxTickets: plan?.maxTickets ?? null,
+          minPrice: session.minPrice,
+          sale: session.sale,
+          venue: session.venue,
+          when: session.when,
           zones: plan?.zones ?? null,
+          zonesMore: plan?.more ?? 0,
         };
       }),
     };

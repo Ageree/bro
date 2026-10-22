@@ -1,6 +1,6 @@
 import * as z from "zod";
 import { defineYandexOperation } from "../operations";
-import { zoneSchema } from "./hall";
+import { zoneSchema, zonesShown } from "./hall";
 
 /**
  * The sessions of one event: when, where, the session's key in the ticket
@@ -31,7 +31,9 @@ const session = z.object({
   venue: z.string().nullable(),
   when: z.string().nullable(),
   // `null`: not read — the page's way, a check, or a session past the first.
-  zones: z.array(zoneSchema).max(60).nullable(),
+  zones: z.array(zoneSchema).max(zonesShown).nullable(),
+  // The zones of a big hall left out of `zones`.
+  zonesMore: z.number(),
 });
 
 /**
@@ -83,7 +85,7 @@ export const afishaPricesOperation = defineYandexOperation({
         operationName: "BroSessions",
         query: ${JSON.stringify(afishaSessionsGraphql)},
         variables: {
-          dates: args.date ? { date: args.date, period: 1 } : { date: today, period: ${sessionsAhead} },
+          dates: args.date ? { date: args.date, period: 1 } : { date: today, period: ${String(sessionsAhead)} },
           id: args.event,
         },
       }),
@@ -100,21 +102,22 @@ export const afishaPricesOperation = defineYandexOperation({
       const t = s.ticket || {};
       const p = x.place || {};
       all.push({
-        address: p.address || null,
+        address: p.address ?? null,
         link: typeof t.widgetUrl === "string" && t.widgetUrl.startsWith("https://widget.afisha.yandex.ru/") ? t.widgetUrl : null,
         maxPrice: t.maxPrice ? t.maxPrice.value / 100 : null,
         maxTickets: null,
         minPrice: t.minPrice ? t.minPrice.value / 100 : null,
-        sale: t.saleStatus || null,
-        venue: p.title || null,
+        sale: t.saleStatus ?? null,
+        venue: p.title ?? null,
         when: s.datetime ? s.datetime.slice(0, 16) : null,
         zones: null,
+        zonesMore: 0,
       });
     }
   all.sort((a, b) => (a.when || "").localeCompare(b.when || ""));
   return {
     status: "ok",
-    data: { more: Math.max(all.length - ${sessionsListed}, 0), sessions: all.slice(0, ${sessionsListed}) },
+    data: { more: Math.max(all.length - ${String(sessionsListed)}, 0), sessions: all.slice(0, ${String(sessionsListed)}) },
   };
 }`,
   service: "afisha",

@@ -9,21 +9,21 @@ import { isYandexHost } from "../operations";
  * browser looked for seats priced 4 200 ₽ in such a zone, found none and told
  * the person that price could not be bought.
  *
- * The widget's own chain, with the anonymous cookie it hands any visitor and
- * nothing of the person's: `yandexuid` from any page of the widget, a token of
- * its antibot check bound to that cookie, then the plan, which it prepares and
- * puts on its CDN.
+ * The widget's own chain, with the anonymous cookies it hands any visitor and
+ * nothing of the person's: the cookies from any page of the widget, a token of
+ * its antibot check bound to them, then the plan, which it prepares and puts
+ * on its CDN.
  */
 const widgetOrigin = "https://widget.afisha.yandex.ru";
 const userAgent =
   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
 
-/** The wait for one request, and for the plan to be ready at all. */
+/** The wait for one request, and for all the plans of one call. */
 const requestBudgetMs = 5000;
-const planBudgetMs = 9000;
+const zonesBudgetMs = 9000;
 /** How often the plan is asked for while the widget prepares it. */
 const pollMs = 700;
-/** After a refusal the widget is not asked again for this long. */
+/** After a refusal or a hang the widget is not asked again for this long. */
 const coolOffMs = 10 * 60_000;
 /** A zone with more prices than this keeps the cheapest and the dearest. */
 const pricesShown = 8;
@@ -89,9 +89,12 @@ export const zoneSchema = z.object({
   rise: z.object({ from: z.string(), price: z.number() }).nullable(),
   seats: z.enum([zoneSeats.byCount, zoneSeats.onMap]),
   // The ticket's own name, when it says more than the zone's.
-  ticket: z.string().optional(),
+  ticket: z.string().nullable(),
   zone: z.string(),
 });
+
+/** A stadium has a hundred sectors: the zones by count and the cheapest seated. */
+export const zonesShown = 40;
 
 type Zone = z.output<typeof zoneSchema>;
 
@@ -122,18 +125,23 @@ function plain(name: string) {
 
 const rubles = (kopecks: number) => kopecks / 100;
 
+const cheapestFirst = (a: Zone, b: Zone) =>
+  (a.prices[0]?.price ?? 0) - (b.prices[0]?.price ?? 0);
+
 /**
  * The zones of a plan, cheapest first: each with its prices and the price
  * with the widget's fee, how many are left (`null` where the widget hides
  * it, as it does for zones without seats), and the next price the site
- * announces for a zone with one price.
+ * announces for a zone with one price. A hall of more zones than are shown
+ * (a stadium's sectors) keeps every zone bought by count and the cheapest
+ * seated ones, and `more` counts the rest.
  */
-export function hallZones(plan: Plan, now: Date): Zone[] {
+function hallZones(plan: Plan, now: Date) {
   const categories = new Map(
     plan.categories.map((category) => [category.id, category])
   );
   const hidden = plan.settings?.hideAdmissionAvailableSeatsCount === true;
-  return plan.levels
+  const zones = plan.levels
     .flatMap((level): Zone[] => {
       const own = (level.categories ?? []).flatMap(({ id }) => {
         const category = categories.get(id);
@@ -142,48 +150,55 @@ export function hallZones(plan: Plan, now: Date): Zone[] {
       const infos = own.flatMap((category) => category.priceInfos ?? []);
       const values = [
         ...new Set((level.prices ?? []).map(({ value }) => value)),
-      ].sort((a, b) => a - b);
-      if (level.name == null || values.length === 0) return [];
+      ].toSorted((a, b) => a - b);
+      const dearest = values.at(-1);
+      if (level.name == null || dearest === undefined) return [];
       const shown =
         values.length > pricesShown
-          ? [...values.slice(0, pricesShown - 1), values[values.length - 1]]
+          ? [...values.slice(0, pricesShown - 1), dearest]
           : values;
-      const prices = shown.flatMap((value) => {
-        if (value === undefined) return [];
-        const total = infos.find((info) => info.price.value === value)?.total;
-        return [
-          {
-            price: rubles(value),
-            withFee: total == null ? null : rubles(total.value),
-          },
-        ];
-      });
       const admission = level.admission === true;
       const count = level.availableSeatCount ?? null;
       const named =
         level.categories?.length === 1 ? level.categories[0] : undefined;
-      const ticket =
-        named?.name != null && plain(named.name) !== plain(level.name)
-          ? named.name
-          : undefined;
       return [
         {
           left: admission && hidden && count !== 0 ? null : count,
-          prices,
-          rise: values.length === 1 ? riseOf(own, values[0], now) : null,
+          prices: shown.map((value) => {
+            const total = infos.find(
+              (info) => info.price.value === value
+            )?.total;
+            return {
+              price: rubles(value),
+              withFee: total == null ? null : rubles(total.value),
+            };
+          }),
+          rise: values.length === 1 ? riseOf(own, dearest, now) : null,
           seats: admission ? zoneSeats.byCount : zoneSeats.onMap,
-          ...(ticket === undefined ? {} : { ticket }),
+          ticket:
+            named?.name != null && plain(named.name) !== plain(level.name)
+              ? named.name
+              : null,
           zone: level.name,
         },
       ];
     })
-    .sort((a, b) => (a.prices[0]?.price ?? 0) - (b.prices[0]?.price ?? 0));
+    .toSorted(cheapestFirst);
+  if (zones.length <= zonesShown) return { more: 0, zones };
+  const byCount = zones.filter((zone) => zone.seats === zoneSeats.byCount);
+  const kept = [
+    ...byCount.slice(0, zonesShown),
+    ...zones
+      .filter((zone) => zone.seats === zoneSeats.onMap)
+      .slice(0, Math.max(zonesShown - byCount.length, 0)),
+  ].toSorted(cheapestFirst);
+  return { more: zones.length - kept.length, zones: kept };
 }
 
 /** The first announced change of a one-price zone to another price. */
 function riseOf(
   own: readonly Plan["categories"][number][],
-  value: number | undefined,
+  value: number,
   now: Date
 ) {
   const next = own
@@ -196,7 +211,7 @@ function riseOf(
         ? []
         : [{ change, starts }];
     })
-    .sort((a, b) => a.starts - b.starts)[0];
+    .toSorted((a, b) => a.starts - b.starts)[0];
   return next === undefined
     ? null
     : {
@@ -208,29 +223,50 @@ function riseOf(
 /** A refusal of the widget: it is left alone for a while. */
 class Refused extends Error {}
 
-async function widgetFetch(path: string, init: RequestInit = {}) {
+/**
+ * One request to the widget, within the call's `deadline`. A connection
+ * dropped on the way is asked once more; a slow answer is not.
+ */
+async function widgetFetch(
+  path: string,
+  deadline: AbortSignal,
+  init: {
+    readonly body?: string;
+    readonly headers?: Readonly<Record<string, string>>;
+    readonly method?: string;
+  } = {}
+) {
   const send = () =>
     fetch(`${widgetOrigin}${path}`, {
-      ...init,
+      body: init.body,
       headers: {
         accept: "application/json",
         "user-agent": userAgent,
         ...init.headers,
       },
+      method: init.method,
       redirect: "error",
-      signal: AbortSignal.timeout(requestBudgetMs),
+      signal: AbortSignal.any([deadline, AbortSignal.timeout(requestBudgetMs)]),
     });
-  // A connection dropped on the way is asked once more; a slow answer is not.
-  const response = await send().catch(async (error: Error) => {
-    if (error.name === "TimeoutError") throw error;
-    return send();
-  });
+  let response: Response;
+  try {
+    response = await send();
+  } catch (error) {
+    if (
+      deadline.aborted ||
+      (error instanceof Error && error.name === "TimeoutError")
+    ) {
+      throw error;
+    }
+    response = await send();
+  }
   if (
     response.status === 403 ||
     response.status === 429 ||
     response.status >= 500
   ) {
-    throw new Refused(`widget ${response.status}`);
+    await response.body?.cancel();
+    throw new Refused(`widget ${response.status.toString()}`);
   }
   return response;
 }
@@ -240,8 +276,8 @@ async function widgetFetch(path: string, init: RequestInit = {}) {
  * the plan takes `yandexuid` only with its signed twin `i`, and a browser
  * sends them all.
  */
-async function visitorCookie() {
-  const response = await widgetFetch("/robots.txt", {
+async function visitorCookie(deadline: AbortSignal) {
+  const response = await widgetFetch("/robots.txt", deadline, {
     headers: { accept: "text/plain" },
   });
   await response.body?.cancel();
@@ -270,10 +306,18 @@ const pause = (ms: number) =>
   });
 
 /** One session's plan: its zones, `captcha` behind a check, or nothing. */
-async function sessionPlan(key: string, cookie: string, now: Date) {
+async function sessionPlan(
+  key: string,
+  cookie: string,
+  {
+    deadline,
+    until,
+  }: { readonly deadline: AbortSignal; readonly until: number },
+  now: Date
+) {
   const check = checkSchema.safeParse(
     await (
-      await widgetFetch("/api/antibot/check", {
+      await widgetFetch("/api/antibot/check", deadline, {
         body: JSON.stringify({ sessionKey: key }),
         headers: { "content-type": "application/json", cookie },
         method: "POST",
@@ -284,70 +328,85 @@ async function sessionPlan(key: string, cookie: string, now: Date) {
   if (check.data.captchaRequired || check.data.jwt === undefined) {
     return "captcha" as const;
   }
-  const until = Date.now() + planBudgetMs;
+  const headers = { cookie, "x-antibot-token": check.data.jwt };
   for (;;) {
+    // oxlint-disable-next-line eslint/no-await-in-loop -- The widget prepares the plan between asks.
     const response = await widgetFetch(
-      `/api/tickets/v4/sessions/${key}/hallplan`,
-      { headers: { cookie, "x-antibot-token": check.data.jwt } }
+      `/api/tickets/v4/sessions/${encodeURIComponent(key)}/hallplan`,
+      deadline,
+      { headers }
     );
+    if (response.status !== 200) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- The last ask: the widget said no.
+      await response.body?.cancel();
+      return undefined;
+    }
     const state = planStateSchema.safeParse(
-      response.status === 200 ? await response.json() : undefined
+      // oxlint-disable-next-line eslint/no-await-in-loop -- The answer of this ask.
+      await response.json()
     );
     if (!state.success) return undefined;
     if (state.data.status === "completed" && state.data.url !== undefined) {
-      return planAt(state.data.url, now);
+      return planAt(state.data.url, deadline, now);
     }
-    if (state.data.status !== "running" || Date.now() + pollMs > until) {
-      return undefined;
+    if (state.data.status !== "running") return undefined;
+    if (Date.now() + pollMs > until) {
+      throw new DOMException("the plan was not ready in time", "TimeoutError");
     }
+    // oxlint-disable-next-line eslint/no-await-in-loop -- The pause between asks.
     await pause(pollMs);
   }
 }
 
 /** The prepared plan on the widget's CDN, read only from Yandex's own host. */
-async function planAt(url: string, now: Date) {
+async function planAt(url: string, deadline: AbortSignal, now: Date) {
   const address = URL.parse(url);
-  if (
-    address === null ||
-    address.protocol !== "https:" ||
-    !isYandexHost(address.hostname)
-  ) {
+  if (address?.protocol !== "https:" || !isYandexHost(address.hostname)) {
     return undefined;
   }
   const response = await fetch(address, {
     headers: { "user-agent": userAgent },
     redirect: "error",
-    signal: AbortSignal.timeout(requestBudgetMs),
+    signal: AbortSignal.any([deadline, AbortSignal.timeout(requestBudgetMs)]),
   });
-  if (response.status !== 200) return undefined;
+  if (response.status !== 200) {
+    await response.body?.cancel();
+    return undefined;
+  }
   const plan = planSchema.safeParse(await response.json());
   return plan.success
     ? {
         maxTickets: plan.data.result.hallplan.maxTicketsCount ?? null,
-        zones: hallZones(plan.data.result.hallplan, now),
+        ...hallZones(plan.data.result.hallplan, now),
       }
     : undefined;
 }
 
+type SessionPlan = NonNullable<Awaited<ReturnType<typeof planAt>>>;
+
 /**
  * The zones of these sessions, by key, from the server with no browser and
- * no sign-in. A session the widget would not show (a check it puts up, an
- * answer of another shape) is left out; a refusal of the widget leaves them
- * all out and the widget alone for ten minutes.
+ * no sign-in, all within one budget. A session the widget would not show (a
+ * check it puts up, an answer of another shape) is left out; a refusal or a
+ * hang of the widget leaves the rest out and the widget alone for ten
+ * minutes.
  */
 export async function sessionZones(keys: readonly string[], now: Date) {
-  const zones = new Map<
-    string,
-    { readonly maxTickets: number | null; readonly zones: Zone[] }
-  >();
+  const zones = new Map<string, SessionPlan>();
   const asked = keys.filter((key) => sessionKeyPattern.test(key));
   if (asked.length === 0 || Date.now() < coolOffUntil) return zones;
+  // The signal ends a request that hangs; the time ends a plan that is
+  // never ready.
+  const budget = {
+    deadline: AbortSignal.timeout(zonesBudgetMs),
+    until: Date.now() + zonesBudgetMs,
+  };
   const failures: Error[] = [];
   try {
-    const cookie = await visitorCookie();
+    const cookie = await visitorCookie(budget.deadline);
     const plans = await Promise.allSettled(
       asked.map(async (key) => {
-        const plan = await sessionPlan(key, cookie, now);
+        const plan = await sessionPlan(key, cookie, budget, now);
         if (plan !== undefined && plan !== "captcha") zones.set(key, plan);
         return plan;
       })
@@ -366,7 +425,11 @@ export async function sessionZones(keys: readonly string[], now: Date) {
   } catch (error) {
     failures.push(error instanceof Error ? error : new Error("failed"));
   }
-  if (failures.some((failure) => failure instanceof Refused)) {
+  if (
+    failures.some(
+      (failure) => failure instanceof Refused || failure.name === "TimeoutError"
+    )
+  ) {
     coolOffUntil = Date.now() + coolOffMs;
   }
   if (failures.length > 0) {

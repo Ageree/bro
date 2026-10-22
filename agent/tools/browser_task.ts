@@ -1124,12 +1124,13 @@ const ticketErrandPattern =
   /(?<!\p{L})(?:авиа\p{L}*|билет\p{L}*|рейс\p{L}*|перел[её]т\p{L}*|самол[её]т\p{L}*|сапсан\p{L}*|ласточк\p{L}*|поезд\p{L}*|ржд|аэрофлот\p{L}*|победой|победы|s7|flights?|airlines?|plane|trains?|aviasales|авиасейлс\p{L}*)(?!\p{L})/iu;
 
 /**
- * The travel words of `ticketErrandPattern`, without the bare «билет»: a trip
- * an event errand may also be about. The airline «Победа» alone is not one —
- * «концерт ко Дню Победы» is no flight.
+ * The travel words of `ticketErrandPattern` and the ones of a trip, without
+ * the bare «билет»: a trip an event errand may also be about («билеты в Питер
+ * на концерт, туда в пятницу, обратно в воскресенье»). The airline is «летим
+ * Победой»; «концерт ко Дню Победы» is no flight.
  */
 const travelErrandPattern =
-  /(?<!\p{L})(?:авиа\p{L}*|рейс\p{L}*|перел[её]т\p{L}*|самол[её]т\p{L}*|сапсан\p{L}*|ласточк\p{L}*|поезд\p{L}*|ржд|аэрофлот\p{L}*|s7|flights?|airlines?|plane|trains?|aviasales|авиасейлс\p{L}*)(?!\p{L})/iu;
+  /(?<!\p{L})(?:авиа\p{L}*|рейс\p{L}*|перел[её]т\p{L}*|самол[её]т\p{L}*|сапсан\p{L}*|ласточк\p{L}*|поезд\p{L}*|электричк\p{L}*|ржд|аэрофлот\p{L}*|победой|s7|вылет\p{L}*|аэропорт\p{L}*|вокзал\p{L}*|обратн\p{L}*|туда|купе|плацкарт\p{L}*|flights?|airlines?|airports?|plane|trains?|return|aviasales|авиасейлс\p{L}*)(?!\p{L})/iu;
 
 /** A flight in particular: a checked bag and online check-in are its own. */
 const flightErrandPattern =
@@ -1171,11 +1172,17 @@ function ticketLine(errand: string, event: boolean) {
 }
 
 /**
- * An errand about tickets to an event: a concert, a play, an opera, a
- * stand-up, a festival, a match, the zones of a hall.
+ * An event: a concert, a play, an opera, a stand-up, a festival, a match.
+ * Its name alone is no errand about its tickets — a table near the Bolshoi
+ * Theatre, a «Матч Премьер» subscription — so it counts beside a ticket or a
+ * seat (`ticketWordPattern`), or on a ticket seller's Site.
  */
 const eventErrandPattern =
-  /(?<!\p{L})(?:концерт\p{L}*|театр\p{L}*|спектакл\p{L}*|опер(?:а|ы|е|у|ой|ах)|балет\p{L}*|мюзикл\p{L}*|стенд-?ап\p{L}*|фестивал\p{L}*|матч(?:а|е|и|у|ей|ам|ами|ах)?|танцпол\p{L}*|фан-?зон\p{L}*|партер\p{L}*|амфитеатр\p{L}*|бельэтаж\p{L}*|афиш\p{L}*|concerts?|theat(?:re|er)s?|gigs?|festivals?|opera|ballet)(?!\p{L})/iu;
+  /(?<!\p{L})(?:концерт\p{L}*|театр\p{L}*|спектакл\p{L}*|опер(?:а|ы|е|у|ой|ах)|балет\p{L}*|мюзикл\p{L}*|стенд-?ап\p{L}*|фестивал\p{L}*|матч(?:а|е|и|у|ей|ам|ами|ах)?|concerts?|theat(?:re|er)s?|gigs?|festivals?|opera|ballet)(?!\p{L})/iu;
+
+/** The zones of a hall, which name an errand about its tickets on their own. */
+const hallZonePattern =
+  /(?<!\p{L})(?:танцпол\p{L}*|фан-?зон\p{L}*|партер\p{L}*|амфитеатр\p{L}*|бельэтаж\p{L}*|афиш\p{L}*)(?!\p{L})/iu;
 
 /**
  * Event words as common outside a hall — a flat with a balcony, a cake for a
@@ -1184,8 +1191,9 @@ const eventErrandPattern =
 const eventHallWordPattern =
   /(?<!\p{L})(?:шоу|балкон\p{L}*|лож(?:а|и|е|у|ей)|рассадк\p{L}*|вечеринк\p{L}*|shows?|match(?:es)?|musicals?|stand-?up|part(?:y|ies))(?!\p{L})/iu;
 
-/** A ticket, beside which `eventHallWordPattern` names an event. */
-const ticketWordPattern = /(?<!\p{L})(?:билет\p{L}*|tickets?)(?!\p{L})/iu;
+/** A ticket or a seat, beside which an event's name is an errand about it. */
+const ticketWordPattern =
+  /(?<!\p{L})(?:билет\p{L}*|входн\p{L}*|мест(?:о|а|ам|ами)?|ряд\p{L}*|сектор\p{L}*|tickets?|seats?)(?!\p{L})/iu;
 
 /** Sites that sell tickets to events, a Яндекс Афиша widget among them. */
 const eventTicketHostPattern =
@@ -1207,8 +1215,9 @@ function sellsEventTickets(site: string | undefined) {
 function eventErrand(site: string | undefined, ...texts: readonly string[]) {
   const text = texts.join("\n");
   return (
-    eventErrandPattern.test(text) ||
-    (eventHallWordPattern.test(text) && ticketWordPattern.test(text)) ||
+    hallZonePattern.test(text) ||
+    ((eventErrandPattern.test(text) || eventHallWordPattern.test(text)) &&
+      ticketWordPattern.test(text)) ||
     sellsEventTickets(site)
   );
 }
@@ -1227,7 +1236,7 @@ const eventTicketLine = [
   "A price chip with no seats of that price on the map is such a zone: never report that a price is not tied to any seat, or cannot be bought, before you have clicked its zone.",
   "When the errand names a zone, or a price without a seat, take that zone by count; pick seats only in a category that has them.",
   "A seat that answers «это место только что заняли» is taken: pick another seat of the same category — that alone does not mean the category is sold out.",
-  "In the report, list every price category with its zone's name, whether it has seats or is sold by count, and the fee if the site shows one.",
+  "In the report, list every price category with its zone's name and whether it has seats or is sold by count; the price that counts is the final one at checkout, with the site's service fee.",
 ].join(" ");
 
 /**

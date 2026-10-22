@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as z from "zod";
 import { afishaPricesDirect } from "@agent/lib/yandex/afisha/direct";
-import { zoneSeats } from "@agent/lib/yandex/afisha/hall";
+import { zoneSeats, zonesShown } from "@agent/lib/yandex/afisha/hall";
 import { afishaPricesOperation } from "@agent/lib/yandex/afisha/prices";
+import type { JsonValue } from "@agent/lib/yandex/operations";
 import { dataOf, fixture, runInPage } from "./page";
 
 const args = afishaPricesOperation.args.parse({
@@ -14,7 +15,11 @@ const planUrl = "https://cdn1.svc.cdn.yandex.net/hallplans/abc";
 interface Widget {
   readonly check?: () => Response;
   readonly plan?: () => Response;
+  readonly hall?: JsonValue;
 }
+
+const urlOf = (input: RequestInfo | URL) =>
+  new URL(input instanceof Request ? input.url : input);
 
 /**
  * Afisha and the ticket widget behind one `fetch`: the schedule, the
@@ -23,10 +28,10 @@ interface Widget {
  */
 async function services(widget: Widget = {}) {
   const sessions = await fixture("afisha/sessions.json");
-  const plan = await fixture("afisha/hallplan.json");
+  const plan = widget.hall ?? (await fixture("afisha/hallplan.json"));
   let asked = 0;
   return vi.fn<typeof fetch>(async (input) => {
-    const url = new URL(z.string().or(z.instanceof(URL)).parse(input));
+    const url = urlOf(input);
     if (url.hostname === "afisha.yandex.ru") return Response.json(sessions);
     if (url.pathname === "/robots.txt") {
       const headers = new Headers();
@@ -63,15 +68,57 @@ async function pricesDirect(input = args) {
   return answer;
 }
 
-/** The URLs of the widget a spy was asked. */
+/** The calls a spy made to the widget. */
 const widgetCalls = (spy: ReturnType<typeof vi.fn<typeof fetch>>) =>
-  spy.mock.calls.filter(([input]) =>
-    String(input).startsWith("https://widget.afisha.yandex.ru/")
+  spy.mock.calls.filter(
+    ([input]) => urlOf(input).hostname === "widget.afisha.yandex.ru"
   );
+
+const sessionsOf = z.object({
+  sessions: z.array(
+    z.object({
+      maxTickets: z.number().nullable(),
+      zones: z
+        .array(z.object({ seats: z.string(), zone: z.string() }).loose())
+        .nullable(),
+      zonesMore: z.number(),
+    })
+  ),
+});
+
+/** A stadium's seated sector, dearer than every zone of the fixture. */
+const sector = (index: number) => ({
+  admission: false,
+  availableSeatCount: 10,
+  categories: [{ id: 77, name: "Партер" }],
+  name: `Сектор ${index.toString()}`,
+  prices: [{ value: 1_000_000 + index * 100 }],
+});
+
+/**
+ * One call meets the widget's `plan`, and the next one does not ask the
+ * widget at all; both still list the sessions.
+ */
+async function leftAloneAfter(plan: () => Response) {
+  vi.setSystemTime(Date.now() + 60 * 60_000);
+  const spy = await services({ plan });
+  vi.stubGlobal("fetch", spy);
+  expect(await pricesDirect()).toMatchObject({
+    sessions: [{ zones: null }, { zones: null }],
+  });
+  const askedBefore = widgetCalls(spy).length;
+  await pricesDirect();
+  expect(widgetCalls(spy)).toHaveLength(askedBefore);
+}
+
+// Each test an hour after the last: the widget's ten-minute pause after a
+// refusal is the module's, and must not carry over.
+let hour = 0;
 
 beforeEach(() => {
   vi.useFakeTimers();
-  vi.setSystemTime(new Date("2026-10-22T10:00:00+03:00"));
+  hour += 1;
+  vi.setSystemTime(new Date(Date.UTC(2026, 9, 22, 6 + hour)));
 });
 
 afterEach(() => {
@@ -83,17 +130,7 @@ describe("afisha.prices", () => {
   it("names every zone of a session and which ones have no seat to pick", async () => {
     const spy = await services();
     vi.stubGlobal("fetch", spy);
-    const answer = z
-      .object({
-        sessions: z.array(
-          z.object({
-            maxTickets: z.number().nullable(),
-            zones: z.array(z.json()).nullable(),
-          })
-        ),
-      })
-      .parse(await pricesDirect());
-    const [first, closed] = answer.sessions;
+    const [first, closed] = sessionsOf.parse(await pricesDirect()).sessions;
     expect(first?.maxTickets).toBe(6);
     expect(first?.zones).toEqual([
       {
@@ -104,6 +141,7 @@ describe("afisha.prices", () => {
         ),
         rise: null,
         seats: zoneSeats.onMap,
+        ticket: null,
         zone: "Партер",
       },
       {
@@ -111,6 +149,7 @@ describe("afisha.prices", () => {
         prices: [{ price: 2300, withFee: 2530 }],
         rise: { from: "2026-11-01", price: 2400 },
         seats: zoneSeats.byCount,
+        ticket: null,
         zone: "Танцпол",
       },
       {
@@ -127,6 +166,7 @@ describe("afisha.prices", () => {
         prices: [{ price: 5500, withFee: 6050 }],
         rise: null,
         seats: zoneSeats.onMap,
+        ticket: null,
         zone: "VIP Lounge",
       },
     ]);
@@ -134,7 +174,7 @@ describe("afisha.prices", () => {
     expect(closed?.zones).toBeNull();
     // The plan takes the visitor's cookie only with its signed twin.
     const planCall = widgetCalls(spy).find(([input]) =>
-      String(input).endsWith("/hallplan")
+      urlOf(input).pathname.endsWith("/hallplan")
     );
     expect(new Headers(planCall?.[1]?.headers).get("cookie")).toBe(
       "yandexuid=123; i=signed"
@@ -142,10 +182,12 @@ describe("afisha.prices", () => {
   });
 
   it("lists the same sessions as the page does, the zones unread behind the widget's check", async () => {
-    const spy = await services({
-      check: () => Response.json({ captchaRequired: true }),
-    });
-    vi.stubGlobal("fetch", spy);
+    vi.stubGlobal(
+      "fetch",
+      await services({
+        check: () => Response.json({ captchaRequired: true }),
+      })
+    );
     const direct = await pricesDirect();
     const sessions = await fixture("afisha/sessions.json");
     const pageAsked: (string | null | undefined)[] = [];
@@ -170,23 +212,49 @@ describe("afisha.prices", () => {
     });
   });
 
-  it("leaves the widget alone for ten minutes after it refused, and still lists the sessions", async () => {
-    vi.setSystemTime(new Date("2026-10-23T10:00:00+03:00"));
-    const spy = await services({
-      plan: () => new Response("busy", { status: 429 }),
-    });
-    vi.stubGlobal("fetch", spy);
-    expect(await pricesDirect()).toMatchObject({
-      sessions: [{ zones: null }, { zones: null }],
-    });
-    const refusedAfter = widgetCalls(spy).length;
-    await pricesDirect();
-    expect(widgetCalls(spy)).toHaveLength(refusedAfter);
+  it("keeps a stadium's zones by count and its cheapest sectors, and counts the rest", async () => {
+    const plan = z
+      .object({
+        result: z.object({
+          hallplan: z.object({ levels: z.array(z.json()) }).loose(),
+        }),
+      })
+      .loose()
+      .parse(await fixture("afisha/hallplan.json"));
+    plan.result.hallplan.levels.push(
+      ...Array.from({ length: zonesShown }, (_, index) => sector(index))
+    );
+    vi.stubGlobal("fetch", await services({ hall: z.json().parse(plan) }));
+    const [first] = sessionsOf.parse(await pricesDirect()).sessions;
+    expect(first?.zones).toHaveLength(zonesShown);
+    expect(first?.zonesMore).toBe(4);
+    expect(first?.zones?.map(({ zone }) => zone)).toEqual(
+      expect.arrayContaining(["Танцпол", "VIP-входной (свободная рассадка)"])
+    );
+  });
+
+  it("leaves the widget alone for ten minutes after it refused or never got ready, and still lists the sessions", async () => {
+    await leftAloneAfter(() => new Response("busy", { status: 429 }));
+    await leftAloneAfter(() => Response.json({ status: "running" }));
     vi.setSystemTime(Date.now() + 11 * 60_000);
     vi.stubGlobal("fetch", await services());
     expect(await pricesDirect()).toMatchObject({
       sessions: [{ maxTickets: 6 }, { zones: null }],
     });
+  });
+
+  it("reads a plan only from Yandex's own host", async () => {
+    const spy = await services({
+      plan: () =>
+        Response.json({ status: "completed", url: "https://evil.example/p" }),
+    });
+    vi.stubGlobal("fetch", spy);
+    expect(await pricesDirect()).toMatchObject({
+      sessions: [{ zones: null }, { zones: null }],
+    });
+    expect(
+      spy.mock.calls.some(([input]) => urlOf(input).hostname === "evil.example")
+    ).toBe(false);
   });
 
   it("answers a day that is none without asking Afisha, as the page does", async () => {

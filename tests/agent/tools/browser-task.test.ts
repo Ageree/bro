@@ -6224,14 +6224,22 @@ describe("browser_task errand text", () => {
     expect(start("Купи 2 билета на «Свидание» 20.11", afisha)).toContain(
       "click the zone itself"
     );
-    // A trip to the concert is still a trip.
+    // A trip to the concert is still a trip, its return too.
     expect(
-      await composed("Купи билеты на концерт в Питере и на сапсан туда")
-    ).toContain("from the seat map itself");
-    // A balcony is a hall's only beside a ticket.
-    expect(await composed("Найди квартиру с балконом")).not.toContain(
-      "click the zone itself"
+      await composed(
+        "Найди билеты в Питер на концерт, туда в пятницу, обратно в воскресенье"
+      )
+    ).toContain("When the errand asks for a return too");
+    // An event's name or a balcony is a hall's only beside a ticket.
+    const notHalls = await Promise.all(
+      [
+        "Найди квартиру с балконом",
+        "Забронируй столик в ресторане у Большого театра",
+      ].map(composed)
     );
+    for (const task of notHalls) {
+      expect(task).not.toContain("click the zone itself");
+    }
 
     const followUp = composeBrowserContinuation({
       aliases: [],

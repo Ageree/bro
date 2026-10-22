@@ -214,7 +214,14 @@ async function tryDirect(
   const answer = await read(args);
   if (answer === undefined) return undefined;
   const data = operation.result.safeParse(answer);
-  if (!data.success) return undefined;
+  if (!data.success) {
+    // The tab is asked instead, slower: an answer the schema refuses is a bug.
+    console.warn("[yandex] direct answer refused by its schema", {
+      issues: data.error.issues.slice(0, 3).map(({ path }) => path.join(".")),
+      operation: operation.id,
+    });
+    return undefined;
+  }
   console.info("[yandex] direct", {
     ms: Date.now() - began,
     operation: operation.id,
