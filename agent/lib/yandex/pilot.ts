@@ -18,6 +18,18 @@ export function yandexPurchasePilot(scope: { readonly workspaceId: string }) {
   );
 }
 
+/**
+ * Whether the workspace buys Afisha tickets through the widget's API
+ * (YANDEX_AFISHA_PURCHASE_WORKSPACES), within the purchase pilot.
+ */
+export function afishaPurchasePilot(scope: { readonly workspaceId: string }) {
+  const list = env.YANDEX_AFISHA_PURCHASE_WORKSPACES ?? [];
+  return (
+    yandexPurchasePilot(scope) &&
+    (list.includes("*") || list.includes(scope.workspaceId))
+  );
+}
+
 /** Whether the workspace's public reads may skip the browser (YANDEX_DIRECT_WORKSPACES). */
 export function yandexDirectPilot(scope: { readonly workspaceId: string }) {
   const list = env.YANDEX_DIRECT_WORKSPACES ?? [];

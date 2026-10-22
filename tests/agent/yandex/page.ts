@@ -11,6 +11,8 @@ import {
 export interface FakeResponse {
   readonly body: JsonValue;
   readonly status?: number;
+  /** A page's own text, such as its HTML, in place of the body's JSON. */
+  readonly text?: string;
 }
 
 /** What an operation's function answered, as the transport reads it. */
@@ -120,7 +122,7 @@ export async function runInPage(
         headers: { get: () => "application/json" },
         json: async () => response.body,
         status: response.status ?? 200,
-        text: async () => JSON.stringify(response.body),
+        text: async () => response.text ?? JSON.stringify(response.body),
       };
     },
     indexedDB: fakeIndexedDb(page.indexedDb),

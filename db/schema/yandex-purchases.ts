@@ -21,7 +21,9 @@ export const yandexPurchases = pgTable(
     workspaceId: text("workspace_id").notNull(),
     userId: text("user_id").notNull(),
     rootSessionId: text("root_session_id").notNull(),
-    service: text("service", { enum: ["lavka", "go", "eda"] }).notNull(),
+    service: text("service", {
+      enum: ["lavka", "go", "eda", "afisha"],
+    }).notNull(),
     checkoutKey: text("checkout_key").notNull(),
     fingerprint: text("fingerprint").notNull(),
     amountMinor: bigint("amount_minor", { mode: "number" }).notNull(),
@@ -93,7 +95,7 @@ export const yandexPurchases = pgTable(
       .where(sql`${table.state} IN ('submitting', 'unknown', 'active')`),
     check(
       "yandex_purchases_service_check",
-      sql`${table.service} IN ('lavka', 'go', 'eda')`
+      sql`${table.service} IN ('lavka', 'go', 'eda', 'afisha')`
     ),
     check("yandex_purchases_currency_check", sql`${table.currency} = 'RUB'`),
     check(

@@ -575,6 +575,13 @@
       "when": 1792449309571,
       "tag": "0081_yoomoney_onboarding",
       "breakpoints": true
+    },
+    {
+      "idx": 82,
+      "version": "7",
+      "when": 1792669554927,
+      "tag": "0082_afisha_purchases",
+      "breakpoints": true
     }
   ]
 }

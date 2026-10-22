@@ -342,6 +342,15 @@ export const env = createEnv({
         "YANDEX_PURCHASE_WORKSPACES takes workspace ids or *, not emails"
       )
       .optional(),
+    // Afisha tickets bought through the widget's own API
+    // (`agent/lib/yandex/afisha/checkout.ts`), inside YANDEX_PURCHASE_WORKSPACES.
+    // Unset, nobody: their tickets go through browser_task as before.
+    YANDEX_AFISHA_PURCHASE_WORKSPACES: workspaceListSchema
+      .refine(
+        (entries) => entries.every((entry) => !entry.includes("@")),
+        "YANDEX_AFISHA_PURCHASE_WORKSPACES takes workspace ids or *, not emails"
+      )
+      .optional(),
     // The person's own request pays without «Оплачиваю?» (owner 15.10,
     // `agent/lib/payments/direct.ts`): «купи корм», «оплати интернет». Up to
     // the budget they named, or DIRECT_PURCHASE_MAX_RUB without one; above
