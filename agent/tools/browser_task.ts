@@ -1123,6 +1123,14 @@ function repeatOrderLine(errand: string) {
 const ticketErrandPattern =
   /(?<!\p{L})(?:авиа\p{L}*|билет\p{L}*|рейс\p{L}*|перел[её]т\p{L}*|самол[её]т\p{L}*|сапсан\p{L}*|ласточк\p{L}*|поезд\p{L}*|ржд|аэрофлот\p{L}*|победой|победы|s7|flights?|airlines?|plane|trains?|aviasales|авиасейлс\p{L}*)(?!\p{L})/iu;
 
+/**
+ * The travel words of `ticketErrandPattern`, without the bare «билет»: a trip
+ * an event errand may also be about. The airline «Победа» alone is not one —
+ * «концерт ко Дню Победы» is no flight.
+ */
+const travelErrandPattern =
+  /(?<!\p{L})(?:авиа\p{L}*|рейс\p{L}*|перел[её]т\p{L}*|самол[её]т\p{L}*|сапсан\p{L}*|ласточк\p{L}*|поезд\p{L}*|ржд|аэрофлот\p{L}*|s7|flights?|airlines?|plane|trains?|aviasales|авиасейлс\p{L}*)(?!\p{L})/iu;
+
 /** A flight in particular: a checked bag and online check-in are its own. */
 const flightErrandPattern =
   /(?<!\p{L})(?:авиа\p{L}*|рейс\p{L}*|перел[её]т\p{L}*|самол[её]т\p{L}*|аэрофлот\p{L}*|победой|победы|s7|flights?|airlines?|plane|aviasales|авиасейлс\p{L}*|(?:за)?регистр(?:ац|ир)\p{L}*|check-?in|багаж\p{L}*)(?!\p{L})/iu;
@@ -1140,8 +1148,11 @@ const flightErrandPattern =
  * And a seat map that comes after the passenger details, which a run
  * without the person's confirmation may not type, is left to the follow-up.
  */
-function ticketLine(errand: string) {
+function ticketLine(errand: string, event: boolean) {
   if (!ticketErrandPattern.test(errand)) return undefined;
+  // A concert, a play or a match is no trip: its hall gets `eventTicketLine`,
+  // and a flight's seat map, metasearch, return and bag only misled it.
+  if (event && !travelErrandPattern.test(errand)) return undefined;
   const flight = flightErrandPattern.test(errand);
   return [
     "Tickets: take the seat the errand asks for — by the aisle, by the window, together — from the seat map itself and say which seat it is. When the site shows the seat map only after the passenger details, which you may not type without the person's confirmation, stop before them and say which seats the map offers once the details are in. When choosing a seat costs extra, report that price as a line of its own: it is paid only as part of a total the person confirmed.",
@@ -1158,6 +1169,66 @@ function ticketLine(errand: string) {
     .filter((line) => line !== undefined)
     .join(" ");
 }
+
+/**
+ * An errand about tickets to an event: a concert, a play, an opera, a
+ * stand-up, a festival, a match, the zones of a hall.
+ */
+const eventErrandPattern =
+  /(?<!\p{L})(?:концерт\p{L}*|театр\p{L}*|спектакл\p{L}*|опер(?:а|ы|е|у|ой|ах)|балет\p{L}*|мюзикл\p{L}*|стенд-?ап\p{L}*|фестивал\p{L}*|матч(?:а|е|и|у|ей|ам|ами|ах)?|танцпол\p{L}*|фан-?зон\p{L}*|партер\p{L}*|амфитеатр\p{L}*|бельэтаж\p{L}*|афиш\p{L}*|concerts?|theat(?:re|er)s?|gigs?|festivals?|opera|ballet)(?!\p{L})/iu;
+
+/**
+ * Event words as common outside a hall — a flat with a balcony, a cake for a
+ * party, «show me» — which name an event only beside a ticket.
+ */
+const eventHallWordPattern =
+  /(?<!\p{L})(?:шоу|балкон\p{L}*|лож(?:а|и|е|у|ей)|рассадк\p{L}*|вечеринк\p{L}*|shows?|match(?:es)?|musicals?|stand-?up|part(?:y|ies))(?!\p{L})/iu;
+
+/** A ticket, beside which `eventHallWordPattern` names an event. */
+const ticketWordPattern = /(?<!\p{L})(?:билет\p{L}*|tickets?)(?!\p{L})/iu;
+
+/** Sites that sell tickets to events, a Яндекс Афиша widget among them. */
+const eventTicketHostPattern =
+  /(?:^|\.)(?:afisha\.yandex\.ru|kassir\.ru|ticketland\.ru|ticketscloud\.(?:com|ru|org)|radario\.ru|intickets\.ru|live\.mts\.ru|ponominalu\.ru)$/u;
+
+/** Whether the run's Site sells event tickets: a seller, or Яндекс's Афиша. */
+function sellsEventTickets(site: string | undefined) {
+  const url = site === undefined ? undefined : siteUrl(site);
+  if (url === undefined) return false;
+  const host = url.hostname.replace(/\.$/u, "");
+  return (
+    eventTicketHostPattern.test(host) ||
+    (/(?:^|\.)yandex\.ru$/u.test(host) &&
+      /^\/afisha(?:\/|$)/u.test(url.pathname))
+  );
+}
+
+/** Whether the errand is about event tickets, by its words or its Site. */
+function eventErrand(site: string | undefined, ...texts: readonly string[]) {
+  const text = texts.join("\n");
+  return (
+    eventErrandPattern.test(text) ||
+    (eventHallWordPattern.test(text) && ticketWordPattern.test(text)) ||
+    sellsEventTickets(site)
+  );
+}
+
+/**
+ * A hall sells tickets two ways: seats, and zones without seats bought by
+ * count. On 21.10 (RU, a concert in «Графит» on a Яндекс Афиша widget) the
+ * 4 200 ₽ «VIP-входной (свободная рассадка)» zone was a plain outline on the
+ * map that opened a − 1 + panel once clicked. Two runs, told by the travel
+ * line to take a seat from the seat map, hunted for 4 200 ₽ seats instead,
+ * reported the price as tied to no seat, and Bro told the person it could not
+ * be bought — even after «просто возьми 4200 2 билета без выбора места».
+ */
+const eventTicketLine = [
+  "Event tickets: on a hall map a price category may be a zone without seats — a dance floor («Танцпол»), a fan zone, standing, «входной», «свободная рассадка», «без места», general admission. It has no seats to pick: click the zone itself — its area on the map or its name — or its price chip, and a panel opens with − and + for the number of tickets; set the count there and go on.",
+  "A price chip with no seats of that price on the map is such a zone: never report that a price is not tied to any seat, or cannot be bought, before you have clicked its zone.",
+  "When the errand names a zone, or a price without a seat, take that zone by count; pick seats only in a category that has them.",
+  "A seat that answers «это место только что заняли» is taken: pick another seat of the same category — that alone does not mean the category is sold out.",
+  "In the report, list every price category with its zone's name, whether it has seats or is sold by count, and the fee if the site shows one.",
+].join(" ");
 
 /**
  * What a follow-up on a finished errand is told: what the person allowed was
@@ -1483,6 +1554,7 @@ export function composeBrowserTask(options: {
   const phoneSignIn = options.aliases.includes(
     browserSecretAliases.signinPhone
   );
+  const event = eventErrand(options.site, options.errand);
   const task = [
     goAheadLine(options.consent, options.aliases),
     options.site
@@ -1496,7 +1568,8 @@ export function composeBrowserTask(options: {
       ? stagingLine(options.aliases.length > 0, own)
       : undefined,
     repeatOrderLine(options.errand),
-    ticketLine(options.errand),
+    ticketLine(options.errand, event),
+    event ? eventTicketLine : undefined,
     deliveryTimeLine(options.errand),
     publicServiceLine(options.errand),
     homeLine(options.home),
@@ -1720,6 +1793,11 @@ export function composeBrowserContinuation(options: {
       : undefined,
     staging !== undefined && options.consent === undefined
       ? stagingLine(options.aliases.length > 0, own)
+      : undefined,
+    // A follow-up picks the hall's zones too: «возьми 2 по 4200 без места».
+    options.done !== true &&
+    eventErrand(options.site, options.errand, options.message)
+      ? eventTicketLine
       : undefined,
     commitmentLine(
       options.consent,
