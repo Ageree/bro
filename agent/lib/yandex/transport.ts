@@ -35,6 +35,11 @@ export type YandexOutcome =
 const openBudgetMs = 45_000;
 /** The page's load and the call in it. */
 const callBudgetMs = 35_000;
+/**
+ * A purchase reads the order again, sends it and reads its payment in one
+ * call: cut short after sending, it loses the order's id (Afisha, 22.10).
+ */
+const purchaseBudgetMs = 55_000;
 
 type Landing = "captcha" | "off_site" | "run" | "signed_out";
 
@@ -144,7 +149,7 @@ async function callInTab(
             URL.parse(url)?.origin === new URL(operation.origin).origin),
         url: operation.origin,
       }),
-      callBudgetMs
+      operation.access === "purchase" ? purchaseBudgetMs : callBudgetMs
     );
     if (called.timedOut) return { kind: "failed", reason: "timeout" };
     const { value } = called;

@@ -9,7 +9,12 @@ import {
 } from "@agent/lib/turn-kind/step";
 import { nearFromPosition } from "@agent/lib/location/near";
 import { operationArguments } from "@agent/lib/yandex/operations";
-import { yandexPilot, yandexPurchasePilot } from "@agent/lib/yandex/pilot";
+import { afishaPricesOperation } from "@agent/lib/yandex/afisha/prices";
+import {
+  afishaPurchasePilot,
+  yandexPilot,
+  yandexPurchasePilot,
+} from "@agent/lib/yandex/pilot";
 import {
   accountReadyOperation,
   readinessReply,
@@ -62,6 +67,13 @@ const refusals = {
   unavailable:
     "Bro's own browser is not available for this right now. Use browser_task for the errand, or say it cannot be done at the moment.",
 } as const;
+
+/**
+ * Tickets of a zone without seats go through `yandex_purchase` in its pilot
+ * (YANDEX_AFISHA_PURCHASE_WORKSPACES); everyone else's note stays as it was.
+ */
+const afishaBuyNote =
+  "Buy a zone without seats with yandex_purchase prepare service afisha (this session's link, the zone's exact name, the count), not browser_task; browser_task stays for a zone with seats.";
 
 /**
  * What the person said, taken before each step as for the sign-in link:
@@ -147,9 +159,12 @@ async function callYandex(
     const answer = { data: outcome.data, ok: true as const };
     const placed = located ? { ...answer, positionNear: located.said } : answer;
     // The note comes last: it is what the model reads just before it writes.
-    return operation.answerNote === undefined
-      ? placed
-      : { ...placed, note: operation.answerNote };
+    const note =
+      operation.id === afishaPricesOperation.id &&
+      afishaPurchasePilot({ workspaceId })
+        ? `${operation.answerNote ?? ""} ${afishaBuyNote}`
+        : operation.answerNote;
+    return note === undefined ? placed : { ...placed, note };
   }
   return { ok: false as const, reply: refusals[outcome.kind] };
 }

@@ -78,6 +78,8 @@ const submitResultSchema = z.discriminatedUnion("kind", [
   paymentSchema.extend({
     kind: z.literal("placed"),
     orderId: z.string().min(1),
+    // The order's own total, when it is not the one the person said yes to.
+    orderTotalMinor: minor.optional(),
   }),
   z.object({ kind: z.literal("rejected"), reason: z.string() }),
   z.object({ kind: z.literal("unknown") }),
@@ -95,10 +97,23 @@ const submitResultSchema = z.discriminatedUnion("kind", [
  * bound to the person's Yandex account (`boundCard`): the widget's own
  * default is SBP, whose order asked the person for an SMS check on 22.10.
  */
+/**
+ * How long the submit may take, inside the transport's purchase budget
+ * (`transport.ts`) after the page loads: the reading before the order,
+ * the order's own answer, and the end of reading its payment.
+ */
+const sendWithinMs = 15_000;
+/** How long a quote stands before it is read again. */
+const quoteMs = 120_000;
+const createWaitMs = 15_000;
+const paidWithinMs = 38_000;
+
 const pageSource = String.raw`
   const ok = (data) => ({ status: "ok", data });
-  const block = (reason) => { throw Object.assign(new Error("checkout blocked"), { reason }); };
+  const block = (reason, status) => { throw Object.assign(new Error("checkout blocked"), { reason, status }); };
   const wait = (ms) => new Promise((done) => setTimeout(done, ms));
+  const lookalikes = { а: "a", в: "b", е: "e", ё: "e", к: "k", м: "m", н: "h", о: "o", р: "p", с: "c", т: "t", у: "y", х: "x" };
+  const plain = (name) => Array.from(String(name).toLowerCase(), (letter) => /\p{L}|\p{N}/u.test(letter) ? (lookalikes[letter] ?? letter) : "").join("");
   const months = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"];
   const minorOf = (money) => {
     if (!money || money.currencyCode !== "rub" || !Number.isSafeInteger(money.value) || money.value < 0) block("money_invalid");
@@ -110,19 +125,20 @@ const pageSource = String.raw`
     total: { value: minorOf(info.total), currency_code: "rub" },
   });
   let headers = {};
-  const call = async (method, path, body, extra, beforeSend) => {
+  const call = async (method, path, body, extra, beforeSend, waitMs = 10000) => {
     const options = {
       method,
       credentials: "include",
       headers: { "Content-Type": "application/json; charset=UTF-8", ...headers, ...extra },
       body: body === undefined ? undefined : JSON.stringify(body),
-      signal: AbortSignal.timeout(10000),
+      signal: AbortSignal.timeout(waitMs),
     };
     beforeSend?.();
     const response = await fetch(path, options);
-    if (response.status === 401) block("signed_out");
+    if (response.status === 401) block("signed_out", 401);
     const data = await response.json().catch(() => null);
-    if (response.status !== 200) block(typeof data?.statusCode === "string" ? "afisha_" + data.statusCode : "http_" + response.status);
+    // The widget's client takes 201 as well as 200.
+    if (response.status < 200 || response.status > 299) block(typeof data?.statusCode === "string" ? "afisha_" + data.statusCode : "http_" + response.status, response.status);
     return data;
   };
   // The tokens the widget's page renders into __config, for the calls after.
@@ -144,8 +160,10 @@ const pageSource = String.raw`
     return clientKey;
   };
   const readCheckout = async (target, cardId) => {
+    // A session's key is base64 of its ids: nothing in it may step to
+    // another path of the widget's API.
     const key = decodeURIComponent(new URL(target.link).pathname.split("/")[3] || "");
-    if (!key) block("link_invalid");
+    if (!/^[A-Za-z0-9+=_-]{8,200}$/.test(key)) block("link_invalid");
     const clientKey = await openWidget(target.link);
     const user = await call("GET", "/api/user");
     if (!user?.id) block("signed_out");
@@ -174,17 +192,25 @@ const pageSource = String.raw`
     }
     if (typeof planUrl !== "string" || !/^https:\/\/[a-z0-9.-]+\.(?:yandex\.net|yandex\.ru)\//.test(planUrl)) block("hallplan_unavailable");
     const plan = (await (await fetch(planUrl, { credentials: "omit", signal: AbortSignal.timeout(10000) })).json())?.result?.hallplan;
-    const level = (plan?.levels || []).find((l) => l.name === target.zone || (l.categories?.length === 1 && l.categories[0].name === target.zone));
-    if (!level) block("zone_not_found");
+    // The zone by its name as afisha.prices gave it, or its one ticket's:
+    // exact first, then without case, marks and look-alike Latin letters
+    // («VIР lоungе» is «VIP Lounge»); one zone, or none is bought.
+    const names = (l) => [l.name, l.categories?.length === 1 ? l.categories[0].name : null].filter((n) => typeof n === "string");
+    const levels = plan?.levels || [];
+    let found = levels.filter((l) => names(l).includes(target.zone));
+    if (!found.length) found = levels.filter((l) => names(l).some((n) => plain(n) === plain(target.zone)));
+    if (!found.length) block("zone_not_found");
+    if (found.length > 1) block("zone_ambiguous");
+    const level = found[0];
     if (level.admission !== true) block("zone_has_seats");
     if (level.categories?.length !== 1) block("zone_ambiguous");
-    const seat = (level.seats || [])[0];
+    if ((Number.isInteger(level.availableSeatCount) && level.availableSeatCount < target.count) || !(level.seats || []).length) block("not_enough_tickets");
+    const seat = level.seats[0];
     if (!seat || seat.categoryId !== level.categories[0].id) block("zone_ambiguous");
     const category = (plan.categories || []).find((c) => c.id === seat.categoryId);
     if (!category) block("zone_ambiguous");
-    const most = Math.min(plan.maxTicketsCount ?? 0, session.maxTicketsCount ?? plan.maxTicketsCount ?? 0);
-    if (target.count > most) block("too_many_tickets");
-    if (Number.isInteger(level.availableSeatCount) && level.availableSeatCount < target.count) block("not_enough_tickets");
+    const limits = [plan.maxTicketsCount, session.maxTicketsCount].filter((n) => Number.isInteger(n) && n > 0);
+    if (limits.length && target.count > Math.min(...limits)) block("too_many_tickets");
     const unit = minorOf(seat.priceInfo.total);
     const preview = async (paymentWay, card) => {
       const item = {
@@ -207,9 +233,14 @@ const pageSource = String.raw`
         const check = (await call("GET", "/api/session-order-preview/" + encodeURIComponent(id)))?.orderPreviewCheck;
         if (!check || check.status === "PROCESSING") continue;
         const result = check.orderPreviewResult;
-        if (check.status !== "SUCCESS" || result?.status !== "SUCCESS") block("preview_failed");
-        if ((result.errors || []).length) block("preview_" + String(result.errors[0]?.errorCode || "error").toLowerCase());
-        return { id: check.id ?? id, result };
+        const done = (status) => status === "SUCCESS" || status === "DONE";
+        if (!done(check.status) || !done(result?.status)) block("preview_failed");
+        // The widget drops errors of other ways to pay (SBP, Split, fintech);
+        // any other one stops the card's order.
+        const errors = (result.errors || []).filter((e) => !/^(?:SPLIT_|SBP_|FINTECH_SERVICE_NOT_AVAILABLE$|MEDIABILLING_NOT_AVAILABLE$)/.test(String(e?.errorCode || "")));
+        if (errors.length) block("preview_" + String(errors[0]?.errorCode || "error").toLowerCase());
+        // The order is made with the id the preview started with, as the widget does.
+        return { id, result };
       }
       block("preview_timeout");
     };
@@ -249,34 +280,70 @@ const pageSource = String.raw`
     };
     const publicQuote = {
       amountMinor, currency: "RUB",
-      delivery: [session.event?.name, [session.venue?.name, date].filter(Boolean).join(", ")].filter(Boolean).join(" — ") +
-        (contacts.email ? "; билеты придут на " + contacts.email : ""),
-      items: [{ title: (session.event?.name ? session.event.name + " — " : "") + level.name + " (без места)", quantity: String(target.count) }],
+      delivery: [session.venue?.name, date].filter(Boolean).join(", ") + (contacts.email ? "; билеты придут на " + contacts.email : ""),
+      items: [{ title: (session.event?.name ? session.event.name + " — " : "") + level.name + ", без места", quantity: String(target.count) }],
       payment: "Карта " + (card.paymentSystem || "") + " •• " + last4,
     };
     return { card, category, clientKey, contacts, guarded, key, preview: quote, publicQuote, required, seat, snapshot };
   };
-  // The widget's order page: reserve, then the card's payment; a bank's
-  // check is a Trust page the person opens.
-  const operation = async (orderId, type) => {
+  // The widget's order page reads its order with the client key, as every
+  // tickets GET of the widget carries it.
+  const orderPath = (orderId, clientKey, rest = "") => "/api/tickets/v2/orders/" + encodeURIComponent(orderId) + rest + "?clientKey=" + encodeURIComponent(clientKey);
+  const readOrder = async (orderId, clientKey, waitMs) => {
     try {
-      return (await call("GET", "/api/tickets/v2/orders/" + encodeURIComponent(orderId) + "/operation/" + type))?.result?.operation ?? null;
+      return (await call("GET", orderPath(orderId, clientKey), undefined, undefined, undefined, waitMs))?.result?.order ?? null;
     } catch { return null; }
   };
-  // A bank's check is not a moment's step: once it shows for a few rounds
-  // it waits for the person, and they get its page.
-  const payment = async (orderId, rounds) => {
+  const operation = async (orderId, clientKey, type, waitMs) => {
+    try {
+      return (await call("GET", orderPath(orderId, clientKey, "/operation/" + type), undefined, undefined, undefined, waitMs))?.result?.operation ?? null;
+    } catch { return null; }
+  };
+  const trusted = (url) => typeof url === "string" && /^https:\/\/trust\.yandex\.(?:ru|com|kz|uz)\//.test(url);
+  // The widget's order: reserve, the card's payment, then the tickets'
+  // issue (sale-approve) — paid is all three. A bank's check is not a
+  // moment's step: once it shows for a few rounds it waits for the person,
+  // who gets the Trust page the widget itself shows (the order's payment
+  // form). Reading stops at the deadline, so a placed order's id always
+  // gets back within the call.
+  const payment = async (orderId, clientKey, until) => {
     for (let round = 0; ; round += 1) {
-      const reserve = await operation(orderId, "reserve");
-      const pay = await operation(orderId, "pay");
-      if (pay?.status === "completed") return { paymentStatus: "paid" };
+      const waitMs = Math.min(4000, Math.max(1000, until - Date.now()));
+      const reserve = await operation(orderId, clientKey, "reserve", waitMs);
+      const pay = await operation(orderId, clientKey, "pay", waitMs);
       if (pay?.status === "failed" || reserve?.status === "failed") return { paymentStatus: "failed" };
-      const url = pay?.redirectUrl3ds ?? reserve?.redirectUrl3ds;
-      const trust = typeof url === "string" && /^https:\/\/trust\.yandex\.(?:ru|com|kz|uz)\//.test(url);
-      if (trust && (round >= 2 || round + 1 >= rounds)) return { paymentStatus: "needs_confirmation", confirmUrl: url };
-      if (round + 1 >= rounds) return { paymentStatus: "pending" };
+      if (pay?.status === "completed") {
+        const sale = await operation(orderId, clientKey, "sale-approve", waitMs);
+        if (sale?.status === "completed") return { paymentStatus: "paid" };
+        if (sale?.status === "failed") return { paymentStatus: "failed" };
+      }
+      const flagged = pay?.status !== "completed" && trusted(pay?.redirectUrl3ds ?? reserve?.redirectUrl3ds);
+      const last = Date.now() + 1500 >= until;
+      if (flagged && (round >= 2 || last)) {
+        const form = (await readOrder(orderId, clientKey, waitMs))?.paymentForm?.targetUrl;
+        return { paymentStatus: "needs_confirmation", confirmUrl: trusted(form) ? form : (pay?.redirectUrl3ds ?? reserve?.redirectUrl3ds) };
+      }
+      if (last) return { paymentStatus: "pending" };
       await wait(1500);
     }
+  };
+  // What the order's page says it costs, to hold against the yes.
+  const orderTotal = async (orderId, clientKey) => {
+    const order = await readOrder(orderId, clientKey, 4000);
+    const total = order?.amountToPay?.total ?? order?.sum?.total;
+    return total?.currencyCode === "rub" && Number.isSafeInteger(total.value) ? total.value : null;
+  };
+  // A refusal of the order that creates nothing: the widget names it for its
+  // own checks of the request (the contacts, the CSRF token, the antibot
+  // token, a session's password, the orders a person may hold). Anything
+  // else after sending, a 5xx or a 409 above all, may have created it.
+  // A stale CSRF token (426) is refused before anything, as the widget
+  // sends the order again after renewing it.
+  const refusedBeforeCreating = (error) => {
+    if (error?.status === 426) return true;
+    const code = /^afisha_(.+)$/.exec(error?.reason || "")?.[1] || "";
+    return [400, 403, 404, 422].includes(error?.status) &&
+      /^(?:invalid-(?:input|csrf-token|phone|email|user-data|session-password)|session-password(?:-[a-z-]+)?|session-not-found|max-orders-count-exceeded|antibot(?:-[a-z-]+)?|(?:missing|invalid|expired)_antibot_token|antibot_token_mismatch|antibot_blocked)$/i.test(code);
   };
   const errorAnswer = (error, kind) => {
     const reason = typeof error?.reason === "string" ? error.reason : "unavailable";
@@ -296,7 +363,8 @@ const prepareOperation = defineYandexOperation({
   run: `async function (args) {${pageSource}
     try {
       const { publicQuote, snapshot } = await readCheckout(args, args.cardId);
-      const expiresAt = new Date(Date.now() + 120000).toISOString();
+      // The term is set by the server's clock (prepareAfishaPurchase).
+      const expiresAt = new Date(0).toISOString();
       return ok({ kind: "ready", checkoutKey: snapshot.sessionKey + ":" + snapshot.levelId + ":" + snapshot.count, expiresAt, publicQuote, snapshot: { ...snapshot, expiresAt } });
     } catch (error) { return errorAnswer(error, "blocked"); }
   }`,
@@ -307,20 +375,30 @@ const submitOperation = defineYandexOperation({
   about:
     "Places one confirmed Afisha ticket order after a fresh exact comparison, without retries.",
   access: "purchase",
-  args: z.object({ amountMinor: minor, snapshot: snapshotSchema }),
+  args: z.object({
+    amountMinor: minor,
+    snapshot: snapshotSchema,
+    validForMs: z.number().int().positive().max(600_000),
+  }),
   id: "afisha.purchase_submit",
   origin: "https://widget.afisha.yandex.ru/robots.txt",
   result: submitResultSchema,
   run: `async function (input) {${pageSource}
     const approved = input.snapshot;
+    const started = Date.now();
+    // The quote's term by the server's clock: the pool browser's own lags
+    // after its sandbox wakes from a snapshot.
+    const sendBy = started + input.validForMs;
     let sent = false;
     try {
       if (approved.amountMinor !== input.amountMinor) block("amount_changed");
-      if (Date.parse(approved.expiresAt) <= Date.now()) block("quote_expired");
       const current = await readCheckout({ cardLast4: null, count: approved.count, link: approved.link, zone: approved.zone }, approved.cardId);
       for (const key of Object.keys(current.snapshot)) {
         if (JSON.stringify(current.snapshot[key]) !== JSON.stringify(approved[key])) block(key === "amountMinor" ? "amount_changed" : "checkout_changed");
       }
+      // A slow reading sends nothing: the order's answer and its payment
+      // need the rest of the call, or the order's id is lost with the tab.
+      if (Date.now() - started > ${String(sendWithinMs)}) block("slow");
       const { card, category, clientKey, contacts, guarded, key, preview, required, seat, snapshot } = current;
       const item = {
         admission: true, category_id: seat.categoryId, categoryName: category.name, ext_session_id: seat.extSessionId,
@@ -335,14 +413,18 @@ const submitOperation = defineYandexOperation({
         personal_data_per_ticket: [], sale_agreements: [], cart_id: snapshot.cartId, device_type: "web",
         payment_way: "bound-card", quick_purchase_card_id: card.id, psp_payment_method_id: card.pspPaymentMethodId,
         items: Array.from({ length: snapshot.count }, () => item), supplements: [],
-      }, guarded, () => { sent = true; });
+      }, { ...guarded, timeout: "10000" }, () => {
+        // The quote's term holds at the moment of sending, after the reading.
+        if (Date.now() >= sendBy) block("quote_expired");
+        sent = true;
+      }, ${String(createWaitMs)});
       const orderId = answer?.result?.order?.id;
       if (typeof orderId !== "string" || !orderId) return ok({ kind: "unknown" });
-      return ok({ kind: "placed", orderId, ...await payment(orderId, 8) });
+      const charged = await orderTotal(orderId, clientKey);
+      const differs = charged !== null && charged !== approved.amountMinor;
+      return ok({ kind: "placed", orderId, ...(differs ? { orderTotalMinor: charged } : {}), ...await payment(orderId, clientKey, started + ${String(paidWithinMs)}) });
     } catch (error) {
-      // The widget's own refusal (a 4xx with its statusCode) placed nothing;
-      // anything else after sending may have.
-      if (sent && !/^afisha_/.test(error?.reason || "")) return ok({ kind: "unknown" });
+      if (sent && !refusedBeforeCreating(error)) return ok({ kind: "unknown" });
       return errorAnswer(error, "rejected");
     }
   }`,
@@ -358,8 +440,9 @@ const paymentOperation = defineYandexOperation({
   origin: "https://widget.afisha.yandex.ru/robots.txt",
   result: paymentSchema,
   run: `async function (args) {${pageSource}
-    try { await openWidget(args.link); } catch { return ok({ paymentStatus: "pending" }); }
-    return ok(await payment(args.orderId, 1));
+    let clientKey;
+    try { clientKey = await openWidget(args.link); } catch { return ok({ paymentStatus: "pending" }); }
+    return ok(await payment(args.orderId, clientKey, Date.now()));
   }`,
   service: "afisha",
 });
@@ -387,10 +470,23 @@ export async function prepareAfishaPurchase(
     targetSchema.parse(target)
   );
   if (outcome.kind !== "ok") return { kind: "blocked", reason: outcome.kind };
-  const result = prepareResultSchema.safeParse(outcome.data);
-  if (!result.success) return { kind: "blocked", reason: "response_invalid" };
+  const parsed = prepareResultSchema.safeParse(outcome.data);
+  if (!parsed.success) return { kind: "blocked", reason: "response_invalid" };
+  // Two minutes by the server's clock, not the pool browser's.
+  const expiresAt = new Date(Date.now() + quoteMs).toISOString();
+  const result =
+    parsed.data.kind === "ready"
+      ? {
+          data: {
+            ...parsed.data,
+            expiresAt,
+            snapshot: { ...parsed.data.snapshot, expiresAt },
+          },
+        }
+      : { data: parsed.data };
   if (approvedSnapshot !== undefined && result.data.kind === "ready") {
-    const terms = snapshotSchema.omit({ expiresAt: true });
+    // An omitted key of a strict object stays refused: strip it.
+    const terms = snapshotSchema.omit({ expiresAt: true }).strip();
     const approved = terms.safeParse(approvedSnapshot);
     if (
       !approved.success ||
@@ -406,14 +502,21 @@ export async function submitAfishaPurchase(
   workspaceId: string,
   input: { readonly amountMinor: number; readonly snapshot: JsonValue }
 ): Promise<z.output<typeof submitResultSchema>> {
-  const parsed = submitOperation.args.safeParse(input);
+  const parsed = snapshotSchema.safeParse(input.snapshot);
   if (!parsed.success) return { kind: "rejected", reason: "snapshot_invalid" };
-  const outcome = await runYandexOperation(
-    workspaceId,
-    submitOperation,
-    parsed.data
-  );
-  if (outcome.kind === "signed_out" || outcome.kind === "captcha")
+  const validForMs = Date.parse(parsed.data.expiresAt) - Date.now();
+  if (!(validForMs > 0)) return { kind: "rejected", reason: "quote_expired" };
+  const outcome = await runYandexOperation(workspaceId, submitOperation, {
+    amountMinor: input.amountMinor,
+    snapshot: parsed.data,
+    validForMs: Math.min(Math.floor(validForMs), 600_000),
+  });
+  // These never ran the function: no tab, a sign-in page or a check.
+  if (
+    outcome.kind === "signed_out" ||
+    outcome.kind === "captcha" ||
+    outcome.kind === "unavailable"
+  )
     return { kind: "rejected", reason: outcome.kind };
   if (outcome.kind !== "ok") return { kind: "unknown" };
   const result = submitResultSchema.safeParse(outcome.data);

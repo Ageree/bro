@@ -24,6 +24,8 @@ const target = { count: 2, link, zone: "VIP-входной (свободная �
 const clientKey = "f6dc63f9-18ab-471b-89ff-eb9773910840";
 const planUrl = "https://cdn1.svc.cdn.yandex.net/hallplans/abc";
 const orderId = "1792665431815@fac1927e-8a09-4496-b156-0c0cc02d4d5b";
+const orderPath = `/api/tickets/v2/orders/${encodeURIComponent(orderId)}`;
+const form = "https://trust.yandex.ru/web/payment?purchase_token=payment_x";
 
 /** The widget page renders its tokens into `__config`, on one line. */
 const html = `<html><script>window['__config'] = {"clientKey":{"id":"${clientKey}","domains":["ya.ru"]},"fetch":{"defaultHeaders":{"X-Request-Id":"1792-1","X-CSRF-Token":"abc123:1792","X-Yandex-Uid":"371"}}};</script></html>`;
@@ -144,7 +146,12 @@ const operation = (status: string, redirectUrl3ds?: string): JsonValue => ({
   status: "success",
 });
 
-const requests: { body: JsonValue; method: string; path: string }[] = [];
+const requests: {
+  body: JsonValue;
+  method: string;
+  path: string;
+  query: string;
+}[] = [];
 let answers: Map<string, FakeResponse | FakeResponse[]>;
 let previewCard = "card-mir";
 
@@ -189,13 +196,23 @@ beforeEach(() => {
       "/api/tickets/v2/orders/create",
       { body: { result: { order: { id: orderId } }, status: "success" } },
     ],
+    [`${orderPath}/operation/reserve`, { body: operation("completed") }],
+    [`${orderPath}/operation/pay`, { body: operation("completed") }],
+    [`${orderPath}/operation/sale-approve`, { body: operation("completed") }],
     [
-      `/api/tickets/v2/orders/${encodeURIComponent(orderId)}/operation/reserve`,
-      { body: operation("completed") },
-    ],
-    [
-      `/api/tickets/v2/orders/${encodeURIComponent(orderId)}/operation/pay`,
-      { body: operation("completed") },
+      orderPath,
+      {
+        body: {
+          result: {
+            order: {
+              amountToPay: { total: rub(924000) },
+              id: orderId,
+              paymentForm: { targetUrl: form },
+            },
+          },
+          status: "success",
+        },
+      },
     ],
   ]);
   transport.run.mockImplementation(async (_workspace, spec, args) => {
@@ -206,6 +223,7 @@ beforeEach(() => {
           body: z.json().parse(JSON.parse(init.body ?? "null")),
           method: init.method ?? "GET",
           path: url.pathname,
+          query: url.search,
         });
         // The preview names the card it was asked for, as Yandex's does.
         const asked = z
@@ -241,12 +259,11 @@ describe("Afisha ticket purchase", () => {
     expect(prepared.publicQuote).toEqual({
       amountMinor: 924000,
       currency: "RUB",
-      delivery:
-        "Свидание — Графит, 20 ноября 2026, 20:00; билеты придут на a@ya.ru",
+      delivery: "Графит, 20 ноября 2026, 20:00; билеты придут на a@ya.ru",
       items: [
         {
           quantity: "2",
-          title: "Свидание — VIP-входной (свободная рассадка) (без места)",
+          title: "Свидание — VIP-входной (свободная рассадка), без места",
         },
       ],
       payment: "Карта MIR •• 6443",
@@ -349,30 +366,45 @@ describe("Afisha ticket purchase", () => {
     });
   });
 
-  it("hands the bank's check to the person when the payment waits for it", async () => {
-    const check = "https://trust.yandex.ru/web/open_3ds?purchase_token=x";
-    answers.set(
-      `/api/tickets/v2/orders/${encodeURIComponent(orderId)}/operation/pay`,
-      {
+  // The widget shows the order's payment form when the bank asks: that
+  // page, not the operation's flag, is what the person opens.
+  it(
+    "hands the bank's page to the person when the payment waits for it",
+    {
+      timeout: 20_000,
+    },
+    async () => {
+      const check = "https://trust.yandex.ru/web/open_3ds?purchase_token=x";
+      answers.set(`${orderPath}/operation/pay`, {
         body: operation("running", check),
-      }
-    );
-    const prepared = await ready(target);
-    expect(
-      await submitAfishaPurchase("workspace:synthetic", {
-        amountMinor: prepared.snapshot.amountMinor,
-        snapshot: prepared.snapshot,
-      })
-    ).toEqual({
-      confirmUrl: check,
-      kind: "placed",
-      orderId,
-      paymentStatus: "needs_confirmation",
-    });
-    expect(
-      await readAfishaPayment("workspace:synthetic", prepared.snapshot, orderId)
-    ).toEqual({ confirmUrl: check, paymentStatus: "needs_confirmation" });
-  });
+      });
+      const prepared = await ready(target);
+      expect(
+        await submitAfishaPurchase("workspace:synthetic", {
+          amountMinor: prepared.snapshot.amountMinor,
+          snapshot: prepared.snapshot,
+        })
+      ).toEqual({
+        confirmUrl: form,
+        kind: "placed",
+        orderId,
+        paymentStatus: "needs_confirmation",
+      });
+      expect(
+        await readAfishaPayment(
+          "workspace:synthetic",
+          prepared.snapshot,
+          orderId
+        )
+      ).toEqual({ confirmUrl: form, paymentStatus: "needs_confirmation" });
+      // Every read of the order carries the widget's client key.
+      expect(
+        requests
+          .filter((r) => r.path.startsWith(orderPath))
+          .every((r) => r.query === `?clientKey=${clientKey}`)
+      ).toBe(true);
+    }
+  );
 
   it("sends nothing when the price changed since the person's yes", async () => {
     const prepared = await ready(target);
@@ -404,24 +436,206 @@ describe("Afisha ticket purchase", () => {
     expect(sent("/api/tickets/v2/orders/create")).toHaveLength(0);
   });
 
-  it("calls an order whose answer was lost unknown, and a refusal of the widget rejected", async () => {
+  // A server's error after the order went out may come after Yandex made
+  // it: only the widget's own checks of the request refuse it for sure.
+  it.each([
+    ["a lost answer", { body: null, status: 502 }, { kind: "unknown" }],
+    [
+      "a server's timeout",
+      { body: { statusCode: "operation-create-timeout" }, status: 504 },
+      { kind: "unknown" },
+    ],
+    [
+      "a conflict",
+      { body: { statusCode: "already-done" }, status: 409 },
+      { kind: "unknown" },
+    ],
+    [
+      "a phone the widget refuses",
+      { body: { statusCode: "invalid-phone" }, status: 400 },
+      { kind: "rejected", reason: "afisha_invalid-phone" },
+    ],
+    [
+      "a stale CSRF token",
+      { body: { statusCode: "invalid-csrf-token" }, status: 426 },
+      { kind: "rejected", reason: "afisha_invalid-csrf-token" },
+    ],
+  ])("settles %s after sending", async (_, answer, outcome) => {
+    const prepared = await ready(target);
+    answers.set("/api/tickets/v2/orders/create", answer);
+    expect(
+      await submitAfishaPurchase("workspace:synthetic", {
+        amountMinor: prepared.snapshot.amountMinor,
+        snapshot: prepared.snapshot,
+      })
+    ).toEqual(outcome);
+    expect(sent("/api/tickets/v2/orders/create")).toHaveLength(1);
+  });
+
+  it("takes an order made with 201", async () => {
+    const prepared = await ready(target);
+    answers.set("/api/tickets/v2/orders/create", {
+      body: { result: { order: { id: orderId } }, status: "success" },
+      status: 201,
+    });
+    expect(
+      await submitAfishaPurchase("workspace:synthetic", {
+        amountMinor: prepared.snapshot.amountMinor,
+        snapshot: prepared.snapshot,
+      })
+    ).toMatchObject({ kind: "placed", orderId });
+  });
+
+  it("calls tickets paid only once they are issued", async () => {
     const prepared = await ready(target);
     const input = {
       amountMinor: prepared.snapshot.amountMinor,
       snapshot: prepared.snapshot,
     };
-    answers.set("/api/tickets/v2/orders/create", { body: null, status: 502 });
+    answers.set(`${orderPath}/operation/sale-approve`, [
+      { body: operation("running") },
+      { body: operation("completed") },
+    ]);
     expect(await submitAfishaPurchase("workspace:synthetic", input)).toEqual({
-      kind: "unknown",
+      kind: "placed",
+      orderId,
+      paymentStatus: "paid",
     });
-    answers.set("/api/tickets/v2/orders/create", {
-      body: { statusCode: "invalid-phone" },
-      status: 400,
+    expect(sent(`${orderPath}/operation/sale-approve`)).toHaveLength(2);
+    answers.set(`${orderPath}/operation/sale-approve`, {
+      body: operation("failed"),
     });
     expect(await submitAfishaPurchase("workspace:synthetic", input)).toEqual({
-      kind: "rejected",
-      reason: "afisha_invalid-phone",
+      kind: "placed",
+      orderId,
+      paymentStatus: "failed",
     });
+  });
+
+  it("names an order whose own total is not the one agreed", async () => {
+    const prepared = await ready(target);
+    answers.set(orderPath, {
+      body: {
+        result: { order: { amountToPay: { total: rub(990000) }, id: orderId } },
+        status: "success",
+      },
+    });
+    expect(
+      await submitAfishaPurchase("workspace:synthetic", {
+        amountMinor: prepared.snapshot.amountMinor,
+        snapshot: prepared.snapshot,
+      })
+    ).toEqual({
+      kind: "placed",
+      orderId,
+      orderTotalMinor: 990000,
+      paymentStatus: "paid",
+    });
+  });
+
+  it("sends nothing on a quote past its term", async () => {
+    const prepared = await ready(target);
+    expect(
+      await submitAfishaPurchase("workspace:synthetic", {
+        amountMinor: prepared.snapshot.amountMinor,
+        snapshot: {
+          ...prepared.snapshot,
+          expiresAt: new Date(Date.now() - 1000).toISOString(),
+        },
+      })
+    ).toEqual({ kind: "rejected", reason: "quote_expired" });
+    expect(sent("/api/tickets/v2/orders/create")).toHaveLength(0);
+  });
+
+  it("quotes an expired quote again when nothing in it changed", async () => {
+    const prepared = await ready(target);
+    const target2 = afishaTarget(prepared.snapshot);
+    if (!target2) throw new Error("Expected a target");
+    expect(
+      await prepareAfishaPurchase(
+        "workspace:synthetic",
+        target2,
+        prepared.snapshot
+      )
+    ).toMatchObject({ kind: "ready" });
+  });
+
+  it("finds a zone written with look-alike letters, and refuses two of one name", async () => {
+    // A Cyrillic «Р» in «VIP».
+    expect(
+      await prepareAfishaPurchase("workspace:synthetic", {
+        ...target,
+        zone: "VIР-входной (свободная рассадка)",
+      })
+    ).toMatchObject({ kind: "ready" });
+    answers.set("/hallplans/abc", {
+      body: {
+        ...plan,
+        result: {
+          hallplan: {
+            ...plan.result.hallplan,
+            levels: [
+              admission,
+              { ...admission, id: 9, name: "VIР-входной (свободная рассадка)" },
+            ],
+          },
+        },
+      },
+    });
+    expect(
+      await prepareAfishaPurchase("workspace:synthetic", {
+        ...target,
+        zone: "vip-входной (свободная рассадка)",
+      })
+    ).toEqual({ kind: "blocked", reason: "zone_ambiguous" });
+  });
+
+  it("takes a preview Yandex calls DONE, past another way to pay's error", async () => {
+    const done = preview(924000);
+    const result = {
+      ...done.orderPreviewCheck.orderPreviewResult,
+      errors: [{ errorCode: "SBP_NOT_AVAILABLE" }],
+      status: "DONE",
+    };
+    answers.set("/api/session-order-preview/preview-1", {
+      body: {
+        orderPreviewCheck: {
+          ...done.orderPreviewCheck,
+          orderPreviewResult: result,
+          status: "DONE",
+        },
+      },
+    });
+    expect(
+      await prepareAfishaPurchase("workspace:synthetic", target)
+    ).toMatchObject({
+      kind: "ready",
+    });
+    answers.set("/api/session-order-preview/preview-1", {
+      body: {
+        orderPreviewCheck: {
+          ...done.orderPreviewCheck,
+          orderPreviewResult: {
+            ...result,
+            errors: [{ errorCode: "SEATS_ALREADY_RESERVED" }],
+          },
+        },
+      },
+    });
+    expect(await prepareAfishaPurchase("workspace:synthetic", target)).toEqual({
+      kind: "blocked",
+      reason: "preview_seats_already_reserved",
+    });
+  });
+
+  it("refuses a link whose key steps to another path", async () => {
+    expect(
+      await prepareAfishaPurchase("workspace:synthetic", {
+        ...target,
+        link: "https://widget.afisha.yandex.ru/w/sessions/AAAAAAAA%2F%2e%2e%2Fuser",
+      })
+    ).toEqual({ kind: "blocked", reason: "link_invalid" });
+    expect(requests).toHaveLength(0);
   });
 
   it("reads an expired quote again with its own card", () => {
