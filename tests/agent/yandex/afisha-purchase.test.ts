@@ -366,8 +366,8 @@ describe("Afisha ticket purchase", () => {
     });
   });
 
-  // The widget shows the order's payment form when the bank asks: that
-  // page, not the operation's flag, is what the person opens.
+  // 22.10, live: the order's payment form, opened alone, showed an error and
+  // the payment failed fail-3ds; the person opens the operation's own check.
   it(
     "hands the bank's page to the person when the payment waits for it",
     {
@@ -385,7 +385,7 @@ describe("Afisha ticket purchase", () => {
           snapshot: prepared.snapshot,
         })
       ).toEqual({
-        confirmUrl: form,
+        confirmUrl: check,
         kind: "placed",
         orderId,
         paymentStatus: "needs_confirmation",
@@ -396,7 +396,7 @@ describe("Afisha ticket purchase", () => {
           prepared.snapshot,
           orderId
         )
-      ).toEqual({ confirmUrl: form, paymentStatus: "needs_confirmation" });
+      ).toEqual({ confirmUrl: check, paymentStatus: "needs_confirmation" });
       // Every read of the order carries the widget's client key.
       expect(
         requests

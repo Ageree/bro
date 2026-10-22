@@ -303,8 +303,10 @@ const pageSource = String.raw`
   // The widget's order: reserve, the card's payment, then the tickets'
   // issue (sale-approve) — paid is all three. A bank's check is not a
   // moment's step: once it shows for a few rounds it waits for the person,
-  // who gets the Trust page the widget itself shows (the order's payment
-  // form). Reading stops at the deadline, so a placed order's id always
+  // who gets the check itself (the operation's redirectUrl3ds, Trust's
+  // open_3ds). The order's payment form (paymentForm.targetUrl) is not it:
+  // opened alone on 22.10 it showed an error, and the payment failed
+  // fail-3ds. Reading stops at the deadline, so a placed order's id always
   // gets back within the call.
   const payment = async (orderId, clientKey, until) => {
     for (let round = 0; ; round += 1) {
@@ -317,12 +319,10 @@ const pageSource = String.raw`
         if (sale?.status === "completed") return { paymentStatus: "paid" };
         if (sale?.status === "failed") return { paymentStatus: "failed" };
       }
-      const flagged = pay?.status !== "completed" && trusted(pay?.redirectUrl3ds ?? reserve?.redirectUrl3ds);
+      const check = pay?.redirectUrl3ds ?? reserve?.redirectUrl3ds;
+      const flagged = pay?.status !== "completed" && trusted(check);
       const last = Date.now() + 1500 >= until;
-      if (flagged && (round >= 2 || last)) {
-        const form = (await readOrder(orderId, clientKey, waitMs))?.paymentForm?.targetUrl;
-        return { paymentStatus: "needs_confirmation", confirmUrl: trusted(form) ? form : (pay?.redirectUrl3ds ?? reserve?.redirectUrl3ds) };
-      }
+      if (flagged && (round >= 2 || last)) return { paymentStatus: "needs_confirmation", confirmUrl: check };
       if (last) return { paymentStatus: "pending" };
       await wait(1500);
     }
