@@ -1230,9 +1230,22 @@ function eventErrand(site: string | undefined, ...texts: readonly string[]) {
  * line to take a seat from the seat map, hunted for 4 200 ₽ seats instead,
  * reported the price as tied to no seat, and Bro told the person it could not
  * be bought — even after «просто возьми 4200 2 билета без выбора места».
+ *
+ * That map is a canvas, and the run's model clicks page elements by index
+ * only (browser-use gives coordinates to vision models alone): told to click
+ * the zone, the run of 22.10 found nothing to click, and the price chip only
+ * highlights the zone. Over the canvas lies an SVG of named outlines
+ * (`[data-name]`, checked live 22.10); a pointer and mouse click dispatched
+ * on one opens the zone's panel, whose − and + are «Уменьшить» and
+ * «Увеличить». `evaluate` runs in the tab's own page, so a map in another
+ * site's frame is opened at its own address first.
  */
+const canvasZoneScript =
+  "(() => { const all = [...document.querySelectorAll('[data-name]')]; const z = all.find(e => e.getAttribute('data-name') === 'ZONE'); if (!z) return all.map(e => e.getAttribute('data-name')); const r = z.getBoundingClientRect(); const o = { bubbles: true, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2 }; for (const t of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) z.dispatchEvent(new (t.startsWith('pointer') ? PointerEvent : MouseEvent)(t, o)); return 'clicked'; })()";
+
 const eventTicketLine = [
-  "Event tickets: on a hall map a price category may be a zone without seats — a dance floor («Танцпол»), a fan zone, standing, «входной», «свободная рассадка», «без места», general admission. It has no seats to pick: click the zone itself — its area on the map or its name — or its price chip, and a panel opens with − and + for the number of tickets; set the count there and go on.",
+  "Event tickets: on a hall map a price category may be a zone without seats — a dance floor («Танцпол»), a fan zone, standing, «входной», «свободная рассадка», «без места», general admission. It has no seats to pick: click the zone itself — its area on the map or its name — and a panel opens with − and + for the number of tickets; set the count there and go on. A price chip may only highlight the zone.",
+  `A hall map drawn on a canvas (Яндекс Афиша's ticket widget) has no zones to click by index: pick the zone with evaluate, with its name as the site writes it in place of ZONE — ${canvasZoneScript} — and when it answers a list instead, take the name from that list. The panel's − and + are «Уменьшить» and «Увеличить». When the map sits in a frame of another page, open the frame's own address (its src) in the tab first.`,
   "A price chip with no seats of that price on the map is such a zone: never report that a price is not tied to any seat, or cannot be bought, before you have clicked its zone.",
   "When the errand names a zone, or a price without a seat, take that zone by count; pick seats only in a category that has them.",
   "A seat that answers «это место только что заняли» is taken: pick another seat of the same category — that alone does not mean the category is sold out.",
