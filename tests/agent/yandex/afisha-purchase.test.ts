@@ -366,17 +366,28 @@ describe("Afisha ticket purchase", () => {
     });
   });
 
-  // 22.10, live: the order's payment form, opened alone, showed an error and
-  // the payment failed fail-3ds; the person opens the operation's own check.
+  // 22.10, live: for its first minute or two the payment names the payment
+  // form, which opened alone showed an error, and the payment failed
+  // fail-3ds; open_3ds of the same token brought the bank's push.
   it(
     "hands the bank's page to the person when the payment waits for it",
     {
       timeout: 20_000,
     },
     async () => {
-      const check = "https://trust.yandex.ru/web/open_3ds?purchase_token=x";
+      const token = "payment_0b5a58913c3e4e808e263a3762512a21";
+      const check = `https://trust.yandex.ru/web/open_3ds?purchase_token=${token}`;
       answers.set(`${orderPath}/operation/pay`, {
-        body: operation("running", check),
+        body: {
+          result: {
+            operation: {
+              purchaseToken: token,
+              redirectUrl3ds: `https://trust.yandex.ru/web/payment?new_backend=1&purchase_token=${token}`,
+              status: "running",
+            },
+          },
+          status: "success",
+        },
       });
       const prepared = await ready(target);
       expect(

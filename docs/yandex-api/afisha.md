@@ -267,7 +267,8 @@ query BroSessions($id: ID!, $dates: DaysIntervalInput) { eventScheduleOtherByDat
   `cart_id`, `payment_way: "bound-card"`, `quick_purchase_card_id`, `psp_payment_method_id`, `personal_data`,
   `items[]` с числовыми `category_id`, `ext_session_id`, `level_id`. Ответ — `result.order.id` вида `<число>@<uuid>`.
 - `GET /api/tickets/v2/orders/<id>/operation/{reserve,pay,sale-approve}?clientKey=` → `{status, statusCode,
-redirectUrl3ds}` (`/web/open_3ds` — проверка банка, её и открывает человек; провал — `statusCode: fail-3ds`);
+redirectUrl3ds, purchaseToken}` (`redirectUrl3ds` первые минуту-две — форма `/web/payment`, потом `/web/open_3ds` —
+  проверка банка; человек получает `open_3ds` по `purchaseToken` сразу; провал — `statusCode: fail-3ds`);
   `GET /api/tickets/v2/orders/<id>?clientKey=` — `amountToPay`, `paymentForm.targetUrl` (форма оплаты Trust
   `/web/payment`: открытая отдельно, она показала ошибку). `@` в id — `%40`.
 
