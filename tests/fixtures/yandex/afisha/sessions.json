@@ -1,0 +1,57 @@
+{
+  "status": 200,
+  "data": {
+    "eventScheduleOtherByDate": [
+      {
+        "date": "2026-11-20",
+        "sessions": [
+          {
+            "place": {
+              "id": "61ea54997c824700da72bf00",
+              "title": "Клуб «Пример»",
+              "address": "ул. Примерная, 1"
+            },
+            "session": {
+              "datetime": "2026-11-20T20:00:00",
+              "hallName": "",
+              "ticket": {
+                "id": "MTAwfDIwMHwzMDB8MTc5NTE5NDAwMDAwMA==",
+                "widgetUrl": "https://widget.afisha.yandex.ru/w/sessions/MTAwfDIwMHwzMDB8MTc5NTE5NDAwMDAwMA==",
+                "saleStatus": "available",
+                "minPrice": {
+                  "value": 230000
+                },
+                "maxPrice": {
+                  "value": 550000
+                }
+              }
+            }
+          }
+        ]
+      },
+      {
+        "date": "2026-11-21",
+        "sessions": [
+          {
+            "place": {
+              "id": "61ea54997c824700da72bf00",
+              "title": "Клуб «Пример»",
+              "address": "ул. Примерная, 1"
+            },
+            "session": {
+              "datetime": "2026-11-21T20:00:00",
+              "hallName": "",
+              "ticket": {
+                "id": "MTAwfDIwMHwzMDB8MTc5NTI4MDQwMDAwMA==",
+                "widgetUrl": "https://widget.afisha.yandex.ru/w/sessions/MTAwfDIwMHwzMDB8MTc5NTI4MDQwMDAwMA==",
+                "saleStatus": "closed",
+                "minPrice": null,
+                "maxPrice": null
+              }
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

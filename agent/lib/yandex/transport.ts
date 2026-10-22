@@ -10,7 +10,7 @@ import {
   renewBrowserVmExit,
   stopBrowserVmBrowser,
 } from "@agent/lib/browser-vm/runs";
-import { afishaSearchDirect } from "./afisha/direct";
+import { afishaPricesDirect, afishaSearchDirect } from "./afisha/direct";
 import { yandexDirectPilot } from "./pilot";
 import {
   type JsonValue,
@@ -190,6 +190,12 @@ async function callInTab(
   }
 }
 
+/** The public reads that need no sign-in, by operation, as the server asks them. */
+const directReads = new Map([
+  ["afisha.prices", afishaPricesDirect],
+  ["afisha.search", afishaSearchDirect],
+]);
+
 /**
  * A public read that needs no sign-in is asked from the server itself, no
  * tab: about a second instead of five or more. Only for the workspaces in
@@ -200,11 +206,12 @@ async function tryDirect(
   operation: YandexOperation,
   args: JsonValue
 ): Promise<YandexOutcome | undefined> {
-  if (operation.id !== "afisha.search" || !yandexDirectPilot({ workspaceId })) {
+  const read = directReads.get(operation.id);
+  if (read === undefined || !yandexDirectPilot({ workspaceId })) {
     return undefined;
   }
   const began = Date.now();
-  const answer = await afishaSearchDirect(args);
+  const answer = await read(args);
   if (answer === undefined) return undefined;
   const data = operation.result.safeParse(answer);
   if (!data.success) return undefined;

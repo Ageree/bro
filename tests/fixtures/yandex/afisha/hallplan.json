@@ -1,0 +1,525 @@
+{
+  "status": "success",
+  "result": {
+    "saleStatus": "available",
+    "operationStatus": "done",
+    "hallplanDisplayType": "with-seats",
+    "extLoyalty": null,
+    "hallplan": {
+      "totalSeatCount": 120,
+      "availableSeatCount": 120,
+      "seatGroups": [],
+      "maxTicketsCount": 6,
+      "allowCompositeOrders": false,
+      "sessionServices": [],
+      "supplements": [],
+      "prices": [
+        {
+          "currencyCode": "rub",
+          "value": 230000
+        },
+        {
+          "currencyCode": "rub",
+          "value": 420000
+        },
+        {
+          "currencyCode": "rub",
+          "value": 550000
+        },
+        {
+          "currencyCode": "rub",
+          "value": 120000
+        },
+        {
+          "currencyCode": "rub",
+          "value": 150000
+        },
+        {
+          "currencyCode": "rub",
+          "value": 200000
+        },
+        {
+          "currencyCode": "rub",
+          "value": 250000
+        },
+        {
+          "currencyCode": "rub",
+          "value": 300000
+        },
+        {
+          "currencyCode": "rub",
+          "value": 350000
+        },
+        {
+          "currencyCode": "rub",
+          "value": 400000
+        },
+        {
+          "currencyCode": "rub",
+          "value": 500000
+        },
+        {
+          "currencyCode": "rub",
+          "value": 600000
+        }
+      ],
+      "settings": {
+        "hideAdmissionAvailableSeatsCount": true
+      },
+      "categories": [
+        {
+          "id": -1622226811,
+          "name": "Танцпол",
+          "categoryType": "regular",
+          "priceInfos": [
+            {
+              "price": {
+                "currencyCode": "rub",
+                "value": 230000
+              },
+              "fee": {
+                "currencyCode": "rub",
+                "value": 23000
+              },
+              "total": {
+                "currencyCode": "rub",
+                "value": 253000
+              }
+            }
+          ],
+          "priceChanges": [
+            {
+              "startDate": "2026-10-20T00:00+03:00",
+              "endDate": "2026-11-01T00:00+03:00",
+              "priceInfo": {
+                "price": {
+                  "currencyCode": "rub",
+                  "value": 230000
+                },
+                "fee": {
+                  "currencyCode": "rub",
+                  "value": 23000
+                },
+                "total": {
+                  "currencyCode": "rub",
+                  "value": 253000
+                }
+              }
+            },
+            {
+              "startDate": "2026-11-01T00:00+03:00",
+              "endDate": "2026-11-20T22:00+03:00",
+              "priceInfo": {
+                "price": {
+                  "currencyCode": "rub",
+                  "value": 240000
+                },
+                "fee": {
+                  "currencyCode": "rub",
+                  "value": 24000
+                },
+                "total": {
+                  "currencyCode": "rub",
+                  "value": 264000
+                }
+              }
+            }
+          ],
+          "supplementLimits": []
+        },
+        {
+          "id": 1462978627,
+          "name": "ВИП-входной (без места)",
+          "categoryType": "regular",
+          "priceInfos": [
+            {
+              "price": {
+                "currencyCode": "rub",
+                "value": 420000
+              },
+              "fee": {
+                "currencyCode": "rub",
+                "value": 42000
+              },
+              "total": {
+                "currencyCode": "rub",
+                "value": 462000
+              }
+            }
+          ],
+          "priceChanges": [
+            {
+              "startDate": "2026-10-01T00:00+03:00",
+              "endDate": "2026-11-01T00:00+03:00",
+              "priceInfo": {
+                "price": {
+                  "currencyCode": "rub",
+                  "value": 420000
+                },
+                "fee": {
+                  "currencyCode": "rub",
+                  "value": 42000
+                },
+                "total": {
+                  "currencyCode": "rub",
+                  "value": 462000
+                }
+              }
+            },
+            {
+              "startDate": "2026-11-01T00:00+03:00",
+              "endDate": "2026-11-20T22:00+03:00",
+              "priceInfo": {
+                "price": {
+                  "currencyCode": "rub",
+                  "value": 450000
+                },
+                "fee": {
+                  "currencyCode": "rub",
+                  "value": 45000
+                },
+                "total": {
+                  "currencyCode": "rub",
+                  "value": 495000
+                }
+              }
+            }
+          ],
+          "supplementLimits": []
+        },
+        {
+          "id": 2012986604,
+          "name": "VIР lоungе",
+          "categoryType": "regular",
+          "priceInfos": [
+            {
+              "price": {
+                "currencyCode": "rub",
+                "value": 550000
+              },
+              "fee": {
+                "currencyCode": "rub",
+                "value": 55000
+              },
+              "total": {
+                "currencyCode": "rub",
+                "value": 605000
+              }
+            }
+          ],
+          "priceChanges": [],
+          "supplementLimits": []
+        },
+        {
+          "id": 77,
+          "name": "Партер",
+          "categoryType": "regular",
+          "priceInfos": [
+            {
+              "price": {
+                "currencyCode": "rub",
+                "value": 120000
+              },
+              "fee": {
+                "currencyCode": "rub",
+                "value": 12000
+              },
+              "total": {
+                "currencyCode": "rub",
+                "value": 132000
+              }
+            },
+            {
+              "price": {
+                "currencyCode": "rub",
+                "value": 150000
+              },
+              "fee": {
+                "currencyCode": "rub",
+                "value": 15000
+              },
+              "total": {
+                "currencyCode": "rub",
+                "value": 165000
+              }
+            },
+            {
+              "price": {
+                "currencyCode": "rub",
+                "value": 200000
+              },
+              "fee": {
+                "currencyCode": "rub",
+                "value": 20000
+              },
+              "total": {
+                "currencyCode": "rub",
+                "value": 220000
+              }
+            },
+            {
+              "price": {
+                "currencyCode": "rub",
+                "value": 250000
+              },
+              "fee": {
+                "currencyCode": "rub",
+                "value": 25000
+              },
+              "total": {
+                "currencyCode": "rub",
+                "value": 275000
+              }
+            },
+            {
+              "price": {
+                "currencyCode": "rub",
+                "value": 300000
+              },
+              "fee": {
+                "currencyCode": "rub",
+                "value": 30000
+              },
+              "total": {
+                "currencyCode": "rub",
+                "value": 330000
+              }
+            },
+            {
+              "price": {
+                "currencyCode": "rub",
+                "value": 350000
+              },
+              "fee": {
+                "currencyCode": "rub",
+                "value": 35000
+              },
+              "total": {
+                "currencyCode": "rub",
+                "value": 385000
+              }
+            },
+            {
+              "price": {
+                "currencyCode": "rub",
+                "value": 400000
+              },
+              "fee": {
+                "currencyCode": "rub",
+                "value": 40000
+              },
+              "total": {
+                "currencyCode": "rub",
+                "value": 440000
+              }
+            },
+            {
+              "price": {
+                "currencyCode": "rub",
+                "value": 500000
+              },
+              "fee": {
+                "currencyCode": "rub",
+                "value": 50000
+              },
+              "total": {
+                "currencyCode": "rub",
+                "value": 550000
+              }
+            },
+            {
+              "price": {
+                "currencyCode": "rub",
+                "value": 600000
+              },
+              "fee": {
+                "currencyCode": "rub",
+                "value": 60000
+              },
+              "total": {
+                "currencyCode": "rub",
+                "value": 660000
+              }
+            }
+          ],
+          "priceChanges": [],
+          "supplementLimits": []
+        }
+      ],
+      "levels": [
+        {
+          "id": 1,
+          "name": "Танцпол",
+          "rows": [],
+          "admission": true,
+          "availableSeatCount": 1486,
+          "outline": " M1079.0 1.0 L1611.0 1.0 Z",
+          "sections": [],
+          "categories": [
+            {
+              "id": -1622226811,
+              "name": "Танцпол",
+              "categoryType": "regular",
+              "priceInfos": [],
+              "priceChanges": [],
+              "availableSeatCount": 1486,
+              "supplementLimits": []
+            }
+          ],
+          "prices": [
+            {
+              "currencyCode": "rub",
+              "value": 230000
+            }
+          ],
+          "priority": 2147483647,
+          "seats": [
+            {
+              "seat": {
+                "xCoord": 1345,
+                "yCoord": 180,
+                "linkedSeats": []
+              },
+              "categoryId": -1622226811,
+              "priceInfo": {
+                "price": {
+                  "currencyCode": "rub",
+                  "value": 230000
+                },
+                "fee": {
+                  "currencyCode": "rub",
+                  "value": 23000
+                },
+                "total": {
+                  "currencyCode": "rub",
+                  "value": 253000
+                }
+              }
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "name": "VIP Lounge",
+          "rows": [
+            {
+              "row": "1",
+              "seatCount": 2,
+              "xCoord": 283,
+              "yCoord": 355
+            }
+          ],
+          "admission": false,
+          "availableSeatCount": 51,
+          "sections": [],
+          "categories": [
+            {
+              "id": 2012986604,
+              "name": "VIР lоungе",
+              "categoryType": "regular",
+              "priceInfos": [],
+              "priceChanges": [],
+              "availableSeatCount": 51,
+              "supplementLimits": []
+            }
+          ],
+          "prices": [
+            {
+              "currencyCode": "rub",
+              "value": 550000
+            }
+          ],
+          "priority": 1,
+          "seats": []
+        },
+        {
+          "id": 8,
+          "name": "VIP-входной (свободная рассадка)",
+          "rows": [],
+          "admission": true,
+          "availableSeatCount": 39,
+          "outline": " M927.0 1.0 L1031.0 1.0 Z",
+          "sections": [],
+          "categories": [
+            {
+              "id": 1462978627,
+              "name": "ВИП-входной (без места)",
+              "categoryType": "regular",
+              "priceInfos": [],
+              "priceChanges": [],
+              "availableSeatCount": 39,
+              "supplementLimits": []
+            }
+          ],
+          "prices": [
+            {
+              "currencyCode": "rub",
+              "value": 420000
+            }
+          ],
+          "priority": 3,
+          "seats": []
+        },
+        {
+          "id": 9,
+          "name": "Партер",
+          "rows": [],
+          "admission": false,
+          "availableSeatCount": 0,
+          "sections": [],
+          "categories": [
+            {
+              "id": 77,
+              "name": "Партер",
+              "categoryType": "regular",
+              "priceInfos": [],
+              "priceChanges": [],
+              "availableSeatCount": 0,
+              "supplementLimits": []
+            }
+          ],
+          "prices": [
+            {
+              "currencyCode": "rub",
+              "value": 120000
+            },
+            {
+              "currencyCode": "rub",
+              "value": 150000
+            },
+            {
+              "currencyCode": "rub",
+              "value": 200000
+            },
+            {
+              "currencyCode": "rub",
+              "value": 250000
+            },
+            {
+              "currencyCode": "rub",
+              "value": 300000
+            },
+            {
+              "currencyCode": "rub",
+              "value": 350000
+            },
+            {
+              "currencyCode": "rub",
+              "value": 400000
+            },
+            {
+              "currencyCode": "rub",
+              "value": 500000
+            },
+            {
+              "currencyCode": "rub",
+              "value": 600000
+            }
+          ],
+          "priority": 4,
+          "seats": []
+        }
+      ]
+    }
+  }
+}

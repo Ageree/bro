@@ -1,5 +1,13 @@
 import { z } from "zod";
 import type { JsonValue } from "../operations";
+import { sessionZones } from "./hall";
+import {
+  afishaPricesOperation,
+  afishaSessionsGraphql,
+  sessionsAhead,
+  sessionsListed,
+  sessionsZoned,
+} from "./prices";
 import {
   afishaListingGraphql,
   afishaSearchGraphql,
@@ -283,6 +291,125 @@ export async function afishaSearchDirect(
     return asksListing(parsed.data)
       ? await listingDirect(parsed.data)
       : await searchDirect(parsed.data);
+  } catch {
+    coolOffUntil = Date.now() + coolOffMs;
+    return undefined;
+  }
+}
+
+const sessionsResponseSchema = z.object({
+  data: z
+    .object({
+      eventScheduleOtherByDate: z.array(
+        z.object({
+          sessions: z
+            .array(
+              z.object({
+                place: z
+                  .object({
+                    address: z.string().nullish(),
+                    title: z.string().nullish(),
+                  })
+                  .nullish(),
+                session: z
+                  .object({
+                    datetime: z.string().nullish(),
+                    ticket: z
+                      .object({
+                        id: z.string().nullish(),
+                        maxPrice: z.object({ value: z.number() }).nullish(),
+                        minPrice: z.object({ value: z.number() }).nullish(),
+                        saleStatus: z.string().nullish(),
+                        widgetUrl: z.string().nullish(),
+                      })
+                      .nullish(),
+                  })
+                  .nullish(),
+              })
+            )
+            .nullish(),
+        })
+      ),
+    })
+    .nullish(),
+});
+
+/** Today in Moscow, the day Afisha's schedule starts from when none is asked. */
+function moscowToday(now: Date) {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Moscow" }).format(
+    now
+  );
+}
+
+/**
+ * An event's sessions with their zones, with no browser: the schedule is the
+ * page's own public request, and the zones of the first sessions on sale come
+ * from the ticket widget's hall plan (`hall.ts`). A refusal of Afisha gives
+ * way to the tab, which lists the same sessions without zones; one of the
+ * widget only leaves those zones unread.
+ */
+export async function afishaPricesDirect(
+  rawArgs: JsonValue
+): Promise<JsonValue | undefined> {
+  if (Date.now() < coolOffUntil) return undefined;
+  const parsed = afishaPricesOperation.args.safeParse(rawArgs);
+  if (!parsed.success) return undefined;
+  const args = parsed.data;
+  if (args.date && dayStamp(args.date) === undefined) {
+    return { error: "bad_date" };
+  }
+  const now = new Date();
+  try {
+    const body = await answerOf(
+      await afishaPost(args.city, "BroSessions", afishaSessionsGraphql, {
+        dates: args.date
+          ? { date: args.date, period: 1 }
+          : { date: moscowToday(now), period: sessionsAhead },
+        id: args.event,
+      }),
+      sessionsResponseSchema
+    );
+    if (!body?.data) return undefined;
+    const all = body.data.eventScheduleOtherByDate
+      .flatMap((group) => group.sessions ?? [])
+      .map(({ place, session }) => {
+        const ticket = session?.ticket;
+        const link = ticket?.widgetUrl;
+        return {
+          address: place?.address || null,
+          key: ticket?.id ?? null,
+          link:
+            link?.startsWith("https://widget.afisha.yandex.ru/") === true
+              ? link
+              : null,
+          maxPrice: ticket?.maxPrice ? ticket.maxPrice.value / 100 : null,
+          minPrice: ticket?.minPrice ? ticket.minPrice.value / 100 : null,
+          sale: ticket?.saleStatus || null,
+          venue: place?.title || null,
+          when: session?.datetime ? session.datetime.slice(0, 16) : null,
+        };
+      })
+      .sort((a, b) => (a.when ?? "").localeCompare(b.when ?? ""));
+    const listed = all.slice(0, sessionsListed);
+    const zones = await sessionZones(
+      listed
+        .slice(0, sessionsZoned)
+        .flatMap(({ key, sale }) =>
+          key !== null && sale === "available" ? [key] : []
+        ),
+      now
+    );
+    return {
+      more: Math.max(all.length - sessionsListed, 0),
+      sessions: listed.map(({ key, ...shown }) => {
+        const plan = key === null ? undefined : zones.get(key);
+        return {
+          ...shown,
+          maxTickets: plan?.maxTickets ?? null,
+          zones: plan?.zones ?? null,
+        };
+      }),
+    };
   } catch {
     coolOffUntil = Date.now() + coolOffMs;
     return undefined;
