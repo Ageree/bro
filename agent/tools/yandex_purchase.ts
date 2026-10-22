@@ -37,6 +37,10 @@ import {
   submitAfishaPurchase,
 } from "@agent/lib/yandex/afisha/checkout";
 import {
+  afishaSessionLink,
+  knownAfishaSessions,
+} from "@agent/lib/yandex/afisha/sessions";
+import {
   edaTarget,
   prepareEdaPurchase,
   readEdaPayment,
@@ -87,6 +91,9 @@ const afishaInputSchema = z.union([
   afishaPurchaseTarget.extend({
     action: z.literal("prepare"),
     service: z.literal("afisha"),
+    // The session's time as afisha.prices gave it: its link is taken from
+    // there when the model's copy is not (`afisha/sessions.ts`).
+    when: z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/u),
   }),
 ]);
 
@@ -117,6 +124,15 @@ const goRefusals = {
 const afishaByBrowser =
   "Nothing was ordered or charged: this tool cannot buy this session. Start browser_task on the session's link with the zone's exact name and the number of tickets, unless the person said not to.";
 
+/** A link that is no session of this conversation, or none of Afisha's. */
+const afishaSessionReply =
+  "Nothing was ordered or charged: that is no session afisha.prices gave in this conversation. Call yandex afisha.prices for the event and prepare again with the session's link and when exactly as it gave them.";
+
+// The person wants it bought here (owner 22.10: «через api»): a failure of
+// Afisha's own is tried once more, and the browser only with their yes.
+const afishaRetryReply =
+  "Nothing was ordered or charged: Afisha did not answer as expected. Call prepare once more; if it fails again, tell the person it cannot be bought here right now and offer to buy it on the site instead (browser_task) — start that only after they agree.";
+
 /**
  * Afisha's refusals: each says what Bro does next, not the Lavka cart's
  * «try nothing more» — a zone with seats goes to the browser, a mistyped
@@ -128,8 +144,11 @@ const afishaBlockedReplies = new Map(
       "Nothing was ordered or charged: no card linked to the person's Yandex account ends in those digits. Prepare again once without cardLast4: the question names the card it would use.",
     checkout_changed:
       "Nothing was submitted: the session, the price, the fee or the card changed since your question. Call prepare again and send its new confirmationQuestion; the old yes does not pay the new terms.",
+    captcha: afishaByBrowser,
     contacts_missing:
       "Nothing was ordered or charged: Afisha sends tickets to the name, e-mail and phone in the person's Yandex ID, and one of them is empty. Ask them to fill it in at id.yandex.ru, then prepare again.",
+    http_404: afishaSessionReply,
+    link_invalid: afishaSessionReply,
     no_saved_card:
       "Nothing was ordered or charged: no card is linked to the person's Yandex account, and this tool pays only with a linked card. Tell them; with their yes, browser_task on the session's link can buy it there.",
     not_enough_tickets:
@@ -138,6 +157,10 @@ const afishaBlockedReplies = new Map(
       "Nothing was submitted: the quote expired before it was saved. Call prepare again.",
     sale_closed:
       "Nothing was ordered or charged: tickets for this session are not on sale now. Tell the person.",
+    session_not_found: afishaSessionReply,
+    session_restricted: afishaByBrowser,
+    session_unknown: afishaSessionReply,
+    session_unsupported: afishaByBrowser,
     signed_out: goRefusals.signed_out,
     too_many_tickets:
       "Nothing was ordered or charged: one order of this session takes fewer tickets (maxTickets in yandex afisha.prices). Tell the person and ask whether to buy that many.",
@@ -153,7 +176,7 @@ const afishaBlockedReplies = new Map(
 /** What the model is told of a prepare or a refresh that did not quote. */
 function blockedReply(service: string, reason: string) {
   if (service !== "afisha") return prepareBlockedReply;
-  return afishaBlockedReplies.get(reason) ?? afishaByBrowser;
+  return afishaBlockedReplies.get(reason) ?? afishaRetryReply;
 }
 
 const goReplies = {
@@ -512,7 +535,7 @@ const purchaseDescription =
  * person never saw in time.
  */
 const afishaDescription =
-  "Afisha tickets: when the person wants tickets of a zone without seats that yandex afisha.prices listed, prepare with service afisha, link (that session's link), zone (its exact name) and count, and cardLast4 only when they named a card; it orders with their card saved in Yandex. Use this, not browser_task, for such tickets; a zone with seats still goes through browser_task.";
+  "Afisha tickets: when the person wants tickets of a zone without seats that yandex afisha.prices listed, prepare with service afisha, link and when (that session's, as afisha.prices gave them), zone (its exact name) and count, and cardLast4 only when they named a card; it orders with their card saved in Yandex. Use this, not browser_task, for such tickets; a zone with seats still goes through browser_task.";
 
 function purchaseResult(purchase: StoredPurchase) {
   const quote = purchaseQuoteSchema.safeParse(purchase.publicQuote);
@@ -597,6 +620,10 @@ export default defineDynamic({
       const words = personWordsThisTurn(context.messages, step);
       // Only in a turn the person's own message opened, as phone-call.
       if (words.said === null) return null;
+      // Afisha sessions this conversation knows, for a link the model miscopied.
+      const sessions = afishaPurchasePilot(scope)
+        ? knownAfishaSessions(context.messages)
+        : [];
       const turn: DirectTurn = {
         forwarded: forwardedMessage(caller),
         personTurn: true,
@@ -704,12 +731,24 @@ export default defineDynamic({
             if (input.action === "prepare") {
               if (input.service === "afisha" && !afishaPurchasePilot(scope))
                 return { kind: "unavailable" as const };
+              const link =
+                input.service === "afisha"
+                  ? afishaSessionLink(input, sessions)
+                  : undefined;
+              if (input.service === "afisha" && link === undefined) {
+                return {
+                  kind: "blocked" as const,
+                  reason: "session_unknown",
+                  reply: blockedReply(input.service, "session_unknown"),
+                };
+              }
               const prepared = await prepareQuote(
                 scope.workspaceId,
                 input.service === "afisha"
                   ? {
                       ...input,
                       cardLast4: namedCard(input.cardLast4, words.said),
+                      link: link ?? input.link,
                     }
                   : input
               );

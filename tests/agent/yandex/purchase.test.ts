@@ -278,6 +278,17 @@ beforeEach(() => {
   services.create.mockResolvedValue({ kind: "created", purchase: row() });
 });
 
+/** An Afisha prepare of the «Свидание» zone, at a session's link and time. */
+const afishaPrepareInput = (link: string, when: string) => ({
+  action: "prepare" as const,
+  cardLast4: null,
+  count: 2,
+  link,
+  service: "afisha" as const,
+  when,
+  zone: "VIP-входной (свободная рассадка)",
+});
+
 describe("Yandex purchase consent", () => {
   it("does not add a tool outside the purchase pilot or in a report turn", async () => {
     services.pilot.mockReturnValue(false);
@@ -369,6 +380,7 @@ describe("Yandex purchase consent", () => {
       cardLast4: null,
       count: 2,
       link,
+      when: "2026-11-20T20:00",
       zone: "VIP-входной (свободная рассадка)",
     };
     const ticketSnapshot = {
@@ -475,6 +487,7 @@ describe("Yandex purchase consent", () => {
         count: 2,
         link: "https://widget.afisha.yandex.ru/w/sessions/MzIzNDJ8ODI5ODU1",
         service: "afisha",
+        when: "2026-11-20T20:00",
         zone: "VIP Lounge",
       },
       callContext()
@@ -494,6 +507,7 @@ describe("Yandex purchase consent", () => {
         count: 2,
         link: "https://widget.afisha.yandex.ru/w/sessions/MzIzNDJ8ODI5ODU1",
         service: "afisha",
+        when: "2026-11-20T20:00",
         zone: "VIP Lounge",
       },
       callContext()
@@ -554,6 +568,7 @@ describe("Yandex purchase consent", () => {
       count: 2,
       link,
       service: "afisha" as const,
+      when: "2026-11-20T20:00",
       zone: "Танцпол",
     };
     services.create
@@ -582,6 +597,72 @@ describe("Yandex purchase consent", () => {
       )?.execute(input, callContext())
     ).toMatchObject({ kind: "placed", paymentStatus: "paid" });
     expect(services.create).toHaveBeenCalledTimes(1);
+  });
+
+  // 22.10 the model copied the session's base64 key with a slip, and
+  // Afisha answered 404: the link afisha.prices gave stands instead.
+  it("takes the Afisha session's link from afisha.prices, not the model's copy", async () => {
+    services.afishaPilot.mockReturnValue(true);
+    services.afishaPrepare.mockResolvedValue({
+      kind: "blocked",
+      reason: "zone_not_found",
+    });
+    const real =
+      "https://widget.afisha.yandex.ru/w/sessions/MzIzNDJ8ODI5ODU1fDE0MDQ3NjE4fDE3OTUxOTQwMDAwMDA=";
+    const priced: ModelMessage[] = [
+      { role: "user", content: "купи два VIP на Свидание" },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolName: "yandex",
+            toolCallId: "prices-1",
+            input: { operation: "afisha.prices" },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolName: "yandex",
+            toolCallId: "prices-1",
+            output: {
+              type: "json",
+              value: {
+                data: { sessions: [{ link: real, when: "2026-11-20T20:00" }] },
+                ok: true,
+              },
+            },
+          },
+        ],
+      },
+      ...answered("да").slice(1),
+    ];
+    const tool = await resolve(priced);
+    await tool?.execute(
+      afishaPrepareInput(
+        "https://widget.afisha.yandex.ru/w/sessions/MzIzNDJ8ODI5ODU1fDE0MDQ3NjE4fDE3OTE5NDAwMDAwMDA=",
+        "2026-11-20T20:00"
+      ),
+      callContext()
+    );
+    expect(services.afishaPrepare.mock.calls[0]?.[1]).toMatchObject({
+      link: real,
+    });
+    // No session of that time either: nothing is read, the model is told.
+    expect(
+      await tool?.execute(
+        afishaPrepareInput(
+          "https://widget.afisha.yandex.ru/w/sessions/AAAAAAAAAAAA",
+          "2026-11-21T20:00"
+        ),
+        callContext()
+      )
+    ).toMatchObject({ kind: "blocked", reason: "session_unknown" });
+    expect(services.afishaPrepare).toHaveBeenCalledTimes(1);
   });
 
   it("buys no Afisha quote once its pilot is off", async () => {
