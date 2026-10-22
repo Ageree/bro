@@ -64,7 +64,7 @@ export const afishaSearchOperation = defineYandexOperation({
   // «Ссылки: …» with the links of some of them. The same ask in the prompt
   // and in `about` did not hold, a result's note does.
   answerNote:
-    "Note for the answer: write the events as a list, one line each — «• [Название](its url from the list above) — Площадка, 31 окт, 19:00, от 3 700 ₽» (title as it is, the venue, the date as Afisha words it, the lowest price; leave out what is null). The event's own name is its link, and every event above has its url, so every line carries one. No line of links at the end, no «Источник:» line, and nothing the list does not show.",
+    "Note for the answer: write the events as a list, one line each — «• [Название](its url from the list above) — Площадка, 31 окт, 19:00, от 3 700 ₽» (title as it is, the venue, the date as Afisha words it, the lowest price; leave out what is null). The event's own name is its link, and every event above has its url, so every line carries one. No line of links at the end, no «Источник:» line, and nothing the list does not show. When the person wants tickets to one of these events — what there is, the prices, to buy them — call afisha.prices with its id first: it names every zone of the hall, the ones without seats too.",
   args: z.object({
     category: z.enum(["", ...categories]).default(""),
     city: z

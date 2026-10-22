@@ -37,7 +37,7 @@
 рубрики (концерты, театр, …), документы — события. Выбираем `SearchObjectEvent`: `id url title placeTitle
 minPrice{value} datePreview{text} type{name} tickets{saleStatus}`. Город — параметр `city` в URL
 (`moscow`, `saint-petersburg`, …). Даты: `datePreview.text` — готовая строка («15 окт», «Октябрь —
-декабрь»); точный список сеансов — отдельным запросом `eventSchedule` (не включён). Фильтра по дате и
+декабрь»); сеансы и зоны зала — операция `afisha.prices` ниже. Фильтра по дате и
 рубрике `search` не принимает: «концерты на следующей неделе», «кино в выходные» — режим `actualEvents` ниже.
 
 ### Рубрика и дни — `actualEvents` (снят вживую 21.10.2026, без cookies)
@@ -203,10 +203,56 @@ tickets: number, total: number (₽), seats: string[]}]}`. Фикстуры: `or
 **Замер:** 4351 / 3392 / 1335 → медиана **3392 мс**.
 **Устойчивость:** как у search; значения перечислений `OrdersSort`: `dateCreated, orderStatus, sessionDate, sessionDateAsc`.
 
+## afisha.prices — сеансы события и зоны зала (снято вживую 22.10.2026, без входа)
+
+**Зачем:** «какие есть билеты на …», «возьми два по 4 200» — до браузера. 22.10 браузер искал места по
+4 200 ₽ в зоне без мест («VIP-входной (свободная рассадка)» в «Графите»), не нашёл и сказал, что такую цену
+не купить; зона без мест берётся количеством, а не местом.
+
+**Сеансы** — GraphQL Афиши, тот же публичный эндпоинт, что у `search`:
+
+```text
+query BroSessions($id: ID!, $dates: DaysIntervalInput) { eventScheduleOtherByDate(id: $id, dates: $dates) {
+  sessions { place { title address } session { datetime ticket { id widgetUrl saleStatus minPrice { value } maxPrice { value } } } } } }
+```
+
+`id` — id события из `afisha.search` (24 hex). Без `dates` ответ пустой: без дня операция берёт сегодня по Москве
+и 180 дней. `ticket.id` — ключ сеанса в виджете (base64 `venueId|ticketsEventId|hallId|ms`), `widgetUrl` —
+`https://widget.afisha.yandex.ru/w/sessions/<ключ>`.
+
+**Зоны** — план зала виджета `widget.afisha.yandex.ru` (Яндекс Билеты), с сервера, без браузера и cookies человека:
+
+1. `GET /robots.txt` виджета — анонимные cookies посетителя. План принимает `yandexuid` только вместе с
+   подписанной `i`; одна `yandexuid` даёт `400 ANTIBOT_TOKEN_MISMATCH` (сервер выдаёт новый uid).
+2. `POST /api/antibot/check {"sessionKey": "<ключ>"}` с этими cookies → `{jwt, captchaRequired: false}`; токен
+   привязан к `yandexuid`. `captchaRequired: true` — зоны не читаем (нужен браузер).
+3. `GET /api/tickets/v4/sessions/<ключ>/hallplan` с cookies и `X-Antibot-Token` → `{"status":"running"}`, через
+   ~1 с `{"status":"completed","url":"https://….svc.cdn.yandex.net/hallplans/<sha>"}`. Без токена —
+   `400 MISSING_ANTIBOT_TOKEN`; `clientKey` и CSRF не нужны.
+4. `GET <url>` (gzip, `content-encoding`) → `{status, result: {saleStatus, hallplanDisplayType, hallplan}}`.
+
+`hallplan.levels[]` — зоны: `name`, `admission` (**true — без мест, по количеству**), `availableSeatCount`,
+`prices[]`, `categories[{id, name}]`; `hallplan.categories[]` — `priceInfos[{price, fee, total}]` и
+`priceChanges[{startDate, priceInfo}]` (объявленное подорожание: «через 10 дней цена вырастет до 4500 ₽»);
+`maxTicketsCount` — билетов в заказе; `settings.hideAdmissionAvailableSeatsCount` — сайт прячет остаток зон без
+мест (операция отдаёт `left: null`). Имена категорий бывают с кириллицей вместо латиницы («VIР lоungе»), имя
+зоны — нормальное. Сеанс с местами в театре — одна категория на зону и десятки цен по рядам.
+
+**Ответ:** `{more, sessions: [{when, venue, address, sale, link, minPrice, maxPrice, maxTickets, zones, zonesMore}]}`,
+до 8 сеансов, зоны — у первых трёх в продаже; `zones[]`: `{zone, ticket, seats, prices: [{price, withFee}], left, rise}`,
+`seats` — «picked on the hall map» или «none: bought by count, no seat to pick»; у зоны больше 8 цен — 7 дешёвых и
+самая дорогая. Больше 40 зон (секторы стадиона) — все зоны без мест и самые дешёвые с местами, остаток в `zonesMore`.
+Весь виджет — за 9 с на вызов; отказ (403/429/5xx) или зависание — 10 минут виджет не спрашиваем, сеансы идут без зон. Через вкладку (сервер отказал)
+— те же сеансы с `zones: null`: виджет на другом origin и без CORS. Код — `agent/lib/yandex/afisha/prices.ts`,
+`hall.ts`, `direct.ts`.
+**Замер (из облачной сессии через прокси):** «Свидание» 5,3–6,6 с, театр с тремя сеансами 5,6–11 с; на VM
+прода не мерили.
+
 ## Не удалось / что отдать `browser_task`
 
-- Покупка билетов и выбор мест (виджет `widgetUrl`, корзина `cart`, оплата) — через `browser_task` с «да» человека.
-- Расписание сеансов конкретного события (`eventSchedule`) не снималось.
+- Покупка билетов и выбор мест (виджет `widgetUrl`, корзина `cart`, оплата) — через `browser_task` с «да» человека;
+  зону без мест браузер берёт количеством (`eventTicketLine` в `agent/tools/browser_task.ts`). Корзина виджета —
+  `POST /api/cart/<id>/update` с `admission`, `category_id`, `level_id` (в бандле `widget.js`) — не пробовали.
 - Наполненный заказ вживую не видели (см. выше).
 - Страница тяжёлая: на холодном старте вкладки ждать до ≈ 9 с до первого запроса; запросы к `/api/graphql` идут с
   любой страницы домена (проверено на `/moscow`; другие не пробовали).

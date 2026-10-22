@@ -6191,6 +6191,71 @@ describe("browser_task errand text", () => {
     expect(train).not.toContain("online check-in opens");
 
     expect(await composed("Закажи корм коту")).not.toContain("Tickets:");
+    expect(flight).not.toContain("click the zone itself");
+  });
+
+  it("gives an event errand the hall's zones bought by count, not a flight's seat map", async () => {
+    // RU 21.10: the 4 200 ₽ «VIP-входной (свободная рассадка)» zone on a
+    // Яндекс Афиша hall map has no seats; two runs hunted for seats instead.
+    const { composeBrowserContinuation, composeBrowserTask } =
+      await import("@agent/tools/browser_task");
+    const afisha = "https://widget.afisha.yandex.ru/w/sessions/MTI0NjQ";
+    const start = (errand: string, site: string) =>
+      composeBrowserTask({
+        aliases: [],
+        allowPayment: false,
+        collectImages: false,
+        consent: undefined,
+        deliveryAddress: undefined,
+        errand,
+        facts: undefined,
+        home: undefined,
+        site,
+      });
+
+    const concert = await composed(
+      "Купи 2 билета на концерт «Свидание» 20.11 в Графите, по 4200"
+    );
+    expect(concert).toContain(
+      "click the zone itself — its area on the map or its name — or its price chip"
+    );
+    expect(concert).not.toContain("from the seat map itself");
+    // The seller's own Site makes it an event errand without an event word.
+    expect(start("Купи 2 билета на «Свидание» 20.11", afisha)).toContain(
+      "click the zone itself"
+    );
+    // A trip to the concert is still a trip, its return too.
+    expect(
+      await composed(
+        "Найди билеты в Питер на концерт, туда в пятницу, обратно в воскресенье"
+      )
+    ).toContain("When the errand asks for a return too");
+    // An event's name or a balcony is a hall's only beside a ticket.
+    const notHalls = await Promise.all(
+      [
+        "Найди квартиру с балконом",
+        "Забронируй столик в ресторане у Большого театра",
+      ].map(composed)
+    );
+    for (const task of notHalls) {
+      expect(task).not.toContain("click the zone itself");
+    }
+
+    const followUp = composeBrowserContinuation({
+      aliases: [],
+      allowPayment: false,
+      collectImages: false,
+      consent: undefined,
+      deliveryAddress: undefined,
+      errand: "Купи 2 билета на «Свидание» 20.11 в Графите",
+      facts: undefined,
+      message: "Просто возьми 4200 2 билета без выбора места",
+      searching: false,
+      site: afisha,
+    });
+    expect(followUp).toContain(
+      "When the errand names a zone, or a price without a seat, take that zone by count"
+    );
   });
 
   it("tells a public-service errand where its charges, documents, readings and doctors are", async () => {

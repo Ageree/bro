@@ -1,3 +1,4 @@
+import { afishaPricesOperation } from "./afisha/prices";
 import { afishaSearchOperation } from "./afisha/search";
 import { afishaTicketsOperation } from "./afisha/tickets";
 import { foodOperations } from "./food/operations";
@@ -28,6 +29,7 @@ export const yandexOperations: readonly [
   mapsSearchOperation,
   mapsOrgOperation,
   afishaSearchOperation,
+  afishaPricesOperation,
   afishaTicketsOperation,
   ...marketOperations,
   ...foodOperations,
