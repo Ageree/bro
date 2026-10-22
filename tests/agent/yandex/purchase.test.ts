@@ -363,7 +363,12 @@ describe("Yandex purchase consent", () => {
   it("asks about Afisha tickets in Afisha's name and places them through the widget, only in its pilot", async () => {
     const link =
       "https://widget.afisha.yandex.ru/w/sessions/MzIzNDJ8ODI5ODU1?widgetName=w1";
-    const target = { count: 2, link, zone: "VIP-входной (свободная рассадка)" };
+    const target = {
+      cardLast4: null,
+      count: 2,
+      link,
+      zone: "VIP-входной (свободная рассадка)",
+    };
     const ticketSnapshot = {
       amountMinor: 924_000,
       cardId: "card-mir",

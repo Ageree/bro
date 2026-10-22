@@ -137,8 +137,10 @@ const preview = (total: number, boundCard = "card-mir") => ({
   },
 });
 
-const operation = (status: string, redirectUrl3ds?: string) => ({
-  result: { operation: { redirectUrl3ds, status } },
+const operation = (status: string, redirectUrl3ds?: string): JsonValue => ({
+  result: {
+    operation: redirectUrl3ds ? { redirectUrl3ds, status } : { status },
+  },
   status: "success",
 });
 
