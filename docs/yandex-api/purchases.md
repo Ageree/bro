@@ -177,6 +177,12 @@ API и браузер используют одну транзакционную
 PURCHASE_ID ORDER_ID`: она становится `placed` с номером заказа, а оплату потом
 читает `yandex_purchase status`. Пока такая запись висит, новые покупки
 воркспейса не готовятся.
+Браузерное поручение, остановленное на коде (`sms_code`, `3ds`), держит
+резервацию трат сутки, и всё это время `confirm` отвечает «идёт другой платёж».
+Резервации воркспейса показывает `host.py ops NAME spend-reservations.sh
+WORKSPACE_ID`, а снимает одну `… WORKSPACE_ID release ENTRY_ID` — только у
+поручения, которое уже не идёт, и лишь после сверки с сервисом, что оно ничего
+не оплатило.
 
 Локальные проверки: `tests/agent/yandex/purchase.test.ts`,
 `tests/agent/yandex/lavka-purchase.test.ts`, `db/tests/yandex-purchases.test.ts`,
