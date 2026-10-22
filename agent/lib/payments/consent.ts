@@ -58,8 +58,13 @@ export async function askedToPay(
   if (!namesTotal(question, amountMinor)) return false;
   try {
     const modelId = await getWorkspaceModelId(scope);
+    // Without reasoning, which used up the verdict's tokens and refused a
+    // yes (`paymentUnanswered` in `browser_task`, RU 22.10).
     const selection = directModelActive()
-      ? directModelSelection(modelId, { toolChoice: "none" })
+      ? directModelSelection(modelId, {
+          reasoningOff: true,
+          toolChoice: "none",
+        })
       : null;
     const { output } = await generateText({
       abortSignal: AbortSignal.timeout(20_000),

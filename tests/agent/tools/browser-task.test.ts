@@ -7593,6 +7593,37 @@ describe("browser_task asks only before paying, in text", () => {
     });
   });
 
+  it("judges the yes on the workspace's model without its reasoning", async () => {
+    // RU 22.10: the judge reasoned as Bro's steps do, ran out of its 256
+    // tokens before the verdict, and the «да» to 9 240 ₽ for two concert
+    // tickets was refused five times as naming another order.
+    vi.resetModules();
+    vi.stubEnv("MODEL_PROVIDER", "routerai");
+    vi.stubEnv("ROUTERAI_API_KEY", "routerai-test-key");
+    try {
+      stoppedAtPayment();
+      const tool = await resolvedBrowserTask(
+        [],
+        "да",
+        askedToPay(4320, tickets)
+      );
+
+      await tool.execute(pay, toolContext("better-auth:alice"));
+
+      const { generateText } = await import("ai");
+      expect(vi.mocked(generateText).mock.calls[0]?.[0]).toMatchObject({
+        providerOptions: { openrouter: { reasoning: { enabled: false } } },
+      });
+      expect(createBrowserRun.mock.calls[0]?.[1]).toMatchObject({
+        paymentAllowed: true,
+      });
+    } finally {
+      vi.stubEnv("MODEL_PROVIDER", "");
+      vi.stubEnv("ROUTERAI_API_KEY", "");
+      vi.resetModules();
+    }
+  });
+
   it.each([
     ["stopped for a decision", "Needs: decision"],
     ["whose footer was cut", "ORD... (truncated)"],
