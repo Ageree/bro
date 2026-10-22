@@ -73,7 +73,7 @@ const refusals = {
  * (YANDEX_AFISHA_PURCHASE_WORKSPACES); everyone else's note stays as it was.
  */
 const afishaBuyNote =
-  "Buy a zone without seats with yandex_purchase prepare service afisha (this session's link, the zone's exact name, the count), not browser_task; browser_task stays for a zone with seats.";
+  "Buy a zone without seats with yandex_purchase prepare service afisha (this session's link and when, the zone's exact name, the count), not browser_task; browser_task stays for a zone with seats.";
 
 /**
  * What the person said, taken before each step as for the sign-in link:
