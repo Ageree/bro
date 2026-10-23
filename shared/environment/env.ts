@@ -353,7 +353,8 @@ export const env = createEnv({
       .optional(),
     // A Go ride booked for someone else (`passengerPhone` of `go.book`),
     // inside YANDEX_PURCHASE_WORKSPACES: Yandex texts the passenger the car.
-    // Unset, nobody: yandex_purchase has no passenger fields at all.
+    // Unset or `*`, every workspace; `off`, nobody (the rollback: then
+    // yandex_purchase has no passenger fields at all); otherwise workspace ids.
     YANDEX_GO_PASSENGER_WORKSPACES: workspaceListSchema
       .refine(
         (entries) => entries.every((entry) => !entry.includes("@")),
