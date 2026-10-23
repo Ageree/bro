@@ -26,6 +26,18 @@ const examples = [
   { name: "weekend-itinerary", card: weekendItinerary },
 ];
 
+interface Row {
+  readonly title: string;
+  readonly photo?: { readonly url: string; readonly alt: string };
+}
+
+function listParses(rows: readonly Row[], layout: "rows" | "carousel") {
+  return cardSchema.safeParse({
+    title: "Тест",
+    blocks: [{ type: "list", rows, layout }],
+  }).success;
+}
+
 describe("card schema", () => {
   it.each(examples)("accepts the example $name", ({ card }) => {
     expect(cardSchema.safeParse(card).success).toBe(true);
@@ -152,18 +164,10 @@ describe("card schema", () => {
     ];
     const without = [{ title: "А" }, { title: "Б" }];
     const mixed = [{ title: "А", photo }, { title: "Б" }];
-    const parse = (
-      rows: readonly { title: string; photo?: typeof photo }[],
-      layout: "rows" | "carousel"
-    ) =>
-      cardSchema.safeParse({
-        title: "Тест",
-        blocks: [{ type: "list", rows, layout }],
-      }).success;
-    expect(parse(withPhotos, "rows")).toBe(true);
-    expect(parse(withPhotos, "carousel")).toBe(true);
-    expect(parse(mixed, "rows")).toBe(false);
-    expect(parse(without, "carousel")).toBe(false);
+    expect(listParses(withPhotos, "rows")).toBe(true);
+    expect(listParses(withPhotos, "carousel")).toBe(true);
+    expect(listParses(mixed, "rows")).toBe(false);
+    expect(listParses(without, "carousel")).toBe(false);
   });
 
   it("limits a gallery to two to eight photos and a card to twelve", () => {
