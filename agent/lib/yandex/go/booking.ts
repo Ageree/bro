@@ -48,10 +48,16 @@ const activeRideSource = String.raw`
  * that is already on answers instead of a second one. The draft is never
  * sent twice; a commit Yandex answers 202 is sent again, as the site does,
  * since it names the same draft.
+ *
+ * A ride for someone else is the site's «Заказ другому человеку»: the
+ * passenger's number and name go into the draft (`extra_contact_phone`,
+ * `extra_passenger_name`), and Yandex texts them the car and the driver; the
+ * ride stays in the person's account and on their payment. A tariff can
+ * refuse it (`order_for_other_prohibited` of its service level).
  */
 export const goBookOperation = defineYandexOperation({
   about:
-    "Book an econom Yandex Go ride now. from and to: address text or [longitude, latitude]; payment: cash, card or current (what is selected in Go); cardLast4: with payment card, the last four digits of the card the person named; maxPriceRub: do not book above it.",
+    "Book an econom Yandex Go ride now. from and to: address text or [longitude, latitude]; payment: cash, card or current (what is selected in Go); cardLast4: with payment card, the last four digits of the card the person named; maxPriceRub: do not book above it; passengerPhone and passengerName: only when the ride is for someone else, their number and name: Yandex texts them the car and the driver, and the person pays.",
   access: "purchase",
   args: z.object({
     cardLast4: z
@@ -63,6 +69,8 @@ export const goBookOperation = defineYandexOperation({
     near: z
       .tuple([z.number().min(-180).max(180), z.number().min(-90).max(90)])
       .default([37.6177, 55.7558]),
+    passengerName: z.string().max(60).optional(),
+    passengerPhone: z.string().max(40).optional(),
     payment: z.enum(["cash", "card", "current"]).default("current"),
     to: goPlace,
   }),
@@ -77,6 +85,9 @@ export const goBookOperation = defineYandexOperation({
       from: z.string(),
       to: z.string(),
       payment: z.string(),
+      passenger: z
+        .object({ phone: z.string(), name: z.string().nullable() })
+        .optional(),
     }),
     z.object({ kind: z.literal("already_active"), ride }),
     z.object({
@@ -184,6 +195,10 @@ export const goBookOperation = defineYandexOperation({
   const level = (quote.service_levels || []).find((l) => l.class === "econom");
   const price = Number(level?.max_price_as_decimal);
   if (!quote.offer || !level || level.is_fixed_price !== true || !Number.isFinite(price)) return fail("no_fixed_price");
+  // The site's «Заказ другому человеку»: the number as its form keeps it.
+  const passengerPhone = String(args.passengerPhone || "").replace(/[^0-9+]/g, "");
+  const passenger = passengerPhone ? { phone: passengerPhone, name: args.passengerName || null } : null;
+  if (passenger && level.order_for_other_prohibited === true) return fail("order_for_other_unavailable");
   if (args.maxPriceRub !== undefined && price > args.maxPriceRub) {
     return ok({ kind: "over_limit", price, from: from.short_text, to: to.short_text });
   }
@@ -191,6 +206,7 @@ export const goBookOperation = defineYandexOperation({
     id: session.userId, class: ["econom"], offer: quote.offer, parks: [], route: [from, to], requirements: {},
     payment: { type: payment.type, ...(payment.id ? { payment_method_id: payment.id } : {}) },
     driverclientchat_enabled: true,
+    ...(passenger ? { extra_contact_phone: passenger.phone, ...(passenger.name ? { extra_passenger_name: passenger.name } : {}) } : {}),
   });
   if (draft.wall) return { status: "signed_out" };
   // A draft is not an order: refused, nothing is booked.
@@ -203,7 +219,7 @@ export const goBookOperation = defineYandexOperation({
       commit = await session.post("/external/3.0/ordercommit", { id: session.userId, orderid: orderId });
     }
     if (typeof commit.status === "string") {
-      return ok({ kind: "booked", orderId, status: commit.status, price, from: from.short_text, to: to.short_text, payment: payment.label });
+      return ok({ kind: "booked", orderId, status: commit.status, price, from: from.short_text, to: to.short_text, payment: payment.label, ...(passenger ? { passenger } : {}) });
     }
   } catch {}
   return ok({ kind: "unknown", orderId });

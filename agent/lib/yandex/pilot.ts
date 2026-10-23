@@ -30,6 +30,18 @@ export function afishaPurchasePilot(scope: { readonly workspaceId: string }) {
   );
 }
 
+/**
+ * Whether the workspace books Go rides for someone else
+ * (YANDEX_GO_PASSENGER_WORKSPACES), within the purchase pilot.
+ */
+export function goPassengerPilot(scope: { readonly workspaceId: string }) {
+  const list = env.YANDEX_GO_PASSENGER_WORKSPACES ?? [];
+  return (
+    yandexPurchasePilot(scope) &&
+    (list.includes("*") || list.includes(scope.workspaceId))
+  );
+}
+
 /** Whether the workspace's public reads may skip the browser (YANDEX_DIRECT_WORKSPACES). */
 export function yandexDirectPilot(scope: { readonly workspaceId: string }) {
   const list = env.YANDEX_DIRECT_WORKSPACES ?? [];
