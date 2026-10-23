@@ -35,7 +35,7 @@ const maximumSlotDays = 7;
 /** How far ahead a range's later free days are looked up. */
 const laterDaysAhead = 30;
 const maximumServices = 80;
-const maximumBranches = 10;
+const maximumBranches = 20;
 
 const day = z
   .string()
@@ -239,6 +239,22 @@ export function yclientsPhone(phone: string) {
   return digits.length >= 10 ? digits : undefined;
 }
 
+/** A place `find` answers with, from its company and what named it. */
+function placeOf(
+  companyId: number,
+  row: z.infer<typeof companiesSchema>[number] | undefined,
+  form: number | undefined,
+  phoneConfirmation: boolean | undefined
+) {
+  return {
+    address: [row?.city, row?.address].filter(Boolean).join(", ") || null,
+    company: companyId,
+    form: form ?? null,
+    phoneConfirmation: phoneConfirmation ?? null,
+    title: row?.title ?? null,
+  };
+}
+
 async function find(link: string, signal: AbortSignal) {
   const url = URL.parse(/^https?:\/\//iu.test(link) ? link : `https://${link}`);
   if (url === null) {
@@ -257,11 +273,14 @@ async function find(link: string, signal: AbortSignal) {
           : "No YClients booking was found there: the place books some other way. Do the booking with browser_task (its site or the «Записаться» button of its Yandex Maps card).",
     };
   }
+  // A form's company, or for a network's form (`group_id`) every branch of
+  // the network: its `company_id` is only the form's default branch, and
+  // the person may mean another one (developers.yclients.com, bookform).
   const companies = new Map<
     number,
     { form?: number; phoneConfirmation?: boolean }
   >();
-  const groups = new Set<number>();
+  const groups = new Map<number, number>();
   // Up to five links: their forms are read together.
   const forms = await Promise.all(
     found.links.map(async (one) =>
@@ -276,50 +295,59 @@ async function find(link: string, signal: AbortSignal) {
   );
   for (const [index, one] of found.links.entries()) {
     const form = forms[index];
-    const formCompany = form?.company_id ?? 0;
-    const companyId =
-      one.company ?? (formCompany > 0 ? formCompany : undefined);
-    if (companyId !== undefined) {
-      companies.set(companyId, {
+    const group = form?.group_id ?? 0;
+    // A network's form says nothing of SMS: each branch has its own setting.
+    const phoneConfirmation =
+      group > 0 ? undefined : (form?.phone_confirmation ?? undefined);
+    if (one.company !== undefined) {
+      companies.set(one.company, { form: one.form, phoneConfirmation });
+    } else if (group > 0 && one.form !== undefined) {
+      groups.set(group, one.form);
+    } else if ((form?.company_id ?? 0) > 0) {
+      companies.set(form?.company_id ?? 0, {
         form: one.form,
-        phoneConfirmation: form?.phone_confirmation ?? undefined,
+        phoneConfirmation,
       });
-    } else if ((form?.group_id ?? 0) > 0) {
-      groups.add(form?.group_id ?? 0);
     }
   }
-  const branches = companiesSchema.parse(
-    groups.size > 0
-      ? await yclientsCall("GET", "/companies", {
-          query: new URLSearchParams({
-            active: "1",
-            group_id: String([...groups][0]),
-          }),
-          signal,
-        })
-      : []
-  );
+  const branches = (
+    await Promise.all(
+      [...groups].map(async ([group, form]) =>
+        companiesSchema
+          .parse(
+            await yclientsCall("GET", "/companies", {
+              query: new URLSearchParams({
+                active: "1",
+                group_id: String(group),
+              }),
+              signal,
+            })
+          )
+          // A branch's own SMS setting is not in the list: book finds out.
+          .map((branch) => placeOf(branch.id, branch, form, undefined))
+      )
+    )
+  ).flat();
   const known = await Promise.all(
-    [...companies.keys()].map(async (id) => {
+    [...companies].map(async ([id, from]) => {
       const rows = companiesSchema.safeParse(
         await yclientsCall("GET", "/companies", {
           query: new URLSearchParams({ id: String(id) }),
           signal,
         }).catch(() => [])
       );
-      return rows.success ? (rows.data[0] ?? { id }) : { id };
+      const row = rows.success ? rows.data[0] : undefined;
+      return placeOf(id, row, from.form, from.phoneConfirmation);
     })
   );
-  const places = [...known, ...branches]
-    .slice(0, maximumBranches)
-    .map((place) => ({
-      address: [place.city, place.address].filter(Boolean).join(", ") || null,
-      company: place.id,
-      form: companies.get(place.id)?.form ?? null,
-      phoneConfirmation: companies.get(place.id)?.phoneConfirmation ?? null,
-      title: place.title ?? null,
-    }));
-  return { ok: true as const, places };
+  const all = [...known, ...branches];
+  const places = all.slice(0, maximumBranches);
+  return {
+    ok: true as const,
+    places,
+    // The model hears that the list is cut, and can name the address.
+    total: all.length,
+  };
 }
 
 async function services(companyId: number, signal: AbortSignal) {
@@ -389,9 +417,10 @@ async function slots(
   const open = new Set(
     (dates.booking_dates ?? []).map((moment) => moment.slice(0, 10))
   );
-  const asked = daysBetween(input.from, to, maximumSlotDays).filter((one) =>
-    open.has(one)
-  );
+  const read = daysBetween(input.from, to, maximumSlotDays);
+  // A range longer than the days read: the rest counts as later days.
+  const readThrough = read.at(-1) ?? input.from;
+  const asked = read.filter((one) => open.has(one));
   const days = await Promise.all(
     asked.map(async (date) => {
       const times = timesSchema.parse(
@@ -413,8 +442,9 @@ async function slots(
   );
   return {
     days: days.filter((one) => one.times.length > 0),
+    readThrough,
     laterDays: [...open]
-      .filter((one) => one > to)
+      .filter((one) => one > readThrough)
       .toSorted()
       .slice(0, 5),
     ok: true as const,
@@ -447,7 +477,45 @@ function refusal(codes: readonly number[]) {
   return "YClients refused the booking. Do it with browser_task on the place's booking page, or offer to call the place. Never quote an error text or a status code to the person.";
 }
 
-const bookedTurns = turnMemory<true>();
+/**
+ * A booking per turn: claimed before the first await, so two calls of one
+ * step cannot both book, and given back only when YClients surely booked
+ * nothing. Keyed by the turn and the person's words: after eve hands a
+ * session over, turn ids start again at `turn_0`. On this instance only: a
+ * restart of eve between `book_record` and the end of its step could run
+ * the step, and the booking, again.
+ */
+const bookingClaims = turnMemory<"booked" | "claimed" | "open">();
+
+/** The step a booking is claimed under, or undefined without a turn id. */
+function claimOf(words: {
+  readonly said: readonly string[] | null;
+  readonly step: StepIdentity;
+}) {
+  if (words.step.turnId === undefined) return undefined;
+  return {
+    sessionId: words.step.sessionId,
+    turnId: `${words.step.turnId}\n${(words.said ?? []).join("\n")}`,
+  };
+}
+
+/**
+ * Whether the person's own words of the turn hold the code as a number of
+ * its own («код 4821», «4 8 2 1»), not as a part of another one: «в 11:00»
+ * does not give the code 1100.
+ */
+function saidCode(said: readonly string[] | null, code: string) {
+  return (said ?? []).some((words) =>
+    (words.match(/\d(?:[\s-]?\d){3,9}/gu) ?? []).some(
+      (number) => number.replaceAll(/\D/gu, "") === code
+    )
+  );
+}
+
+/** Whether YClients surely refused: a 4xx with its own error codes. */
+function refusedForSure(error: YclientsError) {
+  return error.status >= 400 && error.status < 500 && error.codes.length > 0;
+}
 
 async function book(
   input: Extract<Input, { action: "book" }>,
@@ -457,7 +525,10 @@ async function book(
     readonly step: StepIdentity;
   }
 ) {
-  if (bookedTurns.get(words.step) !== undefined) {
+  const claim = claimOf(words);
+  if (claim === undefined) return { ok: false as const, reply: notThePerson };
+  const held = bookingClaims.get(claim);
+  if (held === "booked" || held === "claimed") {
     return {
       ok: false as const,
       reply:
@@ -466,12 +537,7 @@ async function book(
   }
   const digits = input.code?.replaceAll(/\D/gu, "") ?? "";
   const code = digits === "" ? undefined : digits;
-  if (
-    code !== undefined &&
-    !(words.said ?? []).some((said) =>
-      said.replaceAll(/\D/gu, "").includes(code)
-    )
-  ) {
+  if (code !== undefined && !saidCode(words.said, code)) {
     return {
       ok: false as const,
       reply:
@@ -481,7 +547,55 @@ async function book(
   const caller = context.session.auth.current;
   if (caller?.principalType !== "user")
     return { ok: false as const, reply: notThePerson };
-  const scope = scopeFromPrincipal(caller);
+  bookingClaims.set(claim, "claimed");
+  try {
+    const result = await bookOnce(
+      input,
+      code,
+      scopeFromPrincipal(caller),
+      context.abortSignal
+    );
+    bookingClaims.set(claim, result.booked ? "booked" : "open");
+    return result;
+  } catch (error) {
+    // Before `book_record`, or refused by it for sure, nothing was booked.
+    if (error instanceof BookingSent) {
+      bookingClaims.set(claim, "booked");
+      console.warn("[yclients] booking answer lost", {
+        company: input.company,
+        status: error.status,
+      });
+      return {
+        ok: false as const,
+        reply:
+          "It is unknown whether the booking went through: the answer was lost. Do not book again. Tell the person to check for the salon's SMS, and offer to call the place to check.",
+      };
+    }
+    bookingClaims.set(claim, "open");
+    throw error;
+  }
+}
+
+/**
+ * A `book_record` that went out and came back with no sure refusal: a
+ * network error, a 5xx or an answer that is no envelope. The booking may
+ * exist, so it is never sent again (dev-notes: a 5xx can come after the
+ * order exists).
+ */
+class BookingSent extends Error {
+  override readonly name = "BookingSent";
+
+  constructor(readonly status: number | null) {
+    super("The booking may exist.");
+  }
+}
+
+async function bookOnce(
+  input: Extract<Input, { action: "book" }>,
+  code: string | undefined,
+  scope: ReturnType<typeof scopeFromPrincipal>,
+  signal: AbortSignal
+) {
   const [profile, ownPhone] = await Promise.all([
     readUserProfile(scope),
     readOwnPhone(scope),
@@ -491,6 +605,7 @@ async function book(
     .join(" ");
   if (fullname === "") {
     return {
+      booked: false,
       ok: false as const,
       reply:
         "The salon needs the person's name. Ask for it, save it with personal_info__update, then book.",
@@ -499,27 +614,32 @@ async function book(
   const phone = ownPhone === undefined ? undefined : yclientsPhone(ownPhone);
   if (phone === undefined) {
     return {
+      booked: false,
       ok: false as const,
       reply:
         "The salon needs the person's phone number. Ask for it, save it with personal_info__update, then book.",
     };
   }
-  const signal = context.abortSignal;
+  const sendCode = async () => {
+    await yclientsCall("POST", `/book_code/${String(input.company)}`, {
+      body: { fullname, phone },
+      signal,
+    });
+    return {
+      booked: false,
+      codeSent: true,
+      ok: true as const,
+      reply:
+        "YClients sent an SMS code to the person's phone. Ask them for it, then call book again with the same arguments and the code. Nothing is booked yet.",
+    };
+  };
   if (code === undefined && input.form !== undefined && input.form > 0) {
     const form = bookformSchema.parse(
       await yclientsCall("GET", `/bookform/${String(input.form)}`, { signal })
     );
-    if (form.phone_confirmation === true) {
-      await yclientsCall("POST", `/book_code/${String(input.company)}`, {
-        body: { fullname, phone },
-        signal,
-      });
-      return {
-        codeSent: true,
-        ok: true as const,
-        reply:
-          "YClients sent an SMS code to the person's phone. Ask them for it, then call book again with the same arguments and the code. Nothing is booked yet.",
-      };
+    // A network's form leaves SMS to each branch: book_record says so (432).
+    if ((form.group_id ?? 0) === 0 && form.phone_confirmation === true) {
+      return sendCode();
     }
   }
   const appointments = [
@@ -557,17 +677,15 @@ async function book(
       }
     );
   } catch (error) {
-    if (error instanceof YclientsError) throw error;
-    // The request may have reached YClients: a second one could book twice.
-    bookedTurns.set(words.step, true);
-    console.warn("[yclients] booking answer lost", { company: input.company });
-    return {
-      ok: false as const,
-      reply:
-        "It is unknown whether the booking went through: the answer was lost. Do not book again. Tell the person to check for the salon's SMS, and offer to call the place to check.",
-    };
+    if (!(error instanceof YclientsError) || !refusedForSure(error)) {
+      throw new BookingSent(
+        error instanceof YclientsError ? error.status : null
+      );
+    }
+    // No code was given and the salon wants one: it goes out now.
+    if (code === undefined && error.codes.includes(432)) return sendCode();
+    throw error;
   }
-  bookedTurns.set(words.step, true);
   const records = recordsSchema.safeParse(answer);
   console.info("[yclients] booked", {
     company: input.company,

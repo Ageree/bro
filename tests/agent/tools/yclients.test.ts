@@ -128,13 +128,13 @@ const ok = (data: z.core.util.JSONType, status = 200) =>
   Response.json({ data, meta: [], success: true }, { status });
 
 const booking = {
-  action: "book",
+  action: "book" as const,
   company,
   datetime: "2026-10-24T11:00:00+03:00",
-  personAskedToBook: true,
+  personAskedToBook: true as const,
   services: [7],
   staff: 0,
-} as const;
+};
 
 beforeEach(() => {
   vi.resetModules();
@@ -194,6 +194,7 @@ describe("yclients", () => {
           title: "Топган",
         },
       ],
+      total: 1,
     });
     expect(requests[0]?.headers.get("authorization")).toBe(
       "Bearer partner-token"
@@ -246,6 +247,7 @@ describe("yclients", () => {
       ],
       laterDays: ["2026-10-26"],
       ok: true,
+      readThrough: "2026-10-25",
     });
     expect(requests[1]?.url.searchParams.getAll("service_ids[]")).toEqual([
       "7",
@@ -353,5 +355,134 @@ describe("yclients", () => {
       ok: false,
     });
     expect(requests).toHaveLength(2);
+
+    // A gateway's 504 page after the booking went out: it may exist.
+    const gateway = yclients({
+      [`POST /api/v1/book_check/${String(company)}`]: () =>
+        new Response("", { status: 201 }),
+      [`POST /api/v1/book_record/${String(company)}`]: () =>
+        new Response("<html>504 Gateway Time-out</html>", { status: 504 }),
+    });
+    const again = await tool(asked);
+    expect(
+      JSON.stringify(await again.execute(booking, callContext()))
+    ).toContain("Do not book again");
+    expect(await again.execute(booking, callContext())).toMatchObject({
+      ok: false,
+    });
+    expect(gateway).toHaveLength(2);
+  });
+
+  it("books once for two calls of one step", async () => {
+    const { promise: held, resolve: release } =
+      Promise.withResolvers<undefined>();
+    const requests = yclients({
+      [`POST /api/v1/book_check/${String(company)}`]: () => ok(null, 201),
+      [`POST /api/v1/book_record/${String(company)}`]: () =>
+        ok([{ id: 1, record_hash: "abc", record_id: 7 }], 201),
+    });
+    services.phone.mockImplementationOnce(async () => {
+      await held;
+      return "+7 916 150-22-39";
+    });
+    const booker = await tool(asked);
+
+    const both = Promise.all([
+      booker.execute(booking, callContext()),
+      booker.execute(booking, callContext()),
+    ]);
+    release(undefined);
+    const [first, second] = await both;
+
+    expect(first).toMatchObject({ booked: true });
+    expect(second).toMatchObject({ ok: false });
+    expect(
+      requests.filter((request) => request.url.pathname.includes("book_record"))
+    ).toHaveLength(1);
+  });
+
+  it("lists every branch of a network's form, not only its default one", async () => {
+    services.links.mockResolvedValue({
+      kind: "found",
+      links: [{ company: undefined, form: 383_401 }],
+    });
+    yclients({
+      "GET /api/v1/bookform/383401": () =>
+        ok({ company_id: 1, group_id: 77, phone_confirmation: false }),
+      "GET /api/v1/companies": () =>
+        ok([
+          { address: "Тверская, 1", id: 1, title: "Glow&Go Центр" },
+          { address: "Мичуринский проспект, 56", id: 2, title: "Glow&Go Небо" },
+        ]),
+    });
+
+    const found = await (
+      await tool(asked)
+    ).execute({ action: "find", link: "https://glowgo.ru" }, callContext());
+
+    expect(found).toMatchObject({
+      places: [
+        { company: 1, form: 383_401, phoneConfirmation: null },
+        { address: "Мичуринский проспект, 56", company: 2, form: 383_401 },
+      ],
+      total: 2,
+    });
+  });
+
+  it("asks the salon for an SMS code when it refuses a booking without one", async () => {
+    const requests = yclients({
+      [`POST /api/v1/book_check/${String(company)}`]: () => ok(null, 201),
+      [`POST /api/v1/book_record/${String(company)}`]: () =>
+        Response.json(
+          { meta: { errors: [{ code: 432 }] }, success: false },
+          { status: 422 }
+        ),
+      [`POST /api/v1/book_code/${String(company)}`]: () => ok(null, 201),
+    });
+    const booker = await tool(asked);
+
+    expect(await booker.execute(booking, callContext())).toMatchObject({
+      codeSent: true,
+    });
+    expect(requests.at(-1)?.url.pathname).toBe(
+      `/api/v1/book_code/${String(company)}`
+    );
+  });
+
+  it("takes a code only as a number of its own in the person's words", async () => {
+    const requests = yclients({});
+    const booker = await tool([{ content: "запиши на 11:00", role: "user" }]);
+
+    expect(
+      await booker.execute({ ...booking, code: "1100" }, callContext())
+    ).toMatchObject({ ok: false });
+    expect(requests).toHaveLength(0);
+  });
+
+  it("names the free days past a range longer than the days it read", async () => {
+    yclients({
+      [`GET /api/v1/book_dates/${String(company)}`]: () =>
+        ok({ booking_dates: ["2026-10-30", "2026-10-31"] }),
+    });
+
+    const found = await (
+      await tool(asked)
+    ).execute(
+      {
+        action: "slots",
+        company,
+        from: "2026-10-23",
+        services: [7],
+        staff: 0,
+        to: "2026-10-31",
+      },
+      callContext()
+    );
+
+    expect(found).toMatchObject({
+      days: [],
+      laterDays: ["2026-10-30", "2026-10-31"],
+      readThrough: "2026-10-29",
+    });
   });
 });

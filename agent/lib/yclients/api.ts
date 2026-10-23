@@ -98,6 +98,8 @@ export async function yclientsCall(
     init
   );
   const text = await response.text();
+  // book_check may answer 201 with nothing in it (developers.yclients.com).
+  if (response.ok && text.trim() === "") return null;
   const parsed = envelopeSchema.safeParse(parseJson(text));
   if (!parsed.success) {
     throw new YclientsError(

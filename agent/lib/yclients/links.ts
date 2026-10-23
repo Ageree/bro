@@ -55,7 +55,11 @@ export function bookingLinksIn(html: string) {
     at !== -1 && found.size < maximumLinks;
     at = lower.indexOf("yclients.", at + 1)
   ) {
-    const window = lower.slice(Math.max(0, at - 24), at + 200);
+    // A link inside another one's query comes encoded («%2F%2Fn55.yclients.com»).
+    const window = lower
+      .slice(Math.max(0, at - 40), at + 200)
+      .replaceAll("%3a", ":")
+      .replaceAll("%2f", "/");
     const start = window.search(/(?:https?:)?\/\/[a-z0-9.-]*yclients\./u);
     const hostStart =
       start === -1 ? window.search(/[bnw]\d{1,9}\.yclients\./u) : start;
@@ -84,8 +88,14 @@ export function bookingLinksIn(html: string) {
 export async function bookingLinksOf(link: URL) {
   const own = linkIds(link);
   if (own !== undefined) return { kind: "found" as const, links: [own] };
+  // A site's «Записаться» link may redirect to the widget itself.
+  const hops: NonNullable<ReturnType<typeof linkIds>>[] = [];
   const download = await downloadWithin(link, maximumPageBytes, {
-    allowUrl: (next) => !isBlockedHost(next.hostname),
+    allowUrl: (next) => {
+      const hop = linkIds(next);
+      if (hop !== undefined) hops.push(hop);
+      return !isBlockedHost(next.hostname);
+    },
     fetch: fetchPublic,
     headers: {
       accept: "text/html,application/xhtml+xml",
@@ -93,6 +103,7 @@ export async function bookingLinksOf(link: URL) {
       "user-agent": browserUserAgent,
     },
   });
+  if (hops.length > 0) return { kind: "found" as const, links: hops };
   if (download.kind !== "bytes") return { kind: "unreachable" as const };
   const links = bookingLinksIn(decodePage(download.bytes, download.mediaType));
   return { kind: "found" as const, links };
