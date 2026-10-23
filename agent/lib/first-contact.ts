@@ -1,6 +1,4 @@
-import { bugBotTarget } from "@agent/lib/bug-bot/target";
 import { claimWorkspaceIntroduction } from "@db/services/scope";
-import { env } from "@shared/environment";
 import type { AccessScope } from "@shared/identity/access-scope";
 
 /**
@@ -12,19 +10,13 @@ const firstContactMarker =
   "Пометка `first-contact`: аккаунт этого человека создан прямо сейчас, это его первое в жизни сообщение, и знакомства ещё не было.";
 
 /**
- * The beta and where faults go, only while the bug bot is on
- * (`bugBotTarget`) and BUG_BOT_USERNAME names it, as Telegram's `/bug` hint:
- * the model never invents a handle, and without the bot nobody reads a fault.
- * The introduction names no terms, privacy or data rules (owner, 12.10).
+ * The beta and where faults go: to the owner's own Telegram (owner, 23.10),
+ * not the bug bot, so a newcomer writes to a person who reads it.
+ * The model never invents a handle: it says this one as it is. The
+ * introduction names no terms, privacy or data rules (owner, 12.10).
  */
-function betaNote() {
-  const bot = env.BUG_BOT_USERNAME;
-  return bot === undefined || bugBotTarget() === undefined
-    ? []
-    : [
-        `Для знакомства: Бро сейчас в бете. О сбоях и идеях — в Telegram @${bot}.`,
-      ];
-}
+const betaNote =
+  "Для знакомства: Бро сейчас в бете. О сбоях и идеях — в Telegram @kapital0.";
 
 /**
  * The turn context that opens a person's very first conversation, or nothing.
@@ -36,6 +28,6 @@ function betaNote() {
  */
 export async function firstContactContext(scope: AccessScope) {
   return (await claimWorkspaceIntroduction(scope))
-    ? [firstContactMarker, ...betaNote()]
+    ? [firstContactMarker, betaNote]
     : [];
 }
