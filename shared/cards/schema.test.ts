@@ -95,43 +95,44 @@ describe("card schema", () => {
   });
 
   it("refuses a choice whose options repeat or whose initial is not an option", () => {
-    const choice = {
-      type: "choice",
-      id: "pick",
-      label: "Выбор",
-      options: [
-        { value: "a", title: "А" },
-        { value: "b", title: "Б" },
-      ],
-    };
-    const send = { label: "Отправить", submit: "send" };
-    const card = (block: unknown) => ({
+    const options = [
+      { value: "a", title: "А" },
+      { value: "b", title: "Б" },
+    ];
+    const card = {
       title: "Тест",
-      blocks: [block],
-      actions: [send],
-    });
-    expect(cardSchema.safeParse(card(choice)).success).toBe(true);
+      blocks: [{ type: "choice", id: "pick", label: "Выбор", options }],
+      actions: [{ label: "Отправить", submit: "send" }],
+    };
+    expect(cardSchema.safeParse(card).success).toBe(true);
     expect(
-      cardSchema.safeParse(card({ ...choice, initial: ["c"] })).success
+      cardSchema.safeParse({
+        ...card,
+        blocks: [{ ...card.blocks[0], initial: ["c"] }],
+      }).success
     ).toBe(false);
     expect(
-      cardSchema.safeParse(card({ ...choice, initial: ["a", "b"] })).success
+      cardSchema.safeParse({
+        ...card,
+        blocks: [{ ...card.blocks[0], initial: ["a", "b"] }],
+      }).success
     ).toBe(false);
     expect(
-      cardSchema.safeParse(
-        card({ ...choice, initial: ["a", "b"], multiple: true })
-      ).success
+      cardSchema.safeParse({
+        ...card,
+        blocks: [{ ...card.blocks[0], initial: ["a", "b"], multiple: true }],
+      }).success
     ).toBe(true);
     expect(
-      cardSchema.safeParse(
-        card({
-          ...choice,
-          options: [
-            { value: "a", title: "А" },
-            { value: "a", title: "Б" },
-          ],
-        })
-      ).success
+      cardSchema.safeParse({
+        ...card,
+        blocks: [
+          {
+            ...card.blocks[0],
+            options: [options[0], { value: "a", title: "Б" }],
+          },
+        ],
+      }).success
     ).toBe(false);
   });
 });
