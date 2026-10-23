@@ -1,19 +1,27 @@
 import { describe, expect, it } from "vitest";
+import apartmentGallery from "../../docs/cards/examples/apartment-gallery.json";
 import flightBooked from "../../docs/cards/examples/flight-booked.json";
+import hotelChoicePhotos from "../../docs/cards/examples/hotel-choice-photos.json";
 import hotelChoice from "../../docs/cards/examples/hotel-choice.json";
 import kidPartyDetails from "../../docs/cards/examples/kid-party-details.json";
 import meetingSlot from "../../docs/cards/examples/meeting-slot.json";
 import restaurantsCompare from "../../docs/cards/examples/restaurants-compare.json";
 import subscriptionsCancel from "../../docs/cards/examples/subscriptions-cancel.json";
+import vacuumCompare from "../../docs/cards/examples/vacuum-compare.json";
+import weekendIdeasPhotos from "../../docs/cards/examples/weekend-ideas-photos.json";
 import weekendItinerary from "../../docs/cards/examples/weekend-itinerary.json";
 import { blockSchema, cardSchema } from "./schema";
 
 const examples = [
+  { name: "apartment-gallery", card: apartmentGallery },
   { name: "flight-booked", card: flightBooked },
+  { name: "hotel-choice-photos", card: hotelChoicePhotos },
   { name: "hotel-choice", card: hotelChoice },
   { name: "kid-party-details", card: kidPartyDetails },
   { name: "meeting-slot", card: meetingSlot },
   { name: "subscriptions-cancel", card: subscriptionsCancel },
+  { name: "vacuum-compare", card: vacuumCompare },
+  { name: "weekend-ideas-photos", card: weekendIdeasPhotos },
   { name: "restaurants-compare", card: restaurantsCompare },
   { name: "weekend-itinerary", card: weekendItinerary },
 ];
@@ -134,5 +142,45 @@ describe("card schema", () => {
         ],
       }).success
     ).toBe(false);
+  });
+
+  it("shows photos on every row or on none, and a carousel only with photos", () => {
+    const photo = { url: "https://example.com/a.jpg", alt: "Фото" };
+    const withPhotos = [
+      { title: "А", photo },
+      { title: "Б", photo },
+    ];
+    const without = [{ title: "А" }, { title: "Б" }];
+    const mixed = [{ title: "А", photo }, { title: "Б" }];
+    const parse = (
+      rows: readonly { title: string; photo?: typeof photo }[],
+      layout: "rows" | "carousel"
+    ) =>
+      cardSchema.safeParse({
+        title: "Тест",
+        blocks: [{ type: "list", rows, layout }],
+      }).success;
+    expect(parse(withPhotos, "rows")).toBe(true);
+    expect(parse(withPhotos, "carousel")).toBe(true);
+    expect(parse(mixed, "rows")).toBe(false);
+    expect(parse(without, "carousel")).toBe(false);
+  });
+
+  it("limits a gallery to two to eight photos and a card to twelve", () => {
+    const photo = { url: "https://example.com/a.jpg", alt: "Фото" };
+    const photos = (count: number) =>
+      Array.from({ length: count }, () => photo);
+    const parse = (...counts: number[]) =>
+      cardSchema.safeParse({
+        title: "Тест",
+        blocks: counts.map((count) => ({
+          type: "gallery",
+          photos: photos(count),
+        })),
+      }).success;
+    expect(parse(1)).toBe(false);
+    expect(parse(2)).toBe(true);
+    expect(parse(9)).toBe(false);
+    expect(parse(8, 5)).toBe(false);
   });
 });

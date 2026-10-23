@@ -33,6 +33,18 @@ const chipSchema = z.strictObject({
 });
 
 /**
+ * A photograph of the thing a row or an option is about: a hotel, a product, a
+ * place. The address is where Bro found it; the page never loads it from there
+ * (Bro keeps its own copy of every photo, `docs/cards.md`). `credit` names the
+ * site it came from.
+ */
+const photoSchema = z.strictObject({
+  url: httpsUrl,
+  alt: shortText(120),
+  credit: shortText(60).optional(),
+});
+
+/**
  * What a card's answer is keyed by: the id of a field or of a button. Lower case
  * latin so that the person's answers reach Bro as plain keys.
  */
@@ -43,6 +55,7 @@ const optionSchema = z.strictObject({
   title: shortText(80),
   detail: shortText(120).optional(),
   side: shortText(40).optional(),
+  photo: photoSchema.optional(),
 });
 
 const place = z.strictObject({
@@ -51,6 +64,14 @@ const place = z.strictObject({
   code: shortText(8).optional(),
   note: shortText(40).optional(),
 });
+
+/** A set of rows or options shows a photo on each or on none: never a mix. */
+function allOrNone(photos: readonly unknown[]) {
+  return photos.every(Boolean) || !photos.some(Boolean);
+}
+
+/** Photos one card may carry, whatever the blocks are. */
+const maximumPhotos = 12;
 
 export const blockSchema = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("heading"), text: shortText(80) }),
@@ -78,20 +99,38 @@ export const blockSchema = z.discriminatedUnion("type", [
     value: shortText(24),
     hint: shortText(80).optional(),
   }),
+  z
+    .strictObject({
+      type: z.literal("list"),
+      rows: z
+        .array(
+          z.strictObject({
+            title: shortText(80),
+            subtitle: shortText(120).optional(),
+            side: shortText(40).optional(),
+            chip: chipSchema.optional(),
+            href: httpsUrl.optional(),
+            photo: photoSchema.optional(),
+          })
+        )
+        .min(1)
+        .max(12),
+      layout: z.enum(["rows", "carousel"]).default("rows"),
+    })
+    .refine(
+      (list) =>
+        allOrNone(list.rows.map((row) => row.photo)) &&
+        (list.layout === "rows" ||
+          (list.rows.length >= 2 &&
+            list.rows.length <= 8 &&
+            list.rows.every((row) => row.photo !== undefined))),
+      "photos are on every row or on none, and a carousel is 2–8 rows that all have one"
+    ),
   z.strictObject({
-    type: z.literal("list"),
-    rows: z
-      .array(
-        z.strictObject({
-          title: shortText(80),
-          subtitle: shortText(120).optional(),
-          side: shortText(40).optional(),
-          chip: chipSchema.optional(),
-          href: httpsUrl.optional(),
-        })
-      )
-      .min(1)
-      .max(12),
+    type: z.literal("gallery"),
+    photos: z.array(photoSchema).min(2).max(8),
+    caption: shortText(100).optional(),
+    ratio: z.enum(["wide", "square", "portrait"]).default("wide"),
   }),
   z.strictObject({
     type: z.literal("timeline"),
@@ -172,6 +211,7 @@ export const blockSchema = z.discriminatedUnion("type", [
       multiple: z.boolean().default(false),
       required: z.boolean().default(true),
       initial: z.array(identifier).max(8).default([]),
+      layout: z.enum(["list", "tiles", "carousel"]).default("list"),
     })
     .refine(
       (choice) =>
@@ -182,6 +222,13 @@ export const blockSchema = z.discriminatedUnion("type", [
         ) &&
         (choice.multiple || choice.initial.length <= 1),
       "option values are unique, and initial names options (one for a single choice)"
+    )
+    .refine(
+      (choice) =>
+        allOrNone(choice.options.map((option) => option.photo)) &&
+        (choice.layout === "list" ||
+          choice.options.every((option) => option.photo !== undefined)),
+      "photos are on every option or on none, and tiles and a carousel need one on each"
     ),
   z.strictObject({
     type: z.literal("field"),
@@ -229,11 +276,23 @@ export const cardSchema = z
     const submits = card.actions.flatMap((action) =>
       "submit" in action ? [action.submit] : []
     );
+    const photos = card.blocks.reduce((count, block) => {
+      if (block.type === "image") return count + 1;
+      if (block.type === "gallery") return count + block.photos.length;
+      if (block.type === "list") {
+        return count + block.rows.filter((row) => row.photo).length;
+      }
+      if (block.type === "choice") {
+        return count + block.options.filter((option) => option.photo).length;
+      }
+      return count;
+    }, 0);
     return (
       new Set(ids).size === ids.length &&
       new Set(submits).size === submits.length &&
-      (ids.length === 0 || submits.length > 0)
+      (ids.length === 0 || submits.length > 0) &&
+      photos <= maximumPhotos
     );
-  }, "field and choice ids are unique, button ids are unique, and a card with fields has a button that sends them");
+  }, "field and choice ids are unique, button ids are unique, a card with fields has a button that sends them, and a card carries at most 12 photos");
 
 export type Card = z.infer<typeof cardSchema>;

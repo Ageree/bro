@@ -1,0 +1,69 @@
+{
+  "kicker": "Выходные · Москва",
+  "title": "Куда сходить в субботу",
+  "subtitle": "Не банально, до 3 000 ₽ на человека",
+  "tone": "info",
+  "blocks": [
+    {
+      "type": "list",
+      "rows": [
+        {
+          "title": "Выставка «Звук света»",
+          "subtitle": "Гараж, 12:00–21:00",
+          "side": "900 ₽",
+          "chip": {
+            "text": "Новое",
+            "color": "blue"
+          },
+          "photo": {
+            "url": "https://example.com/photos/garage-light.jpg",
+            "alt": "Световая инсталляция в зале музея «Гараж»",
+            "credit": "garagemca.org"
+          }
+        },
+        {
+          "title": "Ужин в «Тюбетее»",
+          "subtitle": "Узбекская кухня, летняя веранда",
+          "side": "2 200 ₽",
+          "photo": {
+            "url": "https://example.com/photos/tubeteika-dinner.jpg",
+            "alt": "Зал ресторана с верандой",
+            "credit": "afisha.ru"
+          }
+        },
+        {
+          "title": "Баня на Яузе",
+          "subtitle": "Паровая на двоих, 3 часа",
+          "side": "2 800 ₽",
+          "photo": {
+            "url": "https://example.com/photos/yauza-banya.jpg",
+            "alt": "Деревянная парная в бане на Яузе",
+            "credit": "afisha.ru"
+          }
+        },
+        {
+          "title": "Джаз в «Эссе»",
+          "subtitle": "Начало в 20:00, мест мало",
+          "side": "1 500 ₽",
+          "photo": {
+            "url": "https://example.com/photos/esse-jazz.jpg",
+            "alt": "Сцена клуба «Эссе» с контрабасом",
+            "credit": "afisha.ru"
+          }
+        }
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "neutral",
+      "text": "Выставку и ужин можно совместить: от «Гаража» до «Тюбетея» 15 минут пешком."
+    }
+  ],
+  "actions": [
+    {
+      "label": "Забронировать ужин",
+      "href": "https://example.com/places/tubeteika/book",
+      "primary": true
+    }
+  ]
+}

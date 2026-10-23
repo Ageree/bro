@@ -1,0 +1,73 @@
+{
+  "kicker": "Робот-пылесос · до 25 000 ₽",
+  "title": "Три варианта с влажной уборкой",
+  "subtitle": "Сравнил по отзывам и ценам в трёх магазинах",
+  "tone": "neutral",
+  "blocks": [
+    {
+      "type": "list",
+      "layout": "carousel",
+      "rows": [
+        {
+          "title": "Roborock Q8",
+          "subtitle": "Влажная уборка, лидар, 5 200 мА·ч",
+          "side": "23 990 ₽",
+          "chip": {
+            "text": "Мой выбор",
+            "color": "yellow"
+          },
+          "href": "https://example.com/shop/roborock-q8",
+          "photo": {
+            "url": "https://example.com/photos/roborock-q8.jpg",
+            "alt": "Робот-пылесос Roborock Q8 сверху",
+            "credit": "ozon.ru"
+          }
+        },
+        {
+          "title": "Dreame L10",
+          "subtitle": "Влажная уборка, лидар, тише всех",
+          "side": "21 490 ₽",
+          "href": "https://example.com/shop/dreame-l10",
+          "photo": {
+            "url": "https://example.com/photos/dreame-l10.jpg",
+            "alt": "Робот-пылесос Dreame L10 с док-станцией",
+            "credit": "wildberries.ru"
+          }
+        },
+        {
+          "title": "Xiaomi X20",
+          "subtitle": "Без лидара, камера, станция самоочистки",
+          "side": "24 700 ₽",
+          "href": "https://example.com/shop/xiaomi-x20",
+          "photo": {
+            "url": "https://example.com/photos/xiaomi-x20.jpg",
+            "alt": "Робот-пылесос Xiaomi X20 в базе",
+            "credit": "market.yandex.ru"
+          }
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "columns": ["Модель", "Шум", "Бак", "Отзывы"],
+      "rows": [
+        ["Roborock Q8", "64 дБ", "470 мл", "4,8"],
+        ["Dreame L10", "58 дБ", "570 мл", "4,7"],
+        ["Xiaomi X20", "66 дБ", "400 мл", "4,5"]
+      ],
+      "highlight": 0
+    },
+    {
+      "type": "callout",
+      "tone": "info",
+      "text": "У Dreame на 2 500 ₽ дешевле и тише, но у Roborock мешок для пыли больше и проще обслуживание."
+    }
+  ],
+  "actions": [
+    {
+      "label": "Открыть Roborock Q8",
+      "href": "https://example.com/shop/roborock-q8",
+      "primary": true
+    }
+  ]
+}
