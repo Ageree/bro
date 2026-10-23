@@ -8,6 +8,8 @@ import {
 import { toolContext } from "@tests/helpers/tool-context";
 
 const book = vi.hoisted(() => ({
+  deleteContact:
+    vi.fn<() => Promise<{ kind: "deleted" | "missing"; name: string }>>(),
   saveContact:
     vi.fn<
       () => Promise<{ kind: string; row: { name: string; phones: string[] } }>
@@ -18,7 +20,7 @@ vi.stubEnv("TELEGRAM_BOT_USERNAME", "phone_test_bot");
 vi.mock("@db/services/phone", () => ({ phonePilot: () => true }));
 vi.mock("@db/services/contacts", () => ({
   contactsPilot: () => true,
-  deleteContact: vi.fn<() => void>(),
+  deleteContact: book.deleteContact,
   findContacts: async () => [
     {
       aliases: [],
@@ -46,10 +48,12 @@ function person(text: string): ModelMessage {
   );
 }
 
-function resolveContext(): DynamicResolveContext {
+function resolveContext(
+  messages = [person("Запомни: мама — +7 916 123-45-67")]
+): DynamicResolveContext {
   return {
     channel: { kind: "channel:eve", metadata: {} },
-    messages: [person("Запомни: мама — +7 916 123-45-67")],
+    messages,
     model: null,
     session: { auth: baseContext.session.auth, id: "session-1" },
   };
@@ -90,11 +94,41 @@ async function setUp(
   };
 }
 
+/** contact-delete in a turn the person opened with these messages. */
+async function deleteIn(messages: ModelMessage[]) {
+  const context = {
+    ...baseContext,
+    session: { ...baseContext.session, id: "session-1" },
+    toolName: "contact-delete",
+  };
+  recordPhoneTurn(context.session, "start");
+  recordPhoneTurn(context.session, "person-message");
+  const tools = await contactTools.events["step.started"]?.(
+    {},
+    resolveContext(messages)
+  );
+  const tool =
+    tools && "contact-delete" in tools ? tools["contact-delete"] : undefined;
+  if (!tool?.approval) throw new Error("Expected contact-delete.");
+  const approval =
+    "request" in tool.approval ? tool.approval.request : tool.approval;
+  const input = { name: "брат" };
+  await approval({
+    ...context,
+    approvedTools: new Set(),
+    callId: "call-1",
+    toolInput: input,
+  });
+  return tool.execute(input, { ...context, callId: "call-1" });
+}
+
 function inContext(run: () => Promise<void>) {
   return () => contextStorage.run(new ContextContainer(), run);
 }
 
 beforeEach(() => {
+  book.deleteContact.mockReset();
+  book.deleteContact.mockResolvedValue({ kind: "deleted", name: "Брат" });
   book.saveContact.mockReset();
   book.saveContact.mockResolvedValue({
     kind: "created",
@@ -145,6 +179,34 @@ describe("contact tools", () => {
       expect(found).toMatchObject({
         contacts: [{ name: "Мама", phones: ["+79161234567"] }],
       });
+    })
+  );
+
+  it(
+    "delete a contact only when the person asked to forget one",
+    inContext(async () => {
+      // 23.10: Bro called contact-delete looking the brother up for a taxi.
+      expect(
+        await deleteIn([person("Вызови такси моему брату до моего дома")])
+      ).toMatchObject({ deleted: false });
+      expect(book.deleteContact).not.toHaveBeenCalled();
+      expect(await deleteIn([person("Забудь номер брата")])).toMatchObject({
+        deleted: true,
+      });
+      expect(book.deleteContact).toHaveBeenCalledOnce();
+    })
+  );
+
+  it(
+    "delete the one the person named after Bro asked which",
+    inContext(async () => {
+      expect(
+        await deleteIn([
+          person("Удали Сашу"),
+          { role: "assistant", content: "Какого Сашу: с работы или соседа?" },
+          person("С работы"),
+        ])
+      ).toMatchObject({ deleted: true });
     })
   );
 });
