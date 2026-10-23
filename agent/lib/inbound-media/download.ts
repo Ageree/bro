@@ -40,6 +40,8 @@ export interface DownloadOptions extends RequestInit {
   readonly fetch?: (url: URL, init: RequestInit) => Promise<Response>;
   /** How long one hop may take, its body included; {@link downloadTimeoutMs} by default. */
   readonly timeoutMs?: number;
+  /** Stops the download as a whole, whichever hop it is on: a deadline over several. */
+  readonly signal?: AbortSignal;
 }
 
 /**
@@ -122,6 +124,7 @@ export async function downloadWithin(
     allowUrl,
     fetch: requestHop = fetch,
     timeoutMs = downloadTimeoutMs,
+    signal,
     ...init
   } = options ?? {};
   if (url.protocol !== "https:") return { kind: "failed", reason: "not-https" };
@@ -132,7 +135,10 @@ export async function downloadWithin(
       response = await requestHop(target, {
         ...init,
         redirect: allowUrl ? "manual" : "follow",
-        signal: AbortSignal.timeout(timeoutMs),
+        signal:
+          signal === undefined
+            ? AbortSignal.timeout(timeoutMs)
+            : AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]),
       });
     } catch (error) {
       const name = error instanceof Error ? error.name : "";

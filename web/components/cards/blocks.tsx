@@ -3,7 +3,10 @@ import { Check, ChevronRight } from "lucide-react";
 import { cn } from "@web/components/class-names";
 import { Badge } from "@web/components/ui/badge";
 import { CardLink } from "./card-link";
+import { Carousel } from "./carousel";
 import { Copyable } from "./copyable";
+import { GalleryBlock } from "./gallery";
+import { PhotoFrame } from "./photo-frame";
 import { toneStyles } from "./tones";
 
 type Block = Card["blocks"][number];
@@ -86,12 +89,76 @@ function StatBlock({ block }: { readonly block: BlockOf<"stat"> }) {
   );
 }
 
+/**
+ * Options as cards in a strip (`layout: "carousel"`): a 4:3 photo on top, the
+ * title, the price, the detail and the chip under it, the next card peeking
+ * in. A card with an address is a link as a whole.
+ */
+function ListCarousel({ block }: { readonly block: BlockOf<"list"> }) {
+  return (
+    <Carousel label="Варианты" slideClassName="w-70">
+      {block.rows.map((row, position) => {
+        const content = (
+          <>
+            {row.photo && <PhotoFrame eager={position < 2} photo={row.photo} />}
+            <span className="type-row flex flex-1 flex-col gap-1 p-4">
+              <span className="font-[600] wrap-anywhere">{row.title}</span>
+              {row.side && (
+                <span className="font-[600] wrap-anywhere">{row.side}</span>
+              )}
+              {row.subtitle && (
+                <span className="type-caption wrap-anywhere text-muted-foreground">
+                  {row.subtitle}
+                </span>
+              )}
+              {row.chip && (
+                <ChipView chip={row.chip} className="mt-1.5 self-start" />
+              )}
+              {row.photo?.credit && (
+                <span className="mt-auto pt-2 type-caption wrap-anywhere text-muted-foreground">
+                  Фото: {row.photo.credit}
+                </span>
+              )}
+            </span>
+          </>
+        );
+        const card =
+          "flex w-full flex-col overflow-hidden rounded-lg border border-bro-line bg-card";
+        return row.href ? (
+          <CardLink
+            className={cn(
+              card,
+              "transition-colors outline-none hover:bg-secondary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground motion-reduce:transition-none"
+            )}
+            href={row.href}
+            key={row.title}
+          >
+            {content}
+          </CardLink>
+        ) : (
+          <div className={card} key={row.title}>
+            {content}
+          </div>
+        );
+      })}
+    </Carousel>
+  );
+}
+
 function ListBlock({ block }: { readonly block: BlockOf<"list"> }) {
+  if (block.layout === "carousel") return <ListCarousel block={block} />;
   return (
     <ul className="-my-3 flex flex-col">
       {block.rows.map((row) => {
         const content = (
           <>
+            {row.photo && (
+              <PhotoFrame
+                className="size-18 shrink-0 rounded-sm"
+                photo={row.photo}
+                ratio="square"
+              />
+            )}
             <span className="type-row flex min-w-0 flex-1 flex-col gap-0.5">
               <span className="font-[600] wrap-anywhere">{row.title}</span>
               {row.subtitle && (
@@ -377,21 +444,19 @@ function ChecklistBlock({ block }: { readonly block: BlockOf<"checklist"> }) {
   );
 }
 
+/**
+ * One photo across the plate, with its caption and the site it came from. A
+ * photo that does not load takes the whole figure with it.
+ */
 function ImageBlock({ block }: { readonly block: BlockOf<"image"> }) {
   return (
-    <figure className="flex flex-col gap-2">
-      {/* oxlint-disable-next-line nextjs/no-img-element -- the address is any https host the model named, and next/image only optimises the hosts it is told about */}
-      <img
-        alt={block.alt}
-        className="aspect-4/3 w-full rounded-lg bg-secondary object-cover"
-        decoding="async"
-        loading="lazy"
-        referrerPolicy="no-referrer"
-        src={block.url}
-      />
-      {block.caption && (
+    <figure className="flex flex-col gap-2 not-has-[img]:hidden">
+      <PhotoFrame className="rounded-lg" photo={block} />
+      {(block.caption ?? block.credit) && (
         <figcaption className="type-caption wrap-anywhere text-muted-foreground">
           {block.caption}
+          {block.caption && block.credit && " · "}
+          {block.credit && `Фото: ${block.credit}`}
         </figcaption>
       )}
     </figure>
@@ -444,6 +509,8 @@ export function BlockView({ block }: { readonly block: Block }) {
       return <ChecklistBlock block={block} />;
     case "image":
       return <ImageBlock block={block} />;
+    case "gallery":
+      return <GalleryBlock block={block} />;
     case "copyable":
       return <Copyable label={block.label} value={block.value} />;
     case "divider":

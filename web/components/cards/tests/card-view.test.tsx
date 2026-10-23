@@ -303,21 +303,21 @@ describe("blocks", () => {
     expect(texts(document, "li label")).toEqual(["Паспорт", "Зарядка"]);
   });
 
-  it("sets an image as a plain lazy img that sends no referrer", () => {
+  it("sets an image as a lazy img that sends no referrer, in a 4:3 frame", () => {
     const document = blocksOf({
       alt: "Кремль",
       caption: "Вид с набережной",
       type: "image",
       url: "https://images.example.org/kremlin.jpg",
     });
-    const image = document.querySelector("figure > img");
+    const image = document.querySelector("figure > span > img");
     expect(image?.getAttribute("src")).toBe(
       "https://images.example.org/kremlin.jpg"
     );
     expect(image?.getAttribute("alt")).toBe("Кремль");
     expect(image?.getAttribute("loading")).toBe("lazy");
     expect(image?.getAttribute("referrerPolicy")).toBe("no-referrer");
-    expect(image?.className).toContain("aspect-4/3");
+    expect(image?.parentElement?.className).toContain("aspect-4/3");
     expect(texts(document, "figure > figcaption")).toEqual([
       "Вид с набережной",
     ]);

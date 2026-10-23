@@ -2,19 +2,28 @@ import type { DynamicResolveContext, ToolContext } from "eve/tools";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import flightBooked from "../../../docs/cards/examples/flight-booked.json";
 import restaurantsCompare from "../../../docs/cards/examples/restaurants-compare.json";
+import vacuumCompare from "../../../docs/cards/examples/vacuum-compare.json";
 import weekendItinerary from "../../../docs/cards/examples/weekend-itinerary.json";
+import type { keepCardPhotos } from "@agent/lib/cards/photos/keep";
 import type { sendCardButton } from "@agent/lib/cards/telegram";
+import { cardPhotoObject } from "@shared/cards/photos";
 import { cardSchema } from "@shared/cards/schema";
 import type { createCard } from "@db/services/cards";
 import type * as EnvModule from "@shared/environment";
 
+const cardId = vi.hoisted(() => "A".repeat(43));
 const services = vi.hoisted(() => ({
   button: vi.fn<typeof sendCardButton>(),
   create: vi.fn<typeof createCard>(),
+  deleteObject: vi.fn<(pathname: string) => Promise<void>>(),
+  keep: vi.fn<typeof keepCardPhotos>(),
   workspaces: Array.from<string>([]),
 }));
 
-vi.mock("@db/services/cards", () => ({ createCard: services.create }));
+vi.mock("@db/services/cards", () => ({
+  createCard: services.create,
+  newCardId: () => cardId,
+}));
 vi.mock("@shared/environment", async (importOriginal) => {
   const original = await importOriginal<typeof EnvModule>();
   return {
@@ -30,11 +39,16 @@ vi.mock("@shared/environment", async (importOriginal) => {
 vi.mock("@agent/lib/cards/telegram", () => ({
   sendCardButton: services.button,
 }));
+vi.mock("@agent/lib/cards/photos/keep", () => ({
+  keepCardPhotos: services.keep,
+}));
+vi.mock("@shared/object-storage/artifacts", () => ({
+  deleteArtifactObject: services.deleteObject,
+}));
 
 import cardsInstructions from "@agent/instructions/46-cards";
 import sendCardTools from "@agent/tools/send_card";
 
-const cardId = "A".repeat(43);
 const message = "Собрал билеты в карточку: время, багаж и код брони.";
 const telegramChat = {
   conversationChannel: "telegram",
@@ -145,8 +159,12 @@ function withBlocks(blocks: readonly object[]) {
 beforeEach(() => {
   vi.clearAllMocks();
   services.workspaces = ["workspace:alice"];
-  services.create.mockResolvedValue(cardId);
+  services.create.mockResolvedValue();
   services.button.mockResolvedValue();
+  services.deleteObject.mockResolvedValue();
+  services.keep.mockImplementation((_id, card) =>
+    Promise.resolve({ card, droppedBlocks: [], dropped: 0, kept: 0 })
+  );
 });
 
 describe("the card tool's exposure", () => {
@@ -218,6 +236,7 @@ describe("the card tool", () => {
     });
     expect(services.create).toHaveBeenCalledExactlyOnceWith(
       { userId: "alice", workspaceId: "workspace:alice" },
+      cardId,
       expect.objectContaining({ title: example.title })
     );
     expect(services.button).toHaveBeenCalledExactlyOnceWith(
@@ -355,5 +374,145 @@ describe("the card tool", () => {
       )
     ).toMatchObject({ status: "failed" });
     warn.mockRestore();
+  });
+});
+
+describe("the card tool's photos", () => {
+  const vacuum = cardSchema.parse(vacuumCompare);
+  const kept = cardSchema.parse({
+    ...vacuum,
+    blocks: vacuum.blocks.map((block) =>
+      block.type === "list"
+        ? {
+            ...block,
+            rows: block.rows.map((row, number) => ({
+              ...row,
+              photo: row.photo && {
+                ...row.photo,
+                url: `/api/cards/${cardId}/photos/${String(number)}`,
+              },
+            })),
+          }
+        : block
+    ),
+  });
+
+  it("keeps the photos under the link it sends, and the card with Bro's addresses", async () => {
+    services.keep.mockResolvedValueOnce({
+      card: kept,
+      droppedBlocks: [],
+      dropped: 0,
+      kept: 3,
+    });
+    const found = await tool();
+    if (!found) throw new Error("Expected send_card.");
+
+    const result = await found.execute({ ...vacuum, message }, callContext());
+
+    expect(result).toMatchObject({
+      photos: { dropped: 0, kept: 3 },
+      status: "sent",
+    });
+    expect(services.keep).toHaveBeenCalledExactlyOnceWith(cardId, vacuum);
+    expect(services.create).toHaveBeenCalledExactlyOnceWith(
+      { userId: "alice", workspaceId: "workspace:alice" },
+      cardId,
+      kept
+    );
+  });
+
+  it("tells the model which blocks went without their photos, and how many", async () => {
+    services.keep.mockResolvedValueOnce({
+      card: vacuum,
+      droppedBlocks: [0],
+      dropped: 3,
+      kept: 0,
+    });
+    const found = await tool();
+    if (!found) throw new Error("Expected send_card.");
+
+    const result = await found.execute({ ...vacuum, message }, callContext());
+
+    expect(result).toMatchObject({
+      photos: { dropped: 3, kept: 0 },
+      status: "sent",
+    });
+    expect(JSON.stringify(result)).toContain("3 of its 3 photos");
+    expect(JSON.stringify(result)).toContain("blocks[0]");
+  });
+
+  it("sends nothing when the card was all photos and none of them kept", async () => {
+    services.keep.mockResolvedValueOnce({
+      card: undefined,
+      droppedBlocks: [0],
+      dropped: 2,
+      kept: 0,
+    });
+    const found = await tool();
+    if (!found) throw new Error("Expected send_card.");
+
+    expect(
+      await found.execute(
+        withBlocks([{ text: "Рейс", type: "text" }]),
+        callContext()
+      )
+    ).toMatchObject({ status: "invalid" });
+    expect(services.create).not.toHaveBeenCalled();
+    expect(services.button).not.toHaveBeenCalled();
+  });
+
+  it("takes the copies back when the card itself could not be kept", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    services.keep.mockResolvedValueOnce({
+      card: kept,
+      droppedBlocks: [],
+      dropped: 0,
+      kept: 3,
+    });
+    services.create.mockRejectedValueOnce(new Error("database is down"));
+    const found = await tool();
+    if (!found) throw new Error("Expected send_card.");
+
+    expect(
+      await found.execute({ ...vacuum, message }, callContext())
+    ).toMatchObject({ status: "failed" });
+    expect(
+      services.deleteObject.mock.calls.map(([pathname]) => pathname)
+    ).toEqual([0, 1, 2].map((number) => cardPhotoObject(cardId, number)));
+    expect(services.button).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("leaves the copies to the card once it is kept, even if Telegram refused the button", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    services.keep.mockResolvedValueOnce({
+      card: kept,
+      droppedBlocks: [],
+      dropped: 0,
+      kept: 3,
+    });
+    services.button.mockRejectedValueOnce(
+      new Error("Telegram card failed (400).")
+    );
+    const found = await tool();
+    if (!found) throw new Error("Expected send_card.");
+
+    expect(
+      await found.execute({ ...vacuum, message }, callContext())
+    ).toMatchObject({ status: "failed" });
+    expect(services.deleteObject).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("says nothing of photos for a card without them", async () => {
+    const found = await tool();
+    if (!found) throw new Error("Expected send_card.");
+
+    expect(
+      await found.execute(
+        withBlocks([{ text: "Рейс", type: "text" }]),
+        callContext()
+      )
+    ).not.toHaveProperty("photos");
   });
 });

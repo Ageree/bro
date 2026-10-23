@@ -33,13 +33,24 @@ const chipSchema = z.strictObject({
 });
 
 /**
+ * Where a photo of a card is: the https address Bro found it at, or, once the
+ * card is kept, the address of Bro's own copy, read by the card's link
+ * (`shared/cards/photos.ts`). The page never loads a photo from another
+ * site: `send_card` copies each one and puts its own address in its place.
+ */
+const photoUrl = z.union([
+  httpsUrl,
+  z
+    .string()
+    .regex(/^\/api\/cards\/[A-Za-z0-9_-]{43}\/photos\/(?:0|[1-9]\d{0,2})$/u),
+]);
+
+/**
  * A photograph of the thing a row or an option is about: a hotel, a product, a
- * place. The address is where Bro found it; the page never loads it from there
- * (Bro keeps its own copy of every photo, `docs/cards.md`). `credit` names the
- * site it came from.
+ * place. `credit` names the site it came from.
  */
 const photoSchema = z.strictObject({
-  url: httpsUrl,
+  url: photoUrl,
   alt: shortText(120),
   credit: shortText(60).optional(),
 });
@@ -192,9 +203,10 @@ export const blockSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     type: z.literal("image"),
-    url: httpsUrl,
+    url: photoUrl,
     alt: shortText(120),
     caption: shortText(100).optional(),
+    credit: shortText(60).optional(),
   }),
   z.strictObject({
     type: z.literal("copyable"),

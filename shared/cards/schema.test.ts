@@ -26,6 +26,23 @@ const examples = [
   { name: "weekend-itinerary", card: weekendItinerary },
 ];
 
+function listParses(
+  rows: readonly { title: string; photo?: { url: string; alt: string } }[],
+  layout: "rows" | "carousel"
+) {
+  return cardSchema.safeParse({
+    title: "Тест",
+    blocks: [{ type: "list", rows, layout }],
+  }).success;
+}
+
+function imageParses(url: string) {
+  return cardSchema.safeParse({
+    blocks: [{ alt: "Фото", credit: "cian.ru", type: "image", url }],
+    title: "Тест",
+  }).success;
+}
+
 describe("card schema", () => {
   it.each(examples)("accepts the example $name", ({ card }) => {
     expect(cardSchema.safeParse(card).success).toBe(true);
@@ -152,18 +169,10 @@ describe("card schema", () => {
     ];
     const without = [{ title: "А" }, { title: "Б" }];
     const mixed = [{ title: "А", photo }, { title: "Б" }];
-    const parse = (
-      rows: readonly { title: string; photo?: typeof photo }[],
-      layout: "rows" | "carousel"
-    ) =>
-      cardSchema.safeParse({
-        title: "Тест",
-        blocks: [{ type: "list", rows, layout }],
-      }).success;
-    expect(parse(withPhotos, "rows")).toBe(true);
-    expect(parse(withPhotos, "carousel")).toBe(true);
-    expect(parse(mixed, "rows")).toBe(false);
-    expect(parse(without, "carousel")).toBe(false);
+    expect(listParses(withPhotos, "rows")).toBe(true);
+    expect(listParses(withPhotos, "carousel")).toBe(true);
+    expect(listParses(mixed, "rows")).toBe(false);
+    expect(listParses(without, "carousel")).toBe(false);
   });
 
   it("limits a gallery to two to eight photos and a card to twelve", () => {
@@ -182,5 +191,22 @@ describe("card schema", () => {
     expect(parse(2)).toBe(true);
     expect(parse(9)).toBe(false);
     expect(parse(8, 5)).toBe(false);
+  });
+
+  it("takes a photo from an https site or from Bro's own copy, and nothing else", () => {
+    const link = "A".repeat(43);
+    expect(imageParses("https://cian.ru/photo.jpg")).toBe(true);
+    expect(imageParses(`/api/cards/${link}/photos/0`)).toBe(true);
+    expect(imageParses(`/api/cards/${link}/photos/11`)).toBe(true);
+    for (const url of [
+      "http://cian.ru/photo.jpg",
+      `/api/cards/${link}/photos/01`,
+      `/api/cards/${link}/photos/0/../../other`,
+      `/api/cards/${link.slice(1)}/photos/0`,
+      "/card/photo.jpg",
+      "data:image/png;base64,AAAA",
+    ]) {
+      expect(imageParses(url)).toBe(false);
+    }
   });
 });
