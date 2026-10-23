@@ -50,6 +50,24 @@ describe("a card in the turn", () => {
       worked: false,
     });
   });
+
+  it("counts an updated card's message as said too", () => {
+    const updateMessage = "Добавил в карточку ещё два рейса, с багажом.";
+    const updated = [
+      userMessage("а есть с багажом?"),
+      ...toolStep(
+        "update_card",
+        { card: "k7m2p9qa", status: "updated" },
+        { message: updateMessage }
+      ),
+    ];
+
+    expect(turnSends(updated)).toMatchObject({
+      delivered: [sent(updateMessage)],
+      worked: false,
+    });
+    expect(refusal(updated, updateMessage)).toEqual({ skipped: "duplicate" });
+  });
 });
 
 describe("sendRefusal", () => {

@@ -9,6 +9,7 @@ import { defineTool } from "eve/tools";
 import type { ApprovalStatus } from "eve/tools/approval";
 import type { ModelMessage } from "ai";
 import { z } from "zod";
+import { answeredCardRef } from "@agent/lib/cards/caller";
 import { resolveModeValue, startedByPerson } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { searchIndexedMemories } from "@agent/lib/memory/supermemory";
@@ -124,10 +125,18 @@ const logOutsidePersonTurn =
   "Nothing was forgotten: with no memory named, the call would only erase the user's own messages, and that waits for a turn the user's own message started.";
 
 /**
+ * A card's answer is the person's input for the errand it asks about, not
+ * their word to remember anything: its turn writes no memory at all
+ * (`agent/lib/cards/answers.ts`).
+ */
+const cardAnswerWrite =
+  "Nothing was saved: this turn carries the person's answer on a card, which is their input for the errand, not a request to remember it. If it is worth keeping, ask them in the chat; their own message saves it.";
+
+/**
  * Why a memory write is refused, if it is: outside a turn the person's own
  * message started it may neither save a rule nor touch a saved one —
  * rewording a rule, or turning it into a plain fact, unmakes it as surely as
- * forgetting it does.
+ * forgetting it does — and a turn a card's answer opened writes nothing.
  */
 export async function ruleWriteRefusal(
   scope: AccessScope,
@@ -138,6 +147,9 @@ export async function ruleWriteRefusal(
     readonly index?: number;
   }
 ) {
+  if (answeredCardRef(session.auth.current) !== undefined) {
+    return cardAnswerWrite;
+  }
   if (startedByPerson({ session })) return undefined;
   if (write.category === "rule") return ruleOutsidePersonTurn;
   if (write.index === undefined) return undefined;

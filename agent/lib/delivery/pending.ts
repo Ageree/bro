@@ -1,6 +1,11 @@
 import type { ModelMessage, ToolResultPart } from "ai";
 import { z } from "zod";
-import { cardSentInHistory, sendCardToolName } from "@agent/lib/cards/sent";
+import {
+  cardSentInHistory,
+  cardToolNames,
+  sendCardToolName,
+  updateCardToolName,
+} from "@agent/lib/cards/sent";
 import {
   leavesRunAtWork,
   reportedRunOf,
@@ -20,16 +25,17 @@ const deliveryToolNames = new Set([
   "send_message",
   "react_to_message",
   sendCardToolName,
+  updateCardToolName,
 ]);
 
 /**
  * Whether a delivery tool's result is a reply the person got: not a send
  * that failed, was dropped or returned, and not the early-reply pilot's
  * heads-up, after which they still wait for the answer. A card is a reply
- * once its button is in the chat (`send_card`).
+ * once its message and button are in the chat (`send_card`, `update_card`).
  */
 function repliedWith(part: Pick<ToolResultPart, "output" | "toolName">) {
-  if (part.toolName === sendCardToolName) return cardSentInHistory(part.output);
+  if (cardToolNames.has(part.toolName)) return cardSentInHistory(part.output);
   return sendReachedPerson(part.output) && !headsUpDelivered(part.output);
 }
 
@@ -110,6 +116,7 @@ export function awaitsDelivery(messages: readonly ModelMessage[]) {
   for (const message of messages.toReversed()) {
     if (reachedPerson(message, "send_message")) return false;
     if (reachedPerson(message, sendCardToolName)) return false;
+    if (reachedPerson(message, updateCardToolName)) return false;
     if (reachedPerson(message, "react_to_message")) reaction = true;
     if (message.role === "assistant") steps += 1;
     if (message.role !== "user") continue;

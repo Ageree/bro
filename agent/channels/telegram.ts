@@ -20,7 +20,7 @@ import { ensureTelegramUser } from "@db/services/auth/telegram-user";
 import { messageQuotaGate } from "@agent/lib/billing/quota";
 import { bugBotTarget } from "@agent/lib/bug-bot/target";
 import { browserFilesEnabled } from "@agent/lib/browser-use/files";
-import { sendCardToolResultSchema } from "@agent/lib/cards/sent";
+import { cardToolResultSchema } from "@agent/lib/cards/sent";
 import {
   fallbackDeliveryText,
   replyLanguageFor,
@@ -309,7 +309,7 @@ export default telegramChannel({
 
       if (
         event.status === "completed" &&
-        sendCardToolResultSchema.safeParse(event.result).success
+        cardToolResultSchema.safeParse(event.result).success
       ) {
         markTurnDelivered(context, event.turnId);
         return;

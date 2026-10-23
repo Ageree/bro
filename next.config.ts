@@ -21,8 +21,10 @@ const nextConfig: NextConfig = {
         // The onboarding page's link, and sign-in on the way back to it.
         /\/yoomoney\/[^/?]+(?:\?|$)/u,
         /callbackUrl=%2F(?:api%2F)?yoomoney%2F/u,
-        // A card's link carries its secret in the path.
+        // A card's link carries its secret in the path, and so does the
+        // address its answer goes to.
         /\/card\/[^/?]+(?:\?|$)/u,
+        /\/api\/cards\/[^/?]+\/respond/u,
       ],
     },
   },

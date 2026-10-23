@@ -303,6 +303,15 @@
     line-height: calc(16 / 12);
   }
 
+  /* The question of a card's choice or field, 14/20. */
+  .type-cards-question {
+    font-family: var(--bro-family-text);
+    font-size: 0.875rem;
+    font-weight: 600;
+    letter-spacing: 0;
+    line-height: calc(20 / 14);
+  }
+
   /* The title of a card, 28/31. */
   .type-cards-title {
     font-family: var(--bro-family-display);

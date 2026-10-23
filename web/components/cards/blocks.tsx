@@ -3,7 +3,9 @@ import { Check, ChevronRight } from "lucide-react";
 import { cn } from "@web/components/class-names";
 import { Badge } from "@web/components/ui/badge";
 import { CardLink } from "./card-link";
+import { ChoiceBlock } from "./choice";
 import { Copyable } from "./copyable";
+import { FieldBlock } from "./field";
 import { toneStyles } from "./tones";
 
 type Block = Card["blocks"][number];
@@ -448,6 +450,10 @@ export function BlockView({ block }: { readonly block: Block }) {
       return <Copyable label={block.label} value={block.value} />;
     case "divider":
       return <hr className="my-1 border-bro-line" />;
+    case "choice":
+      return <ChoiceBlock block={block} />;
+    case "field":
+      return <FieldBlock block={block} />;
   }
   return null;
 }

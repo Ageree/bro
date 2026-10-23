@@ -16,7 +16,7 @@ import {
   requireRequestScope,
   UnauthenticatedError,
 } from "@web/auth/request-scope";
-import { telegramWebAppUser } from "./telegram";
+import { telegramWebAppUser } from "@web/auth/telegram-web-app";
 
 const formSchema = z.object({
   t: z.string().max(100),

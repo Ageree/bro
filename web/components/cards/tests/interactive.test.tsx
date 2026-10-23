@@ -2,15 +2,56 @@ import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import * as linkedom from "linkedom";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import hotelChoice from "../../../../docs/cards/examples/hotel-choice.json";
+import kidPartyDetails from "../../../../docs/cards/examples/kid-party-details.json";
+import { CardAnswerScope } from "@web/components/cards/answer";
 import { CardLink } from "@web/components/cards/card-link";
+import { CardView } from "@web/components/cards/card-view";
 import { Copyable, copyText } from "@web/components/cards/copyable";
+import { TelegramScope } from "@web/components/cards/telegram";
+import {
+  type respondReplySchema,
+  respondRequestSchema,
+} from "@shared/cards/respond";
+import { cardSchema } from "@shared/cards/schema";
+import * as z from "zod";
+
+/**
+ * react-dom decides when it loads whether the page has input events, and
+ * without them a typed letter never reaches onChange: the window is in place
+ * before it loads, with the `oninput` a browser's document has.
+ */
+await vi.hoisted(async () => {
+  const { parseHTML } = await import("linkedom");
+  const { document, window } = parseHTML(
+    "<!doctype html><html><body></body></html>"
+  );
+  Object.assign(document, { oninput: null });
+  Object.assign(globalThis, { document, window });
+});
+
+/** Telegram's script, as it is once loaded: it says it is ready at once. */
+vi.mock("next/script", async () => {
+  const { useEffect } = await import("react");
+  return {
+    default: function Script({ onReady }: { readonly onReady?: () => void }) {
+      useEffect(() => {
+        onReady?.();
+      }, [onReady]);
+      return null;
+    },
+  };
+});
 
 const browserGlobals = {
   Element: linkedom.Element,
   HTMLAnchorElement: linkedom.HTMLAnchorElement,
   HTMLButtonElement: linkedom.HTMLButtonElement,
   HTMLElement: linkedom.HTMLElement,
+  HTMLFieldSetElement: linkedom.HTMLFieldSetElement,
   HTMLInputElement: linkedom.HTMLInputElement,
+  HTMLLabelElement: linkedom.HTMLLabelElement,
+  HTMLTextAreaElement: linkedom.HTMLTextAreaElement,
   Node: linkedom.Node,
   ShadowRoot: linkedom.ShadowRoot,
 };
@@ -195,5 +236,303 @@ describe("card link", () => {
     expect(openLink).not.toHaveBeenCalled();
     expect(call?.getAttribute("target")).toBeNull();
     expect(mail?.getAttribute("rel")).toBe("noopener noreferrer");
+  });
+});
+
+/** Telegram's Mini App object, opened from Bro's button (or not). */
+function telegramApp(initData: string) {
+  return {
+    HapticFeedback: {
+      impactOccurred: vi.fn<() => void>(),
+      notificationOccurred: vi.fn<(type: string) => void>(),
+      selectionChanged: vi.fn<() => void>(),
+    },
+    close: vi.fn<() => void>(),
+    expand: vi.fn<() => void>(),
+    initData,
+    isVersionAtLeast: () => true,
+    openLink: vi.fn<(url: string) => void>(),
+    ready: vi.fn<() => void>(),
+    setBackgroundColor: vi.fn<(color: string) => void>(),
+    setHeaderColor: vi.fn<(color: string) => void>(),
+  };
+}
+
+/** The server's replies, in order; a thrown error is a lost connection. */
+function server(
+  ...replies: readonly (z.input<typeof respondReplySchema> | Error)[]
+) {
+  const queue = [...replies];
+  const fetch = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>(
+    async (url) => {
+      if (url === "/eve/v1/card-answers") {
+        return new Response(null, { status: 202 });
+      }
+      const next = queue.shift();
+      if (next === undefined || next instanceof Error) {
+        throw next ?? new Error("No reply left.");
+      }
+      return Response.json(next, {
+        status: next.status === "invalid" ? 422 : 200,
+      });
+    }
+  );
+  vi.stubGlobal("fetch", fetch);
+  const sent = () =>
+    fetch.mock.calls.flatMap(([url, init]) =>
+      url.startsWith("/api/cards/")
+        ? [respondRequestSchema.parse(JSON.parse(z.string().parse(init?.body)))]
+        : []
+    );
+  return { fetch, sent };
+}
+
+/** The tab's storage, as the page keeps its draft in it. */
+function storage() {
+  const entries = new Map<string, string>();
+  vi.stubGlobal("sessionStorage", {
+    getItem: (key: string) => entries.get(key) ?? null,
+    removeItem: (key: string) => {
+      entries.delete(key);
+    },
+    setItem: (key: string, value: string) => {
+      entries.set(key, value);
+    },
+  });
+  return entries;
+}
+
+async function settle() {
+  await act(async () => {
+    await Promise.resolve();
+  });
+}
+
+/** Whether each box is ticked: React sets `checked` as a property, not an attribute. */
+const ticked = (container: Element, selector: string) =>
+  [...container.querySelectorAll(selector)].map(
+    (input) => input instanceof HTMLInputElement && input.checked
+  );
+
+const buttonOf = (container: Element, label: string) =>
+  [...container.querySelectorAll("button")].find(
+    (button) => button.textContent === label
+  ) ?? null;
+
+describe("a card that asks", () => {
+  const hotel = cardSchema.parse(hotelChoice);
+  const party = cardSchema.parse(kidPartyDetails);
+  const link = "A".repeat(43);
+  const keptAnswer = {
+    answer: { action: "continue", values: { hotel: "admiral" } },
+    delivery: "received" as const,
+    status: "sent" as const,
+  };
+
+  async function page(
+    card: typeof hotel,
+    initData = "signed-launch-data",
+    browser = openBrowser()
+  ) {
+    const app = telegramApp(initData);
+    Object.assign(browser.window, { Telegram: { WebApp: app } });
+    const container = await mount(
+      browser,
+      <TelegramScope>
+        <CardAnswerScope card={card} link={link} revision={1}>
+          <CardView card={card} />
+        </CardAnswerScope>
+      </TelegramScope>
+    );
+    await settle();
+    return {
+      app,
+      container,
+      press: async (node: Element | null) => {
+        await click(browser, node);
+        await settle();
+      },
+      type: async (field: Element | null, value: string) => {
+        if (!(field instanceof linkedom.HTMLElement)) {
+          throw new Error("No field.");
+        }
+        Object.getOwnPropertyDescriptor(
+          Object.getPrototypeOf(field),
+          "value"
+        )?.set?.call(field, value);
+        await act(async () => {
+          field.dispatchEvent(
+            new browser.window.Event("input", { bubbles: true })
+          );
+        });
+      },
+    };
+  }
+
+  it("lets the person choose, sends the answer with the button, and shows it kept", async () => {
+    const keptDrafts = storage();
+    const { fetch, sent } = server({ status: "open" }, keptAnswer);
+    const { app, container, press, type } = await page(hotel);
+
+    const legends = [...container.querySelectorAll("fieldset > legend")];
+    expect(legends.map((legend) => legend.textContent)).toEqual([
+      "Отель",
+      "Что нужно дополнительно",
+    ]);
+    const radios = [...container.querySelectorAll('input[type="radio"]')];
+    expect(ticked(container, 'input[type="radio"]')).toEqual([
+      true,
+      false,
+      false,
+    ]);
+    await press(radios[1] ?? null);
+    expect(app.HapticFeedback.selectionChanged).toHaveBeenCalled();
+    await type(container.querySelector("textarea"), "тихий этаж");
+    expect(
+      JSON.parse(keptDrafts.get(`bro-card:${link}:1`) ?? "{}")
+    ).toMatchObject({ hotel: "admiral", wish: "тихий этаж" });
+
+    await press(buttonOf(container, "Продолжить с выбором"));
+
+    expect(sent()).toEqual([
+      { initData: "signed-launch-data", kind: "open", revision: 1 },
+      {
+        action: "continue",
+        initData: "signed-launch-data",
+        kind: "send",
+        revision: 1,
+        values: { extras: [], hotel: "admiral", wish: "тихий этаж" },
+      },
+    ]);
+    expect(fetch).toHaveBeenCalledWith("/eve/v1/card-answers", {
+      keepalive: true,
+      method: "POST",
+    });
+    expect(container.textContent).toContain("Отправлено");
+    expect(container.textContent).toContain("Ответ у Бро");
+    expect(buttonOf(container, "Показать другие")).toBeNull();
+    expect(
+      [...container.querySelectorAll("input")].every((input) =>
+        input.hasAttribute("disabled")
+      )
+    ).toBe(true);
+    expect(app.HapticFeedback.notificationOccurred).toHaveBeenCalledWith(
+      "success"
+    );
+    expect(keptDrafts.size).toBe(0);
+
+    await press(buttonOf(container, "Вернуться к Бро"));
+    expect(app.close).toHaveBeenCalledOnce();
+  });
+
+  it("holds the main button back until the required questions are filled, and shows what is missing", async () => {
+    storage();
+    const { sent } = server({ status: "open" });
+    const focus = vi.spyOn(linkedom.HTMLElement.prototype, "focus");
+    const { container, press } = await page(party);
+
+    const plan = buttonOf(container, "Подобрать варианты");
+    expect(plan?.getAttribute("aria-disabled")).toBe("true");
+    await press(plan);
+
+    expect(sent()).toHaveLength(1);
+    const date = container.querySelector("#card-question-date");
+    expect(date?.getAttribute("aria-invalid")).toBe("true");
+    expect(date?.getAttribute("aria-describedby")).toBe(
+      "card-question-date-error"
+    );
+    expect(
+      container.querySelector("#card-question-date-error")?.textContent
+    ).toBe("Заполните поле.");
+    expect(
+      container.querySelector("#card-question-format-error")?.textContent
+    ).toBe("Выберите вариант.");
+    expect(focus.mock.contexts[0]).toBe(date);
+    expect(
+      container.querySelector('label[for="card-question-budget"]')?.textContent
+    ).toBe("Бюджет");
+    expect(
+      container
+        .querySelector("#card-question-budget")
+        ?.getAttribute("aria-describedby")
+    ).toBe("card-question-budget-hint");
+    expect(container.textContent).toContain("₽");
+    focus.mockRestore();
+  });
+
+  it("brings the draft back after a reload, and sends nothing until a button is pressed", async () => {
+    const keptDrafts = storage();
+    keptDrafts.set(
+      `bro-card:${link}:1`,
+      JSON.stringify({ hotel: "loft", wish: "с видом во двор" })
+    );
+    const { sent } = server({ status: "open" });
+    const { container } = await page(hotel);
+
+    expect(ticked(container, 'input[type="radio"]')).toEqual([
+      false,
+      false,
+      true,
+    ]);
+    expect(container.querySelector("textarea")?.value).toBe("с видом во двор");
+    expect(sent().map((body) => body.kind)).toEqual(["open"]);
+  });
+
+  it("shows the server's word under the question, and retries a send that was lost", async () => {
+    storage();
+    const { sent } = server(
+      { status: "open" },
+      {
+        issues: [{ id: "hotel", message: "Такого варианта в карточке нет." }],
+        status: "invalid",
+      },
+      new Error("offline"),
+      keptAnswer
+    );
+    const { container, press } = await page(hotel);
+
+    await press(buttonOf(container, "Продолжить с выбором"));
+    expect(
+      container.querySelector("#card-question-hotel-error")?.textContent
+    ).toBe("Такого варианта в карточке нет.");
+
+    await press(buttonOf(container, "Продолжить с выбором"));
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "Не получилось связаться с Бро"
+    );
+    await press(buttonOf(container, "Повторить"));
+    expect(sent()).toHaveLength(4);
+    expect(container.textContent).toContain("Отправлено");
+  });
+
+  it("lets someone else read the card but not answer it, and shows them no answer", async () => {
+    storage();
+    const { sent } = server({ status: "foreign" });
+    const { container } = await page(hotel);
+
+    expect(container.textContent).toContain(
+      "Эту карточку Бро прислал другому человеку"
+    );
+    expect(buttonOf(container, "Продолжить с выбором")).toBeNull();
+    expect(ticked(container, 'input[type="radio"]')).toEqual([
+      true,
+      false,
+      false,
+    ]);
+    expect(
+      [...container.querySelectorAll("input")].every((input) =>
+        input.hasAttribute("disabled")
+      )
+    ).toBe(true);
+    expect(sent()).toHaveLength(1);
+  });
+
+  it("asks nothing outside Telegram and says where to answer", async () => {
+    storage();
+    const { fetch } = server();
+    const { container } = await page(hotel, "");
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Ответить можно в Telegram");
   });
 });
