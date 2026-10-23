@@ -23,22 +23,10 @@ const actionHref = z.union([
  * How a card or a callout reads at a glance. `neutral` is plain paper; the
  * others tint the header band and the callout with the brand palette.
  */
-export const cardTones = [
-  "neutral",
-  "info",
-  "success",
-  "warning",
-  "danger",
-] as const;
+const cardTones = ["neutral", "info", "success", "warning", "danger"] as const;
 const toneSchema = z.enum(cardTones);
 
-export const chipColors = [
-  "neutral",
-  "blue",
-  "yellow",
-  "pink",
-  "coral",
-] as const;
+const chipColors = ["neutral", "blue", "yellow", "pink", "coral"] as const;
 const chipSchema = z.strictObject({
   text: shortText(30),
   color: z.enum(chipColors).default("neutral"),
@@ -184,4 +172,3 @@ export const cardSchema = z.strictObject({
 });
 
 export type Card = z.infer<typeof cardSchema>;
-export type CardBlock = z.infer<typeof blockSchema>;

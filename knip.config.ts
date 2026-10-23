@@ -63,6 +63,8 @@ export default {
     // a reusable component surface wider than this minimal chat consumes.
     "web/components/ai-elements/**/*.tsx": ["exports", "files", "types"],
     "web/components/ui/**/*.tsx": ["exports", "files", "types"],
+    // The page that shows a card imports this in the next change.
+    "web/components/cards/card-view.tsx": ["exports", "files"],
   },
   project: ["**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}"],
 } satisfies KnipConfig;
