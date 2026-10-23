@@ -51,6 +51,13 @@ const runSummarySchema = z.object({
   createdAt: z.string().optional(),
   error: z.string().nullable().optional(),
   id: z.string().min(1),
+  /**
+   * A settled VM run that took no action in the browser, only answering
+   * `done` from the page it began on (`idleRun` in `browser-vm/runs.ts`),
+   * with that page's host. Absent for a run that acted, for a Browser Use
+   * run and for one read from its record once the worker is gone.
+   */
+  idle: z.object({ host: z.string().nullable() }).optional(),
   result: z.string().nullable().optional(),
   sessionId: z.string().min(1),
   status: runStatusSchema,

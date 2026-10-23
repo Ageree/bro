@@ -1002,6 +1002,7 @@ function fromWorker(run: WorkerRun, record: BrowserVmRunRecord | undefined) {
     createdAt: run.createdAt,
     error: explainedError(run.error),
     id: run.id,
+    idle: idleRun(run),
     result: run.result,
     sessionId: run.sessionId,
     status: run.status,
@@ -1009,6 +1010,36 @@ function fromWorker(run: WorkerRun, record: BrowserVmRunRecord | undefined) {
     unreadMessages: run.unreadMessages ?? [],
     workspaceId: run.sessionId,
   };
+}
+
+/**
+ * A settled run that took no action in the browser: every step it took only
+ * answered `done`, so its report can tell no more than the page it began on
+ * showed (a new errand's site is opened before its first step, so that page
+ * is the site; `idleFollowUp` in `browser-use/completion.ts` judges only
+ * follow-ups). 23.10: a follow-up told to book at another salon's site finished
+ * in one step and 12 s with a report of opening that site, the slot it found
+ * and the form it filled, while the browser never left the Yandex Maps card
+ * it began on. The host of that page (null when the worker did not say), or
+ * undefined for a run that acted, is still going, or whose every step the
+ * worker no longer lists (it keeps the last 50).
+ */
+function idleRun(run: WorkerRun) {
+  if (!settledStatuses.has(run.status)) return undefined;
+  if (run.steps.length === 0 || run.stepCount > run.steps.length) {
+    return undefined;
+  }
+  const acted = run.steps.some(
+    (step) =>
+      step.actions === null ||
+      step.actions === undefined ||
+      step.actions.some((action) => action.action !== "done")
+  );
+  if (acted) return undefined;
+  const url = run.steps[0]?.url ?? run.finalUrl;
+  const host = url === null ? "" : (URL.parse(url)?.hostname ?? "");
+  // about:blank and the like have no host to name.
+  return { host: host === "" ? null : host };
 }
 
 function fromRecord(record: BrowserVmRunRecord) {

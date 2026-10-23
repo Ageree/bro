@@ -132,6 +132,24 @@ beforeEach(() => {
   });
 });
 
+/** A place of Yandex Maps' search at a point. */
+const mapsPlace = (id: string, name: string, at: [number, number]) => ({
+  address: "Москва, Мичуринский проспект, 56",
+  bookable: true,
+  category: null,
+  coordinates: at,
+  hours: null,
+  id,
+  name,
+  openNow: null,
+  openText: null,
+  phone: null,
+  rating: null,
+  ratingCount: null,
+  site: null,
+  url: `https://yandex.ru/maps/org/x/${id}/`,
+});
+
 describe("Yandex Maps around the person's shared point", () => {
   const point = {
     live: false,
@@ -183,6 +201,24 @@ describe("Yandex Maps around the person's shared point", () => {
       near: [37.6099, 55.7612],
     });
     services.locationPilot.mockReturnValue(false);
+  });
+
+  it("names the places that share a building last in the result", async () => {
+    services.run.mockResolvedValue({
+      data: {
+        places: [
+          mapsPlace("1", "Glow&Go", [37.4805, 55.6935]),
+          mapsPlace("2", "Топган", [37.4808, 55.6937]),
+        ],
+        total: 2,
+      },
+      kind: "ok",
+    });
+
+    const result = await search({});
+
+    expect(Object.keys(result).at(-1)).toBe("note");
+    expect(JSON.stringify(result)).toContain("«Glow&Go», «Топган»");
   });
 });
 

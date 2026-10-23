@@ -1,6 +1,7 @@
 import type { AttachSessionFn } from "eve/channels";
 import type { ScheduleToFn } from "eve/schedules";
 import {
+  browserRunTookOver,
   claimBrowserRunCompletion,
   claimBrowserRunReport,
   finishWalledBrowserRun,
@@ -158,6 +159,7 @@ export async function settleBrowserRun(
     parseBrowserOutcome(run.result),
     status
   );
+  const idle = await idleFollowUp(row, run);
   const outcome = browserOutcomeSummary(
     parsed,
     run.error ?? `The run ended as ${status}.`,
@@ -241,6 +243,7 @@ export async function settleBrowserRun(
     hasCharges: parsed.charges.length > 0,
     hasItems: parsed.items.length > 0,
     hasLinks,
+    idle,
     interrupted,
     missingSite,
     needs: parsed.needs,
@@ -273,6 +276,7 @@ export async function settleBrowserRun(
   console.info("[browser-use] run settled", {
     blocked: partial ? parsed.blocked : undefined,
     channel: claimed.conversationChannel,
+    idle: idle === undefined ? undefined : true,
     needs: parsed.needs,
     recovery: recovery.kind === "none" ? undefined : recovery.kind,
     retryAt: retryAt?.toISOString(),
@@ -759,6 +763,43 @@ function interruptedInstruction(error: string, checked: boolean) {
 const unclearInstruction =
   "A run of this errand broke off while it was allowed to act in the user's name, and a read-only check of the site afterwards could not tell whether the submission, order, booking or payment went through. Tell the user plainly that it is unclear whether it went through and what the check could not see, and that it has to be checked — in their orders or bookings on the site, or with their bank — before anything is repeated. Never start or continue this errand to submit, order, book or pay again unless the user asks for that after checking.";
 
+type IdleRun = Awaited<ReturnType<typeof readBrowserUseRun>>["idle"];
+
+/**
+ * A follow-up that took no action in the browser (`idleRun` in
+ * `browser-vm/runs.ts`): on 23.10 one told to book at another salon's site
+ * reported the site opened, a slot found and the form filled, while it never
+ * left the Yandex Maps card the earlier run had left open, and Bro went on to
+ * book on the strength of it. Only a follow-up: a new errand's site is opened
+ * for it before its first step, so one that answers at once from that page
+ * did open it. Not the read-only check after a broken-off run either, whose
+ * point is to read the page as it is.
+ */
+async function idleFollowUp(
+  row: BrowserRunRow,
+  run: { readonly idle?: IdleRun }
+) {
+  if (run.idle === undefined || row.recoveryPhase === "verify")
+    return undefined;
+  return (await browserRunTookOver(row.workspaceId, row.id))
+    ? run.idle
+    : undefined;
+}
+
+/**
+ * What the report of an idle follow-up may be trusted for: what the page it
+ * was left on shows — a confirmation already there is real — and no step it
+ * says it took. It does not tell Bro to go on by itself: the stop's own
+ * guidance (a question, a payment) still stands.
+ */
+function idleRunInstruction(host: string | null) {
+  const page =
+    host === null
+      ? "the page it was left on"
+      : `the page it was left on (${host})`;
+  return `This run took no action in the browser: it answered at once from ${page}, without opening, clicking or typing anything. Only what that page shows can be true. Any step the report says it took — opening a site or another page, choosing a service, a time or an item, filling in a form, booking, ordering, paying — did not happen in this run, and nothing it describes from any other page was seen; never tell the user such a step as done or such a finding as found. If the errand still needs those steps, you may continue this run, saying that nothing has been done yet, but not again after another run that took no action.`;
+}
+
 /** The check found what an earlier, broken-off run had already done. */
 const verifiedInstruction =
   "An earlier run of this errand broke off on an error, and a read-only check of the site afterwards found that its action had already gone through, so nothing was repeated. Tell the user the errand is done, with the number, title or date the check found, and do not make the error the story. Do not start or continue it to submit, order, book or pay again.";
@@ -793,6 +834,8 @@ function deliveryInstruction(
     readonly hasCharges: boolean;
     readonly hasItems: boolean;
     readonly hasLinks: boolean;
+    /** A follow-up that took no action in the browser (`idleFollowUp`). */
+    readonly idle?: IdleRun;
     /** The network error that cut off a run allowed to act. */
     readonly interrupted?: string;
     /** The host of the errand's site, when its name does not exist. */
@@ -852,6 +895,7 @@ function deliveryInstruction(
           ? browserRunNeedGuidance(needs)
           : approvedPaymentInstruction(paidFor),
     facts.stuck,
+    facts.idle === undefined ? undefined : idleRunInstruction(facts.idle.host),
     facts.interrupted === undefined
       ? undefined
       : interruptedInstruction(facts.interrupted, facts.checked),
@@ -941,6 +985,8 @@ function browserRunReport(
     readonly hasCharges?: boolean;
     readonly hasItems?: boolean;
     readonly hasLinks?: boolean;
+    /** A follow-up that took no action in the browser (`idleFollowUp`). */
+    readonly idle?: IdleRun;
     readonly images?: readonly BrowserRunImage[];
     /** The network error that cut off a run allowed to act. */
     readonly interrupted?: string;
@@ -1009,6 +1055,7 @@ function browserRunReport(
       hasCharges: options.hasCharges === true,
       hasItems: options.hasItems === true,
       hasLinks: options.hasLinks === true,
+      idle: options.idle,
       interrupted: options.interrupted,
       missingSite: options.missingSite,
       next: options.next !== undefined,

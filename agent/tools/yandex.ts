@@ -11,6 +11,10 @@ import { nearFromPosition } from "@agent/lib/location/near";
 import { operationArguments } from "@agent/lib/yandex/operations";
 import { afishaPricesOperation } from "@agent/lib/yandex/afisha/prices";
 import {
+  mapsSearchOperation,
+  sameBuildingNote,
+} from "@agent/lib/yandex/maps/search";
+import {
   afishaPurchasePilot,
   yandexPilot,
   yandexPurchasePilot,
@@ -176,10 +180,18 @@ async function callYandex(
       operation.id === afishaPricesOperation.id &&
       afishaPurchasePilot({ workspaceId })
         ? `${operation.answerNote ?? ""} ${afishaBuyNote}`
-        : operation.answerNote;
+        : operation.id === mapsSearchOperation.id
+          ? joinedNotes(operation.answerNote, sameBuildingNote(outcome.data))
+          : operation.answerNote;
     return note === undefined ? placed : { ...placed, note };
   }
   return refused(outcome, context);
+}
+
+/** Notes of one result in order, or undefined when there is none. */
+function joinedNotes(...notes: readonly (string | undefined)[]) {
+  const present = notes.filter((note) => note !== undefined);
+  return present.length === 0 ? undefined : present.join(" ");
 }
 
 export default defineDynamic({
