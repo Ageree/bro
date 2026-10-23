@@ -3,7 +3,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import hotelChoice from "../../../docs/cards/examples/hotel-choice.json";
 import hotelChoicePhotos from "../../../docs/cards/examples/hotel-choice-photos.json";
 import type * as Keep from "@agent/lib/cards/photos/keep";
+import { errandByPerson } from "@agent/lib/browser-use/report-caller";
 import type { sendCardButton } from "@agent/lib/cards/telegram";
+import type * as Holds from "@agent/lib/delivery/holds";
+import { backgroundTurnMarker } from "@shared/chat/background-turn";
 import type { updateCard } from "@db/services/cards";
 import { cardSchema } from "@shared/cards/schema";
 import type * as EnvModule from "@shared/environment";
@@ -11,6 +14,7 @@ import type * as EnvModule from "@shared/environment";
 const services = vi.hoisted(() => ({
   button: vi.fn<typeof sendCardButton>(),
   keep: vi.fn<typeof Keep.keepCardPhotos>(),
+  markDelivered: vi.fn<typeof Holds.markTurnDelivered>(),
   update: vi.fn<typeof updateCard>(),
   workspaces: Array.from<string>([]),
 }));
@@ -34,6 +38,10 @@ vi.mock("@agent/lib/cards/telegram", () => ({
 vi.mock("@agent/lib/cards/photos/keep", async (importOriginal) => ({
   ...(await importOriginal<typeof Keep>()),
   keepCardPhotos: services.keep,
+}));
+vi.mock("@agent/lib/delivery/holds", async (importOriginal) => ({
+  ...(await importOriginal<typeof Holds>()),
+  markTurnDelivered: services.markDelivered,
 }));
 
 import updateCardTools from "@agent/tools/update_card";
@@ -247,5 +255,84 @@ describe("updating a card", () => {
       status: "invalid",
     });
     expect(services.button).not.toHaveBeenCalled();
+  });
+});
+
+describe("updating a card in a browser report's turn", () => {
+  const report = Object.assign(
+    {
+      content: `${backgroundTurnMarker}\n\nBrowser run run-1 finished.\n\nResult: ещё два отеля у Невского.`,
+      role: "user" as const,
+    },
+    { kind: "user" }
+  );
+  const reportCaller = {
+    attributes: {
+      ...telegramChat,
+      browserRunId: "run-1",
+      errandBy: errandByPerson,
+    },
+    authenticator: "browser-result",
+    principalId: "alice",
+    principalType: "user" as const,
+  };
+
+  it("is offered in the report of an errand the person gave, and records the turn's message", async () => {
+    const context = dynamicContext([report]);
+    const tools = await updateCardTools.events["step.started"]?.(
+      {},
+      {
+        ...context,
+        session: {
+          ...context.session,
+          auth: { current: reportCaller, initiator: null },
+        },
+      }
+    );
+    const found =
+      tools && "update_card" in tools ? tools.update_card : undefined;
+    if (!found) throw new Error("Expected update_card.");
+    const call = callContext();
+    const reportCall = {
+      ...call,
+      session: {
+        ...call.session,
+        auth: { current: reportCaller, initiator: null },
+      },
+    };
+
+    expect(await found.execute(hotel, reportCall)).toMatchObject({
+      status: "updated",
+    });
+    expect(services.markDelivered).toHaveBeenCalledExactlyOnceWith(
+      reportCall.session
+    );
+    // Under the person's own caller, the report's tool refuses.
+    expect(await found.execute(hotel, callContext())).toMatchObject({
+      status: "refused",
+    });
+    expect(services.markDelivered).toHaveBeenCalledOnce();
+  });
+
+  it("is not offered in the report of an errand Bro gave itself", async () => {
+    const context = dynamicContext([report]);
+    expect(
+      await updateCardTools.events["step.started"]?.(
+        {},
+        {
+          ...context,
+          session: {
+            ...context.session,
+            auth: {
+              current: {
+                ...reportCaller,
+                attributes: { ...reportCaller.attributes, errandBy: "bro" },
+              },
+              initiator: null,
+            },
+          },
+        }
+      )
+    ).toBeNull();
   });
 });

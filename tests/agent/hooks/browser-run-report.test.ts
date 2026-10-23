@@ -145,6 +145,27 @@ describe("the browser report hook", () => {
     expect(finishBrowserRunReport).toHaveBeenCalledExactlyOnceWith(runId);
   });
 
+  it("counts the report delivered once its card reached the person", async () => {
+    await emit(
+      "action.result",
+      toolResult("send_card", { card: "k7m2p9qa", status: "sent" })
+    );
+    await emit(
+      "action.result",
+      toolResult("update_card", { card: "k7m2p9qa", status: "updated" })
+    );
+
+    expect(finishBrowserRunReport.mock.calls).toEqual([[runId], [runId]]);
+  });
+
+  it("does not count a card that did not reach the chat", async () => {
+    await emit("action.result", toolResult("send_card", { status: "failed" }));
+    await emit("action.result", toolResult("send_card", { status: "refused" }));
+
+    expect(finishBrowserRunReport).not.toHaveBeenCalled();
+    expect(renewBrowserRunReportLease).toHaveBeenCalledTimes(2);
+  });
+
   it("lets a browser VM on a short window stop soon after the report landed, once", async () => {
     await emit(
       "action.result",

@@ -10,7 +10,12 @@ import {
 } from "@agent/lib/turn-kind/step";
 import { secretAsked, secretInCard } from "@shared/cards/safety";
 import { type Card, cardSchema } from "@shared/cards/schema";
-import { answeredCardRef, openedByCardAnswer } from "./caller";
+import { personErrandRunId } from "@agent/lib/browser-use/report-caller";
+import {
+  answeredCardRef,
+  openedByCardAnswer,
+  openedByPersonErrandReport,
+} from "./caller";
 import { cardSentInHistory, cardToolNames } from "./sent";
 
 /**
@@ -20,9 +25,14 @@ import { cardSentInHistory, cardToolNames } from "./sent";
 
 /**
  * Who opened the turn, as the card tools ask it at a step's start: the
- * person's own message, or a card's answer, which carries their input; or
- * neither — a report, a schedule, a page — whose text must not become a card
- * the person reads as Bro's.
+ * person's own message; a card's answer, which carries their input; or the
+ * report of a browser errand they gave, whose outcome — the hotels or
+ * goods found, a plan — is the data a card shows. The report's text is a
+ * page's, so its card is only a view of that data: its links are https, its
+ * photos Bro's own copies, and its button brings an answer that is no
+ * consent (`card-answer`). Nothing else opens a card turn — a background
+ * errand's report, a schedule, a phone call, a page — whose text must not
+ * become a card the person reads as Bro's.
  */
 export function cardTurnOpener(
   event: Parameters<typeof stepStartedEventSchema.safeParse>[0],
@@ -36,9 +46,15 @@ export function cardTurnOpener(
     )
   );
   if (turn.said !== null) return "person" as const;
-  return openedByCardAnswer(context.messages) &&
-    answeredCardRef(context.session.auth.current) !== undefined
-    ? ("card-answer" as const)
+  const caller = context.session.auth.current;
+  if (
+    openedByCardAnswer(context.messages) &&
+    answeredCardRef(caller) !== undefined
+  ) {
+    return "card-answer" as const;
+  }
+  return openedByPersonErrandReport(context.messages, caller)
+    ? ("report" as const)
     : undefined;
 }
 
@@ -47,9 +63,10 @@ export function cardTurnCaller(
   opener: NonNullable<ReturnType<typeof cardTurnOpener>>,
   context: ToolContext
 ) {
-  return opener === "person"
-    ? startedByPerson(context)
-    : answeredCardRef(context.session.auth.current) !== undefined;
+  const caller = context.session.auth.current;
+  if (opener === "person") return startedByPerson(context);
+  if (opener === "card-answer") return answeredCardRef(caller) !== undefined;
+  return personErrandRunId(caller) !== undefined;
 }
 
 /** Cards one turn may put in the chat, sent or updated: a loop would post one after another. */

@@ -5,6 +5,7 @@ import {
   claimBrowserRunCompletion,
   claimBrowserRunReport,
   finishWalledBrowserRun,
+  followsPersonErrand,
   holdBrowserRunReportForTurn,
   hurryQueuedBrowserRuns,
   parkBrowserRunForRetry,
@@ -82,6 +83,7 @@ import {
   releaseEndedRunBrowser,
 } from "./release";
 import { nextRecovery, recoverableErrand, recoveryRetryAt } from "./recovery";
+import { errandByPerson } from "./report-caller";
 import { recordRunSignIns } from "./sign-ins";
 import { settleSignUpLogin, signUpSettlement } from "./sign-up";
 
@@ -1157,17 +1159,39 @@ export async function deliverBrowserRunReport(
 /** Past this a send is treated as failed and tried again with a backoff. */
 const reportSendTimeoutMs = 20_000;
 
+/**
+ * Whether the person gave the errand a run reports on: they started it, or a
+ * run it carries on from (a follow-up, a retry) in a turn of theirs. Its
+ * report's caller says so (`errandByPerson`), and its outcome may come as a
+ * card. A chain that cannot be read counts as not theirs: the report then
+ * goes without a card, never undelivered.
+ */
+async function errandOfPerson(row: BrowserRunRow) {
+  if (row.startedByPerson !== false) return true;
+  try {
+    return await followsPersonErrand(row.workspaceId, row.id);
+  } catch (error) {
+    console.warn("[browser-use] the errand's origin was not read", {
+      cause: error,
+      runId: row.id,
+    });
+    return false;
+  }
+}
+
 async function sendBrowserRunReport(
   delivery: BrowserRunDelivery,
   row: BrowserRunRow,
   report: string
 ) {
+  const errandBy = (await errandOfPerson(row)) ? errandByPerson : "bro";
   const options = {
     auth: {
       attributes: {
         browserRunId: row.id,
         conversationChannel: row.conversationChannel,
         conversationId: row.conversationId,
+        errandBy,
         workspaceId: row.workspaceId,
       },
       authenticator: "browser-result",

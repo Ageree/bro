@@ -1,13 +1,17 @@
 import type { ModelMessage } from "ai";
 import type { ToolContext } from "eve/tools";
 import { z } from "zod";
+import { personErrandRunId } from "@agent/lib/browser-use/report-caller";
+import { reportedRunOf } from "@agent/lib/delivery/browser-report";
 import { startsTurn } from "@agent/lib/delivery/turn-sends";
 import { backgroundTurnMarker } from "@shared/chat/background-turn";
 
 /**
- * The turn a card's answer opens (`agent/lib/cards/answers.ts`), as the
- * tools that act on it tell it apart: by its caller, which only Bro's code
- * writes, and by the opening of its message.
+ * The turns Bro's code opens that the card tools act in besides the
+ * person's own: the turn a card's answer opens (`agent/lib/cards/answers.ts`)
+ * and the report of a browser errand the person gave. The tools tell them
+ * apart by their caller, which only Bro's code writes, and by the opening of
+ * their message.
  */
 
 /** The caller of the turn a card's answer opens. */
@@ -46,5 +50,25 @@ export function openedByCardAnswer(messages: readonly ModelMessage[]) {
   const opener = messages.findLast(startsTurn);
   return (
     opener !== undefined && openingText(opener).startsWith(cardAnswerOpening)
+  );
+}
+
+/**
+ * Whether the report of a browser errand the person gave opened this
+ * turn: the caller names the run as theirs (`personErrandRunId`) and the
+ * turn's opening message is that run's report. As with a card's answer, the
+ * caller alone is not enough: eve keeps it for a later delivery that brings
+ * none, such as a task's report.
+ */
+export function openedByPersonErrandReport(
+  messages: readonly ModelMessage[],
+  caller: ToolContext["session"]["auth"]["current"]
+) {
+  const runId = personErrandRunId(caller);
+  const opener = messages.findLast(startsTurn);
+  return (
+    runId !== undefined &&
+    opener !== undefined &&
+    reportedRunOf(openingText(opener)) === runId
   );
 }

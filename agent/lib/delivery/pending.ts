@@ -234,8 +234,8 @@ export function headsUpCoversErrand(messages: readonly ModelMessage[]) {
  * Whether an earlier turn of this conversation already told the person how
  * a browser run ended: `browser_task status` handed over its outcome — the
  * person asked «ну что там?» while the run's report still waited behind
- * their turn — and a message got through after it. The report turn that
- * follows would give them the same result a second time.
+ * their turn — and a message or a card got through after it. The report
+ * turn that follows would give them the same result a second time.
  */
 export function outcomeToldEarlier(
   messages: readonly ModelMessage[],
@@ -256,8 +256,9 @@ export function outcomeToldEarlier(
       }
       if (
         handedOver &&
-        part.toolName === "send_message" &&
-        sendReachedPerson(part.output)
+        (part.toolName === "send_message"
+          ? sendReachedPerson(part.output)
+          : cardToolNames.has(part.toolName) && cardSentInHistory(part.output))
       ) {
         return true;
       }

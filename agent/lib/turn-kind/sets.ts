@@ -52,6 +52,20 @@ export const reportTurnTools = [
 ] as const;
 
 /**
+ * What a browser report's turn is offered beside `reportTurnTools` in a
+ * chat where Bro's cards are offered (`cardsOffered`, `docs/cards.md`):
+ * the outcome as a card (`send_card`, `update_card`, which act only in the
+ * report of an errand the person gave, `cardTurnOpener`) and `find_images`,
+ * from which a card's photos come. Elsewhere the report's tool block stays as
+ * it was, byte for byte; here it is the same from the first step to the last.
+ */
+export const reportTurnCardTools = [
+  "find_images",
+  "send_card",
+  "update_card",
+] as const;
+
+/**
  * The reads a proactive check has: each tool module grants them to the
  * `proactive-worker` mode (`agent/tools/calendar.ts`, `gmail.ts`, `mail.ts`,
  * `agent_mail.ts`). The agentic worker keeps the same reads.

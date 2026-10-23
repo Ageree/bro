@@ -1232,6 +1232,26 @@ describe("sendRefusal in a browser report's turn", () => {
     });
   });
 
+  it("takes the outcome's card as its message: the same outcome again is dropped", () => {
+    const cardMessage =
+      "Нашёл три отеля у Невского до 7 000 ₽ за ночь, сравнение в карточке.";
+    const shown = [
+      report,
+      ...toolStep(
+        "send_card",
+        { card: "k7m2p9qa", status: "sent" },
+        { message: cardMessage }
+      ),
+    ];
+
+    expect(turnSends(shown).delivered).toEqual([sent(cardMessage)]);
+    expect(refusal(shown, cardMessage)).toEqual({ skipped: "duplicate" });
+    expect(
+      refusal(shown, "Три отеля у Невского до 7 000 ₽ за ночь — в карточке.")
+    ).toEqual({ skipped: "reported" });
+    expect(refusal(shown, "Бронировать «Невский Двор»?")).toBeUndefined();
+  });
+
   it("drops a message after a quiet continue: the run reports on its own", () => {
     const continued = [
       ...told,

@@ -20,11 +20,11 @@ export const reportCardHoldRefusal =
  * those tools are not offered there until the message is out, and nothing
  * is checked here; in the pilot the turn keeps one tool set
  * (`reportTurnTools`), so the tools refuse instead, in their approval and
- * again in their execute. The message is out once `send_message` recorded it
- * for this turn and report, or when the report had reached the person before
- * the turn began (`openReportTurn`). A state that cannot be read refuses. A
- * card asked for in the very step of the message is refused and comes in the
- * next one.
+ * again in their execute. The message is out once `send_message` or Bro's
+ * own card (`send_card`, `update_card`) recorded it for this turn and
+ * report, or when the report had reached the person before the turn began
+ * (`openReportTurn`). A state that cannot be read refuses. A card asked for
+ * in the very step of the message is refused and comes in the next one.
  */
 export async function reportCardHold(
   session: Pick<SessionContext["session"], "auth" | "id" | "turn">

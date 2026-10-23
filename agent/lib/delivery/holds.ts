@@ -8,10 +8,11 @@ import { reportedBrowserRunId } from "@agent/lib/browser-use/report-caller";
  * session but not the history, and the card tools of the pilot's fixed set
  * (`reportTurnTools`) have to tell for themselves whether the outcome went
  * out. The report's hook opens it at `turn.started` with what the database
- * said then (`openReportTurn`), and `send_message` marks it
- * (`markTurnDelivered`). eve numbers turns per session loop and starts again
- * from `turn_0` in a successor run, so the value names the run as well: one
- * left by another turn or another report counts for nothing.
+ * said then (`openReportTurn`), and `send_message`, `send_card` and
+ * `update_card` mark it (`markTurnDelivered`): a card's message with its
+ * button tells the outcome as well. eve numbers turns per session loop and
+ * starts again from `turn_0` in a successor run, so the value names the run
+ * as well: one left by another turn or another report counts for nothing.
  */
 const turnHolds = defineState<{
   readonly delivered: boolean;

@@ -322,6 +322,40 @@ describe("outcomeToldEarlier", () => {
     ).toBe(true);
   });
 
+  it("is true once an earlier turn showed what status handed over on a card", () => {
+    const told = (
+      toolName: string,
+      card: Parameters<typeof toolResult>[1]
+    ): ModelMessage[] => [
+      userMessage("ну что там?"),
+      toolCall("browser_task"),
+      toolResult("browser_task", settled),
+      toolCall(toolName),
+      toolResult(toolName, card),
+      userMessage("Browser run run-1 finished."),
+    ];
+
+    expect(
+      outcomeToldEarlier(
+        told("send_card", { type: "json", value: { status: "sent" } }),
+        "run-1"
+      )
+    ).toBe(true);
+    expect(
+      outcomeToldEarlier(
+        told("update_card", { type: "json", value: { status: "updated" } }),
+        "run-1"
+      )
+    ).toBe(true);
+    // A card that never reached the chat told nothing.
+    expect(
+      outcomeToldEarlier(
+        told("send_card", { type: "json", value: { status: "failed" } }),
+        "run-1"
+      )
+    ).toBe(false);
+  });
+
   it("is false for another run, a run still at work, or an outcome nobody was told", () => {
     const told = (
       output: Parameters<typeof toolResult>[1],

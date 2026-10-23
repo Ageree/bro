@@ -1,6 +1,7 @@
 import { defineHook, type HookContext } from "eve/hooks";
 import { reportedBrowserRunId } from "@agent/lib/browser-use/report-caller";
 import { keepBrowserVmAfterReport } from "@agent/lib/browser-vm/idle";
+import { cardToolResultSchema } from "@agent/lib/cards/sent";
 import { openReportTurn } from "@agent/lib/delivery/holds";
 import { sendMessageToolResultSchema } from "@shared/chat/message-delivery";
 import {
@@ -35,8 +36,9 @@ async function finishReport(runId: string) {
  * (`agent/lib/browser-use/completion.ts`), and the conversation accepting it
  * is not the person hearing it: on 24.09 runs finished and the person heard
  * nothing until they asked. The report counts as delivered once its turn
- * got a message through, acted on the errand, or ended on its own; a turn
- * that failed before any of that puts the report back in line.
+ * got a message through — a card's too (`send_card`, `update_card`) — acted
+ * on the errand, or ended on its own; a turn that failed before any of that
+ * puts the report back in line.
  */
 export default defineHook({
   events: {
@@ -74,6 +76,7 @@ export default defineHook({
       // from its own report, and a retry of this one must not repeat it.
       const handled =
         sendMessageToolResultSchema.safeParse(result).success ||
+        cardToolResultSchema.safeParse(result).success ||
         (result.kind === "tool-result" &&
           result.toolName === "browser_task" &&
           result.isError !== true);

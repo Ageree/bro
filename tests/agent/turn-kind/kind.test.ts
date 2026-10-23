@@ -11,6 +11,7 @@ import {
   agenticWriteTools,
   backgroundTaskTurnTools,
   proactiveReadTools,
+  reportTurnCardTools,
   reportTurnTools,
 } from "@agent/lib/turn-kind/sets";
 import { stepIdentity } from "@agent/lib/turn-kind/step";
@@ -200,6 +201,42 @@ describe("the tools of a step", () => {
         withheldTools: ["ask_question", "task"],
       });
     }
+  });
+
+  it("gives a browser report Bro's cards in its one set only where cards are offered", () => {
+    const pilot = {
+      ...quiet,
+      kind: "browser-report",
+      stableContext: true,
+    } as const;
+    for (const step of [
+      turnTools({ ...pilot, cards: true, cardsHeld: true }),
+      turnTools({ ...pilot, cards: true }),
+    ]) {
+      expect(step).toEqual({
+        offeredTools: [...reportTurnTools, ...reportTurnCardTools],
+        withheldTools: ["ask_question", "task"],
+      });
+    }
+    expect(reportTurnCardTools).toEqual([
+      "find_images",
+      "send_card",
+      "update_card",
+    ]);
+    // Elsewhere the report's block is what it was, byte for byte.
+    expect(turnTools({ ...pilot, cards: false }).offeredTools).toEqual(
+      reportTurnTools
+    );
+    expect(reportTurnTools).not.toContain("send_card");
+    // A phone call's report keeps its four tools.
+    expect(
+      turnTools({ ...pilot, cards: true, kind: "phone-report" }).offeredTools
+    ).toEqual([
+      "send_message",
+      "react_to_message",
+      "phone-status",
+      "calculate",
+    ]);
   });
 
   it("keeps only the question and the held actions as removals in the pilot", () => {

@@ -4,6 +4,7 @@ import type { TurnKind } from "./kind";
 import {
   agenticWorkerTurnTools,
   backgroundTaskTurnTools,
+  reportTurnCardTools,
   reportTurnTools,
   taskAgentTool,
 } from "./sets";
@@ -42,6 +43,11 @@ export function turnTools(step: {
   readonly browserFiles?: boolean;
   /** The turn already put an `ask_question` to the person. */
   readonly askedQuestion: boolean;
+  /**
+   * Bro's cards are offered in the chat (`cardsOffered`): a browser report's
+   * set in the pilot has them (`reportTurnCardTools`).
+   */
+  readonly cards?: boolean;
   /** A browser report's turn before its message (`cardToolsBeforeOutcome`). */
   readonly cardsHeld: boolean;
   /** The turn's question holds the actions it asked about. */
@@ -87,13 +93,16 @@ export function turnTools(step: {
         : step.kind === "agentic-worker"
           ? agenticWorkerTurnTools
           : step.stableContext && step.kind === "browser-report"
-            ? step.browserFiles
-              ? [
-                  "browser_files",
-                  ...(step.taskAgent ? [taskAgentTool] : []),
-                  ...reportTurnTools,
-                ]
-              : reportTurnTools
+            ? [
+                ...(step.browserFiles
+                  ? [
+                      "browser_files",
+                      ...(step.taskAgent ? [taskAgentTool] : []),
+                    ]
+                  : []),
+                ...reportTurnTools,
+                ...(step.cards === true ? reportTurnCardTools : []),
+              ]
             : undefined;
   const withheldTools = step.stableContext
     ? [...askQuestion, ...held, ...task]
