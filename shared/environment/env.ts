@@ -1354,14 +1354,6 @@ export const env = createEnv({
     // OPS_ALERT_BOT_TOKEN, the reports are forwarded to OPS_ALERT_CHAT_ID. Off
     // by default, and never on Bro's own bot token (see `bugBotTarget`).
     BUG_BOT: z.enum(["on", "off"]).default("off"),
-    // The handle of that bot without @, for Bro's `/bug` hint; unset, `/bug`
-    // goes to the model as any message.
-    BUG_BOT_USERNAME: requiredValue
-      .refine(
-        (value) => /^[A-Za-z0-9_]{5,32}$/u.test(value),
-        "BUG_BOT_USERNAME must be the bot handle without a leading @"
-      )
-      .optional(),
     // Whether the owner's turn log keeps the text of each turn — the
     // person's words, Bro's replies, tools' arguments and results, with
     // codes, passwords, card and document numbers cut out
