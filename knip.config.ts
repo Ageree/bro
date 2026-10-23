@@ -34,6 +34,8 @@ export default {
     "scripts/bench/latency.ts",
     "scripts/bench/errand-latency.ts",
     "scripts/bench/transcription.ts",
+    // Two Bro ↔ Bro envoys negotiate on the real model, run by hand.
+    "scripts/bro-to-bro/duel.ts",
     // Bundled into a release by scripts/cloudru-app-host/host.py and run on the VM.
     "scripts/cloudru-app-host/ops/migrate.ts",
     "scripts/cloudru-app-host/ops/agent-mail.ts",

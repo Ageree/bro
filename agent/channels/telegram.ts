@@ -18,6 +18,11 @@ import {
 } from "@db/services/auth/telegram-login";
 import { ensureTelegramUser } from "@db/services/auth/telegram-user";
 import { messageQuotaGate } from "@agent/lib/billing/quota";
+import {
+  broInviteMarker,
+  broInviteStartPattern,
+  openedInviteTurn,
+} from "@agent/lib/bro-to-bro/invite";
 import { browserFilesEnabled } from "@agent/lib/browser-use/files";
 import { cardToolResultSchema } from "@agent/lib/cards/sent";
 import {
@@ -480,6 +485,21 @@ export default telegramChannel({
     if (!auth) return null;
     const principalId = `better-auth:${account.userId}`;
     const scope = accessScopeForUser(principalId);
+    // A Bro ↔ Bro invite link (`/start bro_<token>`) is opened here, before
+    // any model, for the account the person writes as: the turn reads what
+    // the invite means behind a bare marker, so the token reaches neither
+    // the model nor the history, and an invite that cannot be accepted gets
+    // the bot's own line.
+    const inviteToken = broInviteStartPattern.exec(message.text.trim())?.groups
+      ?.token;
+    const invite =
+      inviteToken === undefined
+        ? undefined
+        : await openedInviteTurn(inviteToken, scope);
+    if (invite?.kind === "reply") {
+      await context.telegram.sendMessage(invite.text);
+      return null;
+    }
     // Metering happens before the turn starts, so an over-limit message costs
     // a counter row rather than a model call.
     const gate = await messageQuotaGate(scope);
@@ -514,6 +534,19 @@ export default telegramChannel({
       attributes: forwarded ? { ...attributes, forwarded: "1" } : attributes,
       principalId,
     };
+    if (invite) {
+      noteInbound(context.telegram.chatId, message.raw, receivedAt);
+      return {
+        auth: sessionAuth,
+        context: [
+          ...(await firstContactContext(scope)),
+          ...(await crossChannelRecap(scope, { channel: "channel:telegram" })),
+          ...invite.context,
+        ],
+        message: inboundTurn("", [{ kind: "note", text: broInviteMarker }])
+          .message,
+      };
+    }
     // A location the person shared (geolocation pilot): the message keeps a
     // bare marker, and the point, its address and any reminder it fired go
     // as context lines (`agent/lib/location/`).

@@ -4,6 +4,7 @@ import type { TurnKind } from "./kind";
 import {
   agenticWorkerTurnTools,
   backgroundTaskTurnTools,
+  broReportTurnTools,
   reportTurnCardTools,
   reportTurnTools,
   taskAgentTool,
@@ -74,7 +75,8 @@ export function turnTools(step: {
   const reportTurn =
     step.kind === "browser-report" ||
     step.kind === "scheduled-report" ||
-    step.kind === "phone-report";
+    step.kind === "phone-report" ||
+    step.kind === "bro-report";
   const askQuestion = reportTurn || step.askedQuestion ? ["ask_question"] : [];
   const held = [
     ...(step.heldForAnswer ? actionsHeldForAnswer : []),
@@ -84,26 +86,28 @@ export function turnTools(step: {
   const offeredTools =
     step.kind === "phone-report"
       ? ["send_message", "react_to_message", "phone-status", "calculate"]
-      : step.kind === "background-task"
-        ? [
-            ...(step.browserFiles ? ["browser_files"] : []),
-            ...(step.signing === true ? ["sign_document"] : []),
-            ...backgroundTaskTurnTools,
-          ]
-        : step.kind === "agentic-worker"
-          ? agenticWorkerTurnTools
-          : step.stableContext && step.kind === "browser-report"
-            ? [
-                ...(step.browserFiles
-                  ? [
-                      "browser_files",
-                      ...(step.taskAgent ? [taskAgentTool] : []),
-                    ]
-                  : []),
-                ...reportTurnTools,
-                ...(step.cards === true ? reportTurnCardTools : []),
-              ]
-            : undefined;
+      : step.kind === "bro-report"
+        ? broReportTurnTools
+        : step.kind === "background-task"
+          ? [
+              ...(step.browserFiles ? ["browser_files"] : []),
+              ...(step.signing === true ? ["sign_document"] : []),
+              ...backgroundTaskTurnTools,
+            ]
+          : step.kind === "agentic-worker"
+            ? agenticWorkerTurnTools
+            : step.stableContext && step.kind === "browser-report"
+              ? [
+                  ...(step.browserFiles
+                    ? [
+                        "browser_files",
+                        ...(step.taskAgent ? [taskAgentTool] : []),
+                      ]
+                    : []),
+                  ...reportTurnTools,
+                  ...(step.cards === true ? reportTurnCardTools : []),
+                ]
+              : undefined;
   const withheldTools = step.stableContext
     ? [...askQuestion, ...held, ...task]
     : [

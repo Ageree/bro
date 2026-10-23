@@ -14,6 +14,17 @@ export const backgroundTaskTurnTools = [
 ] as const;
 
 /**
+ * All a Bro ↔ Bro report's turn is offered, in every layout: its text holds
+ * another person's Bro's words, so it may only tell the owner. The owner's
+ * answer comes in a turn of theirs, where `bro_talk` takes it.
+ */
+export const broReportTurnTools = [
+  "send_message",
+  "react_to_message",
+  "calculate",
+] as const;
+
+/**
  * All a browser report's turn is offered, from its first step to its last,
  * in the pilot of the cache-friendly step (`stepContextPilot`): its
  * message, the errand's `continue` or `status`, the orders the outcome may

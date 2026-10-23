@@ -11,6 +11,7 @@ import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { signEnabled } from "@agent/lib/signatures/pilot";
 import { yclientsPilot } from "@agent/lib/yclients/api";
 import { agentMailboxEnabled } from "@db/services/agent-mail";
+import { broToBroStanding } from "@db/services/bro-to-bro/enabled";
 import { locationPilot, locationWatchPilot } from "@db/services/location";
 import { phonePilot, readPhoneNumber } from "@db/services/phone";
 import { env } from "@shared/environment";
@@ -77,7 +78,7 @@ export const privacy = defineTool({
       (env.PHONE_AGENT_ID !== undefined &&
         (await readPhoneNumber(scope)) !== null);
     const signature = signEnabled(scope.workspaceId);
-    const [modelId, google, memoryDigest, conversationLog, taskJobs] =
+    const [modelId, google, memoryDigest, conversationLog, taskJobs, broToBro] =
       await Promise.all([
         getWorkspaceModelId(scope),
         googleNow(scope),
@@ -87,10 +88,15 @@ export const privacy = defineTool({
           : false,
         crossChannelPilot(scope),
         taskJobsDecided(scope),
+        broToBroStanding(scope.workspaceId).then(
+          (standing) => standing === "on",
+          () => false
+        ),
       ]);
     const location = locationPilot(scope);
     return {
       kept: keptData({
+        broToBro,
         conversationLog,
         ...(location && { location }),
         ...(locationWatchPilot(scope) && { locationWatch: true }),
@@ -100,6 +106,7 @@ export const privacy = defineTool({
       processors: dataProcessors(modelId, {
         memoryDigest,
         agentMail: agentMailboxEnabled(scope),
+        broToBro,
         decisionModel:
           (directModelActive() &&
             toolRouterListedWorkspace(scope.workspaceId)) ||

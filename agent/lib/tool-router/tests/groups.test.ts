@@ -47,6 +47,7 @@ const everyPilot = {
   ...taskAgentDeployment,
   AGENT_SANDBOX: "bro-cloudru",
   AGENTMAIL_API_KEY: "agentmail-test-key",
+  BRO_TO_BRO_WORKSPACES: "*",
   CONTACTS_WORKSPACES: "*",
   ELEVENLABS_API_KEY: "elevenlabs-test-key",
   EVE_SCHEDULES: "on",
@@ -109,6 +110,8 @@ describe("the tool router's groups", () => {
       "schedules-update",
       "phone-disable",
       "contact-delete",
+      "bro_network",
+      "bro_talk",
     ]) {
       expect([name, routerCoreTool(name)]).toEqual([name, true]);
       expect(routerToolOffered(name, [])).toBe(true);
@@ -153,6 +156,8 @@ describe("the tool router's groups", () => {
         "location_edit",
         "place_reminder",
         "sign_document",
+        "bro_network",
+        "bro_talk",
       ]) {
         expect([name, names.has(name)]).toEqual([name, true]);
       }

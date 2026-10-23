@@ -204,6 +204,18 @@ export const env = createEnv({
     // Telegram chat as a button to a Mini App (`agent/tools/send_card.ts`,
     // `docs/cards.md`): workspace ids or *. Unset, nobody.
     CARDS_WORKSPACES: workspaceListSchema.optional(),
+    // Bro ↔ Bro (docs/bro-to-bro.md): workspace ids or *. Unset, off for
+    // everyone, links included; set, also on for every workspace with an
+    // active link, so the person who accepted an invite gets it with the link.
+    BRO_TO_BRO_WORKSPACES: workspaceListSchema
+      .refine(
+        (entries) => entries.every((entry) => !entry.includes("@")),
+        "BRO_TO_BRO_WORKSPACES takes workspace ids or *, not emails"
+      )
+      .optional(),
+    // The model of the envoys and of their outgoing gate; unset,
+    // `openai/gpt-6-luna` (agent/lib/bro-to-bro/model.ts).
+    BRO_TO_BRO_MODEL: trimmedValue.optional(),
     // Geolocation (`agent/tools/location.ts`, `docs/location.md`): workspace
     // ids or *. Unset, nobody: a shared location stays what it was (an empty
     // Telegram turn, a file note in iMessage).

@@ -12,6 +12,9 @@ import { ensureScope } from "@db/services/scope";
  */
 export const telegramUserEmailDomain = "telegram.local-vault.invalid";
 
+/** The account's name when Telegram gave none. */
+export const telegramUserName = "Telegram user";
+
 function telegramUserEmail(telegramUserId: string) {
   return `telegram-${createHash("sha256")
     .update(telegramUserId)
@@ -50,7 +53,7 @@ export async function ensureTelegramUser({
       email,
       emailVerified: true,
       id: randomUUID(),
-      name: given === "" ? "Telegram user" : given,
+      name: given === "" ? telegramUserName : given,
     })
     .onConflictDoNothing()
     .returning({ id: user.id });

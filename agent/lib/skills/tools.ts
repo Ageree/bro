@@ -71,6 +71,8 @@ const toolGroupEntries = {
   agency_control: "core",
   apps: "apps",
   ask_question: "core",
+  bro_network: "core",
+  bro_talk: "core",
   browser_task: "core",
   browser_files: "core",
   calculate: "core",
