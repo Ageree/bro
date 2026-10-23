@@ -18,7 +18,6 @@ import {
 } from "@db/services/auth/telegram-login";
 import { ensureTelegramUser } from "@db/services/auth/telegram-user";
 import { messageQuotaGate } from "@agent/lib/billing/quota";
-import { bugBotTarget } from "@agent/lib/bug-bot/target";
 import { browserFilesEnabled } from "@agent/lib/browser-use/files";
 import {
   fallbackDeliveryText,
@@ -28,7 +27,7 @@ import {
 } from "@agent/lib/delivery/fallback";
 import { withApprovalCard } from "@shared/chat/approval-card";
 import { crossChannelRecap } from "@agent/lib/conversation/recap";
-import { firstContactContext } from "@agent/lib/first-contact";
+import { firstContactContext, ownerTelegram } from "@agent/lib/first-contact";
 import { telegramMediaTurn } from "@agent/lib/inbound-media/telegram";
 import {
   inboundTurn,
@@ -129,6 +128,7 @@ const startLinkPattern =
 const loginCommandPattern =
   /^\/(?:start(?:@[A-Za-z0-9_]+)?\s+login(?:_[\w-]*)?|login(?:@[A-Za-z0-9_]+)?)$/u;
 const bugCommandPattern = /^\/bug(?:@[A-Za-z0-9_]+)?(?:\s|$)/u;
+const bugHintText = `Нашли ошибку? Напишите ${ownerTelegram}: опишите, что сломалось, можно со скриншотом.`;
 const maximumThrottledChats = 500;
 
 /**
@@ -456,13 +456,9 @@ export default telegramChannel({
       return null;
     }
 
-    // The bug bot is a separate bot: /bug only points to it, before any model.
-    if (
-      env.BUG_BOT_USERNAME &&
-      bugBotTarget() &&
-      bugCommandPattern.test(message.text)
-    ) {
-      await context.telegram.sendMessage(bugHintText(env.BUG_BOT_USERNAME));
+    // /bug points to the owner's Telegram (owner, 23.10), before any model.
+    if (bugCommandPattern.test(message.text)) {
+      await context.telegram.sendMessage(bugHintText);
       return null;
     }
 
@@ -608,10 +604,6 @@ function isForwarded(raw: Parameters<typeof forwardSchema.safeParse>[0]) {
       parsed.data.forward_from !== undefined ||
       parsed.data.forward_sender_name !== undefined)
   );
-}
-
-function bugHintText(botUsername: string) {
-  return `Нашли ошибку? Напишите @${botUsername}: опишите, что сломалось, можно со скриншотом.`;
 }
 
 /**

@@ -10,13 +10,18 @@ const firstContactMarker =
   "Пометка `first-contact`: аккаунт этого человека создан прямо сейчас, это его первое в жизни сообщение, и знакомства ещё не было.";
 
 /**
- * The beta and where faults go: to the owner's own Telegram (owner, 23.10),
- * not the bug bot, so a newcomer writes to a person who reads it.
- * The model never invents a handle: it says this one as it is. The
- * introduction names no terms, privacy or data rules (owner, 12.10).
+ * Where people report faults and ideas: the owner's own Telegram (owner,
+ * 23.10), not the bug bot, so they write to a person who reads it. The
+ * introduction and Telegram's `/bug` both name it.
  */
-const betaNote =
-  "Для знакомства: Бро сейчас в бете. О сбоях и идеях — в Telegram @kapital0.";
+export const ownerTelegram = "@kapital0";
+
+/**
+ * The beta and where faults go. The model never invents a handle: it says
+ * this one as it is. The introduction names no terms, privacy or data rules
+ * (owner, 12.10).
+ */
+const betaNote = `Для знакомства: Бро сейчас в бете. О сбоях и идеях — в Telegram ${ownerTelegram}.`;
 
 /**
  * The turn context that opens a person's very first conversation, or nothing.

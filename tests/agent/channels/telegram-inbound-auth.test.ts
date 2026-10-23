@@ -259,6 +259,18 @@ describe("Telegram inbound authentication", () => {
     expect(capture.ensureUser).not.toHaveBeenCalled();
   });
 
+  it("points /bug to the owner's Telegram without a turn", async () => {
+    const { context, sent } = inboundContext();
+
+    await expect(
+      onMessage(context, telegramMessage({ text: "/bug не грузит фото" }))
+    ).resolves.toBeNull();
+
+    expect(sent).toHaveBeenCalledTimes(1);
+    expect(sent.mock.calls[0]?.[0]).toContain("@kapital0");
+    expect(capture.ensureUser).not.toHaveBeenCalled();
+  });
+
   it("accepts the bot-qualified start command", async () => {
     capture.redeemToken.mockResolvedValue("linked");
     const { context } = inboundContext();
