@@ -12,6 +12,9 @@ import { toneStyles } from "./tones";
  * page gives it.
  */
 export function CardView({ card }: { readonly card: Card }) {
+  const links = card.actions.flatMap((action) =>
+    "href" in action ? [action] : []
+  );
   return (
     <article
       className="group/card w-full overflow-hidden bro-plate"
@@ -42,9 +45,9 @@ export function CardView({ card }: { readonly card: Card }) {
         {card.blocks.map((block, position) => (
           <BlockView block={block} key={`${block.type}-${String(position)}`} />
         ))}
-        {card.actions.length > 0 && (
+        {links.length > 0 && (
           <div className="flex flex-col gap-3 pt-2">
-            {card.actions.map((action) => (
+            {links.map((action) => (
               <CardLink
                 className={buttonVariants({
                   className: "w-full",

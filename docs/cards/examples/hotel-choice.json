@@ -1,0 +1,85 @@
+{
+  "kicker": "Отель · Санкт-Петербург",
+  "title": "Какой отель берём",
+  "subtitle": "Три варианта на 31 октября – 3 ноября рядом с Невским, отмена бесплатная до 29 октября",
+  "tone": "info",
+  "blocks": [
+    {
+      "type": "choice",
+      "id": "hotel",
+      "label": "Отель",
+      "initial": ["nevsky_dvor"],
+      "options": [
+        {
+          "value": "nevsky_dvor",
+          "title": "Невский Двор",
+          "detail": "400 м до Невского, завтрак входит",
+          "side": "6 400 ₽"
+        },
+        {
+          "value": "admiral",
+          "title": "Адмирал",
+          "detail": "900 м до Невского, тихий двор",
+          "side": "5 900 ₽"
+        },
+        {
+          "value": "loft",
+          "title": "Лофт на Лиговском",
+          "detail": "1,2 км до Невского, с кухней",
+          "side": "5 200 ₽"
+        }
+      ]
+    },
+    {
+      "type": "choice",
+      "id": "extras",
+      "label": "Что нужно дополнительно",
+      "multiple": true,
+      "required": false,
+      "options": [
+        {
+          "value": "parking",
+          "title": "Парковка",
+          "side": "400 ₽"
+        },
+        {
+          "value": "late_checkout",
+          "title": "Выезд после 14:00",
+          "side": "1 000 ₽"
+        },
+        {
+          "value": "baby_bed",
+          "title": "Детская кроватка"
+        }
+      ]
+    },
+    {
+      "type": "field",
+      "id": "wish",
+      "label": "Пожелание к номеру",
+      "input": "longtext",
+      "required": false,
+      "placeholder": "Например, тихий этаж"
+    },
+    {
+      "type": "callout",
+      "tone": "warning",
+      "text": "Платить я начну только после вашего «да» в чате: здесь выбор лишь запоминается."
+    }
+  ],
+  "actions": [
+    {
+      "label": "Продолжить с выбором",
+      "submit": "continue",
+      "primary": true
+    },
+    {
+      "label": "Показать другие",
+      "submit": "more"
+    },
+    {
+      "label": "Открыть «Невский Двор»",
+      "href": "https://example.com/hotels/nevsky-dvor"
+    }
+  ]
+}

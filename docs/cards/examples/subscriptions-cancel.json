@@ -1,0 +1,57 @@
+{
+  "kicker": "Подписки · октябрь",
+  "title": "Что отключить",
+  "subtitle": "Списывается 6 подписок на 3 585 ₽ в месяц",
+  "tone": "warning",
+  "blocks": [
+    {
+      "type": "choice",
+      "id": "cancel",
+      "label": "Отметьте, что отключаем",
+      "multiple": true,
+      "required": false,
+      "options": [
+        {
+          "value": "music",
+          "title": "Музыка",
+          "detail": "Не слушали с июля",
+          "side": "299 ₽"
+        },
+        {
+          "value": "cloud",
+          "title": "Облако 200 ГБ",
+          "detail": "Занято 38 ГБ",
+          "side": "249 ₽"
+        },
+        {
+          "value": "cinema",
+          "title": "Онлайн-кинотеатр",
+          "detail": "Последний просмотр в сентябре",
+          "side": "399 ₽"
+        },
+        {
+          "value": "gym",
+          "title": "Фитнес-клуб",
+          "detail": "Ходите по два раза в неделю",
+          "side": "2 390 ₽"
+        }
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "info",
+      "text": "Отключу только отмеченное. Если сайт попросит код из SMS, напишу вам в чат."
+    }
+  ],
+  "actions": [
+    {
+      "label": "Отключить отмеченные",
+      "submit": "cancel",
+      "primary": true
+    },
+    {
+      "label": "Оставить всё",
+      "submit": "keep"
+    }
+  ]
+}
