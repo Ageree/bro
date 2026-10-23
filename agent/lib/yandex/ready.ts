@@ -12,11 +12,12 @@ const cardSchema = z.object({
 /**
  * Which bank cards the person's Yandex account has, read from Go. Whether
  * the browser is signed in at all the tool asks Yandex ID first
- * (`statusOperation`): Go's own session is no proof of it. Cards are the account's, shared by Eda, Lavka and
- * Go through Trust; Go keeps a card it has not had the bank confirm in
- * `unverified_cards`, and the same check frees it for every service
- * (`docs/dev-notes.md`, «Яндекс Еда»). Only reads: nothing is linked,
- * verified or paid.
+ * (`statusOperation`): Go's own session is no proof of it, and a browser
+ * that never opened Go gets one from the transport. Cards are the account's,
+ * shared by Eda, Lavka and Go through Trust; Go keeps a card it has not had
+ * the bank confirm in `unverified_cards`, and the same check frees it for
+ * every service (`docs/dev-notes.md`, «Яндекс Еда»). Only reads: nothing is
+ * linked, verified or paid.
  */
 export const accountReadyOperation = defineYandexOperation({
   about:
@@ -53,18 +54,9 @@ export const accountReadyOperation = defineYandexOperation({
 
 type Readiness = z.output<typeof accountReadyOperation.result>;
 
-/**
- * Told when the person is signed in to Yandex ID but Go's page has never
- * run in Bro's browser: Go keeps its user id in its own storage
- * (`goSession`), so the cards cannot be read there yet. Being signed in is
- * not being ready: nothing is known of the cards.
- */
-const goNeverOpenedReply =
-  "Signed in to Yandex, but Bro's browser has never opened Yandex Go, so the cards could not be read yet. Do not say Yandex is ready and do not say anything about the person's cards. If the person only asked to set Yandex up, tell them in one line they are signed in, and that whether the card needs the bank's confirmation shows on the first order or taxi. Otherwise go on with the errand.";
-
-/** Told when the browser is not signed in to Yandex yet. */
-export const signInFirstReply =
-  "Not signed in to Yandex yet. Before the errand, lead the person in one short message: say you will first sign in to their Yandex together, then send a sign-in link (site-login-link with site yandex.ru and signInPage https://passport.yandex.ru/auth); in the window they sign in themselves, you never see the password. The link goes out only for a site the person named in their own words: if they only said «да» to your offer and never named Yandex, ask them to say it, for example «давай войдём в Яндекс». Never ask for the password or a code in the chat. When they say they are in, call account.ready again and go back to the errand.";
+/** Told when the cards could not be read, signed in as the person is. */
+export const cardsUnreadReply =
+  "Signed in to Yandex, but Yandex did not show the cards just now. Say nothing about the cards, do not call it ready and do not guess: go on with the errand, and if a payment fails on the card, call account.ready again.";
 
 /**
  * What the model does next with the readiness it read, in a reply the tool
@@ -75,11 +67,7 @@ export function readinessReply(
   readiness: Readiness,
   options: { readonly canVerify: boolean }
 ) {
-  if (!("cards" in readiness)) {
-    return readiness.error === "no_user_id"
-      ? goNeverOpenedReply
-      : "Signed in to Yandex, but Yandex did not show the cards just now. Say nothing about the cards, do not call it ready and do not guess: go on with the errand, and if a payment fails on the card, call account.ready again.";
-  }
+  if (!("cards" in readiness)) return cardsUnreadReply;
   const verified = readiness.cards.find((card) => card.verified);
   if (verified) {
     return `Ready: signed in, and the card ${verified.title} should work in Eda, Lavka and Go (Lavka may still ask the bank to confirm a payment). If the person only asked to set Yandex up, tell them in one line it is ready and what you can do there now (order food or groceries, call a taxi); otherwise say nothing of this check and go straight on with the errand.`;

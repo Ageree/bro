@@ -10,12 +10,15 @@ export type JsonValue = z.infer<typeof jsonSchema>;
  * the operation's own schema describes, or one of the two walls a Yandex
  * service puts up. A function that sees the service say «not signed in»
  * (401, a redirect to the sign-in) answers `signed_out`; one that meets a
- * check it cannot pass, `captcha`.
+ * check it cannot pass, `captcha`. `no_session`, before it sends anything:
+ * the service's page has not made its own session in this browser yet (Go,
+ * `go/session.ts`), which the transport makes and calls again.
  */
 export const operationAnswerSchema = z.discriminatedUnion("status", [
   z.object({ data: jsonSchema, status: z.literal("ok") }),
   z.object({ status: z.literal("signed_out") }),
   z.object({ status: z.literal("captcha") }),
+  z.object({ status: z.literal("no_session") }),
 ]);
 
 /** Yandex's own sites, the only ones an operation may be defined on. */

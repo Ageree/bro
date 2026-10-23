@@ -242,6 +242,8 @@ beforeEach(() => {
         return fake ?? { body: {}, status: 404 };
       },
     });
+    // Only Go's pages lack a session of their own (`go/session.ts`).
+    if (answer.status === "no_session") throw new Error("Not a Go page.");
     if (answer.status !== "ok") return { kind: answer.status };
     return { data: answer.data, kind: "ok" };
   });

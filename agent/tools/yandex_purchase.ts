@@ -61,6 +61,7 @@ import {
   afishaPurchasePilot,
   yandexPurchasePilot,
 } from "@agent/lib/yandex/pilot";
+import { yandexSignIn } from "@agent/lib/yandex/sign-in";
 import { runYandexOperation } from "@agent/lib/yandex/transport";
 import type { AccessScope } from "@shared/identity/access-scope";
 
@@ -114,8 +115,6 @@ const goRefusals = {
     "Yandex Go shows a check this tool does not pass. Tell the person to order in the Yandex Go app.",
   failed:
     "Yandex Go did not answer as expected. Check yandex go.ride before anything else: a ride may be on. Never book again blindly.",
-  signed_out:
-    "Bro's browser is not signed in to Yandex. Offer the person a sign-in link (site-login-link with site yandex.ru, signInPage https://passport.yandex.ru/auth).",
   unavailable:
     "Bro's browser is not available right now. Tell the person to order in the Yandex Go app.",
 } as const;
@@ -161,7 +160,6 @@ const afishaBlockedReplies = new Map(
     session_restricted: afishaByBrowser,
     session_unknown: afishaSessionReply,
     session_unsupported: afishaByBrowser,
-    signed_out: goRefusals.signed_out,
     too_many_tickets:
       "Nothing was ordered or charged: one order of this session takes fewer tickets (maxTickets in yandex afisha.prices). Tell the person and ask whether to buy that many.",
     zone_ambiguous:
@@ -690,6 +688,11 @@ export default defineDynamic({
                       goCancelOperation,
                       {}
                     );
+              if (outcome.kind === "signed_out")
+                return {
+                  kind: outcome.kind,
+                  ...(await yandexSignIn(toolContext, outcome)),
+                };
               if (outcome.kind !== "ok")
                 return { kind: outcome.kind, reply: goRefusals[outcome.kind] };
               const { unverifiedCardId, ...result } = goResultSchema.parse(
@@ -755,7 +758,9 @@ export default defineDynamic({
               if (prepared.kind !== "ready") {
                 return {
                   ...prepared,
-                  reply: blockedReply(input.service, prepared.reason),
+                  ...(prepared.reason === "signed_out"
+                    ? await yandexSignIn(toolContext, { kind: "signed_out" })
+                    : { reply: blockedReply(input.service, prepared.reason) }),
                 };
               }
               const expiresAt = new Date(
@@ -964,12 +969,19 @@ export default defineDynamic({
                 ? null
                 : await refreshQuote(scope.workspaceId, purchase);
             if (refreshed && refreshed.kind !== "ready")
-              return purchase.service === "afisha"
+              return refreshed.reason === "signed_out"
                 ? {
                     ...refreshed,
-                    reply: blockedReply(purchase.service, refreshed.reason),
+                    ...(await yandexSignIn(toolContext, {
+                      kind: "signed_out",
+                    })),
                   }
-                : refreshed;
+                : purchase.service === "afisha"
+                  ? {
+                      ...refreshed,
+                      reply: blockedReply(purchase.service, refreshed.reason),
+                    }
+                  : refreshed;
             const claim: Parameters<typeof claimYandexPurchase>[1] = {
               callId: toolContext.callId,
               confirmationQuestion: purchase.confirmationQuestion,

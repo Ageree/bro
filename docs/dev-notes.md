@@ -398,8 +398,8 @@ s3put:<ключ>`; без звонка её гоняют локально: `sip.
   без `@`. Из-за `IMESSAGE_PROJECT_ID` в env сессии прямой `vitest run` падает
   и на `db/services/auth/tests/photon.test.ts` («resolves project credentials
   lazily»), даже на чистом bro-next: `env -u IMESSAGE_PROJECT_ID`. Так же
-  `OPS_ALERT_BOT_TOKEN` сессии валит `agent/lib/model/tests/credits.test.ts`: тревога
-  уходит служебным ботом, а тест ждёт тестовый токен — `env -u OPS_ALERT_BOT_TOKEN`.
+  `OPS_ALERT_BOT_TOKEN` и `OPS_ALERT_CHAT_ID` сессии валят `agent/lib/model/tests/credits.test.ts`:
+  тревога уходит служебным ботом, а тест ждёт тестовый токен — `env -u` обоих.
   `S3_ACCESS_KEY_ID`/`S3_SECRET_ACCESS_KEY` сессии без `S3_ENDPOINT` и
   `S3_REGION` валят `pnpm build:eve` той же проверкой: снимайте и их.
 - `pnpm build` без `.env.local` падает на сборе данных страниц: хватает заглушек
@@ -1197,13 +1197,24 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   `error`/`cancelled`. Отмена — `POST /api/v2/orders/<nr>/cancel`.
 
 - Мини-онбординг Яндекса (12.10): `yandex` `account.ready` (`agent/lib/yandex/ready.ts`)
-  сначала спрашивает вход у Яндекс ID (`status`): сессия Go входа не доказывает —
-  у того, кто ни разу не открывал Go, `goSession` даёт `no_user_id`, а у анонима
-  список карт пуст. Потом читает карты из `/3.0/paymentmethods` Go, а следующий шаг (вход по ссылке, ссылка банка
+  сначала спрашивает вход у Яндекс ID (`status`): сессия Go входа не доказывает,
+  а у анонима список карт пуст. Потом читает карты из `/3.0/paymentmethods` Go, а следующий шаг (ссылка банка
   через `yandex_purchase` `verify_card` только после «да», где привязать карту) несёт
   `reply` результата, а не промпт. Знакомство (`first-contact`) узнаёт о бете, боте
   багов (только при `bugBotTarget()` и `BUG_BOT_USERNAME`, иначе — ни слова) из контекстной строки
   `firstContactContext`; условий, приватности и ссылок в знакомстве нет (владелец 12.10).
+- Такси нового человека (23.10): Go хранит свою сессию (user id для API) в IndexedDB своей
+  страницы, и её заводит лишь страница `taxi.yandex.ru/` при первом запуске. Старое чтение на
+  браузере без Go бросало `NotFoundError` (в журнале — `[yandex] the call failed`, `failed/page`:
+  Бро говорил «такси Яндекса не отвечает» и шёл на сайт, а сайт упирался во вход) и **оставляло
+  пустую базу `turboapp-taxi`**, после которой страница Go сессию не заводила уже никогда (так
+  было и у владельца). Теперь чтение базу не создаёт, пустую удаляет, анонимную сессию
+  (`authStatus: "unauthorized"`, у вошедшего — `"authorized"`) не берёт и отвечает `no_session`;
+  транспорт тогда спрашивает `status` и, если человек вошёл, раз открывает Go (`go.open`, ~7 с) и
+  повторяет вызов (`[yandex] go session`). «Не вошёл» в `yandex`/`yandex_purchase` — ссылка входа
+  на passport.yandex.ru, которую делает сам инструмент (`agent/lib/yandex/sign-in.ts`): сайт
+  выбирает код, а не модель или страница, поэтому «Яндекс» в словах человека не нужен (у
+  `site-login-link` нужен). Пробы — в Chromium сессии (Playwright) и `yandex-probe.py` у владельца.
 
 ## Composio: Google, Notion, Slack и другие приложения
 

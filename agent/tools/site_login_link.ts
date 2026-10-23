@@ -4,23 +4,15 @@ import {
   personMessages,
   personWordsThisTurn,
 } from "@agent/lib/browser-use/said";
-import { usesBrowserVm } from "@agent/lib/browser-vm/backend";
-import { recordLoginHandoffLink } from "@agent/lib/login-handoff/exact-link";
-import {
-  linkLifetimeMs,
-  loginHandoffLink,
-  newLinkId,
-} from "@agent/lib/login-handoff/open";
+import { makeLoginHandoff } from "@agent/lib/login-handoff/make";
 import { loginHandoffPilot } from "@agent/lib/login-handoff/pilot";
 import { handoffSite, namedInWords } from "@agent/lib/login-handoff/site";
 import { resolveModeValue, startedByPerson } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
-import { scheduleOwner, scheduleReplyAnchor } from "@agent/lib/schedules/tools";
 import {
   stepIdentity,
   stepStartedEventSchema,
 } from "@agent/lib/turn-kind/step";
-import { createLoginHandoff } from "@db/services/login-handoffs";
 
 const inputSchema = z.object({
   site: z
@@ -96,43 +88,22 @@ async function createLink(
     }
     openAt = page.url;
   }
-  const owner = scheduleOwner(context);
-  if (!(await usesBrowserVm({ ...owner.scope }))) {
+  const made = await makeLoginHandoff(context, site, openAt);
+  if (made.kind === "no_browser") {
     return {
       reply:
         "This deployment's browser cannot show a sign-in window yet. Say so plainly: Bro signs in itself and asks for the codes in the chat. Nothing was sent.",
       sent: false,
     };
   }
-  const now = new Date();
-  const id = newLinkId();
-  const created = await createLoginHandoff(
-    {
-      allowedDomains: [...site.allowedDomains],
-      conversationChannel: owner.conversation.conversationChannel,
-      conversationId: owner.conversation.conversationId,
-      createdByUserId: owner.scope.userId,
-      domain: site.domain,
-      expiresAt: new Date(now.getTime() + linkLifetimeMs),
-      id,
-      replyAnchorMessageId: scheduleReplyAnchor(context) ?? null,
-      rootSessionId: context.session.id,
-      siteUrl: openAt,
-      workspaceId: owner.scope.workspaceId,
-    },
-    now
-  );
-  if (created.kind === "busy") {
+  if (made.kind === "busy") {
     return {
       reply:
         "Another sign-in window of this person is open right now. Say so: they can finish or close that one, then ask again. Nothing was sent.",
       sent: false,
     };
   }
-  const link = loginHandoffLink(id);
-  // `send_message` puts this exact address into the text it sends
-  // (`exact-link.ts`), so the model's copy of it does not matter.
-  recordLoginHandoffLink(link);
+  const { link } = made;
   return {
     link,
     reply: `The link is made. Send it to the person as it is, on a line of its own, with: it opens a window of Bro's own browser on ${site.domain}, where they sign in themselves (type the login, password and any code right there, and tick «Запомнить меня» if the site offers it), then press «Готово»; Bro does not keep the password, and Bro stays signed in there for later errands. The link works for 30 minutes from one device, so they must not forward it. Do not open the link, do not ask for the password or a code in the chat, and say nothing more until they answer or the result comes.`,

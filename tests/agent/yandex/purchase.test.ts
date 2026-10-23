@@ -11,10 +11,12 @@ import type {
   afishaPurchasePilot,
   yandexPurchasePilot,
 } from "@agent/lib/yandex/pilot";
+import type { makeLoginHandoff } from "@agent/lib/login-handoff/make";
 import type { JsonValue } from "@agent/lib/yandex/operations";
 import type { runYandexOperation } from "@agent/lib/yandex/transport";
 
 const services = vi.hoisted(() => ({
+  makeLink: vi.fn<typeof makeLoginHandoff>(),
   afishaPayment: vi.fn<typeof afisha.readAfishaPayment>(),
   afishaPilot: vi.fn<typeof afishaPurchasePilot>(),
   afishaPrepare: vi.fn<typeof afisha.prepareAfishaPurchase>(),
@@ -47,6 +49,12 @@ vi.mock("@db/services/settings", () => ({
 }));
 vi.mock("@agent/lib/yandex/transport", () => ({
   runYandexOperation: services.run,
+}));
+vi.mock("@agent/lib/login-handoff/make", () => ({
+  makeLoginHandoff: services.makeLink,
+}));
+vi.mock("@agent/lib/login-handoff/pilot", () => ({
+  loginHandoffPilot: async () => true,
 }));
 vi.mock("@agent/lib/yandex/pilot", () => ({
   afishaPurchasePilot: services.afishaPilot,
@@ -989,5 +997,69 @@ describe("Yandex Go with an unverified card", () => {
       expect.objectContaining({ id: "go.card_verify" }),
       { cardId: "card-x4d" }
     );
+  });
+});
+
+describe("a purchase when Bro's browser is not signed in to Yandex", () => {
+  const link = "https://bro.example/handoff/link-1";
+
+  /** A turn of its own: a sign-in link is one per turn (`sign-in.ts`). */
+  function turnContext(id: string): ToolContext {
+    const context = callContext();
+    return {
+      ...context,
+      session: { ...context.session, turn: { id, sequence: 1 } },
+    };
+  }
+
+  beforeEach(() => {
+    services.makeLink.mockResolvedValue({ kind: "made", link });
+  });
+
+  it("hands over a Yandex sign-in link instead of a failure, booking nothing", async () => {
+    // 23.10: the person's first taxi; Bro went to the site and offered to
+    // take the password in the chat.
+    services.run.mockResolvedValue({ byYandexId: true, kind: "signed_out" });
+    const tool = await resolve([
+      { role: "user", content: "Закажи такси от Мичуринского 56 до Гвидона" },
+    ]);
+    const result = await tool?.execute(
+      {
+        action: "book",
+        from: "Мичуринский проспект, 56",
+        near: [37.6177, 55.7558],
+        payment: "current",
+        service: "go",
+        to: "Гвидон",
+      },
+      turnContext("turn-go")
+    );
+    expect(result).toMatchObject({ kind: "signed_out", link });
+    expect(JSON.stringify(result)).toContain("Not signed in to Yandex yet");
+    expect(services.run).toHaveBeenCalledExactlyOnceWith(
+      scope.workspaceId,
+      expect.objectContaining({ id: "go.book" }),
+      expect.anything()
+    );
+  });
+
+  it("hands over the link when Lavka's checkout finds nobody signed in, once Yandex ID agrees", async () => {
+    services.prepare.mockResolvedValue({
+      kind: "blocked",
+      reason: "signed_out",
+    });
+    services.run.mockResolvedValue({ byYandexId: true, kind: "signed_out" });
+    const tool = await resolve();
+    const result = await tool?.execute(
+      { action: "prepare", service: "lavka" },
+      turnContext("turn-lavka")
+    );
+    expect(result).toMatchObject({ kind: "blocked", link });
+    expect(services.run).toHaveBeenCalledExactlyOnceWith(
+      scope.workspaceId,
+      expect.objectContaining({ id: "status" }),
+      {}
+    );
+    expect(services.create).not.toHaveBeenCalled();
   });
 });

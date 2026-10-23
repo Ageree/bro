@@ -1,29 +1,73 @@
 export const goApiPage = "https://taxi.yandex.ru/robots.txt";
 
 /**
- * The page's own session for Yandex Go's API, as JavaScript source for the
- * operations' `run` functions: the user id the page keeps in IndexedDB, and
- * a CSRF token from `POST /csrf_token`. `goSession()` answers the session
- * with `post(path, body)`, or with `wall` (signed out) or `error` (a fault
- * named in words, never the page's text).
+ * Go's own start page: opened once, it makes the session the API needs
+ * (`goOpenOperation`).
  */
-export const goSession = `
-const goSession = async (forceRefresh = false) => {
-  const db = await new Promise((res, rej) => {
+export const goStartPage = "https://taxi.yandex.ru/";
+
+/**
+ * The user id Go's page keeps in IndexedDB, as JavaScript source:
+ * `goStoredUser(repair)` answers it, or null when there is none to use. Go's
+ * page makes its database and store together as it first starts. Opening the
+ * database from here never makes one (the upgrade is called off): the old
+ * code did, on a browser that had never opened Go, and Go's page then never
+ * made its store, so Go stayed without a session for good (23.10, Chromium
+ * and the owner's browser). With `repair`, a database without a single store,
+ * which holds nothing, is deleted. A session Go made while nobody was signed
+ * in to Yandex (`authStatus` «unauthorized») is no one's to use either;
+ * signed in, Go's page writes «authorized». A delete another tab blocks
+ * holds the opens after it until that tab closes: the transport's budget
+ * ends such a call.
+ */
+export const goStoredUserSource = `
+const goStoredUser = async (repair) => {
+  const db = await new Promise((done) => {
     const q = indexedDB.open("turboapp-taxi");
-    q.onsuccess = () => res(q.result);
-    q.onerror = () => rej(q.error);
+    q.onupgradeneeded = () => q.transaction.abort();
+    q.onsuccess = () => done(q.result);
+    q.onerror = () => done(null);
   });
-  const stored = await new Promise((r) => {
+  if (!db) return null;
+  if (!db.objectStoreNames.contains("redux-persist")) {
+    const empty = db.objectStoreNames.length === 0;
+    db.close();
+    if (repair && empty) {
+      await new Promise((done) => {
+        const q = indexedDB.deleteDatabase("turboapp-taxi");
+        q.onsuccess = q.onerror = q.onblocked = () => done();
+      });
+    }
+    return null;
+  }
+  const stored = await new Promise((done) => {
     const q = db
       .transaction("redux-persist", "readonly")
       .objectStore("redux-persist")
       .get("persist:session");
-    q.onsuccess = () => r(q.result);
+    q.onsuccess = () => done(q.result);
+    q.onerror = () => done(null);
   });
+  db.close();
   const raw = typeof stored === "string" ? JSON.parse(stored) : stored;
   const userId = raw && raw.userId;
-  if (!/^[0-9a-f]{32}$/.test(userId || "")) return { error: "no_user_id" };
+  if (!/^[0-9a-f]{32}$/.test(userId || "") || raw.authStatus === "unauthorized") return null;
+  return userId;
+};
+`;
+
+/**
+ * The page's own session for Yandex Go's API, as JavaScript source for the
+ * operations' `run` functions: the user id the page keeps in IndexedDB, and
+ * a CSRF token from `POST /csrf_token`. `goSession()` answers the session
+ * with `post(path, body)`, or with `wall` (signed out) or `error` (a fault
+ * named in words, never the page's text); `no_user_id` before any request,
+ * when Go has made no session in this browser yet.
+ */
+export const goSession = `${goStoredUserSource}
+const goSession = async (forceRefresh = false) => {
+  const userId = await goStoredUser(true);
+  if (!userId) return { error: "no_user_id" };
   const origin = "https://ya-authproxy.taxi.yandex.ru";
   const reads = new Set([
     "/3.0/paymentmethods", "/3.0/routestats", "/3.0/taxiontheway",
@@ -112,5 +156,7 @@ const goSession = async (forceRefresh = false) => {
   return { post, userId };
 };
 const goAnswer = (x) =>
-  x.wall ? { status: "signed_out" } : x.error ? { status: "ok", data: { error: x.error } } : null;
+  x.wall ? { status: "signed_out" } :
+  x.error === "no_user_id" ? { status: "no_session" } :
+  x.error ? { status: "ok", data: { error: x.error } } : null;
 `;

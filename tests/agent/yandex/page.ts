@@ -24,6 +24,16 @@ export type OperationAnswer = z.infer<typeof operationAnswerSchema>;
  * `document`'s scripts, IndexedDB). Nothing else of the browser exists here.
  */
 export interface FakePage {
+  /**
+   * The page's IndexedDB database as Chromium has it, kept across runs on
+   * the same page and changed by them: `ready`, with the store that holds
+   * `indexedDb` (the default); `absent`, never made; `empty`, made without a
+   * store. Opening an absent one makes it empty unless the upgrade is called
+   * off; a transaction on a missing store throws.
+   */
+  readonly database?: { state: "absent" | "empty" | "ready" };
+  /** Collects the names of the databases the page code deletes. */
+  readonly deleted?: string[];
   /** Holds a request before the service answers it, to tell requests that overlap from ones that queue. */
   readonly hold?: (url: URL) => Promise<void>;
   readonly indexedDb?: JsonValue;
@@ -57,31 +67,67 @@ export function dataOf(answer: OperationAnswer): JsonValue {
 interface FakeRequest<Result> {
   onerror?: () => void;
   onsuccess?: () => void;
+  onupgradeneeded?: () => void;
   result?: Result;
+  transaction?: { abort: () => void };
 }
 
-function fakeIndexedDb(value: JsonValue | undefined) {
-  return {
-    open() {
-      const request: FakeRequest<{
-        transaction: () => {
-          objectStore: () => { get: () => FakeRequest<JsonValue | undefined> };
-        };
-      }> = {};
-      request.result = {
-        transaction: () => ({
-          objectStore: () => ({
-            get: () => {
-              const read: FakeRequest<JsonValue | undefined> = {
-                result: value,
-              };
-              queueMicrotask(() => read.onsuccess?.());
-              return read;
-            },
-          }),
-        }),
+function fakeIndexedDb(page: FakePage) {
+  const database: NonNullable<FakePage["database"]> = page.database ?? {
+    state: "ready",
+  };
+  const store = {
+    get: () => {
+      const read: FakeRequest<JsonValue | undefined> = {
+        result: page.indexedDb,
       };
+      queueMicrotask(() => read.onsuccess?.());
+      return read;
+    },
+  };
+  const opened = () => ({
+    close: () => undefined,
+    objectStoreNames: {
+      contains: () => database.state === "ready",
+      length: database.state === "ready" ? 1 : 0,
+    },
+    transaction: () => {
+      if (database.state !== "ready") {
+        throw new Error(
+          "NotFoundError: One of the specified object stores was not found."
+        );
+      }
+      return { objectStore: () => store };
+    },
+  });
+  return {
+    deleteDatabase(name: string) {
+      const request: FakeRequest<undefined> = {};
+      page.deleted?.push(name);
+      database.state = "absent";
       queueMicrotask(() => request.onsuccess?.());
+      return request;
+    },
+    open() {
+      const request: FakeRequest<ReturnType<typeof opened>> = {};
+      queueMicrotask(() => {
+        if (database.state === "absent") {
+          const upgrade = { aborted: false };
+          request.transaction = {
+            abort: () => {
+              upgrade.aborted = true;
+            },
+          };
+          request.onupgradeneeded?.();
+          if (upgrade.aborted) {
+            request.onerror?.();
+            return;
+          }
+          database.state = "empty";
+        }
+        request.result = opened();
+        request.onsuccess?.();
+      });
       return request;
     },
   };
@@ -102,6 +148,9 @@ export async function runInPage(
   const context = createContext({
     AbortSignal,
     console,
+    // The test's clock, faked or not: a context's own Date would read the
+    // real day (afisha.prices asked for 23.10 under a clock set to 22.10).
+    Date,
     crypto: webcrypto,
     document: {
       scripts: (page.scripts ?? []).map((textContent) => ({
@@ -125,7 +174,7 @@ export async function runInPage(
         text: async () => response.text ?? JSON.stringify(response.body),
       };
     },
-    indexedDB: fakeIndexedDb(page.indexedDb),
+    indexedDB: fakeIndexedDb(page),
     navigator: { userAgent: "Mozilla/5.0 (test)" },
     setTimeout: (callback: () => void, ms?: number) => {
       page.timeouts?.push(ms ?? 0);
