@@ -103,6 +103,10 @@ export async function runInPage(
     AbortSignal,
     console,
     crypto: webcrypto,
+    // The test's clock, faked or not: the context's own Date reads the real
+    // one, so a page's «today» drifted off a test's fixed day (afisha.prices
+    // asked from 2026-10-22 only on that day).
+    Date,
     document: {
       scripts: (page.scripts ?? []).map((textContent) => ({
         textContent,

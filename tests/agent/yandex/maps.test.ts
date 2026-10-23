@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { mapsOrgOperation } from "@agent/lib/yandex/maps/org";
-import { mapsSearchOperation } from "@agent/lib/yandex/maps/search";
+import {
+  mapsSearchOperation,
+  sameBuildingNote,
+} from "@agent/lib/yandex/maps/search";
 import { type FakeResponse, dataOf, fixture, runInPage } from "./page";
 
 const origin = "https://yandex.ru/robots.txt";
@@ -150,6 +153,57 @@ describe("maps.search", () => {
     expect(requests[1]?.searchParams.get("csrfToken")).toBe(
       "0000000000000000000000000000000000000000:1790000000"
     );
+  });
+});
+
+/** A salon of Yandex Maps' search at a point, or with none. */
+const salon = (id: string, name: string, at: [number, number] | null) => ({
+  address: "Москва, Мичуринский проспект, 56",
+  bookable: true,
+  category: "Парикмахерская",
+  coordinates: at,
+  hours: null,
+  id,
+  name,
+  openNow: null,
+  openText: null,
+  phone: null,
+  rating: null,
+  ratingCount: null,
+  site: null,
+  url: `https://yandex.ru/maps/org/x/${id}/`,
+});
+
+describe("places in one building", () => {
+  it("names the places of one building so Bro asks which one the person means", () => {
+    // 23.10: two salons at Мичуринский, 56; Bro went to book at the first.
+    const note = sameBuildingNote({
+      places: [
+        salon("1", "Glow&Go", [37.4805, 55.6935]),
+        salon("2", "Топган", [37.4808, 55.6937]),
+        salon("3", "Чародейка", [37.5, 55.7]),
+      ],
+      total: 3,
+    });
+
+    expect(note).toContain("«Glow&Go» (Москва, Мичуринский проспект, 56)");
+    expect(note).toContain("«Топган»");
+    expect(note).not.toContain("Чародейка");
+    expect(note).toContain("ask them before you book");
+  });
+
+  it("says nothing when no two places stand together", () => {
+    expect(
+      sameBuildingNote({
+        places: [
+          salon("1", "Glow&Go", [37.4805, 55.6935]),
+          salon("2", "Топган", null),
+          salon("3", "Чародейка", [37.5, 55.7]),
+        ],
+        total: 3,
+      })
+    ).toBeUndefined();
+    expect(sameBuildingNote({ error: "wall" })).toBeUndefined();
   });
 });
 

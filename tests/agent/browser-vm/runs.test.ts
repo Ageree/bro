@@ -219,6 +219,11 @@ function workerRun(overrides: Partial<WorkerRun> = {}): WorkerRun {
   };
 }
 
+/** One step of a run the worker lists, on a Yandex Maps card. */
+function step(actions: { action: string; index?: number }[] | null) {
+  return { actions, url: "https://yandex.ru/maps/org/glow_go/105598554237/" };
+}
+
 /** The claims of the worker token a URL carries in its path. */
 function claimsOf(url: string, before: string) {
   const token = url.split(before)[1]?.split("/")[0] ?? "";
@@ -896,6 +901,42 @@ describe("reading a VM run", () => {
       status: "completed",
       unreadMessages: [],
     });
+  });
+
+  it("says a settled run took no action when its every step only answered done", async () => {
+    const client = await loadClient();
+    const settled = (overrides: Partial<WorkerRun>) =>
+      workerRun({
+        finishedAt: "2026-09-28T11:58:00Z",
+        result: "RESULT: записал на 11:00",
+        status: "completed",
+        ...overrides,
+      });
+
+    worker.readBrowserVmWorkerRun.mockResolvedValue(
+      settled({ stepCount: 1, steps: [step([{ action: "done" }])] })
+    );
+    expect((await client.readBrowserUseRun(runId)).idle).toEqual({
+      host: "yandex.ru",
+    });
+
+    for (const run of [
+      settled({
+        stepCount: 2,
+        steps: [
+          step([{ action: "click", index: 4 }]),
+          step([{ action: "done" }]),
+        ],
+      }),
+      // The worker lists only the last 50 steps, and may not say a step's actions.
+      settled({ stepCount: 60, steps: [step([{ action: "done" }])] }),
+      settled({ stepCount: 1, steps: [step(null)] }),
+      workerRun({ stepCount: 1, steps: [step([{ action: "done" }])] }),
+    ]) {
+      worker.readBrowserVmWorkerRun.mockResolvedValue(run);
+      // oxlint-disable-next-line eslint/no-await-in-loop -- One worker answer at a time.
+      expect((await client.readBrowserUseRun(runId)).idle).toBeUndefined();
+    }
   });
 
   it("records which hosts served the run's model, and its bill when that list is malformed", async () => {

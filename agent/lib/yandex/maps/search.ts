@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { defineYandexOperation } from "../operations";
+import { defineYandexOperation, type JsonValue } from "../operations";
 import { mapsPage } from "./page";
 
 const coordinates = z.tuple([
@@ -23,6 +23,47 @@ const place = z.object({
   site: z.string().nullable(),
   url: z.string(),
 });
+
+/** Places closer than this stand in one building, for `sameBuildingNote`. */
+const sameBuildingMetres = 60;
+
+/**
+ * 23.10: «в моём доме есть парикмахерская, запиши меня» — two salons stand
+ * at Мичуринский, 56, and Bro went to book at the one it found first, not
+ * the one the person meant. When places of a result stand in one building,
+ * a note that names them and has Bro ask which one before it acts on any;
+ * undefined when no two do.
+ */
+export function sameBuildingNote(result: JsonValue) {
+  const found = z.object({ places: z.array(place) }).safeParse(result);
+  if (!found.success) return undefined;
+  const located = found.data.places.flatMap((one) =>
+    one.coordinates === null ? [] : [{ ...one, at: one.coordinates }]
+  );
+  const together = located.filter((one) =>
+    located.some(
+      (other) =>
+        other.id !== one.id &&
+        metresBetween(one.at, other.at) < sameBuildingMetres
+    )
+  );
+  if (together.length < 2) return undefined;
+  const names = together.map((one) =>
+    one.address === null ? `«${one.name}»` : `«${one.name}» (${one.address})`
+  );
+  return `Note: these places stand in one building — ${names.join(", ")}. If the person did not name which one they mean, ask them before you book, call or send anything there; never take the first one found.`;
+}
+
+/** Metres between two [longitude, latitude] points a short way apart. */
+function metresBetween(
+  [lonA, latA]: readonly [number, number],
+  [lonB, latB]: readonly [number, number]
+) {
+  const north = (latA - latB) * 111_320;
+  const east =
+    (lonA - lonB) * 111_320 * Math.cos((((latA + latB) / 2) * Math.PI) / 180);
+  return Math.hypot(north, east);
+}
 
 /**
  * Places on Yandex Maps for a text query around a point: the name, rating,

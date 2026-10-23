@@ -241,6 +241,7 @@ export async function settleBrowserRun(
     hasCharges: parsed.charges.length > 0,
     hasItems: parsed.items.length > 0,
     hasLinks,
+    idle: run.idle,
     interrupted,
     missingSite,
     needs: parsed.needs,
@@ -273,6 +274,7 @@ export async function settleBrowserRun(
   console.info("[browser-use] run settled", {
     blocked: partial ? parsed.blocked : undefined,
     channel: claimed.conversationChannel,
+    idle: run.idle === undefined ? undefined : true,
     needs: parsed.needs,
     recovery: recovery.kind === "none" ? undefined : recovery.kind,
     retryAt: retryAt?.toISOString(),
@@ -759,6 +761,19 @@ function interruptedInstruction(error: string, checked: boolean) {
 const unclearInstruction =
   "A run of this errand broke off while it was allowed to act in the user's name, and a read-only check of the site afterwards could not tell whether the submission, order, booking or payment went through. Tell the user plainly that it is unclear whether it went through and what the check could not see, and that it has to be checked — in their orders or bookings on the site, or with their bank — before anything is repeated. Never start or continue this errand to submit, order, book or pay again unless the user asks for that after checking.";
 
+/**
+ * A run that took no action in the browser (`idleRun` in `browser-vm/runs.ts`):
+ * on 23.10 such a follow-up reported a site opened, a slot found and a form
+ * filled that it never saw, and Bro went on to book on the strength of it.
+ * What the page it began on showed may stand — a confirmation already on it
+ * is real — but no step it says it took.
+ */
+function idleRunInstruction(host: string | null) {
+  const page =
+    host === null ? "the page it began on" : `the page it began on (${host})`;
+  return `This run took no action in the browser: it answered at once from ${page} without opening, clicking or typing anything. What that page showed may stand; every step the report says it took — opening a site or page, choosing, filling in, booking, ordering, paying — did not happen, and nothing it describes from any other page was seen. Never tell the user any of that as done or found. If the errand still needs those steps, continue this run once, saying that nothing has been done yet and that it must take the steps itself, before you ask the user anything.`;
+}
+
 /** The check found what an earlier, broken-off run had already done. */
 const verifiedInstruction =
   "An earlier run of this errand broke off on an error, and a read-only check of the site afterwards found that its action had already gone through, so nothing was repeated. Tell the user the errand is done, with the number, title or date the check found, and do not make the error the story. Do not start or continue it to submit, order, book or pay again.";
@@ -793,6 +808,8 @@ function deliveryInstruction(
     readonly hasCharges: boolean;
     readonly hasItems: boolean;
     readonly hasLinks: boolean;
+    /** The run took no action in the browser, with the page it began on. */
+    readonly idle?: { readonly host: string | null };
     /** The network error that cut off a run allowed to act. */
     readonly interrupted?: string;
     /** The host of the errand's site, when its name does not exist. */
@@ -852,6 +869,7 @@ function deliveryInstruction(
           ? browserRunNeedGuidance(needs)
           : approvedPaymentInstruction(paidFor),
     facts.stuck,
+    facts.idle === undefined ? undefined : idleRunInstruction(facts.idle.host),
     facts.interrupted === undefined
       ? undefined
       : interruptedInstruction(facts.interrupted, facts.checked),
@@ -941,6 +959,8 @@ function browserRunReport(
     readonly hasCharges?: boolean;
     readonly hasItems?: boolean;
     readonly hasLinks?: boolean;
+    /** The run took no action in the browser, with the page it began on. */
+    readonly idle?: { readonly host: string | null };
     readonly images?: readonly BrowserRunImage[];
     /** The network error that cut off a run allowed to act. */
     readonly interrupted?: string;
@@ -1009,6 +1029,7 @@ function browserRunReport(
       hasCharges: options.hasCharges === true,
       hasItems: options.hasItems === true,
       hasLinks: options.hasLinks === true,
+      idle: options.idle,
       interrupted: options.interrupted,
       missingSite: options.missingSite,
       next: options.next !== undefined,

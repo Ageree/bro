@@ -55,6 +55,7 @@ const row: BrowserRunRow = {
 interface RunSummary {
   error: string | null;
   id: string;
+  idle?: { host: string | null };
   result: string | null;
   sessionId: string;
   status: string;
@@ -385,6 +386,48 @@ describe("settling a browser run", () => {
     expect(prompt).toContain(
       "Do not claim the app code is an SMS, promise an SMS fallback"
     );
+  });
+
+  it("tells Bro that a run which took no action did none of the steps it reports", async () => {
+    // 23.10: a one-step follow-up reported another salon's site opened, a
+    // slot found and the form filled; the browser never left Yandex Maps.
+    const report = [
+      "RESULT: дошёл до подтверждения записи на 11:00",
+      "NEEDS: decision",
+    ].join("\n");
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const idle = "This run took no action in the browser";
+
+    readBrowserUseRun.mockResolvedValue({
+      error: null,
+      id: runId,
+      idle: { host: "yandex.ru" },
+      result: report,
+      sessionId: "session-1",
+      status: "completed",
+      task: "Запиши на стрижку",
+    });
+    const first = delivery();
+    await settleBrowserRun({ to: first.to }, runId);
+    expect(first.send.mock.calls[0]?.[0] ?? "").toContain(
+      `${idle}: it answered at once from the page it began on (yandex.ru)`
+    );
+
+    claimBrowserRunCompletion
+      .mockResolvedValueOnce({ ...row, completedAt: new Date() })
+      .mockResolvedValue(undefined);
+    readBrowserUseRun.mockResolvedValue({
+      error: null,
+      id: runId,
+      result: report,
+      sessionId: "session-1",
+      status: "completed",
+      task: "Запиши на стрижку",
+    });
+    const second = delivery();
+    await settleBrowserRun({ to: second.to }, runId);
+    expect(second.send.mock.calls[0]?.[0] ?? "").not.toContain(idle);
   });
 
   it("asks for app-notification digits rather than assuming a push approval", async () => {

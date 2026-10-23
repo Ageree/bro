@@ -2208,6 +2208,20 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   номер карты. Стенд с Chromium — `browser-vm/worker/test_card_forms.py`
   (`BRO_CARD_FORMS_CHROME`); Chrome browser-use в облачной сессии не берёт CA
   прокси из NSS — `--ignore-certificate-errors-spki-list=<SPKI CA прокси>`.
+- Выдуманный отчёт (23.10, запись в салон): продолжение «запиши в Топган» кончилось
+  за 1 шаг и 12 с отчётом «открыл сайт, слот 11:00, вписал данные», а браузер не
+  уходил с карточки Карт, и Бро по нему запустил запись. Запуск, все шаги которого —
+  лишь `done` (`idleRun` в `agent/lib/browser-vm/runs.ts`; worker отдаёт последние 50
+  шагов, при `stepCount` больше — не судим), несёт в отчёте `idleRunInstruction`
+  (`completion.ts`): что показывала его первая страница — может быть правдой
+  (подтверждение заказа на ней), шаги — нет. Признак есть лишь в живом ответе worker.
+  Шаги и время запуска по окну — `browser-runs.sh`, исход — `site-errands.sh`.
+- Запись в салон через браузер (23.10): Карты нашли салон за 4 с (`maps.search`,
+  `maps.org`), а запись — виджет YClients кликами: 59 шагов, 4 мин, потом ещё 12 мин
+  на другой салон. Два салона в одном доме: `maps.search` пишет `note`
+  (`sameBuildingNote`), Бро спрашивает, какой. API YClients (`book_*`, нужен лишь
+  partner token) — заявка владельца в работе; спецификация — Redoc
+  `developers.yclients.com/ru/` (страница 10 МБ, спека в `__redoc_state`).
 - Отказы сервера сайта (XHR и fetch со статусом ≥ 400) worker пула пишет сам
   блоком `SITE ERRORS` в начало отчёта (`SiteErrors`, стенд
   `test_site_errors.py`): модель запуска перехват через `evaluate` по просьбе
