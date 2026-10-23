@@ -35,6 +35,7 @@ describe("source layout", () => {
       "agent-mail",
       "browser",
       "calendar",
+      "cards",
       "chat",
       "composio",
       "costs",
