@@ -21,6 +21,10 @@ const nextConfig: NextConfig = {
         // The onboarding page's link, and sign-in on the way back to it.
         /\/yoomoney\/[^/?]+(?:\?|$)/u,
         /callbackUrl=%2F(?:api%2F)?yoomoney%2F/u,
+        // A card's link carries its secret in the path, and so do its photos'
+        // addresses and the one its answer goes to.
+        /\/card\/[^/?]+(?:\?|$)/u,
+        /\/api\/cards\//u,
       ],
     },
   },
@@ -67,6 +71,19 @@ const nextConfig: NextConfig = {
           { key: "Referrer-Policy", value: "strict-origin" },
         ],
         source: "/yoomoney/:path*",
+      },
+      {
+        // A card is a Mini App too. The link's secret is in the address, and
+        // a card shows other sites' links and pictures: none may get it as
+        // a referrer.
+        headers: [
+          {
+            key: "Content-Security-Policy",
+            value: "frame-ancestors https://web.telegram.org",
+          },
+          { key: "Referrer-Policy", value: "no-referrer" },
+        ],
+        source: "/card/:path*",
       },
     ];
   },

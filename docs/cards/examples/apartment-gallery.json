@@ -1,0 +1,86 @@
+{
+  "kicker": "Аренда · Сокол",
+  "title": "Квартира на Ленинградском, 58",
+  "subtitle": "Просмотр в субботу в 12:00",
+  "tone": "neutral",
+  "blocks": [
+    {
+      "type": "gallery",
+      "ratio": "wide",
+      "caption": "Фото с объявления на Циан",
+      "photos": [
+        {
+          "url": "https://example.com/photos/lenpr-58-living.jpg",
+          "alt": "Гостиная с диваном и окном на двор",
+          "credit": "cian.ru"
+        },
+        {
+          "url": "https://example.com/photos/lenpr-58-kitchen.jpg",
+          "alt": "Кухня с техникой и обеденным столом",
+          "credit": "cian.ru"
+        },
+        {
+          "url": "https://example.com/photos/lenpr-58-bedroom.jpg",
+          "alt": "Спальня с двуспальной кроватью",
+          "credit": "cian.ru"
+        },
+        {
+          "url": "https://example.com/photos/lenpr-58-bath.jpg",
+          "alt": "Ванная с душевой",
+          "credit": "cian.ru"
+        },
+        {
+          "url": "https://example.com/photos/lenpr-58-window.jpg",
+          "alt": "Вид из окна на двор",
+          "credit": "cian.ru"
+        }
+      ]
+    },
+    {
+      "type": "facts",
+      "rows": [
+        {
+          "label": "Цена",
+          "value": "58 000 ₽ в месяц",
+          "strong": true
+        },
+        {
+          "label": "Площадь",
+          "value": "54 м², 2 комнаты"
+        },
+        {
+          "label": "До метро",
+          "value": "Сокол, 7 минут пешком"
+        },
+        {
+          "label": "Залог",
+          "value": "58 000 ₽"
+        }
+      ]
+    },
+    {
+      "type": "checklist",
+      "items": [
+        {
+          "text": "Спросить про счётчики и платежи за ЖКХ",
+          "done": false
+        },
+        {
+          "text": "Проверить окна и давление воды",
+          "done": false
+        },
+        {
+          "text": "Договориться о договоре на 11 месяцев",
+          "done": false
+        }
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "label": "Открыть объявление",
+      "href": "https://example.com/cian/lenpr-58",
+      "primary": true
+    }
+  ]
+}

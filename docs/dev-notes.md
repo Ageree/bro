@@ -173,6 +173,36 @@ s3put:<ключ>`; без звонка её гоняют локально: `sip.
   делает `photonConfigured()` ложным для входа, кабинета, лендинга и фактов о данных, а сообщение на
   линию получает ссылку на бота (раз в час на чат) без аккаунта и хода. Ключи Photon остаются; откат —
   снять флаг в `prod.json` и `host.py env`.
+- Карточки Бро (23.10, `CARDS_WORKSPACES`, id или `*`; описание, токены и каталог блоков — `docs/cards.md`):
+  страница с готовым ответом, которую модель собирает из 14 блоков `shared/cards/schema.ts` (по образцу Files
+  у Instinct) и шлёт в Telegram кнопкой `web_app` (`send_card`). Секрет ссылки `/card/<id>` — сам `id` в
+  `cards` (43 знака), живёт 30 дней. Публичный путь со ссылкой-секретом требует трёх вещей: `proxy.ts`
+  (иначе уйдёт на `/sign-in`), `robots.ts`, и заголовки `frame-ancestors` + `Referrer-Policy: no-referrer` и
+  скрытие пути из логов в `next.config.ts` (иначе секрет протечёт в Referer и журнал). Инструмент, который
+  сам шлёт сообщение мимо `send_message`, надо учесть в трёх местах: `delivery/pending.ts` (иначе ход
+  форсирует ещё одно сообщение или падает на пустом шаге), `delivery/turn-sends.ts` (дубли) и `action.result`
+  в `channels/telegram.ts` (иначе закрывающий текст модели уйдёт запасным сообщением поверх карточки).
+  `withoutSecrets` для проверки видимых данных не годится: режет «Карта •• 4417» и телефоны; карточки
+  проверяют Luhn плюс `unsafeMemoryRanges` и `documentNumberRanges` (`agent/lib/cards/safety.ts`).
+  Реальную отправку в Telegram и ход модели с `send_card` на проде не проверяли. Дизайн в Paper — файл
+  «bro · Hilos», страница «Cards · Design system»: листы SVG собраны не из компонентов с auto-layout, а
+  вставкой (Paper принимает SVG из буфера, HTML нет; текст остаётся редактируемым; U+00A0 в тексте
+  Paper показывает как `&nbsp;`, поэтому в SVG для него пробел обычный).
+- Ответ с карточки (`POST /api/cards/[id]/respond`, `agent/lib/cards/answers.ts`) возобновляет ход Бро как `card-answer` с `backgroundTurnMarker`: это ввод человека, но не согласие. Оплата, покупка, звонок, подпись и память ждут «да» сообщением; не добавляйте `card-answer` в `personAuthenticators`. `required` проверяется только у главной кнопки отправки. Страница с `Referrer-Policy: no-referrer` шлёт fetch с `Origin: null`: нужен `referrerPolicy: "strict-origin"`. Миграция 0084 при слиянии с чужой может столкнуться номером: перегенерируйте и впишите заполнение `ref` заново.
+- `/api/cards/` открыт в `proxy.ts` без входа (секрет в ссылке): любой новый маршрут под ним сам проверяет доступ, как `respond` (подпись Mini App).
+- Фото карточек: копии лежат в хранилище объектов (`agent/lib/cards/photos/`, `shared/cards/photos.ts`), ключ — хеш ссылки, а не она сама (ключ попадает в ошибки S3). `fetchPublic` идёт без User-Agent, и Wikimedia отвечает на такие запросы 403. Метаданные снимаются на уровне контейнера без декодера (JPEG, PNG, WebP; AVIF, GIF и HEIC отвергаются). Paper при вставке SVG молча выбрасывает `<image>`: в дизайне фото только заглушки.
+- Тесты и среда: linkedom не умеет `<dialog>`, `focus`, `scrollTo` и раскладку (заглушки в `photos.test.tsx`), ввод в нём проверяется с `window` в `vi.hoisted` (`interactive.test.tsx`). В Zod 4 `superRefine` на объекте не запускается, пока поля дают ошибки: обязательность проверяйте в схемах полей. Локальный S3 для `next dev`: `S3_ENDPOINT` только https (самоподписанный сертификат плюс `NODE_EXTRA_CA_CERTS`), `CLOUDRU_*` снять. Turbopack в `next dev` после правки клиентского компонента иногда отдаёт старый SSR (ошибка гидратации): перезапустите dev. Жест листания в headless Chrome даёт только `Input.dispatchTouchEvent`.
+- Просмотр публичной страницы без Telegram: открыть её с `#tgWebAppData=query_id%3Dtest%26auth_date%3D1%26hash%3Dx&tgWebAppVersion=8.0&tgWebAppPlatform=web&tgWebAppThemeParams=%7B%7D`:
+  настоящий скрипт Telegram начинает вести себя как внутри клиента. `next dev`: `BETTER_AUTH_SECRET` и
+  `SECRET_ENCRYPTION_KEY` задавайте вместе или не задавайте вовсе. В сессии снимайте `S3_ACCESS_KEY_ID` и
+  `S3_SECRET_ACCESS_KEY` и при прямом `vitest run` (иначе 200+ ложных «S3_ENDPOINT is required»).
+- Простые классы `.type-*` из `typography.css` и `bro.css` в сборке стоят позже утилит Tailwind того же
+  свойства: `type-row font-[600]` не даст 600. Вес и трекинг ставьте на вложенный элемент или заводите
+  `type-*`. `tsc` и `oxlint` в свежем клоне (и после `rm -rf .next`) падают на `PageProps`, пока не
+  выполнен `next typegen`.
+- `tests/agent/yandex/afisha-prices.test.ts` («lists the same sessions as the page does…») зашит на дату
+  22.10 и с 23.10 красный на любой ветке: «сегодня» считает страница, которую запускает `runInPage`, по
+  реальным часам, а `vi.setSystemTime` её не двигает.
 - iMessage Photon (20.10): линия принимает входящие лишь от телефонов — пользователей проекта
   (`POST spectrum.photon.codes/projects/<id>/users/`, `type: shared`), иначе отвечает «This number
   didn't recognize yours». Исходящие на тарифах Free/Pro (общие линии) — так же: чужому номеру

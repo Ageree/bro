@@ -20,6 +20,7 @@ const privateSections = [
   "/handoff",
   "/pay",
   "/yoomoney",
+  "/card",
 ];
 
 export default function robots(): MetadataRoute.Robots {

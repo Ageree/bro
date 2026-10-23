@@ -138,6 +138,57 @@ describe("awaitsDelivery", () => {
     );
   });
 
+  it("stops waiting once a card with its message reached the chat", () => {
+    expect(
+      awaitsDelivery([
+        userMessage("оформи билеты"),
+        toolCall("send_card"),
+        toolResult("send_card", { type: "json", value: { status: "sent" } }),
+      ])
+    ).toBe(false);
+    expect(
+      awaitsDelivery([
+        userMessage("покажи другие отели"),
+        toolCall("update_card"),
+        toolResult("update_card", {
+          type: "json",
+          value: { status: "updated" },
+        }),
+      ])
+    ).toBe(false);
+  });
+
+  it("keeps waiting after an update that did not reach the chat", () => {
+    expect(
+      awaitsDelivery([
+        userMessage("покажи другие отели"),
+        toolCall("update_card"),
+        toolResult("update_card", {
+          type: "json",
+          value: { status: "refused" },
+        }),
+      ])
+    ).toBe(true);
+  });
+
+  it.each([
+    ["refused", { type: "json", value: { status: "refused" } }],
+    ["invalid", { type: "json", value: { status: "invalid" } }],
+    ["not delivered", { type: "json", value: { status: "failed" } }],
+    [
+      "broken",
+      { type: "error-text", value: "Invalid input for tool send_card" },
+    ],
+  ] as const)("keeps waiting after a card that was %s", (_case, output) => {
+    expect(
+      awaitsDelivery([
+        userMessage("оформи билеты"),
+        toolCall("send_card"),
+        toolResult("send_card", output),
+      ])
+    ).toBe(true);
+  });
+
   it("has nothing to wait on without a person's message", () => {
     expect(awaitsDelivery([])).toBe(false);
     expect(awaitsDelivery([userMessage("summary", "context.compaction")])).toBe(
@@ -163,6 +214,17 @@ describe("turnDelivered", () => {
         userMessage("memory", "memory.recall"),
       ])
     ).toBe(true);
+  });
+
+  it("is true once a card reached the chat, and false for one that did not", () => {
+    const card = (value: { status: string }) => [
+      userMessage("оформи билеты"),
+      toolCall("send_card"),
+      toolResult("send_card", { type: "json", value }),
+    ];
+
+    expect(turnDelivered(card({ status: "sent" }))).toBe(true);
+    expect(turnDelivered(card({ status: "refused" }))).toBe(false);
   });
 
   it("is false before the reply, after a dropped send, and for an earlier turn's reply", () => {

@@ -1,0 +1,68 @@
+{
+  "kicker": "День рождения · Соня",
+  "title": "Подберу праздник: уточните детали",
+  "subtitle": "Без этого предложу наугад",
+  "tone": "info",
+  "blocks": [
+    {
+      "type": "field",
+      "id": "kids",
+      "label": "Сколько детей",
+      "input": "number",
+      "unit": "детей",
+      "initial": "10"
+    },
+    {
+      "type": "field",
+      "id": "date",
+      "label": "Дата",
+      "input": "date"
+    },
+    {
+      "type": "field",
+      "id": "budget",
+      "label": "Бюджет",
+      "input": "number",
+      "unit": "₽",
+      "hint": "Всего, не на ребёнка",
+      "initial": "30000"
+    },
+    {
+      "type": "choice",
+      "id": "format",
+      "label": "Формат",
+      "options": [
+        {
+          "value": "quest",
+          "title": "Квест",
+          "detail": "Час-полтора, ведущий"
+        },
+        {
+          "value": "trampolines",
+          "title": "Батуты",
+          "detail": "Два часа, можно со своим тортом"
+        },
+        {
+          "value": "masterclass",
+          "title": "Мастер-класс",
+          "detail": "Рисование или лепка"
+        }
+      ]
+    },
+    {
+      "type": "field",
+      "id": "wish",
+      "label": "Что ещё учесть",
+      "input": "longtext",
+      "required": false,
+      "placeholder": "Аллергии, место, любимые герои"
+    }
+  ],
+  "actions": [
+    {
+      "label": "Подобрать варианты",
+      "submit": "plan",
+      "primary": true
+    }
+  ]
+}

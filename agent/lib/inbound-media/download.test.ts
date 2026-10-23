@@ -31,6 +31,33 @@ describe("downloadWithin", () => {
     ).resolves.toEqual({ bytes, kind: "bytes", mediaType: undefined });
   });
 
+  it("stops at the caller's signal, whichever hop it is on", async () => {
+    fetchMock.mockImplementationOnce(
+      (_url, init) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            reject(
+              new DOMException("The card waited long enough.", "TimeoutError")
+            );
+          });
+        })
+    );
+    const stop = new AbortController();
+
+    const download = downloadWithin(new URL("https://cdn.example/a"), 16, {
+      signal: stop.signal,
+      timeoutMs: 60_000,
+    });
+    stop.abort(
+      new DOMException("The card waited long enough.", "TimeoutError")
+    );
+
+    await expect(download).resolves.toEqual({
+      kind: "failed",
+      reason: "timeout",
+    });
+  });
+
   it("refuses a plain HTTP URL without fetching", async () => {
     await expect(
       downloadWithin(new URL("http://cdn.example/a"), 16)

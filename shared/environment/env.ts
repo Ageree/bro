@@ -200,6 +200,10 @@ export const env = createEnv({
     PHONE_WORKSPACES: workspaceListSchema.optional(),
     // Bro's own address book (`agent/tools/phone-contacts.ts`): workspace ids or *.
     CONTACTS_WORKSPACES: workspaceListSchema.optional(),
+    // Cards Bro composes from the design system's blocks and sends to a
+    // Telegram chat as a button to a Mini App (`agent/tools/send_card.ts`,
+    // `docs/cards.md`): workspace ids or *. Unset, nobody.
+    CARDS_WORKSPACES: workspaceListSchema.optional(),
     // Geolocation (`agent/tools/location.ts`, `docs/location.md`): workspace
     // ids or *. Unset, nobody: a shared location stays what it was (an empty
     // Telegram turn, a file note in iMessage).

@@ -15,6 +15,16 @@
      its smallest: a label like «Личные данные» has to sit on one line. */
   --spacing-bro-rail: 1.15rem;
   --ease-bro: cubic-bezier(0.22, 0.61, 0.36, 1);
+
+  /* Cards (docs/cards.md): the divider line, the pastels that tint a tone
+     and a chip, and the ink-red of an error. The green of the `success`
+     tone is the site's own `--success*`. */
+  --color-bro-line: #d2d4cb;
+  --color-bro-blue: #b5d5f4;
+  --color-bro-yellow: #f5df8d;
+  --color-bro-pink: #f6cedf;
+  --color-bro-coral: #f9b59f;
+  --color-bro-error: #922a22;
 }
 
 @layer base {
@@ -270,5 +280,74 @@
     font-weight: 400;
     letter-spacing: 0;
     line-height: 1.35;
+  }
+
+  /* ---- cards: the pages Bro sends to a chat (docs/cards.md) ---- */
+
+  /* The line over a card's title: capitals, 12/16. */
+  .type-cards-kicker {
+    font-family: var(--bro-family-text);
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    line-height: calc(16 / 12);
+    text-transform: uppercase;
+  }
+
+  /* A label of a card: a chip, the head of a table column, 12/16. */
+  .type-cards-label {
+    font-family: var(--bro-family-text);
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0;
+    line-height: calc(16 / 12);
+  }
+
+  /* The question of a card's choice or field, 14/20. */
+  .type-cards-question {
+    font-family: var(--bro-family-text);
+    font-size: 0.875rem;
+    font-weight: 600;
+    letter-spacing: 0;
+    line-height: calc(20 / 14);
+  }
+
+  /* The title of a card, 28/31. */
+  .type-cards-title {
+    font-family: var(--bro-family-display);
+    font-size: 1.75rem;
+    font-weight: 400;
+    letter-spacing: 0;
+    line-height: calc(31 / 28);
+    text-wrap: balance;
+  }
+
+  /* The heading of a section inside a card, 20/24. */
+  .type-cards-section {
+    font-family: var(--bro-family-display);
+    font-size: 1.25rem;
+    font-weight: 400;
+    letter-spacing: 0;
+    line-height: 1.2;
+  }
+
+  /* The one big number of a card. */
+  .type-cards-value {
+    font-family: var(--bro-family-display);
+    font-size: 2.5rem;
+    font-variant-numeric: lining-nums;
+    font-weight: 400;
+    letter-spacing: 0;
+    line-height: 1.1;
+  }
+
+  /* The time of a stop on a route. */
+  .type-cards-time {
+    font-family: var(--bro-family-display);
+    font-size: 2rem;
+    font-variant-numeric: lining-nums;
+    font-weight: 400;
+    letter-spacing: 0;
+    line-height: 1.125;
   }
 }

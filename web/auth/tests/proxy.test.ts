@@ -73,6 +73,26 @@ describe("auth proxy matcher", () => {
     );
   });
 
+  it("serves a card's link, its answer and the hurry for it without a session, as Telegram opens them", async () => {
+    const responses = await Promise.all(
+      [
+        new NextRequest(`https://example.com/card/${"A".repeat(43)}`),
+        new NextRequest(
+          `https://example.com/api/cards/${"A".repeat(43)}/respond`,
+          { method: "POST" }
+        ),
+        new NextRequest("https://example.com/eve/v1/card-answers", {
+          method: "POST",
+        }),
+      ].map(async (request) => await proxy(request))
+    );
+
+    for (const response of responses) {
+      expect(response.headers.get("x-middleware-next")).toBe("1");
+    }
+    expect(getAuthSession).not.toHaveBeenCalled();
+  });
+
   it("still sends the workspace through sign-in", async () => {
     const response = await proxy(
       new NextRequest("https://example.com/workspace")

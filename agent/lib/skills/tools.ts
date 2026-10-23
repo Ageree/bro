@@ -127,6 +127,7 @@ const toolGroupEntries = {
   "schedules-create": "schedules",
   "schedules-list": "core",
   "schedules-update": "schedules",
+  send_card: "core",
   send_message: "core",
   // Signing (SIGN_WORKSPACES) stays in the core: the person's «да» must
   // reach `sign_document` even after compaction folded the sign block.
@@ -141,6 +142,7 @@ const toolGroupEntries = {
   standing_permission: "money",
   task: "core",
   timepad_events: "core",
+  update_card: "core",
   "watch-create": "schedules",
   web_fetch: "core",
   web_search: "core",

@@ -1,6 +1,12 @@
 import type { ModelMessage, ToolResultPart } from "ai";
 import { z } from "zod";
 import {
+  cardSentInHistory,
+  cardToolNames,
+  sendCardToolName,
+  updateCardToolName,
+} from "@agent/lib/cards/sent";
+import {
   leavesRunAtWork,
   reportedRunOf,
   settledOutcomeRun,
@@ -15,15 +21,22 @@ import {
 } from "./turn-sends";
 
 /** Tools whose successful call is the reply a person actually sees. */
-const deliveryToolNames = new Set(["send_message", "react_to_message"]);
+const deliveryToolNames = new Set([
+  "send_message",
+  "react_to_message",
+  sendCardToolName,
+  updateCardToolName,
+]);
 
 /**
  * Whether a delivery tool's result is a reply the person got: not a send
  * that failed, was dropped or returned, and not the early-reply pilot's
- * heads-up, after which they still wait for the answer.
+ * heads-up, after which they still wait for the answer. A card is a reply
+ * once its message and button are in the chat (`send_card`, `update_card`).
  */
-function repliedWith(output: ToolResultPart["output"]) {
-  return sendReachedPerson(output) && !headsUpDelivered(output);
+function repliedWith(part: Pick<ToolResultPart, "output" | "toolName">) {
+  if (cardToolNames.has(part.toolName)) return cardSentInHistory(part.output);
+  return sendReachedPerson(part.output) && !headsUpDelivered(part.output);
 }
 
 /**
@@ -49,7 +62,7 @@ function deliveredByTool(message: ModelMessage) {
       (part) =>
         part.type === "tool-result" &&
         deliveryToolNames.has(part.toolName) &&
-        repliedWith(part.output)
+        repliedWith(part)
     )
   );
 }
@@ -73,7 +86,7 @@ function reachedPerson(message: ModelMessage, toolName: string) {
       (part) =>
         part.type === "tool-result" &&
         part.toolName === toolName &&
-        repliedWith(part.output)
+        repliedWith(part)
     )
   );
 }
@@ -102,6 +115,8 @@ export function awaitsDelivery(messages: readonly ModelMessage[]) {
   let reaction = false;
   for (const message of messages.toReversed()) {
     if (reachedPerson(message, "send_message")) return false;
+    if (reachedPerson(message, sendCardToolName)) return false;
+    if (reachedPerson(message, updateCardToolName)) return false;
     if (reachedPerson(message, "react_to_message")) reaction = true;
     if (message.role === "assistant") steps += 1;
     if (message.role !== "user") continue;

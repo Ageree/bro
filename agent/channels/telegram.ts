@@ -19,6 +19,7 @@ import {
 import { ensureTelegramUser } from "@db/services/auth/telegram-user";
 import { messageQuotaGate } from "@agent/lib/billing/quota";
 import { browserFilesEnabled } from "@agent/lib/browser-use/files";
+import { cardToolResultSchema } from "@agent/lib/cards/sent";
 import {
   fallbackDeliveryText,
   replyLanguageFor,
@@ -303,6 +304,14 @@ export default telegramChannel({
           text: locationButtonPrompt,
         });
         rememberLocationAsked(context.telegram.chatId);
+        return;
+      }
+
+      if (
+        event.status === "completed" &&
+        cardToolResultSchema.safeParse(event.result).success
+      ) {
+        markTurnDelivered(context, event.turnId);
         return;
       }
 
