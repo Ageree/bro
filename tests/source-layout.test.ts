@@ -49,6 +49,7 @@ describe("source layout", () => {
       "object-storage",
       "phone",
       "photon",
+      "privacy",
       "sandbox",
       "schedules",
       "spending",

@@ -4,7 +4,9 @@ import flightBooked from "../../../docs/cards/examples/flight-booked.json";
 import restaurantsCompare from "../../../docs/cards/examples/restaurants-compare.json";
 import vacuumCompare from "../../../docs/cards/examples/vacuum-compare.json";
 import weekendItinerary from "../../../docs/cards/examples/weekend-itinerary.json";
-import type { keepCardPhotos } from "@agent/lib/cards/photos/keep";
+import type * as Keep from "@agent/lib/cards/photos/keep";
+import hotelChoice from "../../../docs/cards/examples/hotel-choice.json";
+import { cardAnswerOpening } from "@agent/lib/cards/caller";
 import type { sendCardButton } from "@agent/lib/cards/telegram";
 import { cardPhotoObject } from "@shared/cards/photos";
 import { cardSchema } from "@shared/cards/schema";
@@ -16,7 +18,7 @@ const services = vi.hoisted(() => ({
   button: vi.fn<typeof sendCardButton>(),
   create: vi.fn<typeof createCard>(),
   deleteObject: vi.fn<(pathname: string) => Promise<void>>(),
-  keep: vi.fn<typeof keepCardPhotos>(),
+  keep: vi.fn<typeof Keep.keepCardPhotos>(),
   workspaces: Array.from<string>([]),
 }));
 
@@ -39,7 +41,8 @@ vi.mock("@shared/environment", async (importOriginal) => {
 vi.mock("@agent/lib/cards/telegram", () => ({
   sendCardButton: services.button,
 }));
-vi.mock("@agent/lib/cards/photos/keep", () => ({
+vi.mock("@agent/lib/cards/photos/keep", async (importOriginal) => ({
+  ...(await importOriginal<typeof Keep>()),
   keepCardPhotos: services.keep,
 }));
 vi.mock("@shared/object-storage/artifacts", () => ({
@@ -159,7 +162,7 @@ function withBlocks(blocks: readonly object[]) {
 beforeEach(() => {
   vi.clearAllMocks();
   services.workspaces = ["workspace:alice"];
-  services.create.mockResolvedValue();
+  services.create.mockResolvedValue({ id: cardId, ref: "k7m2p9qa" });
   services.button.mockResolvedValue();
   services.deleteObject.mockResolvedValue();
   services.keep.mockImplementation((_id, card) =>
@@ -236,8 +239,10 @@ describe("the card tool", () => {
     });
     expect(services.create).toHaveBeenCalledExactlyOnceWith(
       { userId: "alice", workspaceId: "workspace:alice" },
-      cardId,
-      expect.objectContaining({ title: example.title })
+      expect.objectContaining({ title: example.title }),
+      { conversationChannel: "telegram", conversationId: "4242::" },
+      expect.any(Date),
+      cardId
     );
     expect(services.button).toHaveBeenCalledExactlyOnceWith(
       "4242::",
@@ -416,8 +421,10 @@ describe("the card tool's photos", () => {
     expect(services.keep).toHaveBeenCalledExactlyOnceWith(cardId, vacuum);
     expect(services.create).toHaveBeenCalledExactlyOnceWith(
       { userId: "alice", workspaceId: "workspace:alice" },
-      cardId,
-      kept
+      kept,
+      { conversationChannel: "telegram", conversationId: "4242::" },
+      expect.any(Date),
+      cardId
     );
   });
 
@@ -514,5 +521,99 @@ describe("the card tool's photos", () => {
         callContext()
       )
     ).not.toHaveProperty("photos");
+  });
+});
+
+describe("a card that asks", () => {
+  const cardAnswer = `${cardAnswerOpening}The person answered your card «Какой отель берём» (card k7m2p9qa) on its page.`;
+  const answerCaller = {
+    attributes: { ...telegramChat, cardRef: "k7m2p9qa" },
+    authenticator: "card-answer",
+    principalId: "alice",
+    principalType: "user" as const,
+  };
+
+  it("tells the model to wait for the answer and end the turn", async () => {
+    const found = await tool();
+    if (!found) throw new Error("Expected send_card.");
+
+    const result = await found.execute(
+      { ...cardSchema.parse(hotelChoice), message },
+      callContext()
+    );
+
+    expect(result).toMatchObject({ card: "k7m2p9qa", status: "sent" });
+    expect(JSON.stringify(result)).toContain("end the turn now");
+  });
+
+  it("is offered in a turn a card's answer opened, and sends from it, but not under a kept caller", async () => {
+    const answered = dynamicContext({
+      messages: [user("Найди отель"), ...sentCard(), user(cardAnswer)],
+    });
+    const tools = await sendCardTools.events["step.started"]?.(
+      {},
+      {
+        ...answered,
+        session: {
+          ...answered.session,
+          auth: { current: answerCaller, initiator: null },
+        },
+      }
+    );
+    const found = tools && "send_card" in tools ? tools.send_card : undefined;
+    if (!found) throw new Error("Expected send_card.");
+
+    expect(
+      await found.execute(withBlocks([{ text: "Рейс", type: "text" }]), {
+        ...callContext(),
+        session: {
+          ...callContext().session,
+          auth: { current: answerCaller, initiator: null },
+        },
+      })
+    ).toMatchObject({ status: "sent" });
+    expect(
+      await sendCardTools.events["step.started"]?.(
+        {},
+        {
+          ...answered,
+          messages: [
+            ...answered.messages,
+            user(
+              "Background task task_1 (task) is completed.",
+              "execution.background_task"
+            ),
+          ],
+          session: {
+            ...answered.session,
+            auth: { current: answerCaller, initiator: null },
+          },
+        }
+      )
+    ).toBeNull();
+  });
+
+  it("refuses a field that asks for a password", async () => {
+    const found = await tool();
+    if (!found) throw new Error("Expected send_card.");
+
+    const result = await found.execute(
+      {
+        ...cardSchema.parse({
+          actions: [{ label: "Войти", submit: "sign_in" }],
+          blocks: [
+            { id: "login", input: "text", label: "Логин", type: "field" },
+            { id: "password", input: "text", label: "Пароль", type: "field" },
+          ],
+          title: "Вход на сайт",
+        }),
+        message,
+      },
+      callContext()
+    );
+
+    expect(result).toMatchObject({ status: "refused" });
+    expect(JSON.stringify(result)).toContain("blocks[1]");
+    expect(services.create).not.toHaveBeenCalled();
   });
 });

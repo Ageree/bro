@@ -214,3 +214,26 @@ export async function keepCardPhotos(
     kept: jobs.length - lost.length,
   };
 }
+
+/**
+ * What a card tool's result says of the card's photos: nothing for a card
+ * without any; otherwise how many were kept and dropped, and, when some were
+ * dropped, a line for the model naming the blocks that went without them.
+ */
+export function photosResult({
+  dropped,
+  droppedBlocks,
+  kept,
+}: Awaited<ReturnType<typeof keepCardPhotos>>) {
+  if (kept + dropped === 0) return { note: "" };
+  const blocks = droppedBlocks
+    .map((block) => `blocks[${String(block)}]`)
+    .join(", ");
+  return {
+    note:
+      dropped === 0
+        ? ""
+        : ` ${String(dropped)} of its ${String(dropped + kept)} photos could not be kept (not downloadable, not a photo, or too small), so ${blocks} went without photos; an image or a gallery left without them is not on the card. Never tell the person those photos are there.`,
+    photos: { dropped, kept },
+  };
+}

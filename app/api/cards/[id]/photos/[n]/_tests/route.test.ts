@@ -22,15 +22,25 @@ const otherId = "Z".repeat(43);
 const webp = new Uint8Array([0x52, 0x49, 0x46, 0x46, 1, 2, 3, 4]);
 
 function cardShowing(...paths: string[]) {
-  return cardSchema.parse({
-    blocks: [
-      {
-        photos: paths.map((url) => ({ alt: "Кухня", url })),
-        type: "gallery",
-      },
-    ],
-    title: "Квартира",
-  });
+  return {
+    card: cardSchema.parse({
+      blocks: [
+        {
+          photos: paths.map((url) => ({ alt: "Кухня", url })),
+          type: "gallery",
+        },
+      ],
+      title: "Квартира",
+    }),
+    conversationChannel: "telegram" as const,
+    conversationId: "4242::",
+    createdAt: new Date("2026-10-23T10:00:00Z"),
+    id: cardId,
+    revision: 1,
+    updatedAt: new Date("2026-10-23T10:00:00Z"),
+    userId: "alice",
+    workspaceId: "workspace:alice",
+  };
 }
 
 function photo(id: string, n: string, headers: HeadersInit = {}) {

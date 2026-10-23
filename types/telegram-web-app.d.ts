@@ -4,13 +4,21 @@
 // lacks is optional.
 interface TelegramWebApp {
   readonly initData: string;
-  readonly HapticFeedback?: { selectionChanged(): void };
   ready(): void;
   expand(): void;
   close(): void;
   setHeaderColor(color: string): void;
   setBackgroundColor(color: string): void;
   openLink(url: string): void;
+  isVersionAtLeast(version: string): boolean;
+  /** Bot API 6.1 and later; older clients have none. */
+  readonly HapticFeedback?: {
+    impactOccurred(
+      style: "light" | "medium" | "heavy" | "rigid" | "soft"
+    ): void;
+    notificationOccurred(type: "error" | "success" | "warning"): void;
+    selectionChanged(): void;
+  };
   disableVerticalSwipes?(): void;
   enableVerticalSwipes?(): void;
 }

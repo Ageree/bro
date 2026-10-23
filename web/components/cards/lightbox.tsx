@@ -52,7 +52,8 @@ export function Lightbox({
     const page = document.documentElement;
     const overflow = page.style.overflow;
     const app = window.Telegram?.WebApp;
-    const telegram = app?.initData ? app : undefined;
+    const telegram =
+      app?.initData && app.isVersionAtLeast("7.7") ? app : undefined;
     page.style.overflow = "hidden";
     telegram?.disableVerticalSwipes?.();
     node.showModal();

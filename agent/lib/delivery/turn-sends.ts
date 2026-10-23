@@ -1,6 +1,6 @@
 import type { ModelMessage, ToolResultPart } from "ai";
 import { z } from "zod";
-import { cardSentInHistory, sendCardToolName } from "@agent/lib/cards/sent";
+import { cardSentInHistory, cardToolNames } from "@agent/lib/cards/sent";
 import { sendMessageOutputSchema } from "@shared/chat/message-delivery";
 import {
   backgroundNoticeText,
@@ -782,13 +782,13 @@ function openingText(message: ModelMessage | undefined) {
 const deliveryTools = new Set([
   "react_to_message",
   "send_message",
-  sendCardToolName,
+  ...cardToolNames,
 ]);
 
 /**
- * A `send_card` call's input as the turn's guards read it: only the card's
- * message counts as said in the chat, the page's data is not compared with
- * the messages that follow.
+ * A `send_card` or `update_card` call's input as the turn's guards read it:
+ * only the card's message counts as said in the chat, the page's data is not
+ * compared with the messages that follow.
  */
 const cardMessageSchema = z.object({ message: z.string() });
 
@@ -917,7 +917,7 @@ export function turnSends(messages: readonly ModelMessage[]) {
         const input = sendMessageOutputSchema.safeParse(part.input).data;
         if (input) inputs.set(part.toolCallId, input);
       }
-      if (part.type === "tool-call" && part.toolName === sendCardToolName) {
+      if (part.type === "tool-call" && cardToolNames.has(part.toolName)) {
         const text = cardMessageSchema.safeParse(part.input).data?.message;
         if (text) inputs.set(part.toolCallId, { kind: "message", text });
       }
@@ -962,7 +962,7 @@ export function turnSends(messages: readonly ModelMessage[]) {
       }
       if (
         part.toolName !== "send_message" &&
-        part.toolName !== sendCardToolName
+        !cardToolNames.has(part.toolName)
       ) {
         continue;
       }
@@ -981,10 +981,9 @@ export function turnSends(messages: readonly ModelMessage[]) {
       ) {
         headsUpSkips += 1;
       }
-      const reached =
-        part.toolName === sendCardToolName
-          ? cardSentInHistory(part.output)
-          : sendReachedPerson(part.output);
+      const reached = cardToolNames.has(part.toolName)
+        ? cardSentInHistory(part.output)
+        : sendReachedPerson(part.output);
       if (!reached) continue;
       const input = inputs.get(part.toolCallId);
       if (!input) continue;

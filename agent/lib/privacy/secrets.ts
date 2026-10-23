@@ -1,7 +1,7 @@
 import { oneTimeCodeRanges } from "@agent/lib/browser-use/said";
 import { redactRanges } from "@agent/lib/memory/digest/redact";
 import { unsafeMemoryRanges } from "@shared/memory/schema";
-import { documentNumberRanges } from "@agent/lib/privacy/document-numbers";
+import { documentNumberRanges } from "@shared/privacy/document-numbers";
 
 /** How many words beside a number still read as passing a code on. */
 const codeReplyWords = 3;
@@ -24,7 +24,7 @@ const readAhead = 100;
  * one. Memory's filter also takes a password only after «:» or with a
  * digit in it, and knows no passport, SNILS or a card's CVV: those go by
  * rules of their own and the benchmark's journal
- * (`agent/lib/privacy/document-numbers.ts`). A secret that starts before
+ * (`shared/privacy/document-numbers.ts`). A secret that starts before
  * the cut is cut out whole; nothing past the cut comes in, whatever the
  * placeholders saved.
  */

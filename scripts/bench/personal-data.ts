@@ -6,7 +6,7 @@
  * carry it back.
  *
  * Passport and SNILS numbers follow the rules the conversation log masks
- * them by too (`agent/lib/privacy/document-numbers.ts`).
+ * them by too (`shared/privacy/document-numbers.ts`).
  *
  * The rules match what these look like in Russian and English text. They
  * mask a stray lookalike too (a page number after «стр.»), which is the
@@ -14,7 +14,7 @@
  * nothing personal.
  */
 
-import { documentNumberRanges } from "@agent/lib/privacy/document-numbers";
+import { documentNumberRanges } from "@shared/privacy/document-numbers";
 
 const hidden = "***";
 

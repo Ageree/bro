@@ -144,6 +144,23 @@ export async function findChannelIdentity(
   return identity;
 }
 
+/**
+ * The account an external conversation account is bound to, as the scope
+ * the agent runtime knows it by, when it is bound.
+ */
+export async function channelAccountScope(
+  channel: LinkableChannel,
+  externalUserId: string
+): Promise<AccessScope | undefined> {
+  const identity = await findChannelIdentity(channel, externalUserId);
+  return identity === undefined
+    ? undefined
+    : {
+        userId: `${betterAuthPrincipalPrefix}${identity.userId}`,
+        workspaceId: identity.workspaceId,
+      };
+}
+
 /** Reads the signed-in account's own identity for one channel, when linked. */
 export async function readChannelIdentity(
   scope: AccessScope,

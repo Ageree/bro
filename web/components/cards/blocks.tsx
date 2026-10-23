@@ -4,7 +4,9 @@ import { cn } from "@web/components/class-names";
 import { Badge } from "@web/components/ui/badge";
 import { CardLink } from "./card-link";
 import { Carousel } from "./carousel";
+import { ChoiceBlock } from "./choice";
 import { Copyable } from "./copyable";
+import { FieldBlock } from "./field";
 import { GalleryBlock } from "./gallery";
 import { PhotoFrame } from "./photo-frame";
 import { toneStyles } from "./tones";
@@ -515,6 +517,10 @@ export function BlockView({ block }: { readonly block: Block }) {
       return <Copyable label={block.label} value={block.value} />;
     case "divider":
       return <hr className="my-1 border-bro-line" />;
+    case "choice":
+      return <ChoiceBlock block={block} />;
+    case "field":
+      return <FieldBlock block={block} />;
   }
   return null;
 }

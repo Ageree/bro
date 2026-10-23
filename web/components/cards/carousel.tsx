@@ -4,6 +4,7 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
 import { Children, type ReactNode, useEffect, useRef, useState } from "react";
 import { cn } from "@web/components/class-names";
 import { Button } from "@web/components/ui/button";
+import { haptic } from "./telegram";
 
 /** How long the strip rests before its slide counts as the one shown. */
 const settleMs = 90;
@@ -82,8 +83,7 @@ export function Carousel({
     shown.current = next;
     setShownIndex(next);
     onIndexChange?.(next);
-    const app = window.Telegram?.WebApp;
-    if (app?.initData) app.HapticFeedback?.selectionChanged();
+    haptic("selection");
   };
 
   const go = (target: number) => {

@@ -246,6 +246,23 @@ describe("Telegram message delivery", () => {
     expect(request).not.toHaveBeenCalled();
   });
 
+  it("does not follow an updated card with the text written after it", async () => {
+    const { context, request } = handlerContext();
+
+    await handleActionResult(
+      sendCardResult({ card: "k7m2p9qa", status: "updated" }, "update_card"),
+      context,
+      sessionContext()
+    );
+    await handleMessageCompleted(
+      assistantMessage("Обновил карточку: добавил ещё два отеля."),
+      context,
+      sessionContext()
+    );
+
+    expect(request).not.toHaveBeenCalled();
+  });
+
   it("still rescues plain text after a card that did not land", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const { context, request } = handlerContext();
@@ -1342,14 +1359,15 @@ function sendMessageResult(
 function sendCardResult(
   output: ActionHandlerParameters[0]["result"] extends { output: infer Output }
     ? Output
-    : never
+    : never,
+  toolName = "send_card"
 ): ActionHandlerParameters[0] {
   return {
     result: {
       callId: "call-send-card",
       kind: "tool-result",
       output,
-      toolName: "send_card",
+      toolName,
     },
     sequence: 0,
     status: "completed",

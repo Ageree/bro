@@ -26,7 +26,7 @@ const fields = {
 
 async function load() {
   vi.resetModules();
-  return import("@app/api/yoomoney/onboarding/[id]/telegram");
+  return import("@web/auth/telegram-web-app");
 }
 
 beforeEach(() => {

@@ -5,6 +5,7 @@ import { eq, sql } from "drizzle-orm";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import flightBooked from "../../docs/cards/examples/flight-booked.json";
 import { cardPhotoObject } from "../../shared/cards/photos";
+import hotelChoice from "../../docs/cards/examples/hotel-choice.json";
 import { cardSchema } from "../../shared/cards/schema";
 import * as schema from "../schema";
 
@@ -23,7 +24,13 @@ const databases: PGlite[] = [];
 const alice = { userId: "alice", workspaceId: "workspace:alice" };
 const start = new Date("2026-10-23T10:00:00Z");
 const days = (count: number) => count * 86_400_000;
+const minutes = (count: number) => count * 60_000;
 const card = cardSchema.parse(flightBooked);
+const hotel = cardSchema.parse(hotelChoice);
+const chat = {
+  conversationChannel: "telegram" as const,
+  conversationId: "4242::",
+};
 
 function withPhotos(id: string, ...numbers: number[]) {
   return cardSchema.parse({
@@ -57,29 +64,38 @@ async function cards() {
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- This test swaps only the driver while retaining the shared Drizzle schema and query-builder contract.
   vi.spyOn(Database, "db", "get").mockReturnValue(database as never);
   await scope.ensureScope(alice);
-  const keep = async (now: Date, kept = card) => {
-    const id = service.newCardId();
-    await service.createCard(alice, id, kept, now);
-    return id;
-  };
+  const keep = async (now: Date) =>
+    (await service.createCard(alice, card, chat, now)).id;
   return { database, keep, service };
 }
 
 describe("cards", () => {
   it("opens a card by its link, and keeps it for thirty days", async () => {
-    const { keep, service } = await cards();
-    const id = await keep(start);
+    const { service } = await cards();
+    const { id, ref } = await service.createCard(alice, card, chat, start);
 
     expect(id).toMatch(/^[A-Za-z0-9_-]{43}$/u);
-    expect(await service.readCardByLink(id, start)).toEqual(card);
+    expect(ref).toMatch(/^[a-z2-9]{8}$/u);
+    expect(await service.readCardByLink(id, start)).toMatchObject({
+      card,
+      conversationId: "4242::",
+      revision: 1,
+      updatedAt: null,
+      ...alice,
+    });
     expect(
-      await service.readCardByLink(id, new Date(start.getTime() + days(30) - 1))
+      (
+        await service.readCardByLink(
+          id,
+          new Date(start.getTime() + days(30) - 1)
+        )
+      )?.card
     ).toEqual(card);
   });
 
   it("makes an expired card and a card that never was look the same", async () => {
-    const { keep, service } = await cards();
-    const id = await keep(start);
+    const { service } = await cards();
+    const { id } = await service.createCard(alice, card, chat, start);
 
     const expired = await service.readCardByLink(
       id,
@@ -94,8 +110,8 @@ describe("cards", () => {
   });
 
   it("treats a stored payload the schema no longer accepts as missing", async () => {
-    const { database, keep, service } = await cards();
-    const id = await keep(start);
+    const { database, service } = await cards();
+    const { id } = await service.createCard(alice, card, chat, start);
     await database.execute(
       sql`update cards set payload = '{"title": 7}'::jsonb`
     );
@@ -104,29 +120,30 @@ describe("cards", () => {
   });
 
   it("drops the cards that expired when a new one is kept", async () => {
-    const { database, keep, service } = await cards();
-    const old = await keep(start);
+    const { database, service } = await cards();
+    const old = await service.createCard(alice, card, chat, start);
     const later = new Date(start.getTime() + days(31));
-    const fresh = await keep(later);
+    const fresh = await service.createCard(alice, card, chat, later);
 
     const rows = await database
       .select({ id: schema.cards.id })
       .from(schema.cards);
-    expect(rows.map((row) => row.id)).toEqual([fresh]);
-    expect(await service.readCardByLink(old, later)).toBeUndefined();
+    expect(rows.map((row) => row.id)).toEqual([fresh.id]);
+    expect(await service.readCardByLink(old.id, later)).toBeUndefined();
   });
 
   it("takes the copies of an expired card's photos with it, and only that card's", async () => {
     const { database, keep, service } = await cards();
     const old = service.newCardId();
     const later = new Date(start.getTime() + days(31));
-    await service.createCard(alice, old, withPhotos(old, 0, 1, 2), start);
+    await service.createCard(alice, withPhotos(old, 0, 1, 2), chat, start, old);
     const kept = service.newCardId();
     await service.createCard(
       alice,
-      kept,
       withPhotos(kept, 0),
-      new Date(start.getTime() + days(2))
+      chat,
+      new Date(start.getTime() + days(2)),
+      kept
     );
     storage.delete.mockResolvedValue();
 
@@ -147,7 +164,7 @@ describe("cards", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const { database, keep, service } = await cards();
     const old = service.newCardId();
-    await service.createCard(alice, old, withPhotos(old, 0), start);
+    await service.createCard(alice, withPhotos(old, 0), chat, start, old);
     const later = new Date(start.getTime() + days(31));
     storage.delete.mockRejectedValueOnce(new Error("Object Storage 503"));
 
@@ -166,14 +183,289 @@ describe("cards", () => {
     expect(await ids()).not.toContain(old);
   });
 
+  it("removes an updated card's old photo copies once the new card is kept", async () => {
+    const { service } = await cards();
+    const old = service.newCardId();
+    const { ref } = await service.createCard(
+      alice,
+      withPhotos(old, 0, 1),
+      chat,
+      start,
+      old
+    );
+    storage.delete.mockResolvedValue();
+
+    const updated = await service.updateCard(
+      alice,
+      { conversationId: chat.conversationId, ref },
+      ({ card: current, id }) => {
+        expect(current).toEqual(withPhotos(old, 0, 1));
+        return Promise.resolve({ card: withPhotos(id, 2, 3) });
+      },
+      start
+    );
+
+    expect(updated).toMatchObject({ id: old, revision: 2 });
+    expect(storage.delete.mock.calls.map(([pathname]) => pathname)).toEqual([
+      cardPhotoObject(old, 0),
+      cardPhotoObject(old, 1),
+    ]);
+    expect(await service.readCardByLink(old, start)).toMatchObject({
+      card: withPhotos(old, 2, 3),
+      revision: 2,
+    });
+  });
+
+  it("removes the new copies instead when the update could not be kept", async () => {
+    const { database, service } = await cards();
+    const old = service.newCardId();
+    const { ref } = await service.createCard(
+      alice,
+      withPhotos(old, 0),
+      chat,
+      start,
+      old
+    );
+    await database.execute(sql`
+      create function refuse_card_update() returns trigger language plpgsql as $$
+      begin raise exception 'the card is not updated'; end $$
+    `);
+    await database.execute(sql`
+      create trigger refuse_card_update before update on cards
+      for each row execute function refuse_card_update()
+    `);
+    storage.delete.mockResolvedValue();
+
+    await expect(
+      service.updateCard(
+        alice,
+        { conversationId: chat.conversationId, ref },
+        ({ id }) => Promise.resolve({ card: withPhotos(id, 1, 2) }),
+        start
+      )
+    ).rejects.toThrow("Failed query");
+
+    expect(storage.delete.mock.calls.map(([pathname]) => pathname)).toEqual([
+      cardPhotoObject(old, 1),
+      cardPhotoObject(old, 2),
+    ]);
+    expect(await service.readCardByLink(old, start)).toMatchObject({
+      card: withPhotos(old, 0),
+      revision: 1,
+    });
+  });
+
+  it("leaves a card as it was when the change gives none", async () => {
+    const { service } = await cards();
+    const old = service.newCardId();
+    const { ref } = await service.createCard(
+      alice,
+      withPhotos(old, 0),
+      chat,
+      start,
+      old
+    );
+
+    expect(
+      await service.updateCard(
+        alice,
+        { conversationId: chat.conversationId, ref },
+        () => Promise.resolve({ card: undefined }),
+        start
+      )
+    ).toMatchObject({ id: old, revision: undefined });
+    expect(storage.delete).not.toHaveBeenCalled();
+    expect(await service.readCardByLink(old, start)).toMatchObject({
+      revision: 1,
+    });
+  });
+
   it("goes with the person's membership", async () => {
-    const { database, keep } = await cards();
-    await keep(start);
+    const { database, service } = await cards();
+    await service.createCard(alice, card, chat, start);
     await database
       .delete(schema.workspaceMemberships)
       .where(eq(schema.workspaceMemberships.userId, alice.userId));
 
     expect(await database.select().from(schema.cards)).toEqual([]);
+  });
+});
+
+describe("a card's answers", () => {
+  const answer = {
+    action: "continue",
+    values: { extras: ["parking"], hotel: "nevsky_dvor" },
+  };
+  const response = {
+    answer,
+    summary: "Отель: Невский Двор\nНажал: «Продолжить с выбором»",
+    telegramUserId: "4242",
+  };
+
+  async function answered() {
+    const { database, service } = await cards();
+    const { id, ref } = await service.createCard(alice, hotel, chat, start);
+    const found = await service.readCardByLink(id, start);
+    if (!found) throw new Error("Expected the card.");
+    return { database, found, ref, service };
+  }
+
+  it("keeps one answer per revision: the same again is a repeat, another is turned away", async () => {
+    const { database, found, service } = await answered();
+
+    expect(await service.saveCardResponse(found, response, start)).toEqual({
+      answer,
+      outcome: "received",
+      state: "received",
+    });
+    expect(
+      await service.saveCardResponse(
+        found,
+        {
+          ...response,
+          answer: {
+            action: "continue",
+            values: { hotel: "nevsky_dvor", extras: ["parking"] },
+          },
+        },
+        start
+      )
+    ).toMatchObject({ outcome: "repeat" });
+    expect(
+      await service.saveCardResponse(
+        found,
+        {
+          ...response,
+          answer: { action: "more", values: {} },
+        },
+        start
+      )
+    ).toEqual({ answer, outcome: "answered", state: "received" });
+    expect(await database.select().from(schema.cardResponses)).toHaveLength(1);
+    expect(await service.readCardResponse(found.id, 1)).toEqual({
+      ...answer,
+      state: "received",
+    });
+  });
+
+  it("gives each waiting answer to one caller, again once its claim ran out, and fails it after the third", async () => {
+    const { found, ref, service } = await answered();
+    await service.saveCardResponse(found, response, start);
+
+    const [first, second] = await Promise.all([
+      service.claimCardResponses(start),
+      service.claimCardResponses(start),
+    ]);
+    expect([...first, ...second]).toEqual([
+      expect.objectContaining({
+        action: "continue",
+        conversationId: "4242::",
+        ref,
+        revision: 1,
+        summary: response.summary,
+        ...alice,
+      }),
+    ]);
+    expect(
+      await service.claimCardResponses(new Date(start.getTime() + minutes(1)))
+    ).toEqual([]);
+
+    const [again] = await service.claimCardResponses(
+      new Date(start.getTime() + minutes(3))
+    );
+    if (!again) throw new Error("Expected the answer again.");
+    await service.releaseCardResponse(again.id);
+    expect(
+      await service.claimCardResponses(new Date(start.getTime() + minutes(4)))
+    ).toHaveLength(1);
+    await service.releaseCardResponse(again.id);
+
+    expect(
+      await service.claimCardResponses(new Date(start.getTime() + minutes(5)))
+    ).toEqual([]);
+    expect(await service.readCardResponse(found.id, 1)).toMatchObject({
+      state: "failed",
+    });
+  });
+
+  it("never sends a delivered answer again, and gives up on one a day old", async () => {
+    const { database, found, service } = await answered();
+    await service.saveCardResponse(found, response, start);
+    const [claimed] = await service.claimCardResponses(start);
+    if (!claimed) throw new Error("Expected the answer.");
+    await service.markCardResponseDelivered(claimed.id, start);
+    await service.releaseCardResponse(claimed.id);
+
+    expect(
+      await service.claimCardResponses(new Date(start.getTime() + minutes(10)))
+    ).toEqual([]);
+    expect(await service.readCardResponse(found.id, 1)).toMatchObject({
+      state: "delivered",
+    });
+
+    await database.delete(schema.cardResponses);
+    await service.saveCardResponse(found, response, start);
+    expect(
+      await service.claimCardResponses(new Date(start.getTime() + days(1) + 1))
+    ).toEqual([]);
+    expect(await service.readCardResponse(found.id, 1)).toMatchObject({
+      state: "failed",
+    });
+  });
+
+  it("updates the person's card in its own chat only, one revision up, and takes a new answer to it", async () => {
+    const { found, ref, service } = await answered();
+    await service.saveCardResponse(found, response, start);
+    const later = new Date(start.getTime() + minutes(5));
+    const changed = { ...hotel, subtitle: "Ещё три варианта" };
+    const change = () => Promise.resolve({ card: changed });
+
+    expect(
+      await service.updateCard(
+        { ...alice, userId: "bob" },
+        { conversationId: "4242::", ref },
+        change,
+        later
+      )
+    ).toBeUndefined();
+    expect(
+      await service.updateCard(
+        alice,
+        { conversationId: "9999::", ref },
+        change,
+        later
+      )
+    ).toBeUndefined();
+    expect(
+      await service.updateCard(
+        alice,
+        { conversationId: "4242::", ref },
+        change,
+        later
+      )
+    ).toEqual({ change: { card: changed }, id: found.id, revision: 2 });
+
+    const now = await service.readCardByLink(found.id, later);
+    expect(now).toMatchObject({ card: changed, revision: 2, updatedAt: later });
+    if (!now) throw new Error("Expected the card.");
+    expect(await service.saveCardResponse(now, response, later)).toMatchObject({
+      outcome: "received",
+    });
+    expect(await service.countCardResponses(alice.workspaceId, start)).toBe(2);
+    expect(await service.countCardResponses(alice.workspaceId, later)).toBe(1);
+  });
+
+  it("go with their card", async () => {
+    const { database, found, service } = await answered();
+    await service.saveCardResponse(found, response, start);
+    await service.createCard(
+      alice,
+      hotel,
+      chat,
+      new Date(start.getTime() + days(31))
+    );
+
+    expect(await database.select().from(schema.cardResponses)).toEqual([]);
   });
 });
 

@@ -146,6 +146,29 @@ describe("awaitsDelivery", () => {
         toolResult("send_card", { type: "json", value: { status: "sent" } }),
       ])
     ).toBe(false);
+    expect(
+      awaitsDelivery([
+        userMessage("покажи другие отели"),
+        toolCall("update_card"),
+        toolResult("update_card", {
+          type: "json",
+          value: { status: "updated" },
+        }),
+      ])
+    ).toBe(false);
+  });
+
+  it("keeps waiting after an update that did not reach the chat", () => {
+    expect(
+      awaitsDelivery([
+        userMessage("покажи другие отели"),
+        toolCall("update_card"),
+        toolResult("update_card", {
+          type: "json",
+          value: { status: "refused" },
+        }),
+      ])
+    ).toBe(true);
   });
 
   it.each([

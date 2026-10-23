@@ -33,8 +33,8 @@ export async function GET(
   const { id, n } = await context.params;
   const number = numberSchema.safeParse(n);
   if (!number.success || !artifactStorageConfigured()) return notFound();
-  const card = await readCardByLink(id);
-  if (!card || !keptPhotoNumbers(id, card).includes(number.data)) {
+  const found = await readCardByLink(id);
+  if (!found || !keptPhotoNumbers(id, found.card).includes(number.data)) {
     return notFound();
   }
 

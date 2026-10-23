@@ -283,7 +283,7 @@ describe("leafing through photos", () => {
     });
   });
 
-  it("counts the photo a swipe settles on, and ticks the haptics only inside Telegram", async () => {
+  it("counts the photo a swipe settles on, and ticks the haptics where Telegram has them", async () => {
     const selectionChanged = vi.fn<() => void>();
     const browser = openBrowser();
     Object.assign(browser.window, {
@@ -291,6 +291,7 @@ describe("leafing through photos", () => {
         WebApp: {
           HapticFeedback: { selectionChanged },
           initData: "query_id=1",
+          isVersionAtLeast: () => true,
         },
       },
     });
@@ -304,11 +305,7 @@ describe("leafing through photos", () => {
     expect(counter(page)).toBe("3 из 5");
     expect(selectionChanged).toHaveBeenCalledOnce();
 
-    Object.assign(browser.window, {
-      Telegram: {
-        WebApp: { HapticFeedback: { selectionChanged }, initData: "" },
-      },
-    });
+    Object.assign(browser.window, { Telegram: undefined });
     strip.scrollLeft = 300;
     await fire(browser, strip, "scroll");
     await rest(150);
@@ -429,6 +426,7 @@ describe("the full-screen photo", () => {
           disableVerticalSwipes,
           enableVerticalSwipes,
           initData: "query_id=1",
+          isVersionAtLeast: () => true,
         },
       },
     });
