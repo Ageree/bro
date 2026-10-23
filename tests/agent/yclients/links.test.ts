@@ -10,12 +10,15 @@ describe("YClients booking links in a page", () => {
       // The same link again, and a page of YClients itself that names no salon.
       '<a href="https://n102887.yclients.com/company/98765/personal/menu?o=">ещё раз</a>',
       '<a href="https://www.yclients.com/blog">блог</a>',
+      // Inside another link's query, encoded.
+      '<a href="https://vk.com/away.php?to=https%3A%2F%2Fn55.yclients.com%2Fcompany%2F777%2F">ВК</a>',
     ].join("\n");
 
     expect(bookingLinksIn(html)).toEqual([
       { company: 98_765, form: 102_887 },
       { company: undefined, form: 123 },
       { company: undefined, form: 383_401 },
+      { company: 777, form: 55 },
     ]);
   });
 
