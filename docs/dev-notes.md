@@ -1216,6 +1216,13 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   на passport.yandex.ru, которую делает сам инструмент (`agent/lib/yandex/sign-in.ts`): сайт
   выбирает код, а не модель или страница, поэтому «Яндекс» в словах человека не нужен (у
   `site-login-link` нужен). Пробы — в Chromium сессии (Playwright) и `yandex-probe.py` у владельца.
+- Такси другому человеку (23.10, владелец — сразу всем: `YANDEX_GO_PASSENGER_WORKSPACES` не задан или `*` —
+  все, `off` — никто, откат, тогда полей пассажира в схеме нет; список id — только им): `go.book` с
+  `passengerPhone`/`passengerName` — поля черновика сайта
+  `extra_contact_phone`/`extra_passenger_name`, пассажиру Яндекс шлёт SMS; живьём не проверено
+  (`docs/yandex-api/go-booking.md`). Номер — лишь из слов человека или его контактов (`ridePassenger`
+  в `agent/tools/yandex_purchase.ts`). Поля веб-клиента Go ищутся в его JS: страница
+  `taxi.yandex.ru` и бандлы `yastatic.net/s3/taxi-front/txf-turboapp-taxi/…` отдаются и curl из сессии.
 
 ## Composio: Google, Notion, Slack и другие приложения
 

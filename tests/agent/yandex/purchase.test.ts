@@ -2,13 +2,16 @@ import type * as ai from "ai";
 import type { ModelMessage } from "ai";
 import type { DynamicResolveContext, ToolContext } from "eve/tools";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import type { YandexPurchase } from "@db/schema/yandex-purchases";
+import type * as contacts from "@db/services/contacts";
 import type * as purchases from "@db/services/yandex-purchases";
 import type * as afisha from "@agent/lib/yandex/afisha/checkout";
 import type * as eda from "@agent/lib/yandex/eda/checkout";
 import type * as lavka from "@agent/lib/yandex/lavka/checkout";
 import type {
   afishaPurchasePilot,
+  goPassengerPilot,
   yandexPurchasePilot,
 } from "@agent/lib/yandex/pilot";
 import type { makeLoginHandoff } from "@agent/lib/login-handoff/make";
@@ -22,10 +25,13 @@ const services = vi.hoisted(() => ({
   afishaPrepare: vi.fn<typeof afisha.prepareAfishaPurchase>(),
   afishaSubmit: vi.fn<typeof afisha.submitAfishaPurchase>(),
   claim: vi.fn<typeof purchases.claimYandexPurchase>(),
+  contacts: vi.fn<typeof contacts.listContacts>(),
+  contactsPilot: vi.fn<typeof contacts.contactsPilot>(),
   create: vi.fn<typeof purchases.createYandexPurchase>(),
   edaPrepare: vi.fn<typeof eda.prepareEdaPurchase>(),
   edaSubmit: vi.fn<typeof eda.submitEdaPurchase>(),
   judge: vi.fn<() => Promise<{ output: { matches: boolean } }>>(),
+  passengerPilot: vi.fn<typeof goPassengerPilot>(),
   pilot: vi.fn<typeof yandexPurchasePilot>(),
   prepare: vi.fn<typeof lavka.prepareLavkaPurchase>(),
   run: vi.fn<typeof runYandexOperation>(),
@@ -39,6 +45,10 @@ vi.mock("@db/services/yandex-purchases", () => ({
   createYandexPurchase: services.create,
   readYandexPurchase: services.read,
   settleYandexPurchase: services.settle,
+}));
+vi.mock("@db/services/contacts", () => ({
+  contactsPilot: services.contactsPilot,
+  listContacts: services.contacts,
 }));
 vi.mock("ai", async (original) => ({
   ...(await original<typeof ai>()),
@@ -58,6 +68,7 @@ vi.mock("@agent/lib/login-handoff/pilot", () => ({
 }));
 vi.mock("@agent/lib/yandex/pilot", () => ({
   afishaPurchasePilot: services.afishaPilot,
+  goPassengerPilot: services.passengerPilot,
   yandexPurchasePilot: services.pilot,
 }));
 vi.mock("@agent/lib/yandex/afisha/checkout", async (original) => ({
@@ -996,6 +1007,120 @@ describe("Yandex Go with an unverified card", () => {
       scope.workspaceId,
       expect.objectContaining({ id: "go.card_verify" }),
       { cardId: "card-x4d" }
+    );
+  });
+});
+
+describe("Yandex Go for another person", () => {
+  const ride = {
+    action: "book" as const,
+    from: "Мичуринский проспект, 56",
+    near: [37.6177, 55.7558] satisfies [number, number],
+    payment: "current" as const,
+    service: "go" as const,
+    to: "Гвидон",
+  };
+  const booked = answer({
+    kind: "booked",
+    orderId: "new-order",
+    status: "search",
+    price: 780,
+    from: "Мичуринский проспект, 56",
+    to: "Гвидон",
+    payment: "наличные",
+    passenger: { name: "Маша", phone: "+79161234567" },
+  });
+
+  beforeEach(() => {
+    services.passengerPilot.mockReturnValue(true);
+  });
+
+  it("takes no passenger outside its pilot", async () => {
+    services.passengerPilot.mockReturnValue(false);
+    const tool = await resolve([
+      { role: "user", content: "Закажи такси Маше, её номер 8 916 123-45-67" },
+    ]);
+    const schema = z
+      .custom<z.ZodType>((value) => value instanceof z.ZodType)
+      .parse(tool?.inputSchema);
+    expect(
+      schema.safeParse({ ...ride, passengerPhone: "+79161234567" }).success
+    ).toBe(false);
+    expect(schema.safeParse(ride).success).toBe(true);
+  });
+
+  it("books a ride for the passenger whose number the person wrote", async () => {
+    services.run.mockResolvedValue(booked);
+    const tool = await resolve([
+      {
+        role: "user",
+        content: "Закажи такси Маше до Гвидона, её номер 8 916 123-45-67",
+      },
+    ]);
+    const result = await tool?.execute(
+      { ...ride, passengerName: "Маша", passengerPhone: "89161234567" },
+      callContext()
+    );
+    expect(services.run).toHaveBeenCalledExactlyOnceWith(
+      scope.workspaceId,
+      expect.objectContaining({ id: "go.book" }),
+      expect.objectContaining({
+        passengerName: "Маша",
+        passengerPhone: "+79161234567",
+      })
+    );
+    expect(result).toMatchObject({ kind: "booked" });
+    expect(JSON.stringify(result)).toContain("Yandex texts the passenger");
+  });
+
+  it("takes the passenger's number from the person's contacts", async () => {
+    services.run.mockResolvedValue(booked);
+    services.contactsPilot.mockReturnValue(true);
+    services.contacts.mockResolvedValue([
+      {
+        aliases: ["мама"],
+        createdAt: new Date(),
+        familiar: true,
+        id: "contact-1",
+        name: "Мама",
+        note: null,
+        phones: ["+79161234567"],
+        searchKey: "мама",
+        updatedAt: new Date(),
+        workspaceId: scope.workspaceId,
+      },
+    ]);
+    const tool = await resolve([
+      { role: "user", content: "Вызови маме такси до Гвидона" },
+    ]);
+    await tool?.execute(
+      { ...ride, passengerPhone: "+79161234567" },
+      callContext()
+    );
+    expect(services.run).toHaveBeenCalledExactlyOnceWith(
+      scope.workspaceId,
+      expect.objectContaining({ id: "go.book" }),
+      expect.objectContaining({ passengerPhone: "+79161234567" })
+    );
+  });
+
+  it("books nothing for a number the person never gave, and their own ride without one", async () => {
+    services.run.mockResolvedValue(booked);
+    const tool = await resolve([
+      { role: "user", content: "Закажи такси до Гвидона" },
+    ]);
+    const refused = await tool?.execute(
+      { ...ride, passengerPhone: "+79990001122" },
+      callContext()
+    );
+    expect(refused).toMatchObject({ kind: "not_booked" });
+    expect(services.run).not.toHaveBeenCalled();
+    // A model fills every optional field: an empty one is the person's ride.
+    await tool?.execute({ ...ride, passengerPhone: "" }, callContext());
+    expect(services.run).toHaveBeenCalledExactlyOnceWith(
+      scope.workspaceId,
+      expect.objectContaining({ id: "go.book" }),
+      expect.objectContaining({ passengerPhone: undefined })
     );
   });
 });

@@ -351,6 +351,16 @@ export const env = createEnv({
         "YANDEX_AFISHA_PURCHASE_WORKSPACES takes workspace ids or *, not emails"
       )
       .optional(),
+    // A Go ride booked for someone else (`passengerPhone` of `go.book`),
+    // inside YANDEX_PURCHASE_WORKSPACES: Yandex texts the passenger the car.
+    // Unset or `*`, every workspace; `off`, nobody (the rollback: then
+    // yandex_purchase has no passenger fields at all); otherwise workspace ids.
+    YANDEX_GO_PASSENGER_WORKSPACES: workspaceListSchema
+      .refine(
+        (entries) => entries.every((entry) => !entry.includes("@")),
+        "YANDEX_GO_PASSENGER_WORKSPACES takes workspace ids or *, not emails"
+      )
+      .optional(),
     // The person's own request pays without «Оплачиваю?» (owner 15.10,
     // `agent/lib/payments/direct.ts`): «купи корм», «оплати интернет». Up to
     // the budget they named, or DIRECT_PURCHASE_MAX_RUB without one; above

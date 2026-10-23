@@ -118,6 +118,9 @@ describe("go.book", () => {
       id: userId,
       orderid: "new-order",
     });
+    expect(sent("/external/3.0/orderdraft")[0]?.body).not.toHaveProperty(
+      "extra_contact_phone"
+    );
   });
 
   it("reads the ride that is on and both places together, and writes only after all of them", async () => {
@@ -212,6 +215,55 @@ describe("go.book", () => {
       kind: "unknown",
       orderId: "new-order",
     });
+  });
+
+  it("books for another person as the site does: their number and name in the draft", async () => {
+    const { page, sent } = await goPage({});
+    const data = dataOf(
+      await runInPage(
+        goBookOperation.run,
+        book({ passengerName: "Маша", passengerPhone: "+7 916 123-45-67" }),
+        page
+      )
+    );
+    expect(data).toMatchObject({
+      kind: "booked",
+      passenger: { name: "Маша", phone: "+79161234567" },
+    });
+    expect(sent("/external/3.0/orderdraft")[0]?.body).toMatchObject({
+      extra_contact_phone: "+79161234567",
+      extra_passenger_name: "Маша",
+    });
+  });
+
+  it("books nothing for another person where the tariff refuses it", async () => {
+    const { page, sent } = await goPage({
+      "/3.0/routestats": {
+        body: {
+          offer: "offer-1",
+          service_levels: [
+            {
+              class: "econom",
+              is_fixed_price: true,
+              max_price_as_decimal: "780.00",
+              order_for_other_prohibited: true,
+            },
+          ],
+        },
+      },
+    });
+    const data = dataOf(
+      await runInPage(
+        goBookOperation.run,
+        book({ passengerPhone: "+79161234567" }),
+        page
+      )
+    );
+    expect(data).toEqual({
+      kind: "failed",
+      reason: "order_for_other_unavailable",
+    });
+    expect(sent("/external/3.0/orderdraft")).toHaveLength(0);
   });
 });
 
