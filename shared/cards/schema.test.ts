@@ -105,7 +105,7 @@ describe("card schema", () => {
       ],
     };
     const send = { label: "Отправить", submit: "send" };
-    const card = (block: object) => ({
+    const card = (block: unknown) => ({
       title: "Тест",
       blocks: [block],
       actions: [send],
