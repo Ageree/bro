@@ -173,6 +173,32 @@ s3put:<ключ>`; без звонка её гоняют локально: `sip.
   делает `photonConfigured()` ложным для входа, кабинета, лендинга и фактов о данных, а сообщение на
   линию получает ссылку на бота (раз в час на чат) без аккаунта и хода. Ключи Photon остаются; откат —
   снять флаг в `prod.json` и `host.py env`.
+- Карточки Бро (23.10, `CARDS_WORKSPACES`, id или `*`; описание, токены и каталог блоков — `docs/cards.md`):
+  страница с готовым ответом, которую модель собирает из 14 блоков `shared/cards/schema.ts` (по образцу Files
+  у Instinct) и шлёт в Telegram кнопкой `web_app` (`send_card`). Секрет ссылки `/card/<id>` — сам `id` в
+  `cards` (43 знака), живёт 30 дней. Публичный путь со ссылкой-секретом требует трёх вещей: `proxy.ts`
+  (иначе уйдёт на `/sign-in`), `robots.ts`, и заголовки `frame-ancestors` + `Referrer-Policy: no-referrer` и
+  скрытие пути из логов в `next.config.ts` (иначе секрет протечёт в Referer и журнал). Инструмент, который
+  сам шлёт сообщение мимо `send_message`, надо учесть в трёх местах: `delivery/pending.ts` (иначе ход
+  форсирует ещё одно сообщение или падает на пустом шаге), `delivery/turn-sends.ts` (дубли) и `action.result`
+  в `channels/telegram.ts` (иначе закрывающий текст модели уйдёт запасным сообщением поверх карточки).
+  `withoutSecrets` для проверки видимых данных не годится: режет «Карта •• 4417» и телефоны; карточки
+  проверяют Luhn плюс `unsafeMemoryRanges` и `documentNumberRanges` (`agent/lib/cards/safety.ts`).
+  Реальную отправку в Telegram и ход модели с `send_card` на проде не проверяли. Дизайн в Paper — файл
+  «bro · Hilos», страница «Cards · Design system»: листы SVG собраны не из компонентов с auto-layout, а
+  вставкой (Paper принимает SVG из буфера, HTML нет; текст остаётся редактируемым; U+00A0 в тексте
+  Paper показывает как `&nbsp;`, поэтому в SVG для него пробел обычный).
+- Просмотр публичной страницы без Telegram: открыть её с `#tgWebAppData=query_id%3Dtest%26auth_date%3D1%26hash%3Dx&tgWebAppVersion=8.0&tgWebAppPlatform=web&tgWebAppThemeParams=%7B%7D`:
+  настоящий скрипт Telegram начинает вести себя как внутри клиента. `next dev`: `BETTER_AUTH_SECRET` и
+  `SECRET_ENCRYPTION_KEY` задавайте вместе или не задавайте вовсе. В сессии снимайте `S3_ACCESS_KEY_ID` и
+  `S3_SECRET_ACCESS_KEY` и при прямом `vitest run` (иначе 200+ ложных «S3_ENDPOINT is required»).
+- Простые классы `.type-*` из `typography.css` и `bro.css` в сборке стоят позже утилит Tailwind того же
+  свойства: `type-row font-[600]` не даст 600. Вес и трекинг ставьте на вложенный элемент или заводите
+  `type-*`. `tsc` и `oxlint` в свежем клоне (и после `rm -rf .next`) падают на `PageProps`, пока не
+  выполнен `next typegen`.
+- `tests/agent/yandex/afisha-prices.test.ts` («lists the same sessions as the page does…») зашит на дату
+  22.10 и с 23.10 красный на любой ветке: «сегодня» считает страница, которую запускает `runInPage`, по
+  реальным часам, а `vi.setSystemTime` её не двигает.
 - iMessage Photon (20.10): линия принимает входящие лишь от телефонов — пользователей проекта
   (`POST spectrum.photon.codes/projects/<id>/users/`, `type: shared`), иначе отвечает «This number
   didn't recognize yours». Исходящие на тарифах Free/Pro (общие линии) — так же: чужому номеру

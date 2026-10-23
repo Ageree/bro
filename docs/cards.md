@@ -143,5 +143,8 @@ https, `tel:` или `mailto:`; не больше одной `primary`) и `foot
 | Схема и каталог блоков                         | `shared/cards/schema.ts`                             |
 | Примеры карточек (по ним же проверяется схема) | `docs/cards/examples/*.json`                         |
 | Рендер блоков                                  | `web/components/cards/`                              |
+| Хранилище (таблица `cards`, срок 30 дней)      | `db/schema/cards.ts`, `db/services/cards.ts`         |
+| Инструмент агента и кнопка в Telegram          | `agent/tools/send_card.ts`, `agent/lib/cards/`       |
+| Флаг включения (id workspace или `*`)          | `CARDS_WORKSPACES`                                   |
 | Страница в Telegram                            | `app/(public)/card/[id]`                             |
 | Дизайн-система в Paper                         | файл «bro · Hilos», страница «Cards · Design system» |
