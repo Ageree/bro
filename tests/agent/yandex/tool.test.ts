@@ -1,16 +1,27 @@
 import type { ModelMessage } from "ai";
 import type { DynamicResolveContext, ToolContext } from "eve/tools";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { makeLoginHandoff } from "@agent/lib/login-handoff/make";
+import type { loginHandoffPilot } from "@agent/lib/login-handoff/pilot";
 import type { yandexPilot } from "@agent/lib/yandex/pilot";
 import type { runYandexOperation } from "@agent/lib/yandex/transport";
 import type { latestPosition } from "@db/services/location";
 
 const services = vi.hoisted(() => ({
   afishaPilot: vi.fn<() => boolean>(() => false),
+  handoffPilot: vi.fn<typeof loginHandoffPilot>(),
   latest: vi.fn<typeof latestPosition>(),
   locationPilot: vi.fn<() => boolean>(() => false),
+  makeLink: vi.fn<typeof makeLoginHandoff>(),
   pilot: vi.fn<typeof yandexPilot>(),
   run: vi.fn<typeof runYandexOperation>(),
+}));
+
+vi.mock("@agent/lib/login-handoff/make", () => ({
+  makeLoginHandoff: services.makeLink,
+}));
+vi.mock("@agent/lib/login-handoff/pilot", () => ({
+  loginHandoffPilot: services.handoffPilot,
 }));
 
 vi.mock("@db/services/location", () => ({
@@ -61,7 +72,11 @@ function resolveContext(
   };
 }
 
+// Every call its own turn: a sign-in link is one per turn (`sign-in.ts`).
+let turns = 0;
+
 function callContext(authenticator = "authjs"): ToolContext {
+  turns += 1;
   return {
     abortSignal: new AbortController().signal,
     callId: "call-1",
@@ -80,7 +95,7 @@ function callContext(authenticator = "authjs"): ToolContext {
     session: {
       auth: { current: caller(authenticator), initiator: null },
       id: "session-1",
-      turn: { id: "turn-1", sequence: 1 },
+      turn: { id: `turn-${String(turns)}`, sequence: 1 },
     },
     toolName: "yandex",
   };
@@ -104,13 +119,35 @@ const asked: ModelMessage[] = [
   { content: "Проверь, вошёл ли ты в Яндекс", role: "user" },
 ];
 
+const signInLink = "https://bro.example/handoff/link-1";
+
 beforeEach(() => {
   vi.clearAllMocks();
+  services.handoffPilot.mockResolvedValue(true);
+  services.makeLink.mockResolvedValue({ kind: "made", link: signInLink });
   services.pilot.mockReturnValue(true);
   services.run.mockResolvedValue({
     data: { requestWorks: true, signedIn: true },
     kind: "ok",
   });
+});
+
+/** A place of Yandex Maps' search at a point. */
+const mapsPlace = (id: string, name: string, at: [number, number]) => ({
+  address: "Москва, Мичуринский проспект, 56",
+  bookable: true,
+  category: null,
+  coordinates: at,
+  hours: null,
+  id,
+  name,
+  openNow: null,
+  openText: null,
+  phone: null,
+  rating: null,
+  ratingCount: null,
+  site: null,
+  url: `https://yandex.ru/maps/org/x/${id}/`,
 });
 
 describe("Yandex Maps around the person's shared point", () => {
@@ -164,6 +201,24 @@ describe("Yandex Maps around the person's shared point", () => {
       near: [37.6099, 55.7612],
     });
     services.locationPilot.mockReturnValue(false);
+  });
+
+  it("names the places that share a building last in the result", async () => {
+    services.run.mockResolvedValue({
+      data: {
+        places: [
+          mapsPlace("1", "Glow&Go", [37.4805, 55.6935]),
+          mapsPlace("2", "Топган", [37.4808, 55.6937]),
+        ],
+        total: 2,
+      },
+      kind: "ok",
+    });
+
+    const result = await search({});
+
+    expect(Object.keys(result).at(-1)).toBe("note");
+    expect(JSON.stringify(result)).toContain("«Glow&Go», «Топган»");
   });
 });
 
@@ -282,16 +337,64 @@ describe("the Yandex tool", () => {
     expect(services.run).not.toHaveBeenCalled();
   });
 
-  it("tells the model what to do when nobody is signed in, without the server's words", async () => {
+  it("hands the model a Yandex sign-in link when nobody is signed in, without the server's words", async () => {
+    // 23.10: a new person who asked for a taxi never named Yandex, so a link
+    // left to the model waited for them to say «Яндекс».
     services.run.mockResolvedValue({ kind: "signed_out" });
-    const result = await call(asked);
-    expect(result).toMatchObject({ ok: false });
-    expect("reply" in result ? result.reply : "").toContain("site-login-link");
+    const result = await call([
+      { content: "Закажи такси от Мичуринского 56", role: "user" },
+    ]);
+    expect(result).toMatchObject({ link: signInLink, ok: false });
+    expect("reply" in result ? result.reply : "").toContain(
+      "Not signed in to Yandex yet"
+    );
+    expect(services.makeLink).toHaveBeenCalledWith(
+      expect.anything(),
+      { allowedDomains: ["yandex.ru"], domain: "yandex.ru" },
+      "https://passport.yandex.ru/auth"
+    );
+    services.makeLink.mockResolvedValue({ kind: "busy" });
+    const busy = await call(asked);
+    expect(busy).not.toHaveProperty("link");
+    expect("reply" in busy ? busy.reply : "").toContain("window");
+    services.handoffPilot.mockResolvedValue(false);
+    const noLink = await call(asked);
+    expect(noLink).not.toHaveProperty("link");
+    expect("reply" in noLink ? noLink.reply : "").toContain("browser_task");
+    services.handoffPilot.mockResolvedValue(true);
+    services.makeLink.mockClear();
+    // Yandex ID says the browser is signed in: the service refused alone.
+    services.run.mockImplementation(async (_workspace, operation) =>
+      operation.id === "status"
+        ? { data: { requestWorks: true, signedIn: true }, kind: "ok" }
+        : { kind: "signed_out" }
+    );
+    const found = await tool(asked);
+    const refused = await found?.execute(
+      { operation: "go.ride" },
+      callContext()
+    );
+    expect(refused).not.toHaveProperty("link");
+    expect(JSON.stringify(refused)).toContain("Do not send a sign-in link");
+    expect(services.makeLink).not.toHaveBeenCalled();
     services.run.mockResolvedValue({ kind: "captcha" });
     const wall = await call(asked);
     expect("reply" in wall ? wall.reply : "").toContain("browser_task");
     services.run.mockResolvedValue({ kind: "failed", reason: "answer" });
     expect(await call(asked)).toMatchObject({ ok: false });
+  });
+
+  it("makes one sign-in link for the calls of one turn", async () => {
+    services.run.mockResolvedValue({ byYandexId: true, kind: "signed_out" });
+    const found = await tool(asked);
+    const context = callContext();
+    const [first, second] = await Promise.all([
+      found?.execute({ operation: "go.ride" }, context),
+      found?.execute({ operation: "status" }, context),
+    ]);
+    expect(first).toMatchObject({ link: signInLink });
+    expect(second).toMatchObject({ link: signInLink });
+    expect(services.makeLink).toHaveBeenCalledOnce();
   });
 
   describe("account.ready", () => {
@@ -329,22 +432,21 @@ describe("the Yandex tool", () => {
           data: { cards: [], signedIn: true },
           kind: "ok",
         },
-        status: { kind: "signed_out" },
+        status: { byYandexId: true, kind: "signed_out" },
       });
-      expect(result).toMatchObject({ ok: false });
+      expect(result).toMatchObject({ link: signInLink, ok: false });
       expect(reply).toContain("Not signed in to Yandex yet");
-      expect(reply).toContain("signInPage https://passport.yandex.ru/auth");
       expect(calls).toEqual(["status"]);
     });
 
-    it("does not call a person who never opened Go ready", async () => {
+    it("does not call Yandex ready when the cards could not be read", async () => {
       const { asked: calls, reply } = await ready({
-        "account.ready": { data: { error: "no_user_id" }, kind: "ok" },
+        "account.ready": { kind: "failed", reason: "page" },
         status: signedIn,
       });
       expect(calls).toEqual(["status", "account.ready"]);
-      expect(reply).toContain("never opened Yandex Go");
-      expect(reply).toContain("Do not say Yandex is ready");
+      expect(reply).toContain("did not show the cards");
+      expect(reply).toContain("do not call it ready");
     });
 
     it("offers the bank's link for a card Go holds back", async () => {

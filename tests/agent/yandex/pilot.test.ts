@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 afterEach(() => {
   vi.stubEnv("YANDEX_API_WORKSPACES", "");
   vi.stubEnv("YANDEX_PURCHASE_WORKSPACES", "");
+  vi.stubEnv("YANDEX_GO_PASSENGER_WORKSPACES", "");
   vi.resetModules();
 });
 
@@ -33,5 +34,23 @@ describe("the separate Yandex purchase pilot", () => {
     // A newly created workspace is in only when both switches are on.
     expect(await enabled("*", "*", "workspace:new-person")).toBe(true);
     expect(await enabled("*", "", "workspace:new-person")).toBe(false);
+  });
+});
+
+async function passengers(list: string, workspaceId = "workspace:alice") {
+  vi.resetModules();
+  vi.stubEnv("YANDEX_API_WORKSPACES", "*");
+  vi.stubEnv("YANDEX_PURCHASE_WORKSPACES", "*");
+  vi.stubEnv("YANDEX_GO_PASSENGER_WORKSPACES", list);
+  const { goPassengerPilot } = await import("@agent/lib/yandex/pilot");
+  return goPassengerPilot({ workspaceId });
+}
+
+describe("a Go ride for someone else", () => {
+  it("is everyone's unless set to off or to other workspaces", async () => {
+    expect(await passengers("")).toBe(true);
+    expect(await passengers("off")).toBe(false);
+    expect(await passengers("workspace:bob")).toBe(false);
+    expect(await passengers("workspace:alice")).toBe(true);
   });
 });

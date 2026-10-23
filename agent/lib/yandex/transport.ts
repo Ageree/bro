@@ -11,6 +11,7 @@ import {
   stopBrowserVmBrowser,
 } from "@agent/lib/browser-vm/runs";
 import { afishaPricesDirect, afishaSearchDirect } from "./afisha/direct";
+import { goOpenOperation } from "./go/open";
 import { yandexDirectPilot } from "./pilot";
 import {
   type JsonValue,
@@ -18,6 +19,7 @@ import {
   isYandexHost,
   operationAnswerSchema,
 } from "./operations";
+import { statusOperation } from "./status";
 
 /**
  * How a call to a Yandex service ended, in words the tool gives the model:
@@ -28,8 +30,18 @@ export type YandexOutcome =
   | { readonly data: JsonValue; readonly kind: "ok" }
   | { readonly kind: "captcha" }
   | { readonly kind: "failed"; readonly reason: "answer" | "page" | "timeout" }
-  | { readonly kind: "signed_out" }
+  | {
+      /** Yandex ID's own word: its sign-in came up, or its page said so. */
+      readonly byYandexId?: true;
+      readonly kind: "signed_out";
+    }
   | { readonly kind: "unavailable" };
+
+/**
+ * One call as it came back, before the transport makes a missing session of
+ * the service's own (`no_session`) and calls again.
+ */
+type CallOutcome = YandexOutcome | { readonly kind: "no_session" };
 
 /** Opening the tab includes waking a sandbox that is off. */
 const openBudgetMs = 45_000;
@@ -78,6 +90,40 @@ export async function runYandexOperation(
   operation: YandexOperation,
   args: JsonValue
 ): Promise<YandexOutcome> {
+  const first = await runOperation(workspaceId, operation, args);
+  if (first.kind !== "no_session") return first;
+  // Go keeps its session in its own page's storage, made when that page
+  // first starts: a browser that never opened Go has none, signed in to
+  // Yandex or not. 23.10 a new person's taxi failed on it three times, and
+  // Bro went to the site instead of signing them in to Yandex. Whether they
+  // are signed in is Yandex ID's word: signed out, the caller leads them to
+  // sign in; signed in, Go's page is opened once and the call made again.
+  // The call answered before it sent anything, so a booking is not sent
+  // twice.
+  const signedIn = await runOperation(workspaceId, statusOperation, {});
+  if (signedIn.kind !== "ok") return settled(signedIn);
+  const opened = await runOperation(workspaceId, goOpenOperation, {});
+  console.info("[yandex] go session", {
+    opened: opened.kind,
+    operation: operation.id,
+    workspaceId,
+  });
+  if (opened.kind !== "ok") return settled(opened);
+  return settled(await runOperation(workspaceId, operation, args));
+}
+
+/** A session still missing after all that is a call that failed. */
+function settled(outcome: CallOutcome): YandexOutcome {
+  return outcome.kind === "no_session"
+    ? { kind: "failed", reason: "page" }
+    : outcome;
+}
+
+async function runOperation(
+  workspaceId: string,
+  operation: YandexOperation,
+  args: JsonValue
+): Promise<CallOutcome> {
   const direct = await tryDirect(workspaceId, operation, args);
   if (direct !== undefined) return direct;
   if (!(await usesBrowserPool({ workspaceId }))) {
@@ -114,7 +160,7 @@ async function callInTab(
   operation: YandexOperation,
   args: JsonValue
 ): Promise<
-  YandexOutcome | { readonly kind: "unreachable"; readonly ran: boolean }
+  CallOutcome | { readonly kind: "unreachable"; readonly ran: boolean }
 > {
   const began = Date.now();
   const opening = openTab(workspaceId);
@@ -161,14 +207,21 @@ async function callInTab(
     });
     if (!value.ran) {
       const where = landing(value.url);
-      if (where === "signed_out") return { kind: "signed_out" };
+      if (where === "signed_out")
+        return { byYandexId: true, kind: "signed_out" };
       if (where === "captcha") return { kind: "captcha" };
       return { kind: "failed", reason: "page" };
     }
     const answer = operationAnswerSchema.safeParse(value.value);
     if (!answer.success) return { kind: "failed", reason: "answer" };
-    if (answer.data.status === "signed_out") return { kind: "signed_out" };
+    if (answer.data.status === "signed_out") {
+      // A service's own 401 may be its session alone, not Yandex ID's.
+      return operation.service === statusOperation.service
+        ? { byYandexId: true, kind: "signed_out" }
+        : { kind: "signed_out" };
+    }
     if (answer.data.status === "captcha") return { kind: "captcha" };
+    if (answer.data.status === "no_session") return { kind: "no_session" };
     const data = operation.result.safeParse(answer.data.data);
     return data.success
       ? { data: data.data, kind: "ok" }

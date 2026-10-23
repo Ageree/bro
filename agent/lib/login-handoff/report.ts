@@ -30,7 +30,7 @@ const instructions = {
   "not-signed-in":
     "The person said they were through, but the page still shows a sign-in form, so it may not have worked. Say so, and offer a new link if they want to try again.",
   signed:
-    "The person said they were through, and the page no longer shows a sign-in form. Say that Bro's browser should now stay signed in there for later errands (a site may still end a session on its own), and ask what they want done there.",
+    "The person said they were through, and the page no longer shows a sign-in form. Say that Bro's browser should now stay signed in there for later errands (a site may still end a session on its own). If they signed in for something they asked for in this conversation that is still not done (a taxi, an order), ask in one short question whether to do it now, naming it; otherwise ask what they want done there.",
   unknown:
     "The person said they were through, but the page could not be checked. Say that Bro will see on the next errand whether the sign-in held.",
 } as const;

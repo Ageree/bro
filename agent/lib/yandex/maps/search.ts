@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { defineYandexOperation } from "../operations";
+import { defineYandexOperation, type JsonValue } from "../operations";
 import { mapsPage } from "./page";
 
 const coordinates = z.tuple([
@@ -23,6 +23,58 @@ const place = z.object({
   site: z.string().nullable(),
   url: z.string(),
 });
+
+/** Places closer than this stand in one building, for `sameBuildingNote`. */
+const sameBuildingMetres = 60;
+
+/**
+ * 23.10: «в моём доме есть парикмахерская, запиши меня» — two salons stand
+ * at Мичуринский, 56, and Bro went to book at the one it found first, not
+ * the one the person meant. When places of a result stand in one building,
+ * a note that names them building by building, so Bro asks which one when
+ * the person meant a particular place without naming it; undefined when no
+ * two places stand together.
+ */
+export function sameBuildingNote(result: JsonValue) {
+  const found = z.object({ places: z.array(place) }).safeParse(result);
+  if (!found.success) return undefined;
+  const located = found.data.places.flatMap((one) =>
+    one.coordinates === null ? [] : [{ ...one, at: one.coordinates }]
+  );
+  // A building is every place within reach of another of it.
+  const buildings: (typeof located)[] = [];
+  for (const one of located) {
+    const near = buildings.filter((building) =>
+      building.some(
+        (other) => metresBetween(one.at, other.at) < sameBuildingMetres
+      )
+    );
+    const merged = [...near.flat(), one];
+    for (const building of near)
+      buildings.splice(buildings.indexOf(building), 1);
+    buildings.push(merged);
+  }
+  const shared = buildings.filter((building) => building.length > 1);
+  if (shared.length === 0) return undefined;
+  const lines = shared.map((building) => {
+    const address =
+      building.find((one) => one.address !== null)?.address ?? undefined;
+    const names = building.map((one) => `«${one.name}»`).join(", ");
+    return address === undefined ? names : `${names} (${address})`;
+  });
+  return `Note: these places share a building — ${lines.join("; ")}. When the person means one particular place there («в моём доме», one they go to) without naming it, ask which one before you book, call or write there; when any of them will do, choose yourself.`;
+}
+
+/** Metres between two [longitude, latitude] points a short way apart. */
+function metresBetween(
+  [lonA, latA]: readonly [number, number],
+  [lonB, latB]: readonly [number, number]
+) {
+  const north = (latA - latB) * 111_320;
+  const east =
+    (lonA - lonB) * 111_320 * Math.cos((((latA + latB) / 2) * Math.PI) / 180);
+  return Math.hypot(north, east);
+}
 
 /**
  * Places on Yandex Maps for a text query around a point: the name, rating,

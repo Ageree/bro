@@ -89,14 +89,14 @@ describe("yandex account.ready", () => {
     });
   });
 
-  it("says Go was never opened when Go keeps no user, reading nothing", async () => {
+  it("answers no_session when Go keeps no user, reading nothing", async () => {
     const { page, paths } = await goPage({ body: {} });
     const answer = await runInPage(
       accountReadyOperation.run,
       {},
       { ...page, indexedDb: {} }
     );
-    expect(dataOf(answer)).toEqual({ error: "no_user_id" });
+    expect(answer).toEqual({ status: "no_session" });
     expect(paths).toEqual([]);
   });
 
@@ -159,11 +159,5 @@ describe("what account.ready tells the model to do next", () => {
     expect(
       readinessReply({ error: "http_500" }, { canVerify: true })
     ).toContain("Say nothing about the cards");
-  });
-
-  it("does not call Yandex ready when Go was never opened", () => {
-    const reply = readinessReply({ error: "no_user_id" }, { canVerify: true });
-    expect(reply).toContain("never opened Yandex Go");
-    expect(reply).not.toContain("Ready");
   });
 });

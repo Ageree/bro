@@ -11,21 +11,29 @@ import { nearFromPosition } from "@agent/lib/location/near";
 import { operationArguments } from "@agent/lib/yandex/operations";
 import { afishaPricesOperation } from "@agent/lib/yandex/afisha/prices";
 import {
+  mapsSearchOperation,
+  sameBuildingNote,
+} from "@agent/lib/yandex/maps/search";
+import {
   afishaPurchasePilot,
   yandexPilot,
   yandexPurchasePilot,
 } from "@agent/lib/yandex/pilot";
 import {
   accountReadyOperation,
+  cardsUnreadReply,
   readinessReply,
-  signInFirstReply,
 } from "@agent/lib/yandex/ready";
+import { yandexSignIn } from "@agent/lib/yandex/sign-in";
 import { statusOperation } from "@agent/lib/yandex/status";
 import {
   findYandexOperation,
   yandexOperations,
 } from "@agent/lib/yandex/registry";
-import { runYandexOperation } from "@agent/lib/yandex/transport";
+import {
+  type YandexOutcome,
+  runYandexOperation,
+} from "@agent/lib/yandex/transport";
 import { locationPilot } from "@db/services/location";
 
 const [firstOperation, ...otherOperations] = yandexOperations;
@@ -62,11 +70,23 @@ const refusals = {
     "Yandex shows a check here that this tool does not pass. Do the errand with browser_task instead, and say nothing of the check unless the person asks.",
   failed:
     "The call did not go through (the service did not answer as expected). Try once more if it is a quick look, otherwise do it with browser_task. Do not guess an answer.",
-  signed_out:
-    "Bro's browser is not signed in to Yandex. Tell the person so and offer to send a sign-in link; if they agree, call site-login-link with site yandex.ru and signInPage https://passport.yandex.ru/auth. Do not ask for the password or a code in the chat.",
   unavailable:
     "Bro's own browser is not available for this right now. Use browser_task for the errand, or say it cannot be done at the moment.",
 } as const;
+
+/**
+ * A call that came back without data: signed out, the person is led to sign
+ * in to Yandex with a link made here (`yandexSignIn`); anything else, what
+ * to do instead.
+ */
+async function refused(
+  outcome: Exclude<YandexOutcome, { kind: "ok" }>,
+  context: ToolContext
+) {
+  return outcome.kind === "signed_out"
+    ? { ok: false as const, ...(await yandexSignIn(context, outcome)) }
+    : { ok: false as const, reply: refusals[outcome.kind] };
+}
 
 /**
  * Tickets of a zone without seats go through `yandex_purchase` in its pilot
@@ -113,12 +133,7 @@ async function callYandex(
     // Signed in is Yandex ID's word, not Go's: a person who never opened Go
     // has no Go session, and an anonymous Go session has no cards.
     const signedIn = await runYandexOperation(workspaceId, statusOperation, {});
-    if (signedIn.kind === "signed_out") {
-      return { ok: false as const, reply: signInFirstReply };
-    }
-    if (signedIn.kind !== "ok") {
-      return { ok: false as const, reply: refusals[signedIn.kind] };
-    }
+    if (signedIn.kind !== "ok") return refused(signedIn, context);
   }
   // Geolocation pilot: «рядом» on Yandex Maps looks around the person's
   // own shared point, not central Moscow.
@@ -138,9 +153,11 @@ async function callYandex(
     )
   );
   if (operation.id === accountReadyOperation.id) {
-    // The onboarding's next step rides in the result, not the prompt.
-    if (outcome.kind === "signed_out") {
-      return { ok: false as const, reply: signInFirstReply };
+    // The onboarding's next step rides in the result, not the prompt. Yandex
+    // ID has just said the person is signed in: a call that failed did not
+    // read the cards.
+    if (outcome.kind === "failed") {
+      return { ok: false as const, reply: cardsUnreadReply };
     }
     const readiness = accountReadyOperation.result.safeParse(
       outcome.kind === "ok" ? outcome.data : undefined
@@ -163,10 +180,18 @@ async function callYandex(
       operation.id === afishaPricesOperation.id &&
       afishaPurchasePilot({ workspaceId })
         ? `${operation.answerNote ?? ""} ${afishaBuyNote}`
-        : operation.answerNote;
+        : operation.id === mapsSearchOperation.id
+          ? joinedNotes(operation.answerNote, sameBuildingNote(outcome.data))
+          : operation.answerNote;
     return note === undefined ? placed : { ...placed, note };
   }
-  return { ok: false as const, reply: refusals[outcome.kind] };
+  return refused(outcome, context);
+}
+
+/** Notes of one result in order, or undefined when there is none. */
+function joinedNotes(...notes: readonly (string | undefined)[]) {
+  const present = notes.filter((note) => note !== undefined);
+  return present.length === 0 ? undefined : present.join(" ");
 }
 
 export default defineDynamic({
