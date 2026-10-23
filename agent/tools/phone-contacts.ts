@@ -1,8 +1,16 @@
 import { defineDynamic, defineTool, type ToolContext } from "eve/tools";
 import type { DynamicResolveContext } from "eve";
 import { z } from "zod";
+import {
+  personWordsThisTurn,
+  recentPersonMessages,
+} from "@agent/lib/browser-use/said";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { phoneActionTurn, rootApproval } from "@agent/lib/phone/policy";
+import {
+  stepIdentity,
+  stepStartedEventSchema,
+} from "@agent/lib/turn-kind/step";
 import {
   contactsPilot,
   deleteContact,
@@ -99,30 +107,67 @@ const save = defineTool({
   },
 });
 
-const remove = defineTool({
-  availableInSubagents: false,
-  approval: rootApproval,
-  description:
-    "Delete a person from Bro's address book on the person's own request («забудь номер Саши»). Name or alias as they said it. With several matches nothing is deleted: ask which one.",
-  inputSchema: z.object({ name: z.string().trim().min(1).max(100) }).strict(),
-  async execute(input, context) {
-    const scope = writeScope(context, JSON.stringify(input));
-    const result = await deleteContact(scope, input.name);
-    if (result.kind === "deleted") return { deleted: true, name: result.name };
-    if (result.kind === "ambiguous")
-      return { deleted: false, matches: result.names };
-    return { deleted: false, note: "No such contact in Bro's book." };
-  },
-});
+/**
+ * A request to forget someone in the person's own words: «забудь Сашу»,
+ * «удали номер мамы», «вычеркни Петю».
+ */
+const forgetWords =
+  /(?<!\p{L})(?:забудь(?:те)?|забыть|удали(?:те|ть)?|удаляй|сотри(?:те)?|стереть|убери(?:те)?|убрать|вычеркни(?:те)?|вычеркнуть|delete|remove|forget)(?!\p{L})/iu;
 
-function resolveContactTools(context: DynamicResolveContext) {
+/**
+ * Whether the person asked to forget a contact: in this turn's words, or in
+ * the message before them when Bro asked which one («удали Сашу» — «какого?» —
+ * «с работы»). 23.10 Bro called contact-delete on «Вызови такси моему брату»
+ * while looking the brother up; a contact «брат» would have gone.
+ */
+function askedToForget(
+  messages: DynamicResolveContext["messages"],
+  turn: ReturnType<typeof personWordsThisTurn>
+) {
+  if (turn.compacted === true || turn.said === null) return false;
+  return [
+    ...turn.said,
+    ...turn.answers,
+    ...recentPersonMessages(messages, 2).map((message) => message.text),
+  ].some((text) => forgetWords.test(text));
+}
+
+const notAskedNote =
+  "Nothing was deleted: the person did not ask to forget anyone. To look someone up, use contact-find; delete only when they ask in their own words («забудь Сашу», «удали номер мамы»).";
+
+/** `asked`: the person's words ask to forget a contact (`askedToForget`). */
+function defineRemove(asked: boolean) {
+  return defineTool({
+    availableInSubagents: false,
+    approval: rootApproval,
+    description:
+      "Delete a person from Bro's address book on the person's own request («забудь номер Саши»). Name or alias as they said it. With several matches nothing is deleted: ask which one.",
+    inputSchema: z.object({ name: z.string().trim().min(1).max(100) }).strict(),
+    async execute(input, context) {
+      const scope = writeScope(context, JSON.stringify(input));
+      if (!asked) return { deleted: false, note: notAskedNote };
+      const result = await deleteContact(scope, input.name);
+      if (result.kind === "deleted")
+        return { deleted: true, name: result.name };
+      if (result.kind === "ambiguous")
+        return { deleted: false, matches: result.names };
+      return { deleted: false, note: "No such contact in Bro's book." };
+    },
+  });
+}
+
+function resolveContactTools(
+  context: DynamicResolveContext,
+  step: ReturnType<typeof stepIdentity>
+) {
   const caller = context.session.auth.current;
   if (context.channel.kind === "subagent" || caller?.principalType !== "user")
     return null;
   const scope = scopeFromPrincipal(caller);
   if (!contactsPilot(scope) || !phonePilot(scope)) return null;
+  const turn = personWordsThisTurn(context.messages, step);
   return {
-    "contact-delete": remove,
+    "contact-delete": defineRemove(askedToForget(context.messages, turn)),
     "contact-find": find,
     "contact-save": save,
   };
@@ -130,7 +175,21 @@ function resolveContactTools(context: DynamicResolveContext) {
 
 export default defineDynamic({
   events: {
-    "turn.started": (_event, context) => resolveContactTools(context),
-    "step.started": (_event, context) => resolveContactTools(context),
+    "turn.started": (event, context) =>
+      resolveContactTools(
+        context,
+        stepIdentity(
+          stepStartedEventSchema.safeParse(event).data,
+          context.session.id
+        )
+      ),
+    "step.started": (event, context) =>
+      resolveContactTools(
+        context,
+        stepIdentity(
+          stepStartedEventSchema.safeParse(event).data,
+          context.session.id
+        )
+      ),
   },
 });
