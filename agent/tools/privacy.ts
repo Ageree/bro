@@ -9,6 +9,7 @@ import { schedulesEnabled } from "@agent/lib/schedules/enabled";
 import { resolveModeValue } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { signEnabled } from "@agent/lib/signatures/pilot";
+import { yclientsPilot } from "@agent/lib/yclients/api";
 import { agentMailboxEnabled } from "@db/services/agent-mail";
 import { locationPilot, locationWatchPilot } from "@db/services/location";
 import { phonePilot, readPhoneNumber } from "@db/services/phone";
@@ -106,6 +107,7 @@ export const privacy = defineTool({
           taskJobs,
         ...(location && { location }),
         phone,
+        ...(yclientsPilot(scope) && { yclients: true }),
       }),
       serverLocation: serverLocation(),
       ...(google !== undefined && { google }),

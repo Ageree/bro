@@ -2234,9 +2234,19 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   `maps.org`), а запись — виджет YClients кликами: 59 шагов, 4 мин, потом ещё 12 мин
   на другой салон. Места одного здания `maps.search` называет в `note`
   (`sameBuildingNote`, по зданиям): Бро спрашивает, какое, если человек имел в виду
-  конкретное («в моём доме»), а не «любую». API YClients (`book_*`, нужен лишь
-  partner token) — заявка владельца в работе; спецификация — Redoc
-  `developers.yclients.com/ru/` (страница 10 МБ, спека в `__redoc_state`).
+  конкретное («в моём доме»), а не «любую».
+- Запись через API YClients (`yclients`, `agent/tools/yclients.ts`; пилот
+  `YCLIENTS_WORKSPACES` и ключ `YCLIENTS_PARTNER_TOKEN`, без них инструмента нет):
+  методы онлайн-записи (`bookform`, `book_services`, `book_dates`, `book_times`,
+  `book_check`, `book_code`, `book_record`) берут лишь partner token, без входа салона
+  и человека. Салон — по ссылке виджета (`n102887.yclients.com` — форма, `/company/<id>` —
+  компания) или по ссылкам на его сайте (`bookingLinksIn`: окно у каждого
+  «yclients.», не регулярка по 2 МБ). Записывает лишь ход человека, раз за ход
+  (`turnMemory`); потерянный ответ `book_record` — «неизвестно, не повторять». Ключ
+  владелец ещё получает (23.10): формы ответов взяты из спецификации — Redoc
+  `developers.yclients.com/ru/` (страница 10 МБ, спека в `__redoc_state`), вживую не
+  сверены; с ключом сначала чтения на одном салоне, потом пилот владельцу. Стенду
+  ключ не идёт (`STAND_DROPPED` в `host.py`): записал бы в настоящий салон.
 - Отказы сервера сайта (XHR и fetch со статусом ≥ 400) worker пула пишет сам
   блоком `SITE ERRORS` в начало отчёта (`SiteErrors`, стенд
   `test_site_errors.py`): модель запуска перехват через `evaluate` по просьбе
