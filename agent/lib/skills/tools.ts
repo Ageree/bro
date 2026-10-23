@@ -153,6 +153,7 @@ const toolGroupEntries = {
   workstreams__save: "core",
   yandex: "core",
   yandex_purchase: "core",
+  yclients: "core",
   yoomoney: "core",
   yoomoney_pay: "core",
 } as const satisfies Readonly<Record<string, ToolGroup | "core">>;

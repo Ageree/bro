@@ -1248,6 +1248,12 @@ export const env = createEnv({
     // `timepad_events`, a read-only search of its events
     // (`agent/tools/timepad_events.ts`). Unset, the tool is absent.
     TIMEPAD_API_KEY: pastedKeySchema.optional(),
+    // The partner token of YClients' API (developers.yclients.com): with it
+    // and the pilot below, interactive turns get `yclients`, online booking
+    // at salons and studios by API (`agent/tools/yclients.ts`).
+    YCLIENTS_PARTNER_TOKEN: pastedKeySchema.optional(),
+    // The pilot of `yclients`: workspace ids or `*`. Unset, nobody.
+    YCLIENTS_WORKSPACES: workspaceListSchema.optional(),
     // The pilot of the model router: workspace ids or owners' emails, or `*`
     // for every workspace, whose task agent works on the model its job's kind
     // is routed to (`agent/lib/model/router/task.ts`). Unset, it works on
