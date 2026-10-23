@@ -31,8 +31,9 @@ const sameBuildingMetres = 60;
  * 23.10: «в моём доме есть парикмахерская, запиши меня» — two salons stand
  * at Мичуринский, 56, and Bro went to book at the one it found first, not
  * the one the person meant. When places of a result stand in one building,
- * a note that names them and has Bro ask which one before it acts on any;
- * undefined when no two do.
+ * a note that names them building by building, so Bro asks which one when
+ * the person meant a particular place without naming it; undefined when no
+ * two places stand together.
  */
 export function sameBuildingNote(result: JsonValue) {
   const found = z.object({ places: z.array(place) }).safeParse(result);
@@ -40,18 +41,28 @@ export function sameBuildingNote(result: JsonValue) {
   const located = found.data.places.flatMap((one) =>
     one.coordinates === null ? [] : [{ ...one, at: one.coordinates }]
   );
-  const together = located.filter((one) =>
-    located.some(
-      (other) =>
-        other.id !== one.id &&
-        metresBetween(one.at, other.at) < sameBuildingMetres
-    )
-  );
-  if (together.length < 2) return undefined;
-  const names = together.map((one) =>
-    one.address === null ? `«${one.name}»` : `«${one.name}» (${one.address})`
-  );
-  return `Note: these places stand in one building — ${names.join(", ")}. If the person did not name which one they mean, ask them before you book, call or send anything there; never take the first one found.`;
+  // A building is every place within reach of another of it.
+  const buildings: (typeof located)[] = [];
+  for (const one of located) {
+    const near = buildings.filter((building) =>
+      building.some(
+        (other) => metresBetween(one.at, other.at) < sameBuildingMetres
+      )
+    );
+    const merged = [...near.flat(), one];
+    for (const building of near)
+      buildings.splice(buildings.indexOf(building), 1);
+    buildings.push(merged);
+  }
+  const shared = buildings.filter((building) => building.length > 1);
+  if (shared.length === 0) return undefined;
+  const lines = shared.map((building) => {
+    const address =
+      building.find((one) => one.address !== null)?.address ?? undefined;
+    const names = building.map((one) => `«${one.name}»`).join(", ");
+    return address === undefined ? names : `${names} (${address})`;
+  });
+  return `Note: these places share a building — ${lines.join("; ")}. When the person means one particular place there («в моём доме», one they go to) without naming it, ask which one before you book, call or write there; when any of them will do, choose yourself.`;
 }
 
 /** Metres between two [longitude, latitude] points a short way apart. */

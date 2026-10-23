@@ -168,11 +168,17 @@ async function callYandex(
       afishaPurchasePilot({ workspaceId })
         ? `${operation.answerNote ?? ""} ${afishaBuyNote}`
         : operation.id === mapsSearchOperation.id
-          ? sameBuildingNote(outcome.data)
+          ? joinedNotes(operation.answerNote, sameBuildingNote(outcome.data))
           : operation.answerNote;
     return note === undefined ? placed : { ...placed, note };
   }
   return { ok: false as const, reply: refusals[outcome.kind] };
+}
+
+/** Notes of one result in order, or undefined when there is none. */
+function joinedNotes(...notes: readonly (string | undefined)[]) {
+  const present = notes.filter((note) => note !== undefined);
+  return present.length === 0 ? undefined : present.join(" ");
 }
 
 export default defineDynamic({

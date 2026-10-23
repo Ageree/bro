@@ -175,21 +175,25 @@ const salon = (id: string, name: string, at: [number, number] | null) => ({
 });
 
 describe("places in one building", () => {
-  it("names the places of one building so Bro asks which one the person means", () => {
+  it("names the places of each building so Bro asks which one the person means", () => {
     // 23.10: two salons at Мичуринский, 56; Bro went to book at the first.
     const note = sameBuildingNote({
       places: [
         salon("1", "Glow&Go", [37.4805, 55.6935]),
         salon("2", "Топган", [37.4808, 55.6937]),
         salon("3", "Чародейка", [37.5, 55.7]),
+        // Another building a kilometre and more away, with two of its own.
+        salon("4", "Персона", [37.52, 55.71]),
+        salon("5", "Цирюльник", [37.5203, 55.7101]),
       ],
-      total: 3,
+      total: 5,
     });
 
-    expect(note).toContain("«Glow&Go» (Москва, Мичуринский проспект, 56)");
-    expect(note).toContain("«Топган»");
+    expect(note).toContain(
+      "«Glow&Go», «Топган» (Москва, Мичуринский проспект, 56); «Персона», «Цирюльник»"
+    );
     expect(note).not.toContain("Чародейка");
-    expect(note).toContain("ask them before you book");
+    expect(note).toContain("ask which one before you book");
   });
 
   it("says nothing when no two places stand together", () => {

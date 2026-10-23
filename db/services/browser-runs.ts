@@ -193,6 +193,25 @@ export async function readBrowserRun(runId: string) {
   return rows[0];
 }
 
+/**
+ * Whether the run took its errand over from an earlier run of it (a
+ * follow-up, a retry in the earlier run's browser session): its browser
+ * began on the page the earlier run left, not on one opened for it.
+ */
+export async function browserRunTookOver(workspaceId: string, runId: string) {
+  const rows = await db
+    .select({ id: browserRuns.id })
+    .from(browserRuns)
+    .where(
+      and(
+        eq(browserRuns.workspaceId, workspaceId),
+        eq(browserRuns.retriedAsRunId, runId)
+      )
+    )
+    .limit(1);
+  return rows.length > 0;
+}
+
 export async function updateBrowserRunProgress(
   runId: string,
   input: Pick<

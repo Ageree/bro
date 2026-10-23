@@ -1015,7 +1015,9 @@ function fromWorker(run: WorkerRun, record: BrowserVmRunRecord | undefined) {
 /**
  * A settled run that took no action in the browser: every step it took only
  * answered `done`, so its report can tell no more than the page it began on
- * showed. 23.10: a follow-up told to book at another salon's site finished
+ * showed (a new errand's site is opened before its first step, so that page
+ * is the site; `idleFollowUp` in `browser-use/completion.ts` judges only
+ * follow-ups). 23.10: a follow-up told to book at another salon's site finished
  * in one step and 12 s with a report of opening that site, the slot it found
  * and the form it filled, while the browser never left the Yandex Maps card
  * it began on. The host of that page (null when the worker did not say), or
@@ -1035,7 +1037,9 @@ function idleRun(run: WorkerRun) {
   );
   if (acted) return undefined;
   const url = run.steps[0]?.url ?? run.finalUrl;
-  return { host: url === null ? null : (URL.parse(url)?.hostname ?? null) };
+  const host = url === null ? "" : (URL.parse(url)?.hostname ?? "");
+  // about:blank and the like have no host to name.
+  return { host: host === "" ? null : host };
 }
 
 function fromRecord(record: BrowserVmRunRecord) {

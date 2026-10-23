@@ -104,6 +104,12 @@ const hurryQueuedBrowserRuns = vi.hoisted(() =>
     Promise.resolve(1)
   )
 );
+// Whether the settling run took its errand over from an earlier one.
+const browserRunTookOver = vi.hoisted(() =>
+  vi.fn<(workspaceId: string, runId: string) => Promise<boolean>>(() =>
+    Promise.resolve(true)
+  )
+);
 const unclaimBrowserRunBrowser = vi.hoisted(() =>
   vi.fn<(runId: string, claimedAt: Date) => Promise<void>>(() =>
     Promise.resolve()
@@ -224,6 +230,7 @@ vi.mock("@db/services/browser-runs", () => ({
   holdBrowserRunReportForTurn: vi.fn<() => Promise<void>>(() =>
     Promise.resolve()
   ),
+  browserRunTookOver,
   claimBrowserRunBrowser,
   claimBrowserRunCompletion,
   finishWalledBrowserRun: vi.fn<() => Promise<void>>(() => Promise.resolve()),
@@ -388,46 +395,57 @@ describe("settling a browser run", () => {
     );
   });
 
-  it("tells Bro that a run which took no action did none of the steps it reports", async () => {
+  it("tells Bro that a follow-up which took no action did none of the steps it reports", async () => {
     // 23.10: a one-step follow-up reported another salon's site opened, a
     // slot found and the form filled; the browser never left Yandex Maps.
-    const report = [
-      "RESULT: дошёл до подтверждения записи на 11:00",
-      "NEEDS: decision",
-    ].join("\n");
     const { settleBrowserRun } =
       await import("@agent/lib/browser-use/completion");
     const idle = "This run took no action in the browser";
+    const settle = async (
+      overrides: { idle?: { host: string | null } },
+      settling: BrowserRunRow = row
+    ) => {
+      claimBrowserRunCompletion
+        .mockReset()
+        .mockResolvedValueOnce({ ...settling, completedAt: new Date() })
+        .mockResolvedValue(undefined);
+      readBrowserRun.mockResolvedValue(settling);
+      // Each settle is a run of its own, with its own report to deliver.
+      ledger.claimed = false;
+      ledger.delivered = false;
+      ledger.row = settling;
+      readBrowserUseRun.mockResolvedValue({
+        error: null,
+        id: runId,
+        result:
+          "RESULT: дошёл до подтверждения записи на 11:00\nNEEDS: decision",
+        sessionId: "session-1",
+        status: "completed",
+        task: "Запиши на стрижку",
+        ...overrides,
+      });
+      const { send, to } = delivery();
+      await settleBrowserRun({ to }, runId);
+      const report = send.mock.calls[0]?.[0] ?? "";
+      expect(report).toContain(`Browser run ${runId} finished.`);
+      return report;
+    };
 
-    readBrowserUseRun.mockResolvedValue({
-      error: null,
-      id: runId,
-      idle: { host: "yandex.ru" },
-      result: report,
-      sessionId: "session-1",
-      status: "completed",
-      task: "Запиши на стрижку",
-    });
-    const first = delivery();
-    await settleBrowserRun({ to: first.to }, runId);
-    expect(first.send.mock.calls[0]?.[0] ?? "").toContain(
-      `${idle}: it answered at once from the page it began on (yandex.ru)`
+    expect(await settle({ idle: { host: "yandex.ru" } })).toContain(
+      `${idle}: it answered at once from the page it was left on (yandex.ru)`
     );
-
-    claimBrowserRunCompletion
-      .mockResolvedValueOnce({ ...row, completedAt: new Date() })
-      .mockResolvedValue(undefined);
-    readBrowserUseRun.mockResolvedValue({
-      error: null,
-      id: runId,
-      result: report,
-      sessionId: "session-1",
-      status: "completed",
-      task: "Запиши на стрижку",
-    });
-    const second = delivery();
-    await settleBrowserRun({ to: second.to }, runId);
-    expect(second.send.mock.calls[0]?.[0] ?? "").not.toContain(idle);
+    // A run that acted.
+    expect(await settle({})).not.toContain(idle);
+    // A new errand: its site was opened for it before its first step.
+    browserRunTookOver.mockResolvedValueOnce(false);
+    expect(await settle({ idle: { host: "yandex.ru" } })).not.toContain(idle);
+    // The read-only check after a broken-off run reads the page as it is.
+    expect(
+      await settle(
+        { idle: { host: "yandex.ru" } },
+        { ...row, recoveryPhase: "verify" }
+      )
+    ).not.toContain(idle);
   });
 
   it("asks for app-notification digits rather than assuming a push approval", async () => {
