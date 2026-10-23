@@ -607,7 +607,7 @@ export function merchantFromText(...sources: (string | null | undefined)[]) {
  * number's shape, so length cannot tell them apart. Luhn can: an order number
  * that happens to pass it is rare, a card number that fails it does not exist.
  */
-function looksLikeCardNumber(value: string) {
+export function looksLikeCardNumber(value: string) {
   const bare = value.replaceAll(/[\s-]/gu, "");
   if (bare.length < 13 || bare.length > 19) return false;
   let sum = 0;

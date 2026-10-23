@@ -229,6 +229,42 @@ describe("Telegram message delivery", () => {
     expect(request).not.toHaveBeenCalled();
   });
 
+  it("does not follow a card with the text written after it", async () => {
+    const { context, request } = handlerContext();
+
+    await handleActionResult(
+      sendCardResult({ status: "sent" }),
+      context,
+      sessionContext()
+    );
+    await handleMessageCompleted(
+      assistantMessage("Отправил карточку с рейсом."),
+      context,
+      sessionContext()
+    );
+
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("still rescues plain text after a card that did not land", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { context, request } = handlerContext();
+
+    await handleActionResult(
+      sendCardResult({ status: "failed" }),
+      context,
+      sessionContext()
+    );
+    await handleMessageCompleted(
+      assistantMessage("Карточка не дошла, вот ответ текстом."),
+      context,
+      sessionContext()
+    );
+
+    expect(request).toHaveBeenCalledOnce();
+    warn.mockRestore();
+  });
+
   it("still rescues plain text in a later turn after a delivered one", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const { context, request } = handlerContext();
@@ -1295,6 +1331,25 @@ function sendMessageResult(
       kind: "tool-result",
       output,
       toolName: "send_message",
+    },
+    sequence: 0,
+    status: "completed",
+    stepIndex: 0,
+    turnId: "turn-1",
+  };
+}
+
+function sendCardResult(
+  output: ActionHandlerParameters[0]["result"] extends { output: infer Output }
+    ? Output
+    : never
+): ActionHandlerParameters[0] {
+  return {
+    result: {
+      callId: "call-send-card",
+      kind: "tool-result",
+      output,
+      toolName: "send_card",
     },
     sequence: 0,
     status: "completed",

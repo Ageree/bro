@@ -582,6 +582,13 @@
       "when": 1792669554927,
       "tag": "0082_afisha_purchases",
       "breakpoints": true
+    },
+    {
+      "idx": 83,
+      "version": "7",
+      "when": 1792742686298,
+      "tag": "0083_cards",
+      "breakpoints": true
     }
   ]
 }

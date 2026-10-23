@@ -46,6 +46,10 @@ export async function proxy(request: NextRequest) {
     // too (db/services/yoomoney/onboarding.ts).
     pathname.startsWith("/yoomoney/") ||
     pathname.startsWith("/api/yoomoney/onboarding/") ||
+    // A card Bro sent to a chat, opened as a Mini App in Telegram: the
+    // link's id is the secret, and the page only shows the card
+    // (db/services/cards.ts).
+    pathname.startsWith("/card/") ||
     pathname === "/api/yoomoney/callback" ||
     pathname.startsWith("/eve/v1/sandbox-files/") ||
     pathname === "/eve/v1/dev/schedules/dynamic"

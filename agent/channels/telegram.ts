@@ -20,6 +20,7 @@ import { ensureTelegramUser } from "@db/services/auth/telegram-user";
 import { messageQuotaGate } from "@agent/lib/billing/quota";
 import { bugBotTarget } from "@agent/lib/bug-bot/target";
 import { browserFilesEnabled } from "@agent/lib/browser-use/files";
+import { sendCardToolResultSchema } from "@agent/lib/cards/sent";
 import {
   fallbackDeliveryText,
   replyLanguageFor,
@@ -303,6 +304,14 @@ export default telegramChannel({
           text: locationButtonPrompt,
         });
         rememberLocationAsked(context.telegram.chatId);
+        return;
+      }
+
+      if (
+        event.status === "completed" &&
+        sendCardToolResultSchema.safeParse(event.result).success
+      ) {
+        markTurnDelivered(context, event.turnId);
         return;
       }
 

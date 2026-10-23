@@ -18,6 +18,40 @@ import { backgroundTurnMarker } from "@shared/chat/background-turn";
 
 const callRestaurant = "Пришли название ресторана — я позвоню.";
 
+describe("a card in the turn", () => {
+  const cardMessage = "Собрал рейсы в карточку: время, цены и багаж.";
+  const sentCard = [
+    userMessage("найди рейсы в Казань"),
+    ...toolStep("send_card", { status: "sent" }, { message: cardMessage }),
+  ];
+
+  it("counts its message as said, so the same words in the chat are a repeat", () => {
+    expect(turnSends(sentCard).delivered).toEqual([sent(cardMessage)]);
+    expect(refusal(sentCard, cardMessage)).toEqual({ skipped: "duplicate" });
+  });
+
+  it("counts for nothing when the card did not land", () => {
+    const refused = [
+      userMessage("найди рейсы в Казань"),
+      ...toolStep(
+        "send_card",
+        { reply: "Nothing was sent.", status: "refused" },
+        { message: cardMessage }
+      ),
+    ];
+
+    expect(turnSends(refused).delivered).toEqual([]);
+    expect(refusal(refused, cardMessage)).toBeUndefined();
+  });
+
+  it("is a reply, not work the next message tells", () => {
+    expect(turnSends(sentCard)).toMatchObject({
+      otherWorkSinceDelivery: false,
+      worked: false,
+    });
+  });
+});
+
 describe("sendRefusal", () => {
   it.each([
     ["other case and spacing", "  пришли   НАЗВАНИЕ ресторана — я позвоню "],

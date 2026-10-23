@@ -73,6 +73,15 @@ describe("auth proxy matcher", () => {
     );
   });
 
+  it("serves a card's link without a session, as Telegram opens it", async () => {
+    const response = await proxy(
+      new NextRequest(`https://example.com/card/${"A".repeat(43)}`)
+    );
+
+    expect(response.headers.get("x-middleware-next")).toBe("1");
+    expect(getAuthSession).not.toHaveBeenCalled();
+  });
+
   it("still sends the workspace through sign-in", async () => {
     const response = await proxy(
       new NextRequest("https://example.com/workspace")

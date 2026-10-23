@@ -1,5 +1,6 @@
 import type { ModelMessage, ToolResultPart } from "ai";
 import { z } from "zod";
+import { cardSentInHistory, sendCardToolName } from "@agent/lib/cards/sent";
 import { sendMessageOutputSchema } from "@shared/chat/message-delivery";
 import {
   backgroundNoticeText,
@@ -778,7 +779,18 @@ function openingText(message: ModelMessage | undefined) {
 }
 
 /** Tools whose result is the reply itself rather than work towards it. */
-const deliveryTools = new Set(["react_to_message", "send_message"]);
+const deliveryTools = new Set([
+  "react_to_message",
+  "send_message",
+  sendCardToolName,
+]);
+
+/**
+ * A `send_card` call's input as the turn's guards read it: only the card's
+ * message counts as said in the chat, the page's data is not compared with
+ * the messages that follow.
+ */
+const cardMessageSchema = z.object({ message: z.string() });
 
 /**
  * The text of the person's own message that opened the turn, or nothing
@@ -905,6 +917,10 @@ export function turnSends(messages: readonly ModelMessage[]) {
         const input = sendMessageOutputSchema.safeParse(part.input).data;
         if (input) inputs.set(part.toolCallId, input);
       }
+      if (part.type === "tool-call" && part.toolName === sendCardToolName) {
+        const text = cardMessageSchema.safeParse(part.input).data?.message;
+        if (text) inputs.set(part.toolCallId, { kind: "message", text });
+      }
       if (part.type === "tool-call" && !deliveryTools.has(part.toolName)) {
         const input = jsonSchema.safeParse(part.input);
         if (input.success) inputTexts.push(...stringsOf(input.data));
@@ -944,7 +960,12 @@ export function turnSends(messages: readonly ModelMessage[]) {
         }
         continue;
       }
-      if (part.toolName !== "send_message") continue;
+      if (
+        part.toolName !== "send_message" &&
+        part.toolName !== sendCardToolName
+      ) {
+        continue;
+      }
       const refusal = refusalOf(part.output);
       if (refusal === "skipped") skipped += 1;
       if (refusal === "rewrite") rewrites += 1;
@@ -960,7 +981,11 @@ export function turnSends(messages: readonly ModelMessage[]) {
       ) {
         headsUpSkips += 1;
       }
-      if (!sendReachedPerson(part.output)) continue;
+      const reached =
+        part.toolName === sendCardToolName
+          ? cardSentInHistory(part.output)
+          : sendReachedPerson(part.output);
+      if (!reached) continue;
       const input = inputs.get(part.toolCallId);
       if (!input) continue;
       const sent = sentMessageOf(input);

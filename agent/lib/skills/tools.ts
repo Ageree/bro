@@ -127,6 +127,7 @@ const toolGroupEntries = {
   "schedules-create": "schedules",
   "schedules-list": "core",
   "schedules-update": "schedules",
+  send_card: "core",
   send_message: "core",
   // Signing (SIGN_WORKSPACES) stays in the core: the person's «да» must
   // reach `sign_document` even after compaction folded the sign block.

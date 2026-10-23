@@ -21,6 +21,7 @@ describe("robots.txt", () => {
       "/handoff",
       "/pay",
       "/yoomoney",
+      "/card",
     ]);
     expect(sitemapUrl).toBe(`${origin}/sitemap.xml`);
   });

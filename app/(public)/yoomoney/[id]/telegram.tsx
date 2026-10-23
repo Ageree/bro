@@ -4,20 +4,6 @@ import Script from "next/script";
 import { createContext, type ReactNode, use, useState } from "react";
 import { Button, buttonVariants } from "@web/components/ui/button";
 
-/** The part of Telegram's Mini App object the page uses. */
-interface TelegramWebApp {
-  readonly initData: string;
-  ready(): void;
-  expand(): void;
-  close(): void;
-}
-
-declare global {
-  interface Window {
-    Telegram?: { WebApp?: TelegramWebApp };
-  }
-}
-
 /** The Mini App's signed launch data: empty outside Telegram. */
 const LaunchData = createContext("");
 
