@@ -1,8 +1,21 @@
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
+import {
+  goBookOperation,
+  goCancelOperation,
+} from "@agent/lib/yandex/go/booking";
 import { goEstimateOperation } from "@agent/lib/yandex/go/estimate";
+import { goOpenOperation } from "@agent/lib/yandex/go/open";
 import { goRidesOperation } from "@agent/lib/yandex/go/rides";
 import type { JsonValue } from "@agent/lib/yandex/operations";
-import { type FakeResponse, dataOf, fixture, overlap, runInPage } from "./page";
+import {
+  type FakePage,
+  type FakeResponse,
+  dataOf,
+  fixture,
+  overlap,
+  runInPage,
+} from "./page";
 
 const userId = "0123456789abcdef0123456789abcdef";
 const origin = "https://taxi.yandex.ru/";
@@ -147,7 +160,7 @@ describe("go.estimate", () => {
     });
   });
 
-  it("reports a signed-out page as the sign-in, and a session without a user id as an error", async () => {
+  it("reports a signed-out page as the sign-in, and a session without a user id as none", async () => {
     const signedOut = await goPage([
       ["/csrf_token", { body: {}, status: 401 }],
     ]);
@@ -157,7 +170,7 @@ describe("go.estimate", () => {
     const noUser = await goPage([], { userId: "not-a-user" });
     expect(
       await runInPage(goEstimateOperation.run, estimateArgs({}), noUser.page)
-    ).toEqual({ data: { error: "no_user_id" }, status: "ok" });
+    ).toEqual({ status: "no_session" });
   });
 
   it("answers only with the fields for the person", () => {
@@ -202,5 +215,93 @@ describe("go.rides", () => {
       /Тест Водитель|А000АА000|driver|phone/u
     );
     expect(goRidesOperation.result.parse(dataOf(answer))).toBeDefined();
+  });
+});
+
+describe("Go's own session in Bro's browser", () => {
+  // 23.10: a new person's taxi failed three times on a browser that had never
+  // opened Go, and the failed read left an empty database that kept Go's own
+  // page from ever making its store.
+  it("answers no_session, sending nothing and making no database, where Go was never opened", async () => {
+    const { page, requests } = await goPage();
+    const database = { state: "absent" as const };
+    expect(
+      await runInPage(goEstimateOperation.run, estimateArgs({}), {
+        ...page,
+        database,
+      })
+    ).toEqual({ status: "no_session" });
+    expect(database.state).toBe("absent");
+    expect(requests).toEqual([]);
+  });
+
+  it("deletes the empty database an older read left, so Go's page can make its store", async () => {
+    const { page, requests } = await goPage();
+    const deleted: string[] = [];
+    const database: NonNullable<FakePage["database"]> = { state: "empty" };
+    expect(
+      await runInPage(goEstimateOperation.run, estimateArgs({}), {
+        ...page,
+        database,
+        deleted,
+      })
+    ).toEqual({ status: "no_session" });
+    expect(deleted).toEqual(["turboapp-taxi"]);
+    expect(database.state).toBe("absent");
+    expect(requests).toEqual([]);
+  });
+
+  it("does not use a session Go made while nobody was signed in to Yandex", async () => {
+    const { page, requests } = await goPage([], {
+      authStatus: "unauthorized",
+      userId,
+    });
+    expect(
+      await runInPage(goEstimateOperation.run, estimateArgs({}), page)
+    ).toEqual({ status: "no_session" });
+    expect(requests).toEqual([]);
+  });
+
+  it("books and cancels nothing without a session: no_session comes before any request", async () => {
+    const { page, requests } = await goPage();
+    const never = { ...page, database: { state: "absent" as const } };
+    expect(
+      await runInPage(
+        goBookOperation.run,
+        z.json().parse(
+          goBookOperation.args.parse({
+            from: "Мичуринский проспект, 56",
+            to: "Гвидон",
+          })
+        ),
+        never
+      )
+    ).toEqual({ status: "no_session" });
+    expect(await runInPage(goCancelOperation.run, {}, never)).toEqual({
+      status: "no_session",
+    });
+    expect(requests).toEqual([]);
+  });
+
+  it("opens Go's page and waits for its session, deleting nothing while Go's page is at work", async () => {
+    const signedIn = await goPage([], { authStatus: "authorized", userId });
+    expect(await runInPage(goOpenOperation.run, {}, signedIn.page)).toEqual({
+      data: { opened: true },
+      status: "ok",
+    });
+    const deleted: string[] = [];
+    expect(
+      await runInPage(
+        goOpenOperation.run,
+        {},
+        {
+          ...signedIn.page,
+          database: { state: "empty" },
+          deleted,
+        }
+      )
+    ).toEqual({ status: "no_session" });
+    expect(deleted).toEqual([]);
+    expect(signedIn.requests).toEqual([]);
   });
 });

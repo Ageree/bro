@@ -35,6 +35,8 @@ import {
   defineYandexOperation,
   operationArguments,
 } from "@agent/lib/yandex/operations";
+import { goBookOperation, goRideOperation } from "@agent/lib/yandex/go/booking";
+import { goOpenOperation } from "@agent/lib/yandex/go/open";
 import { yandexOperations } from "@agent/lib/yandex/registry";
 import { statusOperation } from "@agent/lib/yandex/status";
 import { runYandexOperation } from "@agent/lib/yandex/transport";
@@ -201,6 +203,7 @@ describe("a Yandex call", () => {
       url: "https://passport.yandex.ru/auth?retpath=x",
     });
     expect(await runYandexOperation(workspaceId, statusOperation, {})).toEqual({
+      byYandexId: true,
       kind: "signed_out",
     });
     services.call.mockResolvedValue({
@@ -280,6 +283,14 @@ describe("a Yandex call", () => {
       loaded("https://id.yandex.ru/", { status: "signed_out" })
     );
     expect(await runYandexOperation(workspaceId, statusOperation, {})).toEqual({
+      byYandexId: true,
+      kind: "signed_out",
+    });
+    // A service's own 401 may be its session alone, not Yandex ID's.
+    services.call.mockResolvedValue(
+      loaded("https://lavka.yandex.ru/robots.txt", { status: "signed_out" })
+    );
+    expect(await runYandexOperation(workspaceId, cartChange, {})).toEqual({
       kind: "signed_out",
     });
     services.call.mockResolvedValue(
@@ -299,6 +310,111 @@ describe("a Yandex call", () => {
     const outcome = await runYandexOperation(workspaceId, statusOperation, {});
     expect(outcome).toEqual({ kind: "failed", reason: "page" });
     expect(services.stop).toHaveBeenCalledWith("tab-1");
+  });
+});
+
+describe("a Go call in a browser where Go has no session yet", () => {
+  // 23.10: a new person's taxi failed three times on it, and Bro went to the
+  // site instead of signing them in to Yandex.
+  const signedIn = loaded("https://id.yandex.ru/", {
+    data: { requestWorks: true, signedIn: true },
+    status: "ok",
+  });
+  const noSession = loaded(goRideOperation.origin, { status: "no_session" });
+
+  /** The pages the calls were made on, in order. */
+  const pages = () => services.call.mock.calls.map(([, page]) => page.url);
+
+  it("opens Go's page once when the person is signed in, then calls again", async () => {
+    services.call
+      .mockResolvedValueOnce(noSession)
+      .mockResolvedValueOnce(signedIn)
+      .mockResolvedValueOnce(
+        loaded(goOpenOperation.origin, {
+          data: { opened: true },
+          status: "ok",
+        })
+      )
+      .mockResolvedValueOnce(
+        loaded(goRideOperation.origin, { data: { ride: null }, status: "ok" })
+      );
+    expect(await runYandexOperation(workspaceId, goRideOperation, {})).toEqual({
+      data: { ride: null },
+      kind: "ok",
+    });
+    expect(pages()).toEqual([
+      goRideOperation.origin,
+      statusOperation.origin,
+      goOpenOperation.origin,
+      goRideOperation.origin,
+    ]);
+  });
+
+  it("answers signed_out without opening Go when nobody is signed in to Yandex", async () => {
+    services.call.mockResolvedValueOnce(noSession).mockResolvedValueOnce({
+      ran: false,
+      url: "https://passport.yandex.ru/auth?retpath=x",
+    });
+    expect(await runYandexOperation(workspaceId, goRideOperation, {})).toEqual({
+      byYandexId: true,
+      kind: "signed_out",
+    });
+    expect(pages()).toEqual([goRideOperation.origin, statusOperation.origin]);
+  });
+
+  it("sends a booking once more, and only once, after Go's page made the session", async () => {
+    const booked = { kind: "booked" };
+    services.call
+      .mockResolvedValueOnce(
+        loaded(goBookOperation.origin, { status: "no_session" })
+      )
+      .mockResolvedValueOnce(signedIn)
+      .mockResolvedValueOnce(
+        loaded(goOpenOperation.origin, {
+          data: { opened: true },
+          status: "ok",
+        })
+      )
+      .mockResolvedValueOnce(
+        loaded(goBookOperation.origin, {
+          data: {
+            ...booked,
+            from: "Мичуринский проспект, 56",
+            orderId: "order-1",
+            payment: "наличные",
+            price: 450,
+            status: "search",
+            to: "Гвидон",
+          },
+          status: "ok",
+        })
+      );
+    expect(
+      await runYandexOperation(workspaceId, goBookOperation, {
+        from: "Мичуринский проспект, 56",
+        to: "Гвидон",
+      })
+    ).toMatchObject({ data: booked, kind: "ok" });
+    expect(
+      services.call.mock.calls.filter(
+        ([, page]) => page.fn === goBookOperation.run
+      )
+    ).toHaveLength(2);
+    expect(services.call).toHaveBeenCalledTimes(4);
+  });
+
+  it("fails, without calling again, when Go's page makes no session", async () => {
+    services.call
+      .mockResolvedValueOnce(noSession)
+      .mockResolvedValueOnce(signedIn)
+      .mockResolvedValueOnce(
+        loaded(goOpenOperation.origin, { status: "no_session" })
+      );
+    expect(await runYandexOperation(workspaceId, goRideOperation, {})).toEqual({
+      kind: "failed",
+      reason: "page",
+    });
+    expect(services.call).toHaveBeenCalledTimes(3);
   });
 });
 

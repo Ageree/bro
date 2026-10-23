@@ -163,6 +163,8 @@ beforeEach(() => {
     );
     if (answer.status === "signed_out" || answer.status === "captcha")
       return { kind: answer.status };
+    // Only Go's pages lack a session of their own (`go/session.ts`).
+    if (answer.status === "no_session") throw new Error("Not a Go page.");
     return { data: operation.result.parse(answer.data), kind: "ok" };
   });
 });
