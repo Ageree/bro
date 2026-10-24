@@ -463,10 +463,10 @@ postgres:17-alpine`, Docker в облачной сессии есть; Google �
   `pnpm bench link`.
 - Тестовые аккаунты прода (25.10, Бро ↔ Бро): «Тест Аня» (Екатеринбург), «Тест Борис», «Тест Вика» — только
   веб, без мессенджера и номера. Вход — `python3 scripts/cloudru-app-host/test-accounts.py bro-app-sel-2`
-  (env как у `owner-login.py`), cookie каждого — `~/.bro-bench/test-accounts/<имя>.txt`. Что о них в базе:
-  `host.py ops NAME test-accounts.sh state [SINCE]`. Workspace заводит сам `ops/test-accounts.ts`, а не
-  `ensureScope`: тот ставит новому workspace платный номер (`PHONE_AUTO_PROVISION=on`). Их workspace — в
-  `BRO_TO_BRO_WORKSPACES` прода.
+  (env как у `owner-login.py`), cookie каждого — `~/.bro-bench/test-accounts/<имя>.txt`. Что о них в базе —
+  `test-accounts.py bro-app-sel-2 --state [--since ISO]`: через S3, журнал задачи deployd режет строку до 1000
+  знаков. Workspace заводит сам `ops/test-accounts.ts`, а не `ensureScope`: тот ставит новому workspace платный
+  номер (`PHONE_AUTO_PROVISION=on`). Их workspace — в `BRO_TO_BRO_WORKSPACES` прода.
 - Ревьюит cubic и только PR не в черновике; на merge-коммит в голове PR
   он ставит зелёную проверку без ревью — кладите сверху обычный коммит. С
   03.10 до 01.11 его квота кончилась (`neutral`, «AI review line limit
