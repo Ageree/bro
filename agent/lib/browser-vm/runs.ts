@@ -628,8 +628,11 @@ export async function createBrowserVmBrowser(input: {
   }
   // Continues the workspace's one profile, like a queued message or a
   // follow-up run: a keep-alive visit exists to hold the sign-in steady, so
-  // it must not itself move the address the site sees it from.
+  // it must not itself move the address the site sees it from. A tab of a
+  // few requests needs a live Russian exit, not its measured speed: it does
+  // not wait out a long exit check (`page`).
   const vm = await prepareBrowserVmSession(running, new Date(), {
+    page: true,
     rotate: false,
   });
   const targetId = await onWorker(async () => openBrowserVmWorkerTab(vm));

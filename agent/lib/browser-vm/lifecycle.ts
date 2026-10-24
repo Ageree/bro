@@ -6,6 +6,7 @@ import {
   reconcileBrowserSandbox,
   removeBrowserSandbox,
 } from "@agent/lib/browser-pool/sandbox";
+import { within } from "@agent/lib/browser-use/deadline";
 import { BrowserUseError } from "@agent/lib/browser-use/errors";
 import { recordBrowserVmUptime } from "@agent/lib/costs/browser";
 import { alertOwner, clearOwnerAlert } from "@agent/lib/owner-alert";
@@ -155,6 +156,13 @@ const noExitRetryMs = 60_000;
 const turnExitBudgetMs = 15_000;
 /** The queued errand's poller takes the search up on its next pass. */
 const turnExitResumeMs = 10_000;
+/**
+ * How long a page of a few requests waits for the exit check going on in
+ * front of it (`page`). The worker's check pulls a megabyte through the exit
+ * after its address: 24.10 one took 18.7 s at 0.53 Mbit/s, and `maps.search`
+ * waited all of it for its tab.
+ */
+const pageExitWaitMs = 3_000;
 /** The VMs one reconcile looks at; the poller comes back every minute. */
 const reconcileLimit = 20;
 /**
@@ -545,22 +553,70 @@ export async function touchBrowserVm(workspaceId: string, now = new Date()) {
  * the current exit is fresh and Russian: the site turning the errand away is
  * itself a reason to try another address. Only these two may move the
  * workspace to its other proxy (`browserVmProxyLines`).
+ *
+ * `page` (a tab for a few requests: a Yandex or YClients call, a keep-alive
+ * visit) waits for the exit check no longer than `pageExitWaitMs`
+ * (`aheadOfCheck`): such a page needs a live Russian exit, not its speed.
  */
 export async function prepareBrowserVmSession(
   vm: BrowserVm,
   now = new Date(),
-  options: Parameters<typeof prepareAfterWarmUp>[2] = {}
+  {
+    page = false,
+    ...options
+  }: Parameters<typeof prepareAfterWarmUp>[2] & {
+    readonly page?: boolean;
+  } = {}
 ) {
   // A warm-up or another errand may be checking the exit right now: a second
   // check beside it would point the worker at two sessions at once, and the
   // record could name the other one. Wait for it and go on from what it left.
-  return oneExitCheckAtATime(vm.workspaceId, async (waited) =>
+  const checking = oneExitCheckAtATime(vm.workspaceId, async (waited) =>
     prepareAfterWarmUp(
       waited ? ((await readBrowserVm(vm.workspaceId)) ?? vm) : vm,
       now,
       options
     )
   );
+  return page ? aheadOfCheck(vm, checking) : checking;
+}
+
+/**
+ * A page's wait for the exit check in front of it: its own, when the worker
+ * forgot the proxy with its sandbox's park, or a warm-up's or an errand's.
+ * Past `pageExitWaitMs` the page goes out through the exit the worker
+ * carries, as it does whenever no check is going on: once the worker goes
+ * out through the proxy again (a check sets it first thing) on the sticky
+ * session the workspace's last check found an exit in Russia on, its Chrome
+ * is up, and the worker has not seen that exit stop carrying Chrome. The
+ * check goes on behind the page and writes what it finds, and the next one
+ * waits for it as before; a dead exit fails the page's requests, and their
+ * caller has it checked again (`renewBrowserVmExit`). Short of all that the
+ * page waits it out.
+ */
+async function aheadOfCheck(vm: BrowserVm, checking: Promise<BrowserVm>) {
+  const waited = await within(checking, pageExitWaitMs);
+  if (!waited.timedOut) return waited.value;
+  const [health, current] = await Promise.all([
+    readBrowserVmWorkerHealth(vm).catch(() => undefined),
+    readBrowserVm(vm.workspaceId).catch(() => undefined),
+  ]);
+  const kept = current?.proxyExit ?? null;
+  if (
+    current === undefined ||
+    kept === null ||
+    exitsOnTrial.has(vm.workspaceId) ||
+    health?.proxy !== true ||
+    !health.chrome ||
+    exitStoppedCarrying(health)
+  ) {
+    return checking;
+  }
+  console.info("[browser-vm] a page went ahead of the exit check", {
+    waitedMs: pageExitWaitMs,
+    workspaceId: vm.workspaceId,
+  });
+  return current;
 }
 
 /**
@@ -571,6 +627,14 @@ const exitChecks = new Map<string, Promise<undefined>>();
 
 /** Workspaces whose person's message already has a warm-up of the exit. */
 const exitWarmUps = new Set<string>();
+
+/**
+ * Workspaces whose worker a check pointed at another sticky session than the
+ * stored one, until a check keeps one: the record still names the old exit
+ * meanwhile, and a page must not go out through the new one before its check
+ * (`aheadOfCheck`).
+ */
+const exitsOnTrial = new Set<string>();
 
 /** `check` once the workspace's earlier exit preparations are over. */
 async function oneExitCheckAtATime<T>(
@@ -1792,6 +1856,8 @@ async function tryExit(
   // errand's detour to the second. Never the proxy login.
   const proxy =
     lines.length > 1 ? { detour: place.home !== undefined, proxy: line } : {};
+  if (rotated) exitsOnTrial.add(vm.workspaceId);
+  else exitsOnTrial.delete(vm.workspaceId);
   let exit: Awaited<ReturnType<typeof setBrowserVmWorkerProxy>>["exit"];
   try {
     ({ exit } = await setBrowserVmWorkerProxy(
@@ -1844,7 +1910,7 @@ async function tryExit(
   };
   if (taken !== undefined) {
     console.info("[browser-vm] the proxy exit checked", check);
-    return updateBrowserVm(
+    const kept = await updateBrowserVm(
       vm.workspaceId,
       {
         proxyExit: {
@@ -1858,6 +1924,8 @@ async function tryExit(
       },
       now
     );
+    exitsOnTrial.delete(vm.workspaceId);
+    return kept;
   }
   console.warn("[browser-vm] the proxy exit checked", check);
   // The proxy turned the login away: every sticky session of that login
