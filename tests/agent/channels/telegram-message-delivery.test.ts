@@ -246,6 +246,23 @@ describe("Telegram message delivery", () => {
     expect(request).not.toHaveBeenCalled();
   });
 
+  it("does not follow a browser report's card with the text written after it", async () => {
+    const { context, request } = handlerContext();
+
+    await handleActionResult(
+      sendCardResult({ card: "k7m2p9qa", status: "sent" }),
+      context,
+      sessionContext("browser-result")
+    );
+    await handleMessageCompleted(
+      assistantMessage("Отправил карточку с тремя отелями."),
+      context,
+      sessionContext("browser-result")
+    );
+
+    expect(request).not.toHaveBeenCalled();
+  });
+
   it("does not follow an updated card with the text written after it", async () => {
     const { context, request } = handlerContext();
 

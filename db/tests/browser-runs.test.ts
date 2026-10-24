@@ -243,6 +243,52 @@ describe("browser run persistence", () => {
     expect(await origin(followUpRetry, followed.task, bob)).toBe("start");
   }, 20_000);
 
+  it("knows whether a run Bro started carries on an errand the person gave", async () => {
+    const browserRuns = await browserRunsDatabase();
+    const [followUp, retry, ownErrand, ownFollowUp] = [
+      "22222222-2222-4222-8222-222222222222",
+      "33333333-3333-4333-8333-333333333333",
+      "44444444-4444-4444-8444-444444444444",
+      "55555555-5555-4555-8555-555555555555",
+    ];
+    // The person's errand, a follow-up a report turn handed on and its
+    // background retry.
+    await browserRuns.createBrowserRun(alice, {
+      ...conversation(),
+      id: runId,
+      startedByPerson: true,
+    });
+    await browserRuns.createBrowserRun(
+      alice,
+      { ...conversation(), id: followUp, startedByPerson: false },
+      runId
+    );
+    await browserRuns.createBrowserRun(
+      alice,
+      { ...conversation(), id: retry, startedByPerson: false },
+      followUp
+    );
+    // A schedule's errand and Bro's follow-up on it.
+    await browserRuns.createBrowserRun(alice, {
+      ...conversation(),
+      id: ownErrand,
+      startedByPerson: false,
+    });
+    await browserRuns.createBrowserRun(
+      alice,
+      { ...conversation(), id: ownFollowUp, startedByPerson: false },
+      ownErrand
+    );
+
+    const follows = (id: string, scope = alice) =>
+      browserRuns.followsPersonErrand(scope.workspaceId, id);
+    expect(await follows(followUp)).toBe(true);
+    expect(await follows(retry)).toBe(true);
+    expect(await follows(runId)).toBe(false);
+    expect(await follows(ownFollowUp)).toBe(false);
+    expect(await follows(retry, bob)).toBe(false);
+  }, 20_000);
+
   it("carries unread messages parked on a walled run across its hand-off to the retry", async () => {
     const browserRuns = await browserRunsDatabase();
     const retryId = "55555555-5555-4555-8555-555555555555";

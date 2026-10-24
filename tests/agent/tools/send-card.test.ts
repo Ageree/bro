@@ -6,8 +6,13 @@ import vacuumCompare from "../../../docs/cards/examples/vacuum-compare.json";
 import weekendItinerary from "../../../docs/cards/examples/weekend-itinerary.json";
 import type * as Keep from "@agent/lib/cards/photos/keep";
 import hotelChoice from "../../../docs/cards/examples/hotel-choice.json";
+import policyCases from "../../../docs/cards/policy-cases.json";
+import { errandByPerson } from "@agent/lib/browser-use/report-caller";
 import { cardAnswerOpening } from "@agent/lib/cards/caller";
 import type { sendCardButton } from "@agent/lib/cards/telegram";
+import { browserReportFraming } from "@agent/lib/delivery/browser-report";
+import type * as Holds from "@agent/lib/delivery/holds";
+import { backgroundTurnMarker } from "@shared/chat/background-turn";
 import { cardPhotoObject } from "@shared/cards/photos";
 import { cardSchema } from "@shared/cards/schema";
 import type { createCard } from "@db/services/cards";
@@ -19,6 +24,7 @@ const services = vi.hoisted(() => ({
   create: vi.fn<typeof createCard>(),
   deleteObject: vi.fn<(pathname: string) => Promise<void>>(),
   keep: vi.fn<typeof Keep.keepCardPhotos>(),
+  markDelivered: vi.fn<typeof Holds.markTurnDelivered>(),
   workspaces: Array.from<string>([]),
 }));
 
@@ -47,6 +53,10 @@ vi.mock("@agent/lib/cards/photos/keep", async (importOriginal) => ({
 }));
 vi.mock("@shared/object-storage/artifacts", () => ({
   deleteArtifactObject: services.deleteObject,
+}));
+vi.mock("@agent/lib/delivery/holds", async (importOriginal) => ({
+  ...(await importOriginal<typeof Holds>()),
+  markTurnDelivered: services.markDelivered,
 }));
 
 import cardsInstructions from "@agent/instructions/46-cards";
@@ -615,5 +625,208 @@ describe("a card that asks", () => {
     expect(result).toMatchObject({ status: "refused" });
     expect(JSON.stringify(result)).toContain("blocks[1]");
     expect(services.create).not.toHaveBeenCalled();
+  });
+});
+
+describe("a browser report's turn", () => {
+  const errand =
+    "найди три отеля в Питере на пятницу-субботу, до 7к, рядом с Невским";
+
+  function report(runId = "run-1") {
+    return user(
+      [
+        backgroundTurnMarker,
+        `Browser run ${runId} finished.`,
+        browserReportFraming,
+        "Result: три отеля у Невского до 7 000 ₽ за ночь.",
+      ].join("\n\n")
+    );
+  }
+
+  /** The caller Bro's code gives the report of an errand the person gave. */
+  function reportCaller(
+    attributes: Readonly<Record<string, string>> = { errandBy: errandByPerson }
+  ) {
+    return caller("browser-result", {
+      ...telegramChat,
+      browserRunId: "run-1",
+      ...attributes,
+    });
+  }
+
+  type Caller = ReturnType<typeof caller>;
+
+  async function reportTool(
+    messages: DynamicResolveContext["messages"] = [user(errand), report()],
+    current: Caller = reportCaller(),
+    channel: ContextOptions["channel"] = "channel:telegram"
+  ) {
+    const context = dynamicContext({ channel, messages });
+    const tools = await sendCardTools.events["step.started"]?.(
+      {},
+      {
+        ...context,
+        session: { ...context.session, auth: { current, initiator: null } },
+      }
+    );
+    return tools && "send_card" in tools ? tools.send_card : undefined;
+  }
+
+  function reportCall(current: Caller = reportCaller()): ToolContext {
+    const context = callContext();
+    return {
+      ...context,
+      session: { ...context.session, auth: { current, initiator: null } },
+    };
+  }
+
+  const hotels = { ...cardSchema.parse(hotelChoice), message };
+
+  it("is offered in the report of an errand the person gave, and sends its outcome to their chat", async () => {
+    const found = await reportTool();
+    if (!found) throw new Error("Expected send_card.");
+    const call = reportCall();
+
+    expect(await found.execute(hotels, call)).toMatchObject({
+      status: "sent",
+    });
+    expect(services.keep).toHaveBeenCalledOnce();
+    expect(services.create).toHaveBeenCalledExactlyOnceWith(
+      { userId: "alice", workspaceId: "workspace:alice" },
+      expect.objectContaining({ title: hotelChoice.title }),
+      { conversationChannel: "telegram", conversationId: "4242::" },
+      expect.any(Date),
+      cardId
+    );
+    expect(services.button).toHaveBeenCalledExactlyOnceWith(
+      "4242::",
+      `https://example.com/card/${cardId}`,
+      message
+    );
+    // The card tells the outcome: the report's card steps may follow it.
+    expect(services.markDelivered).toHaveBeenCalledExactlyOnceWith(
+      call.session
+    );
+  });
+
+  it.each([
+    "uc-tr-hotel",
+    "uc-ho-kid-club",
+    "uc-ho-gift-mom",
+    "uc-sh-compare",
+    "uc-sh-avito-buy",
+  ])(
+    "is there for the outcome of «%s», whose cases expect a card",
+    async (id) => {
+      const marked = policyCases.find((entry) => entry.id === id);
+      if (!marked) throw new Error(`Expected the case ${id}.`);
+      expect(marked.expected).toBe("card");
+
+      const found = await reportTool([user(marked.prompt), report()]);
+      if (!found) throw new Error("Expected send_card.");
+      expect(await found.execute(hotels, reportCall())).toMatchObject({
+        status: "sent",
+      });
+    }
+  );
+
+  it("is not there for an errand Bro gave itself, another run's report, or a turn the report's caller outlived", async () => {
+    // A schedule's, a worker's or a report turn's own errand: the caller does
+    // not say the person gave it.
+    expect(
+      await reportTool(undefined, reportCaller({ errandBy: "bro" }))
+    ).toBeUndefined();
+    expect(
+      await reportTool(
+        undefined,
+        caller("browser-result", {
+          ...telegramChat,
+          browserRunId: "run-1",
+        })
+      )
+    ).toBeUndefined();
+    expect(await reportTool([user(errand), report("run-2")])).toBeUndefined();
+    expect(
+      await reportTool([
+        user(errand),
+        report(),
+        user(
+          "Background task task_1 (task) is completed.",
+          "execution.background_task"
+        ),
+      ])
+    ).toBeUndefined();
+    expect(
+      await reportTool(undefined, caller("scheduled-result"))
+    ).toBeUndefined();
+    expect(await reportTool(undefined, caller("phone-result"))).toBeUndefined();
+  });
+
+  it("is not there outside Telegram or the pilot", async () => {
+    expect(
+      await reportTool(undefined, undefined, "channel:eve")
+    ).toBeUndefined();
+    services.workspaces = [];
+    expect(await reportTool()).toBeUndefined();
+  });
+
+  it("refuses once the call runs under any caller but that report's", async () => {
+    const found = await reportTool();
+    if (!found) throw new Error("Expected send_card.");
+
+    const results = await Promise.all(
+      [
+        reportCaller({ errandBy: "bro" }),
+        caller("telegram-webhook"),
+        caller("card-answer", { ...telegramChat, cardRef: "k7m2p9qa" }),
+      ].map(async (current) => found.execute(hotels, reportCall(current)))
+    );
+    for (const result of results) {
+      expect(result).toMatchObject({ status: "refused" });
+    }
+    expect(services.create).not.toHaveBeenCalled();
+    expect(services.markDelivered).not.toHaveBeenCalled();
+  });
+
+  it("keeps the turn's limit and every check of a card", async () => {
+    const full = await reportTool([
+      user(errand),
+      report(),
+      ...sentCard(),
+      ...sentCard(),
+    ]);
+    if (!full) throw new Error("Expected send_card.");
+    expect(await full.execute(hotels, reportCall())).toMatchObject({
+      status: "refused",
+    });
+
+    // A number the page showed is no more a card's than one the model wrote.
+    const found = await reportTool();
+    if (!found) throw new Error("Expected send_card.");
+    expect(
+      await found.execute(
+        withBlocks([
+          { text: "Оплата картой 4111 1111 1111 1111", type: "text" },
+        ]),
+        reportCall()
+      )
+    ).toMatchObject({ status: "refused" });
+    expect(services.create).not.toHaveBeenCalled();
+    expect(services.markDelivered).not.toHaveBeenCalled();
+  });
+
+  it("records nothing for a card that did not reach the chat", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    services.button.mockRejectedValueOnce(
+      new Error("Telegram card failed (400).")
+    );
+    const found = await reportTool();
+    if (!found) throw new Error("Expected send_card.");
+
+    expect(await found.execute(hotels, reportCall())).toMatchObject({
+      status: "failed",
+    });
+    expect(services.markDelivered).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 });

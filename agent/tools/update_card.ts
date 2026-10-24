@@ -4,6 +4,7 @@ import { cardsOffered } from "@agent/lib/cards/enabled";
 import { keepCardPhotos, photosResult } from "@agent/lib/cards/photos/keep";
 import { updateCardToolName } from "@agent/lib/cards/sent";
 import { sendCardButton } from "@agent/lib/cards/telegram";
+import { markTurnDelivered } from "@agent/lib/delivery/holds";
 import {
   cardsPerTurn,
   cardsThisTurn,
@@ -25,7 +26,8 @@ import { applicationOrigin } from "@shared/environment/origin";
  * другие». Offered where `send_card` is, under the same checks, and only for
  * a card of the person's sent to this chat; its revision goes one up, so the
  * page says it was updated and an answer to the old one is turned away. The
- * chat gets a line of what changed, with the card's button.
+ * chat gets a line of what changed, with the card's button, which is the
+ * turn's message as `send_card`'s is.
  */
 
 const inputSchema = cardSchema.extend({
@@ -49,7 +51,7 @@ const description =
   "Change what a card you sent shows, under its same link: pass its ref and the whole new card, built from the same catalog and by the same rules as send_card. The page marks it updated, and the chat gets your message with the card's button again. Use it when the person's answer or words change the card — the plan rebuilt from what they marked, other options after «Показать другие», a corrected date — not for a new subject, which is a new send_card. Only a card sent to this chat. On invalid or refused, the reason is in the result: fix it and call again.";
 
 const notThePerson =
-  "Nothing changed: a card is updated only in its Telegram chat, in a turn the person's own message or their answer to a card opened.";
+  "Nothing changed: a card is updated only in its Telegram chat, in a turn the person's own message, their answer to a card or the report of an errand they gave opened.";
 
 export default defineDynamic({
   events: {
@@ -122,6 +124,7 @@ export default defineDynamic({
                   "The card was updated, but its message did not reach the chat. Tell the person in a short line what changed.",
               };
             }
+            markTurnDelivered(toolContext.session);
             return {
               status: "updated" as const,
               card: ref,

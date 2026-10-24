@@ -26,6 +26,9 @@ interface BrowserRunRow {
   recoveryPhase: "continue" | "verify" | null;
   sessionId?: string | null;
   site?: string | null;
+  // Whether the person started the errand in a turn of theirs; null on runs
+  // from before it was recorded.
+  startedByPerson?: boolean | null;
   submission?: {
     readonly directRequest?: { readonly key: string; readonly request: string };
     readonly paymentCapRub?: number;
@@ -96,6 +99,12 @@ const releaseBrowserRunBrowser = vi.hoisted(() =>
 const claimBrowserRunBrowser = vi.hoisted(() =>
   vi.fn<(runId: string, now: Date) => Promise<boolean>>(() =>
     Promise.resolve(true)
+  )
+);
+// Whether a run Bro started carries on an errand the person gave.
+const followsPersonErrand = vi.hoisted(() =>
+  vi.fn<(workspaceId: string, runId: string) => Promise<boolean>>(() =>
+    Promise.resolve(false)
   )
 );
 // Errands queued behind a freed browser of the workspace's own.
@@ -234,6 +243,7 @@ vi.mock("@db/services/browser-runs", () => ({
   claimBrowserRunBrowser,
   claimBrowserRunCompletion,
   finishWalledBrowserRun: vi.fn<() => Promise<void>>(() => Promise.resolve()),
+  followsPersonErrand,
   hurryQueuedBrowserRuns,
   parkBrowserRunForRetry,
   claimBrowserRunReport,
@@ -3040,5 +3050,83 @@ describe("settling a sign-up with Bro's own mailbox", () => {
     settleSignUpLogin.mockClear();
     await settled("RESULT: что-то пошло не так\nNEEDS: none");
     expect(settleSignUpLogin.mock.calls[0]?.[2]).toBe("kept");
+  });
+});
+
+describe("the caller of a run's report", () => {
+  /** The caller the report of `settling` reaches its conversation under. */
+  async function reportCaller(settling: BrowserRunRow) {
+    claimBrowserRunCompletion
+      .mockReset()
+      .mockResolvedValueOnce({ ...settling, completedAt: new Date() })
+      .mockResolvedValue(undefined);
+    readBrowserRun.mockResolvedValue(settling);
+    ledger.row = settling;
+    ledger.claimed = false;
+    ledger.delivered = false;
+    readBrowserUseRun.mockResolvedValue({
+      error: null,
+      id: runId,
+      result: "RESULT: три отеля у Невского до 7 000 ₽\nNEEDS: none",
+      sessionId: "session-1",
+      status: "completed",
+      task: "Найди три отеля у Невского",
+    });
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+    await settleBrowserRun({ to }, runId);
+    return send.mock.calls[0]?.[1]?.auth ?? null;
+  }
+
+  it("says the person gave the errand, so its outcome may come as a card", async () => {
+    const { personErrandRunId } =
+      await import("@agent/lib/browser-use/report-caller");
+    const caller = await reportCaller({ ...row, startedByPerson: true });
+
+    expect(caller).toMatchObject({
+      attributes: { browserRunId: runId, errandBy: "person" },
+      authenticator: "browser-result",
+      principalType: "user",
+    });
+    expect(personErrandRunId(caller)).toBe(runId);
+    // A run from before it was recorded is the person's, as everywhere else.
+    expect(
+      personErrandRunId(await reportCaller({ ...row, startedByPerson: null }))
+    ).toBe(runId);
+  });
+
+  it("says nothing of the kind for an errand a schedule, a worker or a report turn gave", async () => {
+    const { personErrandRunId, reportedBrowserRunId } =
+      await import("@agent/lib/browser-use/report-caller");
+    const caller = await reportCaller({ ...row, startedByPerson: false });
+
+    expect(followsPersonErrand).toHaveBeenCalledExactlyOnceWith(
+      row.workspaceId,
+      runId
+    );
+    expect(caller?.attributes).toMatchObject({ errandBy: "bro" });
+    expect(reportedBrowserRunId(caller)).toBe(runId);
+    expect(personErrandRunId(caller)).toBeUndefined();
+  });
+
+  it("keeps the errand the person's through a follow-up Bro handed on", async () => {
+    const { personErrandRunId } =
+      await import("@agent/lib/browser-use/report-caller");
+    followsPersonErrand.mockResolvedValueOnce(true);
+
+    expect(
+      personErrandRunId(await reportCaller({ ...row, startedByPerson: false }))
+    ).toBe(runId);
+  });
+
+  it("still delivers the report, without a card, when the errand's origin cannot be read", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    followsPersonErrand.mockRejectedValueOnce(new Error("db down"));
+    const caller = await reportCaller({ ...row, startedByPerson: false });
+
+    expect(caller).toMatchObject({ authenticator: "browser-result" });
+    expect(caller?.attributes).toMatchObject({ errandBy: "bro" });
+    warn.mockRestore();
   });
 });

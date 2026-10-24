@@ -74,6 +74,7 @@ type ProviderSettings = Partial<
 afterEach(() => {
   for (const name of providerSettings) vi.stubEnv(name, "");
   vi.stubEnv("STEP_CONTEXT_WORKSPACES", "");
+  vi.stubEnv("CARDS_WORKSPACES", "");
   // A case that failed half-way must not leave its clock or its silenced
   // console to the next one.
   vi.useRealTimers();
@@ -246,6 +247,44 @@ describe("a step in the pilot", () => {
       )
     );
     expect(outside).not.toHaveProperty("offeredTools");
+  });
+
+  it("gives a Telegram report turn Bro's cards in its one set where cards are on", async () => {
+    const { reportTurnCardTools, reportTurnTools } =
+      await import("@agent/lib/turn-kind/sets");
+    const report = [humanMessage("Browser run finished")];
+    const telegram = (messages: DynamicResolveContext["messages"]) => ({
+      ...interactiveContext(messages, "browser-result", {
+        ...reportAttributes,
+        conversationChannel: "telegram",
+        conversationId: "4242::",
+        errandBy: "person",
+      }),
+      channel: { kind: "channel:telegram" as const },
+    });
+
+    vi.stubEnv("CARDS_WORKSPACES", workspaceId);
+    const withCards = [...reportTurnTools, ...reportTurnCardTools];
+    // The same set before the report's message and after it.
+    expect((await stepOptions("*", telegram(report)))?.offeredTools).toEqual(
+      withCards
+    );
+    expect(
+      (
+        await stepOptions(
+          "*",
+          telegram([
+            ...report,
+            ...sent("call-1", "Нашёл три отеля у Невского."),
+          ])
+        )
+      )?.offeredTools
+    ).toEqual(withCards);
+
+    vi.stubEnv("CARDS_WORKSPACES", "");
+    expect((await stepOptions("*", telegram(report)))?.offeredTools).toEqual(
+      reportTurnTools
+    );
   });
 
   it("keeps a report turn's messages offered past its answer, refusing instead", async () => {

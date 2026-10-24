@@ -966,6 +966,36 @@ describe("interactive delivery enforcement", () => {
     ]);
   });
 
+  it("takes a report's card as its outcome: no message is forced after it, and the cards come back", async () => {
+    await agent.model.events["step.started"]?.(
+      {},
+      interactiveContext(
+        [
+          ...pending,
+          toolCallStep("send_card", "call-1", {
+            message:
+              "Нашёл три отеля у Невского до 7 000 ₽, сравнение в карточке.",
+          }),
+          toolResultStep("send_card", "call-1", {
+            card: "k7m2p9qa",
+            status: "sent",
+          }),
+        ],
+        "browser-result",
+        reportAttributes
+      )
+    );
+
+    const [, options] = services.modelSelection.mock.lastCall ?? [];
+    expect(options).toMatchObject({
+      delivered: true,
+      silent: false,
+      toolChoice: "auto",
+    });
+    expect(options?.withheldTools).toEqual(["ask_question", "task"]);
+    expect(options?.replyNote).not.toContain(cardToolsBeforeOutcomeNote);
+  });
+
   it("keeps a booked report's turn going until its calendar card came (review #22)", async () => {
     const booked = bookedReport(
       "Result: записан к терапевту на 3 октября, 14:30, каб. 212.",

@@ -511,6 +511,38 @@ export async function readLatestBrowserRunForScope(
 }
 
 /**
+ * Whether a run Bro started itself carries on an errand the person gave: a
+ * run it took the errand over from — a follow-up a report turn handed on, a
+ * background retry — was started in a turn of theirs (`startedByPerson`; a
+ * run from before it was recorded counts as theirs), followed back through
+ * the runs that each took over from the one before.
+ */
+export async function followsPersonErrand(
+  workspaceId: string,
+  runId: string,
+  hops = 0
+): Promise<boolean> {
+  const [before] = await db
+    .select({
+      id: browserRuns.id,
+      startedByPerson: browserRuns.startedByPerson,
+    })
+    .from(browserRuns)
+    .where(
+      and(
+        eq(browserRuns.workspaceId, workspaceId),
+        eq(browserRuns.retriedAsRunId, runId)
+      )
+    )
+    .limit(1);
+  if (before === undefined || hops >= maximumRetryHops) return false;
+  return (
+    before.startedByPerson !== false ||
+    followsPersonErrand(workspaceId, before.id, hops + 1)
+  );
+}
+
+/**
  * Where an errand's own words in `task` came from: the run that first had
  * them, followed back through the background retries and the queued start
  * that kept the same task, and whether it took the errand over from a run

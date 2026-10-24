@@ -36,6 +36,7 @@ import {
 } from "@agent/lib/delivery/pending";
 import { reportedBrowserRunId } from "@agent/lib/browser-use/report-caller";
 import { bareOpening } from "@agent/lib/browser-use/said";
+import { cardsOffered } from "@agent/lib/cards/enabled";
 import { firstContactMarked } from "@agent/lib/skills/triggers";
 import {
   browserFilesEnabled,
@@ -536,6 +537,7 @@ export default defineAgent({
             browserFiles: browserFilesEnabled(scope.workspaceId),
             signing: signEnabled(scope.workspaceId),
             askedQuestion: turnAskedQuestion(ctx.messages),
+            cards: cardsOffered(ctx),
             cardsHeld,
             heldForAnswer,
             heldRoutine,
