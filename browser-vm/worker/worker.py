@@ -88,7 +88,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-10-24.1"
+VERSION = "2026-10-24.2"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -500,6 +500,22 @@ async def new_tab():
 async def close_tab(target_id):
     with contextlib.suppress(Exception):
         await cdp_command(await browser_socket(), "Target.closeTarget", {"targetId": target_id})
+
+
+async def tab_openers(tab):
+    """The tab and the tabs that opened it, up the chain. A popup (a bank's 3-D Secure window a shop opened
+    with window.open) reports back to its opener, so the opener must stay while the popup does; an opener the
+    popup cannot reach (noopener) does not count. Chrome not answering keeps the tab alone."""
+    infos = {}
+    with contextlib.suppress(Exception):
+        result = await cdp_command(await browser_socket(), "Target.getTargets")
+        infos = {info.get("targetId"): info for info in result.get("targetInfos") or []}
+    chain, current = set(), tab
+    while current and current not in chain and len(chain) < 16:
+        chain.add(current)
+        info = infos.get(current) or {}
+        current = info.get("openerId") if info.get("canAccessOpener", True) else None
+    return chain
 
 
 def owned_tabs():
@@ -1745,6 +1761,20 @@ class Worker:
             session.tabs.add(focus)
         self.save_tabs()
 
+    async def close_spare_tabs(self, session):
+        """After a run: close the session's tabs but the one the agent ended on and its openers. The next run
+        continues from that tab, and each other one kept its page, its frames' renderers and their memory until
+        the session was released: follow-ups of one errand left three heavy hh.ru pages open (24.10), and the
+        kernel's OOM killer took Chrome under the next one."""
+        if not session.tab or session.tab not in session.tabs:
+            return
+        spare = session.tabs - await tab_openers(session.tab)
+        for tab in spare:
+            await close_tab(tab)
+        if spare:
+            session.tabs -= spare
+            self.save_tabs()
+
     async def browser_session(self, session, options):
         from browser_use import BrowserSession
 
@@ -2251,6 +2281,8 @@ class Worker:
                 run.messages = pending_messages + run.messages
             run.agent = None
             await self.follow_focus(session, browser, before)
+            with contextlib.suppress(Exception):
+                await self.close_spare_tabs(session)
             with contextlib.suppress(Exception):
                 await http.aclose()
             # A mailto: link the run clicked: its browser is not left up for the snapshot to keep.
