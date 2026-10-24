@@ -13,7 +13,7 @@ const runId = "11111111-1111-4111-8111-111111111111";
 interface BrowserRunRow {
   captchaAttempt: number;
   completedAt: Date | null;
-  conversationChannel: "eve" | "photon";
+  conversationChannel: "eve" | "photon" | "telegram";
   conversationId: string;
   createdByUserId: string;
   id: string;
@@ -101,6 +101,11 @@ const claimBrowserRunBrowser = vi.hoisted(() =>
     Promise.resolve(true)
   )
 );
+/** Whether the workspace takes Bro's cards (CARDS_WORKSPACES). */
+const cardsEnabled = vi.hoisted(() =>
+  vi.fn<(scope: { readonly workspaceId: string }) => boolean>(() => false)
+);
+vi.mock("@shared/cards/pilot", () => ({ cardsEnabled }));
 // Whether a run Bro started carries on an errand the person gave.
 const followsPersonErrand = vi.hoisted(() =>
   vi.fn<(workspaceId: string, runId: string) => Promise<boolean>>(() =>
@@ -3128,5 +3133,93 @@ describe("the caller of a run's report", () => {
     expect(caller).toMatchObject({ authenticator: "browser-result" });
     expect(caller?.attributes).toMatchObject({ errandBy: "bro" });
     warn.mockRestore();
+  });
+});
+
+describe("the report of the person's errand in a chat that takes cards", () => {
+  const telegramRow: BrowserRunRow = {
+    ...row,
+    conversationChannel: "telegram",
+    conversationId: "4242::",
+  };
+
+  /** The report sent for `settling`, as its conversation receives it. */
+  async function sentReport(settling: BrowserRunRow, outcome: string) {
+    claimBrowserRunCompletion
+      .mockReset()
+      .mockResolvedValueOnce({ ...settling, completedAt: new Date() })
+      .mockResolvedValue(undefined);
+    readBrowserRun.mockResolvedValue(settling);
+    ledger.row = settling;
+    ledger.claimed = false;
+    ledger.delivered = false;
+    readBrowserUseRun.mockResolvedValue({
+      error: null,
+      id: runId,
+      result: outcome,
+      sessionId: "session-1",
+      status: "completed",
+      task: "Найди три отеля у Невского",
+    });
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const { send, to } = delivery();
+    await settleBrowserRun({ to }, runId);
+    return z.string().parse(send.mock.calls[0]?.[0]);
+  }
+
+  const hotels =
+    'RESULT: три отеля у Невского до 7 000 ₽\nNEEDS: none\nITEMS: [{"name":"NordKapp","price":"5 900 ₽","url":"https://ostrovok.ru/hotel/1/","details":"4,8, 250 м"},{"name":"Апельсин","price":"6 400 ₽","url":"https://ostrovok.ru/hotel/2/","details":"4,6, 150 м"},{"name":"Восстания","price":"6 950 ₽","url":"https://ostrovok.ru/hotel/3/","details":"4,7, 400 м"}]';
+
+  it("closes with when its outcome goes as one card", async () => {
+    const { reportCardInstruction } =
+      await import("@agent/lib/browser-use/guidance");
+    cardsEnabled.mockReturnValue(true);
+    const report = await sentReport(
+      { ...telegramRow, startedByPerson: true },
+      hotels
+    );
+
+    expect(cardsEnabled).toHaveBeenCalledWith({
+      workspaceId: telegramRow.workspaceId,
+    });
+    expect(report.endsWith(` ${reportCardInstruction}`)).toBe(true);
+    expect(report.split("\n\n").at(-1)).toContain(
+      "The Items list in the Parsed metadata"
+    );
+    expect(reportCardInstruction).toContain("send_card");
+    expect(ledger.report).not.toContain(reportCardInstruction);
+  });
+
+  it("keeps the steps it asks for in its closing paragraph", async () => {
+    const { calendarInstruction } =
+      await import("@agent/lib/browser-use/guidance");
+    const { stepsAskedBy } = await import("@agent/lib/delivery/browser-report");
+    cardsEnabled.mockReturnValue(true);
+    const report = await sentReport(
+      { ...telegramRow, startedByPerson: true },
+      'RESULT: записал к терапевту на 26.10 в 19:00\nNEEDS: none\nBOOKING: {"what":"Приём терапевта","start":"2026-10-26T19:00","zone":"Europe/Moscow","place":"Медси, Белорусская","confirmed":true}'
+    );
+
+    expect(report).toContain(calendarInstruction);
+    expect(stepsAskedBy(report).map(({ tool }) => tool)).toContain(
+      "calendar-create-event"
+    );
+  });
+
+  it("closes as before for an errand Bro gave, without cards, or in another chat", async () => {
+    const { reportCardInstruction } =
+      await import("@agent/lib/browser-use/guidance");
+    cardsEnabled.mockReturnValue(true);
+    expect(
+      await sentReport({ ...telegramRow, startedByPerson: false }, hotels)
+    ).not.toContain(reportCardInstruction);
+    expect(
+      await sentReport({ ...row, startedByPerson: true }, hotels)
+    ).not.toContain(reportCardInstruction);
+    cardsEnabled.mockReturnValue(false);
+    expect(
+      await sentReport({ ...telegramRow, startedByPerson: true }, hotels)
+    ).not.toContain(reportCardInstruction);
   });
 });

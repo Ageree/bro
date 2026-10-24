@@ -117,12 +117,15 @@ type SkipReason = z.infer<typeof skipReasonSchema>;
  * has taken, or it says options were found that nothing has found yet. A
  * calendar claim in a browser report's turn before its message has its own
  * notice: the calendar tool is held back there until that message goes out
- * (`cardToolsBeforeOutcome`), so the only way on is the future tense.
+ * (`cardToolsBeforeOutcome`), so the only way on is the future tense. A list
+ * of options in a report turn that may send Bro's card goes back once to be
+ * a card (`listsOptions`).
  */
 const rewriteReasons = [
   ...unperformedClaims,
   "announced",
   "calendar-later",
+  "card",
   "found",
   "report",
   "restated",
@@ -179,6 +182,7 @@ const rewriteNotices = {
   declined: `${rewritePrefix} it says something was done — a reminder, task or schedule set or changed, an event added, a letter or a Slack message sent, something remembered or forgotten, an order placed — but its tool call was declined on its card, refused or failed, so it was not done. Say plainly that it was not done and why — the person declined the card, or the call was refused or failed — and keep the rest of the message. Do not present it as done, and do not try it again unless the person asks.`,
   undone: `${rewritePrefix} it says something was done — a reminder or schedule set or changed, a letter or a Slack message sent, something remembered or forgotten — but no tool result of this turn shows it. If you called its tool in this same step, its result is in now: send again and say what it shows, without calling that tool again. If an earlier conversation or turn did it, say so plainly («уже стоит с прошлого раза»). Otherwise do it with its tool first and tell what the result shows, or say it is not done yet.`,
   calendar: `${rewritePrefix} it says the calendar is being or has been changed, but no calendar event was created, changed or deleted in this turn. Make the change with the calendar tool first and report its result, or say you will add it once the person confirms the details; never present a slot you picked yourself as booked.`,
+  card: `${rewritePrefix} it lists three or more options with their facts, and this chat takes Bro's cards: send them as one card with send_card instead — each option a row with its facts and its link, the card's message one or two lines with the gist and your pick. If no card can be built from them, send this same message again unchanged.`,
   "calendar-later": `${rewritePrefix} it says the calendar is being or has been changed, but no calendar event was created, changed or deleted in this turn, and in a browser report's turn the calendar tool comes back only once this message has reached the person. Keep the outcome and say the calendar step in the future tense — «добавлю в календарь», once they confirm the card — never «добавляю» or «добавил»; then call the calendar tool right after this message.`,
   found: `${rewritePrefix} it says you picked or found several options — «подобрал три места», «нашёл пять вариантов» — but names none of them, and no search, read or report of this turn has returned any yet, so the list would follow as a second message. Put the options themselves in this one message, each with the facts that matter and its link. If they have to be looked up, look them up first — a search you called in this same step has returned by now — and until then say only what you started, never that options are picked. Keep the rest of the message.`,
   report: `${rewritePrefix} it only announces what you are about to tell, and the browser report is already in front of you. Tell the person now, in this one message, what the run found or where the errand stands, with the facts the report names.`,
@@ -475,11 +479,18 @@ function announcesReport(
  * In the early-reply pilot (`earlyReply`) a person's turn may open with one
  * short heads-up before slow work (`opensWithHeadsUp`); saying it again
  * before the answer is dropped as `heads-up`, which leaves the turn open.
+ *
+ * Where the turn may send Bro's card (`cardsDue`: the report of an errand the
+ * person gave, in a chat that takes cards), a list of options goes back
+ * once to be a card (`card`), before any card was tried: the report asks
+ * for one (`reportCardInstruction`), and on 24.10 the owner's three hotels
+ * came as a list all the same. Sent again as it was, it goes out.
  */
 export function sendRefusal(
   outgoing: OutgoingMessage,
   turn: ReturnType<typeof turnSends>,
-  earlyReply = false
+  earlyReply = false,
+  cardsDue = false
 ): z.infer<typeof sendRefusalSchema> | undefined {
   const { delivered } = turn;
   // The heads-up is a message the person reads too.
@@ -550,6 +561,9 @@ export function sendRefusal(
       : { skipped: held };
   }
   if (yields) return undefined;
+  if (cardsDue && !turn.cardTried && listsOptions(outgoing.text ?? "")) {
+    return { rewrite: "card" };
+  }
   if (announcesReport(message, turn)) return { rewrite: "report" };
   if (
     announcesUnstartedWork(message, turn) &&
@@ -575,6 +589,77 @@ export function sendRefusal(
     return { rewrite: "found" };
   }
   return undefined;
+}
+
+/** A Markdown link, whose words stay as the option's name. */
+const markdownLinkPattern = /\[([^\]\n]+)\]\(https?:\/\/[^)\s]+\)/gu;
+const bareUrlPattern = /https?:\/\/[^\s)\]>]+/gu;
+const listMarkerPattern = /^\s*(?:\d{1,2}[.)]|[-–—•*·▪]|\d\uFE0F?\u20E3)\s*/u;
+/** What separates an option's facts: a dash between words, a comma, a dot or a bar. */
+const factSeparatorPattern = /\s[—–-]\s|[,;|·•]|\n/u;
+
+/**
+ * Whether a piece of a message names an option with its facts: it opens a
+ * list or carries a link, and past its name it has two or more facts, a
+ * number among them — «1. [NordKapp](…) — 5 900 ₽, 4,8, 250 м до Невского».
+ * A link's address counts as no fact: its digits are an id.
+ */
+function optionEntry(piece: string) {
+  const linked = /https?:\/\//u.test(piece);
+  if (!linked && !listMarkerPattern.test(piece)) return false;
+  const words = piece
+    .replaceAll(markdownLinkPattern, "$1")
+    .replaceAll(bareUrlPattern, "")
+    .replace(listMarkerPattern, "");
+  const facts = words
+    .split(factSeparatorPattern)
+    .filter((part) => /[\p{L}\d]/u.test(part));
+  return facts.length >= 3 && /\d/u.test(words);
+}
+
+/**
+ * Whether a message lists three or more options with their facts — what
+ * `docs/cards.md` gives a card: one line each, or a paragraph each when an
+ * option takes several lines. A reply of a few lines, one booking, one fact
+ * or a failure is no such list: it has no three entries that open a list or
+ * carry a link with facts.
+ */
+function listsOptions(text: string) {
+  const lines = text.split("\n").filter(optionEntry).length;
+  const paragraphs = text.split(/\n\s*\n/u).filter(optionEntry).length;
+  return Math.max(lines, paragraphs) >= 3;
+}
+
+/** Whether a `send_message` came back to be sent as a card. */
+function sentBackForCard(output: ToolResultPart["output"]) {
+  return output.type === "text" && output.value === rewriteSendNotice("card");
+}
+
+/**
+ * Whether the turn owes the person its outcome after a list went back to be
+ * a card (`card` rewrite): neither a card tool nor a message has gone out
+ * since. Its next step must call a tool — the card, or the same message —
+ * rather than end on text, which the channel would post as the list's
+ * stand-in.
+ */
+export function cardResendOwed(messages: readonly ModelMessage[]) {
+  const turn = currentTurnMessages(messages);
+  const results = turn.flatMap((message) =>
+    message.role === "tool"
+      ? message.content.filter((part) => part.type === "tool-result")
+      : []
+  );
+  const sentBack = results.findLastIndex(
+    (part) => part.toolName === "send_message" && sentBackForCard(part.output)
+  );
+  if (sentBack === -1) return false;
+  return !results
+    .slice(sentBack + 1)
+    .some(
+      (part) =>
+        cardToolNames.has(part.toolName) ||
+        (part.toolName === "send_message" && sendReachedPerson(part.output))
+    );
 }
 
 /**
@@ -910,6 +995,7 @@ export function turnSends(messages: readonly ModelMessage[]) {
   // The words of the turn's tool inputs, which the model wrote with the
   // person's own words in mind.
   const inputTexts: string[] = [];
+  let cardTried = false;
   for (const message of turn) {
     const parts = Array.isArray(message.content) ? message.content : [];
     for (const part of parts) {
@@ -918,6 +1004,7 @@ export function turnSends(messages: readonly ModelMessage[]) {
         if (input) inputs.set(part.toolCallId, input);
       }
       if (part.type === "tool-call" && cardToolNames.has(part.toolName)) {
+        cardTried = true;
         const text = cardMessageSchema.safeParse(part.input).data?.message;
         if (text) inputs.set(part.toolCallId, { kind: "message", text });
       }
@@ -969,6 +1056,7 @@ export function turnSends(messages: readonly ModelMessage[]) {
       const refusal = refusalOf(part.output);
       if (refusal === "skipped") skipped += 1;
       if (refusal === "rewrite") rewrites += 1;
+      if (sentBackForCard(part.output)) cardTried = true;
       if (
         part.output.type === "text" &&
         part.output.value === skipNotices.started
@@ -1026,6 +1114,11 @@ export function turnSends(messages: readonly ModelMessage[]) {
   }
   return {
     actions,
+    /**
+     * Whether the turn called a card tool, or had a list sent back to be a
+     * card (`card` rewrite): either way no list is sent back for one again.
+     */
+    cardTried,
     delivered,
     /** Stems on which the person named two people (`distinctStems`). */
     distinct: requestText === undefined ? [] : distinctStems(requestText),

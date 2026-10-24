@@ -2,6 +2,7 @@ import type { JSONValue, ModelMessage, ToolResultPart } from "ai";
 import { describe, expect, it } from "vitest";
 import {
   approvedResendOwed,
+  cardResendOwed,
   repeatsDelivered,
   rewriteSendNotice,
   sendReachedPerson,
@@ -2969,6 +2970,8 @@ describe("rewriteSendNotice", () => {
       calendar: true,
       // Only in a browser report's turn, which keeps the calendar tool.
       "calendar-later": false,
+      // Only where the report turn offers send_card, a core tool.
+      card: false,
       declined: false,
       found: true,
       report: false,
@@ -2993,5 +2996,125 @@ describe("rewriteSendNotice", () => {
         rewriteSendNotice(reason).includes("load_skill")
       )
     ).toEqual([]);
+  });
+});
+
+describe("a list of options in a report turn that may send a card", () => {
+  const report = userMessage(
+    `${backgroundTurnMarker}\n\nBrowser run run-1 finished.\n\nResult: нашёл три отеля у Невского.`
+  );
+  const hotels = [
+    "Нашёл три отеля у Невского на 30.10–01.11, все до 7 000 ₽ за ночь:",
+    "",
+    "1. [NordKapp Hotel](https://ostrovok.ru/hotel/russia/st._petersburg/mid8936501/nordkapp_hotel/) — 5 900 ₽, 4,8 (1 214 отзывов), 250 м до Невского, бесплатная отмена",
+    "2. [Апельсин на Невском](https://ostrovok.ru/hotel/russia/st._petersburg/mid7114223/apelsin/) — 6 400 ₽, 4,6 (860 отзывов), 150 м, завтрак",
+    "3. [Hotel Vosstaniya](https://ostrovok.ru/hotel/russia/st._petersburg/mid9302117/vosstaniya/) — 6 950 ₽, 4,7, 400 м, бесплатная отмена",
+    "",
+    "Взял бы NordKapp. Бронировать? Скажи какой.",
+  ].join("\n");
+  const due = (history: readonly ModelMessage[], text: string) =>
+    sendRefusal(message(text), turnSends(history), false, true);
+
+  it("goes back once to be a card, then out as it is", () => {
+    expect(due([report], hotels)).toEqual({ rewrite: "card" });
+    expect(rewriteSendNotice("card")).toContain("send_card");
+    expect(rewriteSendNotice("card")).toContain("send this same message again");
+
+    const sentBack = [
+      report,
+      ...sendMessage("list", hotels, textOutput(rewriteSendNotice("card"))),
+    ];
+    expect(turnSends(sentBack).cardTried).toBe(true);
+    expect(due(sentBack, hotels)).toBeUndefined();
+  });
+
+  it("is left alone where no card may go, or once a card was tried", () => {
+    expect(sendRefusal(message(hotels), turnSends([report]))).toBeUndefined();
+    const carded = [
+      report,
+      ...toolStep(
+        "send_card",
+        {
+          reply: "Nothing was sent: the card does not fit the catalog.",
+          status: "invalid",
+        },
+        { message: "Три отеля у Невского — в карточке." }
+      ),
+    ];
+    expect(due(carded, hotels)).toBeUndefined();
+  });
+
+  it.each([
+    [
+      "bullets with links",
+      "• [Revolution 7](https://www.ozon.ru/product/1/) — 5 990 ₽, 4,8, привезут 26.10\n• [Downshifter 13](https://www.ozon.ru/product/2/) — 6 790 ₽, 4,7, привезут 25.10\n• [Court Vision](https://www.ozon.ru/product/3/) — 7 490 ₽, 4,9, привезут 27.10",
+    ],
+    [
+      "a paragraph per option",
+      "Аэрофлот SU 6\n07:55–09:25, багаж 23 кг, 7 450 ₽\nhttps://www.aeroflot.ru/sb/1\n\nПобеда DP 201\n10:20–11:45, ручная кладь, 4 990 ₽\nhttps://www.pobeda.aero/2\n\nS7 1035\n13:40–15:10, багаж 10 кг, 6 120 ₽\nhttps://www.s7.ru/3",
+    ],
+    [
+      "a numbered list without links",
+      "1. NordKapp — 5 900 ₽, 4,8, 250 м\n2. Апельсин — 6 400 ₽, 4,6, 150 м\n3. Восстания — 6 950 ₽, 4,7, 400 м",
+    ],
+  ])("takes %s for a list of options", (_case, text) => {
+    expect(due([report], text)).toEqual({ rewrite: "card" });
+  });
+
+  it.each([
+    [
+      "one booking",
+      "Записал к терапевту в Медси на Белорусской: понедельник, 26 октября, 19:00, кабинет 212, врач Иванова Н. П.",
+    ],
+    [
+      "a failure",
+      "Островок не открылся: страница не загрузилась ни с первой попытки, ни после перезагрузки. Попробую 101hotels?",
+    ],
+    [
+      "three short lines of a day",
+      "Завтра:\n- 10:00 созвон\n- 14:30 стоматолог\n- 19:00 ужин с Машей",
+    ],
+    [
+      "two options",
+      "1. [NordKapp](https://ostrovok.ru/1/) — 5 900 ₽, 4,8, 250 м\n2. [Апельсин](https://ostrovok.ru/2/) — 6 400 ₽, 4,6, 150 м\n\nКакой берём?",
+    ],
+    [
+      "three links without facts",
+      "Вот страницы: https://ostrovok.ru/1/ https://ostrovok.ru/2/ https://ostrovok.ru/3/",
+    ],
+  ])("lets %s through", (_case, text) => {
+    expect(due([report], text)).toBeUndefined();
+  });
+
+  it("owes the card or the message itself after the list went back", () => {
+    const sentBack = [
+      report,
+      ...sendMessage("list", hotels, textOutput(rewriteSendNotice("card"))),
+    ];
+    expect(cardResendOwed(sentBack)).toBe(true);
+    expect(cardResendOwed([report])).toBe(false);
+    expect(
+      cardResendOwed([
+        ...sentBack,
+        ...toolStep(
+          "send_card",
+          { card: "k7m2p9qa", status: "sent" },
+          { message: "Три отеля у Невского — в карточке." }
+        ),
+      ])
+    ).toBe(false);
+    expect(cardResendOwed([...sentBack, ...sendMessage("again", hotels)])).toBe(
+      false
+    );
+    expect(
+      cardResendOwed([
+        ...sentBack,
+        ...toolStep(
+          "find_images",
+          { images: [] },
+          { url: "https://ostrovok.ru/1/" }
+        ),
+      ])
+    ).toBe(true);
   });
 });

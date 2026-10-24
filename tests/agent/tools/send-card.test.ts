@@ -60,6 +60,8 @@ vi.mock("@agent/lib/delivery/holds", async (importOriginal) => ({
 }));
 
 import cardsInstructions from "@agent/instructions/46-cards";
+import { rewriteSendNotice } from "@agent/lib/delivery/turn-sends";
+import messaging from "@agent/tools/messaging";
 import sendCardTools from "@agent/tools/send_card";
 
 const message = "Собрал билеты в карточку: время, багаж и код брони.";
@@ -219,6 +221,16 @@ describe("the card tool's exposure", () => {
 });
 
 describe("the card instructions", () => {
+  it("ask an errand for the options' own photo links where the look helps to choose", async () => {
+    const content = JSON.stringify(
+      await cardsInstructions.events["turn.started"]?.({}, dynamicContext({}))
+    );
+
+    expect(content).toContain("browser_task");
+    expect(content).toContain("прямую ссылку на главное фото с его страницы");
+    expect(content).toContain("Для рейсов, билетов и тарифов фото не проси");
+  });
+
   it("are read where the tool is offered, and nowhere else", async () => {
     const read = (options: ContextOptions) =>
       cardsInstructions.events["turn.started"]?.({}, dynamicContext(options));
@@ -813,6 +825,74 @@ describe("a browser report's turn", () => {
     ).toMatchObject({ status: "refused" });
     expect(services.create).not.toHaveBeenCalled();
     expect(services.markDelivered).not.toHaveBeenCalled();
+  });
+
+  it("sends a list of the outcome's options back once to be a card", async () => {
+    async function sendMessage(
+      messages: DynamicResolveContext["messages"],
+      current: Caller = reportCaller()
+    ) {
+      const context = dynamicContext({ messages });
+      const tools = await messaging.events["step.started"]?.(
+        {},
+        {
+          ...context,
+          session: { ...context.session, auth: { current, initiator: null } },
+        }
+      );
+      if (!tools || !("send_message" in tools)) {
+        throw new Error("Expected send_message.");
+      }
+      return tools.send_message;
+    }
+    const list = {
+      kind: "message" as const,
+      text: [
+        "1. [NordKapp](https://ostrovok.ru/hotel/1/) — 5 900 ₽, 4,8, 250 м",
+        "2. [Апельсин](https://ostrovok.ru/hotel/2/) — 6 400 ₽, 4,6, 150 м",
+        "3. [Восстания](https://ostrovok.ru/hotel/3/) — 6 950 ₽, 4,7, 400 м",
+      ].join("\n"),
+    };
+    const turn = [user(errand), report()];
+
+    expect(await (await sendMessage(turn)).execute(list, reportCall())).toEqual(
+      { rewrite: "card" }
+    );
+    expect(services.markDelivered).not.toHaveBeenCalled();
+
+    const sentBack = [
+      ...turn,
+      {
+        content: [
+          {
+            input: list,
+            toolCallId: "list-1",
+            toolName: "send_message",
+            type: "tool-call" as const,
+          },
+        ],
+        role: "assistant" as const,
+      },
+      {
+        content: [
+          {
+            output: { type: "text" as const, value: rewriteSendNotice("card") },
+            toolCallId: "list-1",
+            toolName: "send_message",
+            type: "tool-result" as const,
+          },
+        ],
+        role: "tool" as const,
+      },
+    ];
+    expect(
+      await (await sendMessage(sentBack)).execute(list, reportCall())
+    ).toMatchObject({ kind: "message" });
+
+    const bro = reportCaller({ errandBy: "bro" });
+    expect(
+      await (await sendMessage(turn, bro)).execute(list, reportCall(bro))
+    ).toMatchObject({ kind: "message" });
   });
 
   it("records nothing for a card that did not reach the chat", async () => {

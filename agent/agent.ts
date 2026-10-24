@@ -57,6 +57,7 @@ import { earlyReplyPilot } from "@agent/lib/delivery/pilot";
 import { taskAtWorkNote, taskHandoff } from "@agent/lib/delivery/task-handoff";
 import {
   approvedResendOwed,
+  cardResendOwed,
   earlyReplyNote,
   earlyReplySplitNote,
   taskCorrectionNote,
@@ -257,8 +258,10 @@ export default defineAgent({
         // A claim about a call the person just approved went back to be
         // checked against its result: the message is owed once more, even
         // in a turn that already delivered one before the card, where the
-        // step would otherwise go unforced and could end without it.
-        const resendOwed = approvedResendOwed(ctx.messages);
+        // step would otherwise go unforced and could end without it. So is
+        // the outcome of a report whose list went back to be a card.
+        const resendOwed =
+          approvedResendOwed(ctx.messages) || cardResendOwed(ctx.messages);
         const requireToolCall =
           !staleReport &&
           !sendFailed &&

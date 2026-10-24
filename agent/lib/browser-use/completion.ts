@@ -44,6 +44,7 @@ import {
   settleBrowserRunSpend,
 } from "./spend";
 import { recordOrder } from "@db/services/orders";
+import { cardsEnabled } from "@shared/cards/pilot";
 import { readSpendEntryForRun } from "@db/services/spending";
 import { captureBrowserRunImages, type BrowserRunImage } from "./images";
 import { within } from "./deadline";
@@ -69,6 +70,7 @@ import {
   itemsInstruction,
   laterStepInstruction,
   placedOrderInstruction,
+  reportCardInstruction,
 } from "./guidance";
 import {
   eventZonePilot,
@@ -1179,6 +1181,13 @@ async function errandOfPerson(row: BrowserRunRow) {
   }
 }
 
+/**
+ * The report as a turn of its conversation. In a Telegram chat that takes
+ * Bro's cards, the report of the person's errand closes with when its
+ * outcome goes as a card (`reportCardInstruction`): the line joins the
+ * report's closing paragraph, where the steps it asks for are read
+ * (`stepsAskedBy`), and only this send carries it, not the kept report.
+ */
 async function sendBrowserRunReport(
   delivery: BrowserRunDelivery,
   row: BrowserRunRow,
@@ -1212,7 +1221,12 @@ async function sendBrowserRunReport(
     if (!chatId) {
       throw new Error("A Telegram browser run requires a chat id.");
     }
-    await delivery.to(telegram, { chatId }).send(report, options);
+    const cards =
+      errandBy === errandByPerson &&
+      cardsEnabled({ workspaceId: row.workspaceId });
+    await delivery
+      .to(telegram, { chatId })
+      .send(cards ? `${report} ${reportCardInstruction}` : report, options);
     return { accepted: true } as const;
   }
   // An eve chat has no channel address to send to: only a handle on its
