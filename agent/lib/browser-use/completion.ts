@@ -54,6 +54,7 @@ import {
   parseBrowserOrder,
   parseBrowserOutcome,
   priceRubFromTotal,
+  strandedRun,
   summaryUnreachableCause,
   unreachableCause,
   unreachableRun,
@@ -474,8 +475,13 @@ async function networkVerdict(
   readonly missingSite?: string;
   readonly parsed: ReturnType<typeof parseBrowserOutcome>;
 }> {
-  const error = networkErrorIn(run.result) ?? networkErrorIn(run.error);
-  const walled = reported.needs === "captcha" || unreachableRun(run);
+  const stranded = strandedRun(run);
+  const error =
+    networkErrorIn(run.result) ??
+    networkErrorIn(run.error) ??
+    (stranded ? "the browser took no step" : undefined);
+  const walled =
+    reported.needs === "captcha" || unreachableRun(run) || stranded;
   const unresolved =
     unreachableCause(reported, run.error)?.includes("NAME_NOT_RESOLVED") ===
     true;

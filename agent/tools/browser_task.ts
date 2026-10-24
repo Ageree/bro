@@ -3270,6 +3270,28 @@ async function writesOwnAddress(
   }
 }
 
+/**
+ * What a call that tells a run to type the emailed code's secret is told
+ * when the run does not carry it. On 24.10 Bro wrote «вставь секрет
+ * email_code» into a Z-Library sign-up start: the run looked for a secret it
+ * did not have, left the code step for it, and the step was lost.
+ */
+const missingCodeSecretRefusal = `Nothing was sent: the task names the secret ${browserSecretAliases.emailCode}, which this run does not carry — only a continue with codeFrom "mail", after a run stopped on the code step, hands it over. Leave out of task how to confirm the address or enter a code: the run stops on the code step by itself. Call again without it.`;
+
+/**
+ * The emailed code's secret named in a text, apart from the footer label
+ * «NEEDS: email_code», which a task may well ask the run to stop with.
+ */
+const codeSecretPattern = new RegExp(
+  `(?<!needs\\s*:\\s*)\\b${browserSecretAliases.emailCode}\\b`,
+  "iu"
+);
+
+/** Whether a text tells the run to type the emailed code's secret. */
+function namesCodeSecret(texts: readonly (string | undefined)[]) {
+  return texts.some((text) => codeSecretPattern.test(text ?? ""));
+}
+
 /** What Bro hears about the account a start registers with its mailbox. */
 function signUpNote(kind: "again" | "new" | "saved") {
   if (kind === "again") {
@@ -4748,6 +4770,7 @@ async function runBrowserTask(
     }
     const inventedCode = inventedCodeRefusal([errand], false, words);
     if (inventedCode) throw new Error(inventedCode);
+    if (namesCodeSecret([errand])) throw new Error(missingCodeSecretRefusal);
     if (
       input.signUpWith === undefined &&
       (await writesOwnAddress(scope, [errand]))
@@ -5188,6 +5211,9 @@ async function runBrowserTask(
     const signUp = mail
       ? undefined
       : await signUpFor(input, scope, byPerson, row.site ?? undefined);
+    if (!mail && namesCodeSecret([task])) {
+      throw new Error(missingCodeSecretRefusal);
+    }
     if (
       input.signUpWith === undefined &&
       !mail &&
