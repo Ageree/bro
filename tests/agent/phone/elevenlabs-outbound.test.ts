@@ -297,7 +297,19 @@ describe("outbound Bro call initiation", () => {
     await placeCall(true);
     expect(sentPrompt()).toContain("больше не представляйся");
     expect(sentPrompt()).toContain(
-      "Организациям и незнакомым людям представляйся"
+      "Незнакомым людям представляйся как обычно, организациям — нет"
     );
+  });
+
+  it("tells Bro to open a call to a business with the matter, not an introduction", async () => {
+    for (const repeat of [false, true]) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Calls are placed one by one.
+      await placeCall(repeat, false);
+      const prompt = sentPrompt();
+      expect(prompt).toContain(
+        "Звонишь в организацию (заведение, клуб, ресторан, магазин, клинику, салон, службу) — не представляйся"
+      );
+      expect(prompt).toContain("Звонишь человеку — сначала назови себя");
+    }
   });
 });
