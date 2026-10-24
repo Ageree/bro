@@ -754,6 +754,41 @@ describe("taking the code or the link from Bro's own mailbox", () => {
     });
   });
 
+  it("takes the code from another domain of the site's own name", async () => {
+    // 24.10: the account was made on z-library.sk, and Z-Library wrote from
+    // z-library.im, its letter only HTML.
+    agentInbox.letters = [
+      agentLetter({
+        from: "Library <no-reply@z-library.im>",
+        html: '<html><body><p>Your confirmation code:</p><h1 style="padding:16px 0;font-size:32px">5284</h1><p>If you received this email by mistake, just ignore it.</p><img src="https://click.maileroo.net/v2/u1234/open?sig=x" height="1" width="1" /></body></html>',
+        message_id: "mirror",
+        subject: "Your confirmation code:",
+      }),
+    ];
+
+    await expect(
+      lookInAgentMail("https://z-library.sk")
+    ).resolves.toMatchObject({
+      code: "5284",
+      domain: "z-library.sk",
+      kind: "found",
+    });
+  });
+
+  it("never takes a short name's namesake on another domain", async () => {
+    agentInbox.letters = [
+      agentLetter({
+        from: "no-reply@vk.example",
+        message_id: "namesake",
+        text: "Your code is 482913",
+      }),
+    ];
+
+    await expect(lookInAgentMail("https://vk.com")).resolves.toMatchObject({
+      kind: "not_found",
+    });
+  });
+
   it("never takes a letter from another sender, unauthenticated or stale", async () => {
     agentInbox.letters = [
       agentLetter({

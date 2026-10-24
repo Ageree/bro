@@ -14,7 +14,11 @@ import {
   readGmailLetters,
 } from "@agent/lib/google-workspace/gmail";
 import type { BrowserUseSecretBinding } from "./client";
-import { browserSecretAliases, phoneSignInDomains } from "./secrets";
+import {
+  browserSecretAliases,
+  phoneSignInDomains,
+  registrableDomain,
+} from "./secrets";
 
 /**
  * A one-time code a site sent to the person's own mailbox, taken by Bro
@@ -197,6 +201,26 @@ export function authenticatedFrom(
  */
 function siteSender(sender: string, domain: string) {
   return under(sender, domain) && !mailboxDomains.has(bareHost(sender));
+}
+
+/** The name of a domain before its public suffix: `z-library` of z-library.sk. */
+function domainName(host: string) {
+  return registrableDomain(host)?.split(".")[0];
+}
+
+/**
+ * Whether a letter to Bro's own mailbox comes from another domain of the
+ * site's own name: on 24.10 Z-Library wrote from z-library.im to the account
+ * made on z-library.sk, and its code was never found. The name has to match
+ * whole and be no short word, and no public mailbox counts. Only Bro's inbox:
+ * the site wrote there because this errand registered Bro's address, and
+ * AgentMail drops a letter that fails DMARC for its From domain. The code is
+ * still typed on the errand's own domain alone, and a link taken only there.
+ */
+function siteMirrorSender(sender: string, domain: string) {
+  if (mailboxDomains.has(bareHost(sender))) return false;
+  const name = domainName(domain);
+  return name !== undefined && name.length >= 4 && domainName(sender) === name;
 }
 
 /** A word that names a number as the code: «Код для входа», "Your code". */
@@ -674,7 +698,7 @@ async function lookInAgentMail(
         receivedAt >= since.getTime() &&
         trustedLabels(item.labels) &&
         sender !== undefined &&
-        siteSender(sender, domain)
+        (siteSender(sender, domain) || siteMirrorSender(sender, domain))
       );
     })
     .toSorted((a, b) => b.receivedAt - a.receivedAt)
