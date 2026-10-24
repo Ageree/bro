@@ -88,7 +88,11 @@ import {
 import { nextRecovery, recoverableErrand, recoveryRetryAt } from "./recovery";
 import { errandByPerson } from "./report-caller";
 import { recordRunSignIns } from "./sign-ins";
-import { settleSignUpLogin, signUpSettlement } from "./sign-up";
+import {
+  registersWithAgentMail,
+  settleSignUpLogin,
+  signUpSettlement,
+} from "./sign-up";
 
 /**
  * Both completion paths — the Browser Use webhook and the reconciling poller —
@@ -256,6 +260,7 @@ export async function settleBrowserRun(
     failed: status === "failed",
     ordered: order?.status === "placed",
     outcome,
+    signUpRun: registersWithAgentMail(run.task),
     unreachable:
       parsed.needs === "captcha"
         ? unreachableCause(parsed, run.error)
@@ -852,6 +857,8 @@ function deliveryInstruction(
     readonly missingSite?: string;
     readonly next: boolean;
     readonly ordered: boolean;
+    /** The run was registering an account with Bro's own mailbox. */
+    readonly signUpRun: boolean;
     /** What to do without a public-service site that would not let it in. */
     readonly stuck?: string;
     /**
@@ -902,7 +909,7 @@ function deliveryInstruction(
       : directPay !== undefined
         ? directPaymentInstruction(directPay)
         : paidFor === undefined
-          ? browserRunNeedGuidance(needs)
+          ? browserRunNeedGuidance(needs, facts.signUpRun)
           : approvedPaymentInstruction(paidFor),
     facts.stuck,
     facts.idle === undefined ? undefined : idleRunInstruction(facts.idle.host),
@@ -1010,6 +1017,8 @@ function browserRunReport(
     readonly outcome: string;
     /** What became of the login saved for a sign-up with Bro's mailbox. */
     readonly signUp?: string;
+    /** The run was registering an account with Bro's own mailbox. */
+    readonly signUpRun?: boolean;
     readonly spend?: string;
     /** A read-only check after a broken-off run could not tell. */
     readonly unclear?: boolean;
@@ -1070,6 +1079,7 @@ function browserRunReport(
       missingSite: options.missingSite,
       next: options.next !== undefined,
       ordered: options.ordered === true,
+      signUpRun: options.signUpRun === true,
       stuck,
       unclear: options.unclear === true,
       unreachable: needs === "captcha" ? options.unreachable : undefined,

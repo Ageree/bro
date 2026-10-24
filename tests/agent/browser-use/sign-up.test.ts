@@ -263,6 +263,10 @@ describe("what a settled sign-up leaves in the vault", () => {
       "none"
     );
     expect(signUpAccount("ACCOUNT: нет")).toBe("none");
+    expect(signUpAccount("ACCOUNT: refused")).toBe("refused");
+    expect(signUpAccount("ACCOUNT: не принят — Bad email address")).toBe(
+      "refused"
+    );
     expect(signUpAccount(null)).toBeUndefined();
     // Only the start is asked to say a form was never sent.
     expect(startTask).toContain("ACCOUNT: none when you never submitted");
@@ -309,6 +313,15 @@ describe("what a settled sign-up leaves in the vault", () => {
     expect(signUpSettlement({ ...unsent, task: followUpTask }, ended)).toBe(
       "kept"
     );
+    // Stepik (24.10) would not take Bro's address: no attempt made an account.
+    const refused = {
+      result: "NEEDS: none\nACCOUNT: refused",
+      task: startTask,
+    };
+    expect(signUpSettlement(refused, ended)).toBe("refused");
+    expect(signUpSettlement(refused, { ...ended, firstAttempt: false })).toBe(
+      "refused"
+    );
     // A failed run or a refusal without a word: unclear, so it stays.
     expect(
       signUpSettlement({ result: "NEEDS: none", task: startTask }, ended)
@@ -337,6 +350,28 @@ describe("what a settled sign-up leaves in the vault", () => {
       settleSignUpLogin(scope, "https://www.inaturalist.org", "kept")
     ).resolves.toContain("The login prepared for it stays saved on your side");
     expect(deleteVaultItem).not.toHaveBeenCalled();
+  });
+
+  it("tells the run to stop on a refused address rather than sign in", () => {
+    expect(startTask).toContain(
+      "If the site refuses the address itself — calls it invalid, not allowed, or a disposable or temporary mailbox"
+    );
+    expect(startTask).toContain("ACCOUNT: refused when it would not take");
+    expect(followUpTask).toContain("ACCOUNT: refused when it would not take");
+  });
+
+  it("drops the login of a refused address and offers no sign-up with it again", async () => {
+    savedLogin(mailbox.email);
+
+    const line = await settleSignUpLogin(
+      scope,
+      "https://www.inaturalist.org",
+      "refused"
+    );
+
+    expect(deleteVaultItem).toHaveBeenCalledWith(scope, "vault-1");
+    expect(line).toContain("never offer to sign up there with it again");
+    expect(line).toContain("site-login-link");
   });
 
   it("takes out only Bro's own login for the site", async () => {

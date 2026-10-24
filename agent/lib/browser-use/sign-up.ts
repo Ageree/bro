@@ -96,6 +96,15 @@ const unsubmittedFooterLine =
   "or ACCOUNT: none when you never submitted the sign-up form.";
 
 /**
+ * A site that will not take Bro's mailbox at all: Stepik answered the form
+ * 400 «Bad email address.» (24.10), and the run, told to sign in where the
+ * address is already registered, tried that too and stopped on NEEDS:
+ * password, so Bro offered to sign up with the same mailbox again.
+ */
+const refusedAddressLine =
+  "If the site refuses the address itself — calls it invalid, not allowed, or a disposable or temporary mailbox — that is the site's answer, not a typo: do not sign in, submit again or type any other address, and stop with NEEDS: none and ACCOUNT: refused, quoting the site's words in DETAILS.";
+
+/**
  * What the run is told about registering, for the errand that does. `start`:
  * the errand's own first run, the only one that may say no form was sent.
  */
@@ -103,8 +112,8 @@ export function signUpLine(username: string, start = false) {
   return [
     `${agentMailSignUpSentence} the email address is the secret ${browserSecretAliases.loginUsername} and the password the secret ${browserSecretAliases.loginPassword} — focus the field and ask for the secret by name; the server types it, and you never see it. Type ${browserSecretAliases.loginPassword} into the password field and into its confirmation field too.`,
     `Where the form insists on a user name or a nickname, use ${username}; where it insists on a name, use «Bro». Never type the person's name, phone, own email, address, birth date or anything else of theirs, and never pay or subscribe to anything paid. Accept the terms the sign-up needs, and leave newsletters and marketing unticked.`,
-    `If the site sends a code or a link to that email to confirm it, finish the form and stop at once with NEEDS: email_code, saying in DETAILS whether the letter carries a code or a link: Bro takes it from its own mailbox and brings it to this page. Stopping is your last action: once the page waits for the code, do not open another page, tab or link, not even for the rest of the task — what the task asks after the sign-up waits for the next run, and a page you leave loses the code step. You cannot read that mailbox: never open a mail site or webmail (agentmail.to, Gmail, Mail.ru or any other) to look for the letter, even where the task says to confirm the address or take the letter yourself. If the site says the address is already registered, sign in with the same two secrets instead. Never write a password or a secret's value in your report.`,
-    `Add one more line to the labelled footer: ACCOUNT: created once the site accepted the sign-up — even while it still waits for the email to be confirmed${start ? `, ${unsubmittedFooterLine}` : "."}`,
+    `If the site sends a code or a link to that email to confirm it, finish the form and stop at once with NEEDS: email_code, saying in DETAILS whether the letter carries a code or a link: Bro takes it from its own mailbox and brings it to this page. Stopping is your last action: once the page waits for the code, do not open another page, tab or link, not even for the rest of the task — what the task asks after the sign-up waits for the next run, and a page you leave loses the code step. You cannot read that mailbox: never open a mail site or webmail (agentmail.to, Gmail, Mail.ru or any other) to look for the letter, even where the task says to confirm the address or take the letter yourself. If the site says the address is already registered, sign in with the same two secrets instead. ${refusedAddressLine} Never write a password or a secret's value in your report.`,
+    `Add one more line to the labelled footer: ACCOUNT: created once the site accepted the sign-up — even while it still waits for the email to be confirmed, ACCOUNT: refused when it would not take the address${start ? `, ${unsubmittedFooterLine}` : "."}`,
   ].join(" ");
 }
 
@@ -121,6 +130,9 @@ export function signUpAccount(result: string | null | undefined) {
       .exec(result ?? "")?.[1]
       ?.toLowerCase();
   if (value === undefined) return undefined;
+  if (/^(?:refused|отклон|отказ|не\s+приня[лт])/u.test(value)) {
+    return "refused" as const;
+  }
   if (/^(?:none|не\s|нет)/u.test(value)) return "none" as const;
   if (/^(?:created|создан|зарегистрирован)/u.test(value)) {
     return "created" as const;
@@ -138,7 +150,9 @@ export function signUpAccount(result: string | null | undefined) {
  * to a failed run: the site may have taken the form, and a login thrown
  * away then would leave an account nobody can sign in to, so it stays and
  * the person hears so. A later attempt after an anti-bot wall is never
- * sure: an earlier one may have sent the form.
+ * sure: an earlier one may have sent the form. `refused` — the site would
+ * not take Bro's address at all, so no attempt can have made an account
+ * with it, and the login goes as well.
  */
 export function signUpSettlement(
   run: { readonly result?: string | null; readonly task: string },
@@ -152,7 +166,7 @@ export function signUpSettlement(
     return undefined;
   }
   const account = signUpAccount(run.result);
-  if (account === "created") return "created" as const;
+  if (account === "created" || account === "refused") return account;
   const startRun = run.task.includes(unsubmittedFooterLine);
   return startRun &&
     options.firstAttempt &&
@@ -174,7 +188,7 @@ function signUpLoginLabel(host: string) {
 export async function settleSignUpLogin(
   scope: AccessScope,
   site: string | null,
-  settlement: "created" | "forget" | "kept"
+  settlement: "created" | "forget" | "kept" | "refused"
 ) {
   const host = site === null ? undefined : siteUrl(site)?.hostname;
   if (host === undefined || host === "") return undefined;
@@ -184,6 +198,10 @@ export async function settleSignUpLogin(
   if (settlement === "forget") {
     await forgetAgentMailLogin(scope, login.loginId);
     return `The sign-up form on ${host} was never sent, so the login prepared for it was taken out of the user's vault; a new sign-up there starts afresh. Never write a password.`;
+  }
+  if (settlement === "refused") {
+    await forgetAgentMailLogin(scope, login.loginId);
+    return `${host} does not accept your own mailbox address (Details quotes what it said), so no account was made there, and the login prepared for it was taken out of the user's vault. Say so in one short line in your own words. Your mailbox will not do on this site: never offer to sign up there with it again, and never offer to register with the user's own email yourself — you would have no password to give them. Offer them, speaking to them directly, to register or sign in there themselves through a link — a window of your own browser (site-login-link) — and, if they already have an account there, to send its login and password in the chat instead. Never write a password.`;
   }
   if (settlement === "created") {
     return `The run registered a new account on ${host} with your own AgentMail address ${login.mailbox.email}, and its login is already saved on your side as «${label}», so they add nothing by hand. Say in one short sentence that you registered the account and keep its login yourself and sign in there on your own. There is no page of logins for the person: never point them to the vault or any cabinet section for it, never write the password, and if they want you to drop the account's login they can say «забудь мой вход на ${host}». Do not ask them for anything or to write to you: the site's letters come to your own mailbox.`;
