@@ -84,7 +84,12 @@ function deliver(send = vi.fn<Send>(async () => undefined)) {
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- A bare handle stands in for the channel's.
   const to = vi.fn<ScheduleToFn>(() => ({ send }) as never);
   const attachSession = vi.fn<AttachSessionFn>();
-  return { send, to, run: () => deliverBroReports({ attachSession, to }) };
+  return {
+    attachSession,
+    send,
+    to,
+    run: () => deliverBroReports({ attachSession, to }),
+  };
 }
 
 describe("delivering Bro ↔ Bro reports", () => {
@@ -144,8 +149,45 @@ describe("delivering Bro ↔ Bro reports", () => {
     expect(outbox.finishBroReport).toHaveBeenCalledExactlyOnceWith(
       reportId,
       token,
-      { delivered: false, error: "no messenger", retry: false }
+      { delivered: false, error: "no chat", retry: false }
     );
+  });
+
+  it("goes to the web chat an owner with no messenger last wrote in", async () => {
+    outbox.claimBroReports.mockResolvedValue([report(null)]);
+    outbox.remembered.mockResolvedValueOnce({
+      messengerChannel: null,
+      messengerConversationId: null,
+      webConversationId: "web-session-1",
+    });
+    const send = vi.fn<
+      (...call: Parameters<Send>) => Promise<{ readonly status: string }>
+    >(async () => ({ status: "accepted" }));
+    const delivery = deliver();
+    delivery.attachSession.mockReturnValue(
+      // SAFETY: the delivery only calls `send` on the handle.
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- A bare handle stands in for the session's.
+      { send } as never
+    );
+    await delivery.run();
+
+    expect(delivery.to).not.toHaveBeenCalled();
+    expect(delivery.attachSession).toHaveBeenCalledExactlyOnceWith(
+      "web-session-1"
+    );
+    const [message, options] = send.mock.calls[0] ?? [];
+    expect(message).toContain(`thread ${threadId}`);
+    expect(options).toMatchObject({
+      auth: {
+        attributes: {
+          conversationChannel: "eve",
+          conversationId: "web-session-1",
+        },
+        authenticator: "bro-result",
+      },
+      turnPolicy: "queue",
+    });
+    expect(outbox.finishBroReport).not.toHaveBeenCalled();
   });
 
   it("puts a report whose dispatch failed back in line", async () => {

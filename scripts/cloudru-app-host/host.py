@@ -699,6 +699,7 @@ def assemble(stage, version, commit):
     shutil.copy2(BUILDS / "migrate.mjs", stage / "ops/migrate.mjs")
     shutil.copy2(BUILDS / "agent-mail.mjs", stage / "ops/agent-mail.mjs")
     shutil.copy2(BUILDS / "owner-login.mjs", stage / "ops/owner-login.mjs")
+    shutil.copy2(BUILDS / "test-accounts.mjs", stage / "ops/test-accounts.mjs")
     shutil.copy2(BUILDS / "yandex-probe.mjs", stage / "ops/yandex-probe.mjs")
     shutil.copy2(BUILDS / "yandex-session-probe.mjs", stage / "ops/yandex-session-probe.mjs")
     shutil.copy2(BUILDS / "phone-setup.mjs", stage / "ops/phone-setup.mjs")
@@ -752,7 +753,7 @@ def cmd_build(args):
          "--banner:js=import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);"],
         env)
     stage = BUILDS / "stage"
-    for name in ("agent-mail", "owner-login", "yandex-probe", "yandex-session-probe"):
+    for name in ("agent-mail", "owner-login", "test-accounts", "yandex-probe", "yandex-session-probe"):
         run(["pnpm", "exec", "esbuild", f"scripts/cloudru-app-host/ops/{name}.ts", "--bundle", "--platform=node",
              "--target=node24", "--format=esm", f"--outfile={BUILDS / f'{name}.mjs'}",
              # The browser code imports the skill texts (`*.md?raw`), as eve's bundler does.

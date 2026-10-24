@@ -27,8 +27,10 @@ const dispatchTimeoutMs = 20_000;
 
 /**
  * Where a report goes: the conversation its side started the thread from,
- * else the messenger the owner last wrote from. A web chat is never guessed:
- * without a messenger the report stays in the cabinet and `bro_talk status`.
+ * else the messenger the owner last wrote from, which has pushes, else the
+ * web chat they last wrote in, as a schedule's report finds a person with
+ * no messenger (`reportConversations`). Someone who never wrote to Bro at
+ * all has the report in the cabinet and `bro_talk status` alone.
  */
 async function reportRoute(report: {
   readonly target: BroReportTarget | null;
@@ -36,7 +38,16 @@ async function reportRoute(report: {
 }) {
   if (report.target) return report.target;
   const remembered = await readRememberedConversations(report.workspaceId);
-  return remembered ? rememberedMessenger(remembered) : undefined;
+  if (!remembered) return undefined;
+  return (
+    rememberedMessenger(remembered) ??
+    (remembered.webConversationId
+      ? {
+          conversationChannel: "eve" as const,
+          conversationId: remembered.webConversationId,
+        }
+      : undefined)
+  );
 }
 
 /**
@@ -45,8 +56,8 @@ async function reportRoute(report: {
  * text is code's (`broReportMessage`), the turn waits in the conversation's
  * queue, and its caller (`bro-result`) speaks for nobody. A conversation
  * that took the report, or may have, holds it until its turn settles it; a
- * failed dispatch is retried with a backoff, and an owner with no messenger
- * has the report dropped with that reason.
+ * failed dispatch is retried with a backoff, and an owner with no chat at
+ * all has the report dropped with that reason.
  */
 export async function deliverBroReports(delivery: {
   readonly attachSession?: AttachSessionFn;
@@ -62,7 +73,7 @@ export async function deliverBroReports(delivery: {
       if (!route) {
         await finishBroReport(row.id, row.leaseToken, {
           delivered: false,
-          error: "no messenger",
+          error: "no chat",
           retry: false,
         });
         return;
