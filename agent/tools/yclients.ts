@@ -124,7 +124,7 @@ const inputSchema = z.discriminatedUnion("action", [
 
 type Input = z.output<typeof inputSchema>;
 
-const description = `Book a salon, barbershop, nail or beauty studio, clinic, fitness or other studio that takes online bookings through YClients — in seconds, instead of browser_task clicking through its booking form. A place of maps.search or maps.org with a \`yclients\` id books here: that id is its company — go straight to services with it. Steps: services lists the services with prices and minutes and names the place; slots gives the free times on days (staff 0 is any master); staff lists the masters for the services; book books one slot. find, with the place's site or a YClients booking link (…yclients.com), answers the company of a place Maps did not name (when several branches come back, take the one at the address the person meant). Book only a time inside what the person asked for — the day, and «закончить до 16:00» counts the service's minutes — at the place they meant, and only once; then tell them the place, service, day, time, master and price in one message. When the place has no YClients id or a call fails twice, do the booking with browser_task as before. When book says an SMS code was sent, ask the person for it and call book again with the same arguments and the code.`;
+const description = `Book a salon, barbershop, nail or beauty studio, clinic, fitness or other studio that takes online bookings through YClients — in seconds, instead of browser_task clicking through its booking form. A place of maps.search or maps.org with a \`yclients\` id books here: that id is its company — go straight to services with it. Steps: services lists the services with prices and minutes and names the place; slots gives the free times on days (staff 0 is any master); staff lists the masters for the services; book books one slot. A place's company comes from the yandex tool's maps.search or maps.org (open_tools yandex when it is not in your list), not from a guessed site; find takes a link the person gave or a YClients booking link (…yclients.com) (when several branches come back, take the one at the address the person meant). Book only a time inside what the person asked for — the day, and «закончить до 16:00» counts the service's minutes — at the place they meant, and only once; then tell them the place, service, day, time, master and price in one message. When the place has no YClients id or a call fails twice, do the booking with browser_task as before. When book says an SMS code was sent, ask the person for it and call book again with the same arguments and the code.`;
 
 const notThePerson =
   "Nothing was done: bookings through YClients are made only in a turn the person's own message opened. Ask the person.";
@@ -299,6 +299,14 @@ function companyRow(answer: Parameters<typeof dataOf>[0]) {
   return row.success ? row.data : undefined;
 }
 
+/**
+ * 24.10: with the browser group open and the yandex one not, the model
+ * guessed the salon's site for find, whose page loads its booking form by
+ * script, and went to browser_task; Maps named the company all along.
+ */
+const fromMaps =
+  "Look the place up with the yandex tool's maps.search (open_tools yandex when it is not in your list): when the place books through YClients, its result names the company (`yclients`). Only when Maps names none, do the booking with browser_task.";
+
 const namedNoPlace = {
   ok: false as const,
   reply:
@@ -317,10 +325,7 @@ async function find(link: string, workspaceId: string) {
   if (found.kind === "unreachable" || found.links.length === 0) {
     return {
       ok: false as const,
-      reply:
-        found.kind === "unreachable"
-          ? "The page did not open. Do the booking with browser_task."
-          : "No YClients booking was found there: the place books some other way. Do the booking with browser_task (its site or the «Записаться» button of its Yandex Maps card).",
+      reply: `${found.kind === "unreachable" ? "The page did not open." : "The page names no YClients booking: a site often loads its booking form by script, out of sight here."} ${fromMaps}`,
     };
   }
   // Up to five links: their forms are read together.
