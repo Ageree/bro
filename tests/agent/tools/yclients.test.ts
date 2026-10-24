@@ -616,5 +616,98 @@ describe("yclients", () => {
       laterDays: ["2026-10-30", "2026-10-31"],
       readThrough: "2026-10-29",
     });
+    expect(found).not.toHaveProperty("note");
+  });
+
+  it("says several services are one visit when none fits a day together", async () => {
+    yclients({
+      [`GET /api/v1/book_dates/${String(company)}`]: () =>
+        ok({ booking_dates: ["2026-10-26"] }),
+      [`GET /api/v1/book_times/${String(company)}/0/2026-10-25`]: () => ok([]),
+    });
+
+    const found = await (
+      await tool(asked)
+    ).execute(
+      {
+        action: "slots",
+        company,
+        from: "2026-10-25",
+        services: [7, 8],
+        staff: 0,
+      },
+      callContext()
+    );
+
+    expect(found).toMatchObject({ days: [], laterDays: ["2026-10-26"] });
+    expect(JSON.stringify(found)).toContain(
+      "alternatives are asked one at a time"
+    );
+  });
+
+  it("tells a made-up company, another place's service and an unbookable master apart", async () => {
+    // As YClients answered from the pool browser on 24.10.
+    const notFound = { detail: "Not Found", status: 404 };
+
+    yclients({
+      [`GET /api/v1/book_services/${String(company)}`]: () =>
+        Response.json(notFound, { status: 404 }),
+      [`GET /api/v1/company/${String(company)}`]: () =>
+        Response.json(notFound, { status: 404 }),
+    });
+    expect(
+      JSON.stringify(
+        await (
+          await tool(asked)
+        ).execute({ action: "services", company }, callContext())
+      )
+    ).toContain("no company with that id");
+
+    yclients({
+      [`GET /api/v1/book_staff/${String(company)}`]: () =>
+        Response.json(
+          { data: notFound, meta: [], success: false },
+          { status: 404 }
+        ),
+    });
+    expect(
+      JSON.stringify(
+        await (
+          await tool(asked)
+        ).execute({ action: "staff", company, services: [1] }, callContext())
+      )
+    ).toContain("This place has no such services");
+
+    yclients({
+      [`GET /api/v1/book_dates/${String(company)}`]: () =>
+        Response.json(
+          {
+            data: [],
+            meta: {
+              message:
+                "Сотрудник недоступен для записи. Выберите другого сотрудника.",
+            },
+            success: false,
+          },
+          { status: 404 }
+        ),
+      [`GET /api/v1/book_times/${String(company)}/9/2026-10-25`]: () => ok([]),
+    });
+    expect(
+      JSON.stringify(
+        await (
+          await tool(asked)
+        ).execute(
+          {
+            action: "slots",
+            company,
+            from: "2026-10-25",
+            services: [7],
+            staff: 9,
+          },
+          callContext()
+        )
+      )
+    ).toContain("That master takes no bookings");
   });
 });
