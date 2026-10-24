@@ -18,9 +18,9 @@ import { runYandexOperation } from "@agent/lib/yandex/transport";
  *
  * The spec is JSON in Object Storage (an ops argument cannot hold it):
  * `{workspace, op, args}` runs a registered operation as the tool does;
- * `{workspace, page, steps, waitMs}` opens a Yandex page with every fetch and
- * XHR of the page recorded (method, URL, bodies), runs each step — an
- * expression awaited in the page — and waits; `{direct: "afisha.search",
+ * `{workspace, page, steps, waitMs}` opens a Yandex page or a YClients booking
+ * form with every fetch and XHR of the page recorded (method, URL, bodies),
+ * runs each step — an expression awaited in the page — and waits; `{direct: "afisha.search",
  * args, times, pauseMs}` sends Afisha's search from this server with no
  * browser, as YANDEX_DIRECT does, and keeps of each answer only its status,
  * time, type and the number of events (printed to the job's log too). Any
@@ -82,6 +82,9 @@ const recorder = String.raw`(() => {
   };
 })()`;
 
+/** YClients' booking forms (`n102887.yclients.com`), probed the same way. */
+const yclientsHost = /(^|\.)yclients\.(com|ru)$/u;
+
 const sleep = async (ms: number) =>
   new Promise((done) => {
     setTimeout(done, ms);
@@ -103,8 +106,9 @@ async function probePage(
   workspace: string,
   spec: { page: string; steps: string[]; waitMs: number }
 ) {
-  if (!isYandexHost(new URL(spec.page).hostname)) {
-    throw new Error("Only Yandex pages are probed.");
+  const host = new URL(spec.page).hostname;
+  if (!isYandexHost(host) && !yclientsHost.test(host)) {
+    throw new Error("Only Yandex and YClients pages are probed.");
   }
   const tab = await createBrowserVmBrowser({
     profileId: browserVmProfileId(workspace, 0),
