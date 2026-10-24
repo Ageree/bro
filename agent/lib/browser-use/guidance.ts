@@ -137,6 +137,17 @@ export const itemsInstruction =
   "The Items list in the Parsed metadata is what the run found: give the user every item as a list, one line each with its name, price and quantity, the details that matter for choosing (dates or slot, cancellation terms, delivery) and its link — never only a total or a count. Name every substitute together with what it replaces, give each fee line ([fee]: delivery, service, packaging) as its own line, and the delivery slot and the total they add up to. When the user asked for delivery at a time the run could not choose — the site offers only immediate delivery, or no slot then — say so plainly, with what the site offers instead: that confirming now brings it now («привезут минут через 10, а не к восьми»), and offer to order it closer to their time instead. Never describe the time they asked for as available when the site cannot offer it. Name anything the run removed from or changed in the basket that was there before the errand.";
 
 /**
+ * How a report closes in a Telegram chat that takes Bro's cards, when the
+ * person gave the errand (`sendBrowserRunReport`): the rule of
+ * `docs/cards.md` said where the model reads it last. The report's own lines
+ * ask for a list in the message (`itemsInstruction`, the links), and on
+ * 24.10 the owner's three hotels came as such a list though a card was
+ * offered; a soft line in the instructions did not outweigh them.
+ */
+export const reportCardInstruction =
+  "This chat takes Bro's cards, and that changes how this outcome goes out. When it is three or more options with three or more facts each — hotels, goods, flights or places to compare and pick from — or a plan, a schedule or a list of six or more lines, send it as one card with send_card instead of a list in send_message: each option a row of a list or a table with its facts and its link, and a photo only where this report gives a direct photo link of that very option. The card's message is the answer in one or two lines, the gist and your pick, and no list of the same options follows in the chat. A single option, a booking or a fact that fits three lines, a failure, or a question with two answers stays one send_message.";
+
+/**
  * «Висит 500 ₽ к оплате» is not an answer to «нет ли у меня штрафов и
  * налогов» (RU 24.09, d06): each charge is told with what it is for.
  */

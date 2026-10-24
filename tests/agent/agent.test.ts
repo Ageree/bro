@@ -966,6 +966,55 @@ describe("interactive delivery enforcement", () => {
     ]);
   });
 
+  it("makes a report whose list went back to be a card call a tool next, until the card or the message is out", async () => {
+    const list =
+      "1. [NordKapp](https://ostrovok.ru/hotel/1/) — 5 900 ₽, 4,8, 250 м\n2. [Апельсин](https://ostrovok.ru/hotel/2/) — 6 400 ₽, 4,6, 150 м\n3. [Восстания](https://ostrovok.ru/hotel/3/) — 6 950 ₽, 4,7, 400 м";
+    const sentBack = [
+      ...pending,
+      toolCallStep("send_message", "call-1", { kind: "message", text: list }),
+      {
+        content: [
+          {
+            output: {
+              type: "text" as const,
+              value: rewriteSendNotice("card"),
+            },
+            toolCallId: "call-1",
+            toolName: "send_message",
+            type: "tool-result" as const,
+          },
+        ],
+        role: "tool" as const,
+      },
+    ];
+    await agent.model.events["step.started"]?.(
+      {},
+      interactiveContext(sentBack, "browser-result", reportAttributes)
+    );
+    expect(services.modelSelection.mock.lastCall?.[1]?.toolChoice).toBe(
+      "required"
+    );
+
+    await agent.model.events["step.started"]?.(
+      {},
+      interactiveContext(
+        [
+          ...sentBack,
+          toolCallStep("send_card", "call-2", {
+            message: "Три отеля у Невского, лучший — NordKapp.",
+          }),
+          toolResultStep("send_card", "call-2", {
+            card: "k7m2p9qa",
+            status: "sent",
+          }),
+        ],
+        "browser-result",
+        reportAttributes
+      )
+    );
+    expect(services.modelSelection.mock.lastCall?.[1]?.toolChoice).toBe("auto");
+  });
+
   it("takes a report's card as its outcome: no message is forced after it, and the cards come back", async () => {
     await agent.model.events["step.started"]?.(
       {},

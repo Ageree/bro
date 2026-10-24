@@ -10,6 +10,8 @@ import {
   sendMessageOutputSchema,
 } from "@shared/chat/message-delivery";
 import { reportedBrowserRunId } from "../lib/browser-use/report-caller";
+import { openedByPersonErrandReport } from "../lib/cards/caller";
+import { cardsOffered } from "../lib/cards/enabled";
 import { withGroupedRoubles } from "../lib/delivery/amounts";
 import { withHttpsLinks, withVisibleLinks } from "../lib/delivery/links";
 import { withExactLoginHandoffLink } from "../lib/login-handoff/exact-link";
@@ -170,7 +172,10 @@ function withoutBookkeeping(message: SentMessage): SentMessage | undefined {
  * turn may open with one short heads-up, and its result tells the model the
  * answer is still owed (`headsUpDeliveredNotice`). In the files pilot a
  * task file link the model miswrote is sent as the conversation's link it
- * stands for (`sharedLinks`, `withExactSharedLinks`).
+ * stands for (`sharedLinks`, `withExactSharedLinks`). In the report of an
+ * errand the person gave, where Bro's card may carry its options
+ * (`cardsDue`, `cardTurnOpener`), a list of options goes back once to be a
+ * card (`sendRefusal`).
  */
 function defineSendMessage(
   turn: ReturnType<typeof turnSends>,
@@ -179,7 +184,8 @@ function defineSendMessage(
   taskReport: boolean,
   earlyReply: boolean,
   phoneReport: boolean,
-  sharedLinks: readonly string[]
+  sharedLinks: readonly string[],
+  cardsDue: boolean
 ) {
   return defineTool({
     description:
@@ -199,7 +205,7 @@ function defineSendMessage(
           )
         );
         if (!outgoing) return { skipped: "sentinel" as const };
-        const refused = sendRefusal(outgoing, turn, earlyReply);
+        const refused = sendRefusal(outgoing, turn, earlyReply, cardsDue);
         if (refused) return refused;
         markTurnDelivered(context.session);
         // «2000 ₽» goes out as «2 000 ₽» (`amounts.ts`).
@@ -357,7 +363,12 @@ export default defineDynamic({
         ),
         phoneReport,
         // The links the task agent's files have in this conversation.
-        taskFilesOfCaller(context) ? knownSharedLinks(context.messages) : []
+        taskFilesOfCaller(context) ? knownSharedLinks(context.messages) : [],
+        cardsOffered(context) &&
+          openedByPersonErrandReport(
+            context.messages,
+            context.session.auth.current
+          )
       );
       const messageOnly = { send_message };
       const interactive = delivery
