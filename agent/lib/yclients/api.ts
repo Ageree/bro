@@ -48,9 +48,10 @@ const envelopeSchema = z.object({
 });
 
 /**
- * A refusal of YClients, or no answer: the HTTP status (0 when none came)
- * and its error codes. The message is YClients' own text, for the log
- * only: the model repeats what it reads.
+ * A refusal of YClients, or no answer: the HTTP status (0 when none came),
+ * its error codes, and whether it came as YClients' own envelope (not a
+ * gateway's or a WAF's page). The message is YClients' own text, for the
+ * code and the log only: the model repeats what it reads.
  */
 export class YclientsError extends Error {
   override readonly name = "YclientsError";
@@ -58,7 +59,8 @@ export class YclientsError extends Error {
   constructor(
     readonly status: number,
     readonly codes: readonly number[],
-    message: string
+    message: string,
+    readonly envelope = false
   ) {
     super(message);
   }
@@ -143,7 +145,10 @@ function readAnswer(answer: PageAnswer): YclientsAnswer {
         (meta?.errors ?? []).flatMap((error) =>
           error.code === undefined ? [] : [error.code]
         ),
-        meta?.message ?? `HTTP ${String(answer.status)}`
+        [meta?.message, ...(meta?.errors ?? []).map((error) => error.message)]
+          .filter(Boolean)
+          .join("; ") || `HTTP ${String(answer.status)}`,
+        true
       ),
       kind: "refused",
     };

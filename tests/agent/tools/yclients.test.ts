@@ -98,13 +98,21 @@ async function yclientsModule() {
   return (await import("@agent/tools/yclients")).default;
 }
 
-/** The tool as a step of a new turn with these messages sees it. */
-async function tool(messages: ModelMessage[]) {
-  turn += 1;
+/**
+ * The tool as a step sees it with these messages: of a new turn, or of the
+ * turn of `same` (a later step, after a message the person sent meanwhile).
+ */
+async function tool(messages: ModelMessage[], same?: "same turn") {
+  if (same === undefined) turn += 1;
   const resolve = (await yclientsModule()).events["step.started"];
   const tools = resolve
     ? await resolve(
-        { data: { stepIndex: 0, turnId: `turn_${String(turn)}` } },
+        {
+          data: {
+            stepIndex: same === undefined ? 0 : 1,
+            turnId: `turn_${String(turn)}`,
+          },
+        },
         resolveContext(messages)
       )
     : null;
@@ -424,24 +432,53 @@ describe("yclients", () => {
     const booker = await tool(asked);
     const lost = await booker.execute(booking, callContext());
     expect(JSON.stringify(lost)).toContain("Do not book again");
-    expect(await booker.execute(booking, callContext())).toMatchObject({
-      ok: false,
-    });
+    // «Ну что? Попробуй ещё» while the turn runs: still the same turn, and
+    // its one booking is spent, at any place.
+    const steered = await tool(
+      [...asked, { content: "ну что? попробуй ещё", role: "user" }],
+      "same turn"
+    );
+    expect(
+      await steered.execute({ ...booking, company: 556 }, callContext())
+    ).toMatchObject({ ok: false });
+    // A later turn does not book that place again for a while either.
+    expect(
+      JSON.stringify(await (await tool(asked)).execute(booking, callContext()))
+    ).toContain("may already exist");
     expect(requests).toHaveLength(1);
 
     // A gateway's 504 page after the booking went out: it may exist.
     const gateway = yclients({
-      [`POST /api/v1/book_record/${String(company)}`]: () =>
+      "POST /api/v1/book_record/557": () =>
         new Response("<html>504 Gateway Time-out</html>", { status: 504 }),
     });
     const again = await tool(asked);
     expect(
-      JSON.stringify(await again.execute(booking, callContext()))
+      JSON.stringify(
+        await again.execute({ ...booking, company: 557 }, callContext())
+      )
     ).toContain("Do not book again");
-    expect(await again.execute(booking, callContext())).toMatchObject({
-      ok: false,
-    });
     expect(gateway).toHaveLength(1);
+  });
+
+  it("takes YClients' own refusal without codes for a sure one, and asks for an email it wants", async () => {
+    const requests = yclients({
+      [`POST /api/v1/book_record/${String(company)}`]: () =>
+        Response.json(
+          { meta: { message: "Некорректный email" }, success: false },
+          { status: 400 }
+        ),
+    });
+    const booker = await tool(asked);
+
+    const refused = JSON.stringify(
+      await booker.execute(booking, callContext())
+    );
+    expect(refused).toContain("email");
+    expect(refused).not.toContain("Do not book again");
+    // Nothing was booked: the turn may book once more.
+    await booker.execute(booking, callContext());
+    expect(requests).toHaveLength(2);
   });
 
   it("books again after a tab that never sent the booking, but not after one that may have", async () => {

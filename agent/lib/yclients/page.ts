@@ -92,9 +92,9 @@ export async function sendInPage(
   requests: readonly PageRequest[],
   writes: boolean
 ) {
-  if (!(await usesBrowserPool({ workspaceId }))) {
-    throw new YclientsPageError(false, "no pool browser");
-  }
+  // Nothing has gone out until the tab runs the calls.
+  const pool = await usesBrowserPool({ workspaceId }).catch(() => false);
+  if (!pool) throw new YclientsPageError(false, "no pool browser");
   const first = await inTab(workspaceId, token, requests);
   if (first.kind === "answers") return first.answers;
   if (first.kind === "failed") {
@@ -103,7 +103,9 @@ export async function sendInPage(
   if (first.ran && writes) {
     throw new YclientsPageError(true, "the network failed the calls");
   }
-  const renewed = await renewBrowserVmExit(browserVmProfileId(workspaceId, 0));
+  const renewed = await renewBrowserVmExit(
+    browserVmProfileId(workspaceId, 0)
+  ).catch(() => false);
   console.warn("[yclients] the page did not reach YClients", {
     ran: first.ran,
     renewed,
@@ -178,6 +180,11 @@ async function inTab(
     const answers = answersSchema.safeParse(value.value);
     if (!answers.success || answers.data.length !== requests.length) {
       return { kind: "failed", reason: "answer", sent: true };
+    }
+    // Not one call found a network: the exit did not carry the page's
+    // requests (it may have served robots.txt from the cache).
+    if (answers.data.every((answer) => answer.status === 0)) {
+      return { kind: "unreachable", ran: true };
     }
     console.info("[yclients] page", {
       callMs: Date.now() - began - tabMs,

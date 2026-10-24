@@ -50,7 +50,7 @@ const mapsCall = async (session, path, params) => {
 // A place booked through YClients names its YClients company:
 // \`booking.originalId\` is "yclients__664163" (24.10, the yclients tool).
 const mapsYclients = (booking) => {
-  const id = booking && /^yclients__(\\d{1,12})$/.exec(booking.originalId || "");
+  const id = booking && /^yclients__([1-9]\\d{0,11})$/.exec(booking.originalId || "");
   return id ? Number(id[1]) : null;
 };
 const mapsAnswer = (x) =>

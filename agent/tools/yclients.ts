@@ -277,6 +277,12 @@ function companyRow(answer: Parameters<typeof dataOf>[0]) {
   return row.success ? row.data : undefined;
 }
 
+const namedNoPlace = {
+  ok: false as const,
+  reply:
+    "YClients named no place for that link. Do the booking with browser_task (the place's site or the «Записаться» button of its Yandex Maps card).",
+};
+
 async function find(link: string, workspaceId: string) {
   const url = URL.parse(/^https?:\/\//iu.test(link) ? link : `https://${link}`);
   if (url === null) {
@@ -309,11 +315,16 @@ async function find(link: string, workspaceId: string) {
             path: `/bookform/${String(form)}`,
           }))
         );
+  // A form YClients does not know any more (an old link on the site) is
+  // left out; the others still count.
   const forms = new Map(
-    formIds.map((form, index) => [
-      form,
-      bookformSchema.parse(dataOf(formAnswers[index])),
-    ])
+    formIds.flatMap((form, index) => {
+      const answer = formAnswers[index];
+      const parsed = bookformSchema.safeParse(
+        answer?.kind === "ok" ? answer.data : null
+      );
+      return parsed.success ? [[form, parsed.data] as const] : [];
+    })
   );
   // A form's company, and for a network's form (`group_id`) every branch of
   // the network too: its `company_id` is only the form's default branch,
@@ -335,6 +346,7 @@ async function find(link: string, workspaceId: string) {
   }
   const known = [...companies];
   const networks = [...groups];
+  if (known.length + networks.length === 0) return namedNoPlace;
   const answers = await yclientsCalls(workspaceId, [
     ...known.map(([id]) => ({
       method: "GET" as const,
@@ -362,6 +374,7 @@ async function find(link: string, workspaceId: string) {
       : [];
   });
   const all = [...places, ...branches];
+  if (all.length === 0) return namedNoPlace;
   return {
     ok: true as const,
     places: all.slice(0, maximumBranches),
@@ -490,7 +503,8 @@ async function slots(
 }
 
 /** What a refused booking's codes mean, for the model (developers.yclients.com). */
-function refusal(codes: readonly number[]) {
+function refusal(error: YclientsError) {
+  const { codes } = error;
   if (codes.includes(432)) {
     return "The SMS code is wrong. Ask the person to check it, then call book again with the right code.";
   }
@@ -512,29 +526,54 @@ function refusal(codes: readonly number[]) {
   if (codes.includes(438)) {
     return "That service can no longer be booked. Read services again.";
   }
+  // YClients' own words, read by the code only: the model is not shown them.
+  if (/e-?mail|почт/iu.test(error.message)) {
+    return "The salon needs the person's email. Ask for it, save it with personal_info__update, then book.";
+  }
   return "YClients refused the booking. Do it with browser_task on the place's booking page, or offer to call the place. Never quote an error text or a status code to the person.";
+}
+
+/** The person's words of the turn, as the step saw them. */
+interface TurnWords {
+  readonly answers: readonly string[];
+  readonly said: readonly string[] | null;
+  readonly step: StepIdentity;
 }
 
 /**
  * A booking per turn: claimed before the first await, so two calls of one
  * step cannot both book, and given back only when YClients surely booked
- * nothing. Keyed by the turn and the person's words: after eve hands a
- * session over, turn ids start again at `turn_0`. On this instance only: a
- * restart of eve between `book_record` and the end of its step could run
- * the step, and the booking, again.
+ * nothing. Keyed by the session and the turn alone: a message the person
+ * sends while the turn runs («ну что?») is still the same turn. On this
+ * instance only: a restart of eve between `book_record` and the end of its
+ * step could run the step, and the booking, again.
  */
 const bookingClaims = turnMemory<"booked" | "claimed" | "open">();
 
-/** The step a booking is claimed under, or undefined without a turn id. */
-function claimOf(words: {
-  readonly said: readonly string[] | null;
-  readonly step: StepIdentity;
-}) {
-  if (words.step.turnId === undefined) return undefined;
-  return {
-    sessionId: words.step.sessionId,
-    turnId: `${words.step.turnId}\n${(words.said ?? []).join("\n")}`,
-  };
+/**
+ * Places whose booking may exist from an answer that was lost, by workspace
+ * and company, with when: no booking goes there again for a while, in this
+ * turn or a later one. A second try after a lost answer would be a second
+ * appointment (staff 0 takes another master), and its 433 would read as
+ * «taken» and send the model to another time.
+ */
+const uncertainBookings = new Map<string, number>();
+const uncertainHoldMs = 30 * 60_000;
+
+function uncertainKey(workspaceId: string, companyId: number) {
+  return `${workspaceId}\n${String(companyId)}`;
+}
+
+/** Minutes since a booking at the place may have gone through, if lately. */
+function uncertainSince(workspaceId: string, companyId: number) {
+  const key = uncertainKey(workspaceId, companyId);
+  const at = uncertainBookings.get(key);
+  if (at === undefined) return undefined;
+  if (Date.now() - at >= uncertainHoldMs) {
+    uncertainBookings.delete(key);
+    return undefined;
+  }
+  return Math.max(1, Math.round((Date.now() - at) / 60_000));
 }
 
 /**
@@ -542,29 +581,32 @@ function claimOf(words: {
  * its own («код 4821», «4 8 2 1»), not as a part of another one: «в 11:00»
  * does not give the code 1100.
  */
-function saidCode(said: readonly string[] | null, code: string) {
-  return (said ?? []).some((words) =>
+function saidCode(said: readonly string[], code: string) {
+  return said.some((words) =>
     (words.match(/\d(?:[\s-]?\d){3,9}/gu) ?? []).some(
       (number) => number.replaceAll(/\D/gu, "") === code
     )
   );
 }
 
-/** Whether YClients surely refused: a 4xx with its own error codes. */
+/**
+ * Whether YClients surely refused: a 4xx in its own envelope. A non-201
+ * answer of `book_record` creates no record (developers.yclients.com); a
+ * gateway's or a WAF's page says nothing of what happened behind it.
+ */
 function refusedForSure(error: YclientsError) {
-  return error.status >= 400 && error.status < 500 && error.codes.length > 0;
+  return error.envelope && error.status >= 400 && error.status < 500;
 }
 
 async function book(
   input: Extract<Input, { action: "book" }>,
   context: ToolContext,
-  words: {
-    readonly said: readonly string[] | null;
-    readonly step: StepIdentity;
-  }
+  words: TurnWords
 ) {
-  const claim = claimOf(words);
-  if (claim === undefined) return { ok: false as const, reply: notThePerson };
+  const claim = words.step;
+  if (claim.turnId === undefined) {
+    return { ok: false as const, reply: notThePerson };
+  }
   const held = bookingClaims.get(claim);
   if (held === "booked" || held === "claimed") {
     return {
@@ -573,27 +615,43 @@ async function book(
         "One booking was already made in this turn. Do not book again unless the person asks for another one.",
     };
   }
+  const caller = context.session.auth.current;
+  if (caller?.principalType !== "user")
+    return { ok: false as const, reply: notThePerson };
+  const scope = scopeFromPrincipal(caller);
+  const since = uncertainSince(scope.workspaceId, input.company);
+  if (since !== undefined) {
+    return {
+      ok: false as const,
+      reply: `A booking at this place may already exist: ${String(since)} min ago its answer was lost. Do not book there again now. Tell the person to check for the salon's SMS, and offer to call the place to check.`,
+    };
+  }
   const digits = input.code?.replaceAll(/\D/gu, "") ?? "";
   const code = digits === "" ? undefined : digits;
-  if (code !== undefined && !saidCode(words.said, code)) {
+  // An answer to Bro's question is the person's own words too.
+  if (
+    code !== undefined &&
+    !saidCode([...(words.said ?? []), ...words.answers], code)
+  ) {
     return {
       ok: false as const,
       reply:
         "That code is not in the person's own words of this turn. Ask the person for the SMS code.",
     };
   }
-  const caller = context.session.auth.current;
-  if (caller?.principalType !== "user")
-    return { ok: false as const, reply: notThePerson };
   bookingClaims.set(claim, "claimed");
   try {
-    const result = await bookOnce(input, code, scopeFromPrincipal(caller));
+    const result = await bookOnce(input, code, scope);
     bookingClaims.set(claim, result.booked ? "booked" : "open");
     return result;
   } catch (error) {
     // Before `book_record`, or refused by it for sure, nothing was booked.
     if (error instanceof BookingSent) {
       bookingClaims.set(claim, "booked");
+      uncertainBookings.set(
+        uncertainKey(scope.workspaceId, input.company),
+        Date.now()
+      );
       console.warn("[yclients] booking answer lost", {
         company: input.company,
         status: error.status,
@@ -749,10 +807,7 @@ async function bookOnce(
 async function callYclients(
   input: Input,
   context: ToolContext,
-  words: {
-    readonly said: readonly string[] | null;
-    readonly step: StepIdentity;
-  },
+  words: TurnWords,
   workspaceId: string
 ) {
   try {
@@ -778,7 +833,7 @@ async function callYclients(
       ok: false as const,
       reply:
         error instanceof YclientsError && input.action === "book"
-          ? refusal(error.codes)
+          ? refusal(error)
           : unavailable,
     };
   }
@@ -799,7 +854,7 @@ export default defineDynamic({
         context.session.id
       );
       const turn = personWordsThisTurn(context.messages, step);
-      const words = { said: turn.said, step };
+      const words = { answers: turn.answers, said: turn.said, step };
       return {
         yclients: defineTool({
           availableInSubagents: false,
