@@ -2,10 +2,10 @@
 # Production's test accounts (test-accounts.ts): web-only people for live checks, none of them real.
 #
 #   host.py ops NAME test-accounts.sh ensure s3put:<result key>   # make them once, one-time sign-in links to the PUT URL
-#   host.py ops NAME test-accounts.sh state [SINCE]               # read only: what Bro ↔ Bro holds of them
+#   host.py ops NAME test-accounts.sh state s3put:<result key> [SINCE]   # read only: what Bro ↔ Bro holds of them
 #
-# state prints, as one JSON object, for the accounts whose mail is bro-test-*@telegram.local-vault.invalid and
-# nobody else: their workspace, its phone number requests and numbers (there must be none), the chats Bro
+# state puts one JSON object to the PUT URL (a job's log keeps 1000 characters of a line; test-accounts.py --state
+# reads it), for the accounts whose mail is bro-test-*@telegram.local-vault.invalid and nobody else: their workspace, its phone number requests and numbers (there must be none), the chats Bro
 # remembers they wrote from, and since SINCE (ISO 8601, a day back by default) their invites, links, and the
 # threads between two of them with both sides, every message and every report. Only test data: a thread with a
 # real person's workspace is left out whole.
@@ -17,11 +17,13 @@ case "${1:-}" in
     ;;
   state)
     source "$(dirname "$0")/db-lib.sh"
-    since=${2:-}
+    result=${2:-}
+    [[ "$result" == https://* ]] || die "usage: test-accounts.sh state s3put:<result key> [SINCE]"
+    since=${3:-}
     [ -z "$since" ] || [[ "$since" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}(T[0-9:.]+(Z|[+-][0-9:]+)?)?$ ]] || die "SINCE: an ISO 8601 date"
     connection SRC app
     PGOPTIONS="-c default_transaction_read_only=on -c statement_timeout=20000 -c TimeZone=Europe/Moscow" \
-      psql_on SRC -v since="${since:-$(date -u -d '1 day ago' +%Y-%m-%dT%H:%M:%SZ)}" <<'SQL'
+      psql_on SRC -v since="${since:-$(date -u -d '1 day ago' +%Y-%m-%dT%H:%M:%SZ)}" <<'SQL' |
 WITH tests AS (
   SELECT m.workspace_id, u.name FROM "user" u
   JOIN workspace_memberships m ON m.user_id = 'better-auth:' || u.id
@@ -86,9 +88,11 @@ SELECT json_build_object(
       AND (r.thread_id IS NULL OR r.thread_id IN (SELECT id FROM threads)))
 );
 SQL
+      curl -fsS -m 60 -X PUT --data-binary @- -o /dev/null "$result"
+    echo "state uploaded"
     ;;
   *)
-    echo "usage: test-accounts.sh ensure s3put:<result key> | state [SINCE]" >&2
+    echo "usage: test-accounts.sh ensure s3put:<result key> | state s3put:<result key> [SINCE]" >&2
     exit 1
     ;;
 esac
