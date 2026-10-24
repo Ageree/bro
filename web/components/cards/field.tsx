@@ -4,15 +4,19 @@ import type { Card } from "@shared/cards/schema";
 import { cn } from "@web/components/class-names";
 import { Input } from "@web/components/ui/input";
 import { Textarea } from "@web/components/ui/textarea";
+import { Button } from "@web/components/ui/button";
+import { Minus, Plus } from "lucide-react";
 import { initialValue, useCardAnswer } from "./answer";
 
 type Field = Extract<Card["blocks"][number], { type: "field" }>;
 
 /** What the browser's own control is for each kind of field. */
 const controls = {
+  count: { inputMode: "decimal", type: "number" },
   date: { inputMode: undefined, type: "date" },
   longtext: { inputMode: undefined, type: "text" },
   number: { inputMode: "decimal", type: "text" },
+  slider: { inputMode: undefined, type: "range" },
   text: { inputMode: undefined, type: "text" },
   time: { inputMode: undefined, type: "time" },
 } as const satisfies Record<
@@ -51,12 +55,71 @@ export function FieldBlock({ block }: { readonly block: Field }) {
     value,
   };
   const border = error === undefined ? "border-foreground" : "border-bro-error";
+  const number = Number(value);
   return (
     <div className="flex min-w-0 flex-col gap-2">
       <label className="type-cards-question wrap-anywhere" htmlFor={id}>
         {block.label}
       </label>
-      {block.input === "longtext" ? (
+      {block.input === "count" ? (
+        <div className="flex items-center gap-4" id={id} tabIndex={-1}>
+          <Button
+            aria-label={`Уменьшить: ${block.label}`}
+            disabled={locked || number <= (block.min ?? 0)}
+            size="icon"
+            variant="outline"
+            onClick={() => {
+              answer.set(
+                block.id,
+                String(Math.max(block.min ?? 0, number - (block.step ?? 1)))
+              );
+            }}
+          >
+            <Minus />
+          </Button>
+          <output className="type-row min-w-12 text-center" aria-live="polite">
+            {value}
+            {block.unit ? ` ${block.unit}` : ""}
+          </output>
+          <Button
+            aria-label={`Увеличить: ${block.label}`}
+            disabled={locked || number >= (block.max ?? 0)}
+            size="icon"
+            variant="outline"
+            onClick={() => {
+              answer.set(
+                block.id,
+                String(Math.min(block.max ?? 0, number + (block.step ?? 1)))
+              );
+            }}
+          >
+            <Plus />
+          </Button>
+        </div>
+      ) : block.input === "slider" ? (
+        <div className="flex flex-col gap-2">
+          <output className="type-row" htmlFor={id}>
+            {new Intl.NumberFormat("ru-RU").format(number)} {block.unit}
+          </output>
+          <Input
+            {...control}
+            className="h-11 w-full cursor-pointer accent-foreground"
+            disabled={locked}
+            type="range"
+            variant="plain"
+            min={block.min}
+            max={block.max}
+            step={block.step ?? 1}
+            onChange={(event) => {
+              answer.set(block.id, event.target.value);
+            }}
+          />
+          <div className="flex justify-between type-caption text-muted-foreground">
+            <span>{block.min}</span>
+            <span>{block.max}</span>
+          </div>
+        </div>
+      ) : block.input === "longtext" ? (
         <Textarea
           {...control}
           className={cn(

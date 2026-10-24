@@ -365,6 +365,7 @@ describe("a card's answers", () => {
     expect([...first, ...second]).toEqual([
       expect.objectContaining({
         action: "continue",
+        claimedAt: start,
         conversationId: "4242::",
         ref,
         revision: 1,
@@ -380,11 +381,13 @@ describe("a card's answers", () => {
       new Date(start.getTime() + minutes(3))
     );
     if (!again) throw new Error("Expected the answer again.");
-    await service.releaseCardResponse(again.id);
-    expect(
-      await service.claimCardResponses(new Date(start.getTime() + minutes(4)))
-    ).toHaveLength(1);
-    await service.releaseCardResponse(again.id);
+    await service.releaseCardResponse(again.id, again.claimedAt);
+    const third = await service.claimCardResponses(
+      new Date(start.getTime() + minutes(4))
+    );
+    expect(third).toHaveLength(1);
+    if (!third[0]) throw new Error("Expected the third claim.");
+    await service.releaseCardResponse(third[0].id, third[0].claimedAt);
 
     expect(
       await service.claimCardResponses(new Date(start.getTime() + minutes(5)))
@@ -399,8 +402,12 @@ describe("a card's answers", () => {
     await service.saveCardResponse(found, response, start);
     const [claimed] = await service.claimCardResponses(start);
     if (!claimed) throw new Error("Expected the answer.");
-    await service.markCardResponseDelivered(claimed.id, start);
-    await service.releaseCardResponse(claimed.id);
+    await service.markCardResponseDelivered(
+      claimed.id,
+      claimed.claimedAt,
+      start
+    );
+    await service.releaseCardResponse(claimed.id, claimed.claimedAt);
 
     expect(
       await service.claimCardResponses(new Date(start.getTime() + minutes(10)))
@@ -418,6 +425,55 @@ describe("a card's answers", () => {
       state: "failed",
     });
   });
+
+  it.each(["release", "delivered", "fail"] as const)(
+    "ignores a late %s from an expired claim without changing its newer lease",
+    async (outcome) => {
+      const { database, found, service } = await answered();
+      await service.saveCardResponse(found, response, start);
+      const [first] = await service.claimCardResponses(start);
+      const claimedAt = new Date(start.getTime() + minutes(3));
+      const [current] = await service.claimCardResponses(claimedAt);
+      if (!first || !current) throw new Error("Expected both claims.");
+      const before = await database.select().from(schema.cardResponses);
+
+      if (outcome === "release")
+        await service.releaseCardResponse(first.id, start);
+      else if (outcome === "delivered")
+        await service.markCardResponseDelivered(first.id, start, claimedAt);
+      else await service.failCardResponse(first.id, start);
+
+      expect(await database.select().from(schema.cardResponses)).toEqual(
+        before
+      );
+      expect(
+        await service.claimCardResponses(new Date(claimedAt.getTime() + 1))
+      ).toEqual([]);
+
+      if (outcome === "release") {
+        await service.releaseCardResponse(current.id, claimedAt);
+      } else if (outcome === "delivered") {
+        await service.markCardResponseDelivered(
+          current.id,
+          claimedAt,
+          claimedAt
+        );
+      } else {
+        await service.failCardResponse(current.id, claimedAt);
+      }
+      expect(await service.readCardResponse(found.id, 1)).toMatchObject({
+        state:
+          outcome === "delivered"
+            ? "delivered"
+            : outcome === "fail"
+              ? "failed"
+              : "received",
+      });
+      expect(
+        await service.claimCardResponses(new Date(claimedAt.getTime() + 1))
+      ).toHaveLength(outcome === "release" ? 1 : 0);
+    }
+  );
 
   it("updates the person's card in its own chat only, one revision up, and takes a new answer to it", async () => {
     const { found, ref, service } = await answered();
@@ -490,7 +546,7 @@ describe("a card's intents", () => {
 
   async function pressed() {
     const { database, service } = await cards();
-    const { id } = await service.createCard(alice, hotel, chat, start);
+    const { id, ref } = await service.createCard(alice, hotel, chat, start);
     const found = await service.readCardByLink(id, start);
     if (!found) throw new Error("Expected the card.");
     const rows = () =>
@@ -501,7 +557,7 @@ describe("a card's intents", () => {
           state: schema.cardResponses.state,
         })
         .from(schema.cardResponses);
-    return { database, found, rows, service };
+    return { database, found, ref, rows, service };
   }
 
   it("keeps the person's last word: a waiting intent takes the new press, one Bro took up stays", async () => {
@@ -557,6 +613,50 @@ describe("a card's intents", () => {
     });
   });
 
+  it.each(["submit", "intent"] as const)(
+    "keeps only the final submit when concurrent saves start with %s",
+    async (first) => {
+      const { found, rows, service } = await pressed();
+      expect(
+        await service.readCardResponse(found.id, found.revision)
+      ).toBeUndefined();
+      const submit = () => service.saveCardResponse(found, answer, start);
+      const intent = () => service.saveCardIntent(found, press("more"), start);
+
+      await Promise.all(
+        first === "submit" ? [submit(), intent()] : [intent(), submit()]
+      );
+
+      expect(await rows()).toEqual([
+        { action: "continue", kind: "submit", state: "received" },
+      ]);
+    }
+  );
+
+  it("refuses an intent after its revision was submitted, but accepts one after the card updates", async () => {
+    const { found, ref, rows, service } = await pressed();
+    await service.saveCardResponse(found, answer, start);
+
+    expect(await service.saveCardIntent(found, press("more"), start)).toBe(
+      "busy"
+    );
+    await service.updateCard(
+      alice,
+      { conversationId: chat.conversationId, ref },
+      async () => ({ card: hotel }),
+      start
+    );
+    const updated = await service.readCardByLink(found.id, start);
+    if (!updated) throw new Error("Expected the updated card.");
+    expect(await service.saveCardIntent(updated, press("more"), start)).toBe(
+      "received"
+    );
+    expect((await rows()).map((row) => row.kind).toSorted()).toEqual([
+      "intent",
+      "submit",
+    ]);
+  });
+
   it("gives a card one turn of its presses at a time", async () => {
     const { found, service } = await pressed();
     await service.saveCardIntent(found, press("more"), start);
@@ -571,11 +671,32 @@ describe("a card's intents", () => {
       stage: "queued",
     });
 
-    await service.markCardResponseDelivered(first.id, at(1));
+    await service.markCardResponseDelivered(first.id, first.claimedAt, at(1));
     expect(await service.claimCardResponses(at(2))).toEqual([]);
     await service.finishCardResponse(first.id, at(3));
     expect(await service.claimCardResponses(at(3))).toMatchObject([
       { action: "continue", kind: "submit" },
+    ]);
+  });
+
+  it("keeps replacing the latest waiting intent behind a delivered intent's turn", async () => {
+    const { found, service } = await pressed();
+    await service.saveCardIntent(found, press("more"), start);
+    const [first] = await service.claimCardResponses(start);
+    if (!first) throw new Error("Expected the first intent.");
+    await service.markCardResponseDelivered(first.id, first.claimedAt, start);
+
+    expect(await service.saveCardIntent(found, press("refresh"), at(1))).toBe(
+      "received"
+    );
+    expect(await service.saveCardIntent(found, press("question"), at(2))).toBe(
+      "replaced"
+    );
+    expect(await service.claimCardResponses(at(2))).toEqual([]);
+
+    await service.finishCardResponse(first.id, at(3));
+    expect(await service.claimCardResponses(at(3))).toMatchObject([
+      { action: "question", kind: "intent" },
     ]);
   });
 
@@ -584,7 +705,7 @@ describe("a card's intents", () => {
     await service.saveCardIntent(found, press("more"), start);
     const [first] = await service.claimCardResponses(start);
     if (!first) throw new Error("Expected the intent.");
-    await service.markCardResponseDelivered(first.id, start);
+    await service.markCardResponseDelivered(first.id, first.claimedAt, start);
     await service.saveCardIntent(found, press("refresh"), at(1));
 
     expect(await service.claimCardResponses(at(4))).toEqual([]);
@@ -619,7 +740,7 @@ describe("a card's intents", () => {
     });
     const [taken] = await service.claimCardResponses(start);
     if (!taken) throw new Error("Expected the intent.");
-    await service.markCardResponseDelivered(taken.id, start);
+    await service.markCardResponseDelivered(taken.id, taken.claimedAt, start);
     expect(await service.readCardPress(found.id, at(1))).toMatchObject({
       stage: "working",
     });
@@ -658,6 +779,127 @@ describe("a card's intents", () => {
       .where(eq(schema.browserRuns.id, "run-1"));
     expect(await service.readCardPress(found.id, at(5))).toMatchObject({
       stage: "done",
+    });
+  });
+
+  describe("the browser run a card press is waiting for", () => {
+    async function linkedPress(status: "done" | "waiting" = "waiting") {
+      const current = await pressed();
+      const { found, service } = current;
+      const runs = await import("@db/services/browser-runs");
+      await service.saveCardIntent(found, press("more"), start);
+      const [taken] = await service.claimCardResponses(start);
+      if (!taken) throw new Error("Expected the card's press.");
+      await service.markCardResponseDelivered(taken.id, taken.claimedAt, start);
+      await runs.createBrowserRun(alice, {
+        ...chat,
+        completedAt: at(1),
+        id: "run-1",
+        sessionId: "browser-session-1",
+        status,
+        task: "Найди ещё три отеля",
+      });
+      await service.linkCardResponseRun(taken.id, "run-1");
+      await service.finishCardResponse(taken.id, at(1));
+      return { ...current, runs };
+    }
+
+    it("is done once a retry successor delivered its report, without changing the original response link", async () => {
+      const { database, found, runs, service } = await linkedPress();
+      expect(
+        await runs.handOffBrowserRunRetry("run-1", {
+          ...chat,
+          id: "run-2",
+          sessionId: "browser-session-2",
+          status: "running",
+          task: "Найди ещё три отеля",
+        })
+      ).toBe(true);
+      expect(await service.readCardPress(found.id, at(2))).toMatchObject({
+        stage: "searching",
+      });
+      await database
+        .update(schema.browserRuns)
+        .set({ completedAt: at(4), status: "done" })
+        .where(eq(schema.browserRuns.id, "run-2"));
+      await runs.finishBrowserRunReport("run-2");
+
+      expect(
+        (await runs.readBrowserRun("run-1"))?.reportDeliveredAt
+      ).toBeNull();
+      expect(await service.readCardPress(found.id, at(5))).toMatchObject({
+        stage: "done",
+      });
+      expect(await service.readCardOfRun("run-2", at(5))).toMatchObject({
+        id: found.id,
+      });
+      expect(
+        await database
+          .select({ runId: schema.cardResponses.runId })
+          .from(schema.cardResponses)
+          .where(eq(schema.cardResponses.cardId, found.id))
+      ).toEqual([{ runId: "run-1" }]);
+    });
+
+    it("keeps searching for an ordinary continuation despite its delivered predecessor, for at most thirty minutes", async () => {
+      const { database, found, runs, service } = await linkedPress("done");
+      await runs.createBrowserRun(
+        alice,
+        {
+          ...chat,
+          id: "run-2",
+          sessionId: "browser-session-2",
+          status: "running",
+          task: "Покажи другие варианты",
+        },
+        "run-1"
+      );
+
+      expect(
+        (await runs.readBrowserRun("run-1"))?.reportDeliveredAt
+      ).toBeInstanceOf(Date);
+      expect(await service.readCardPress(found.id, at(2))).toMatchObject({
+        stage: "searching",
+      });
+      expect(await service.readCardPress(found.id, at(29))).toMatchObject({
+        stage: "searching",
+      });
+      expect(await service.readCardPress(found.id, at(30))).toMatchObject({
+        stage: "done",
+      });
+      expect(
+        await database
+          .select({ runId: schema.cardResponses.runId })
+          .from(schema.cardResponses)
+          .where(eq(schema.cardResponses.cardId, found.id))
+      ).toEqual([{ runId: "run-1" }]);
+    });
+
+    it("ignores a delivered successor from another workspace", async () => {
+      const { database, found, runs, service } = await linkedPress();
+      await runs.createBrowserRun(
+        { userId: "bob", workspaceId: "workspace:bob" },
+        {
+          ...chat,
+          completedAt: at(2),
+          id: "foreign-run",
+          sessionId: "browser-session-bob",
+          status: "done",
+          task: "Другое поручение",
+        }
+      );
+      await runs.finishBrowserRunReport("foreign-run");
+      await database
+        .update(schema.browserRuns)
+        .set({ retriedAsRunId: "foreign-run" })
+        .where(eq(schema.browserRuns.id, "run-1"));
+
+      expect(await service.readCardPress(found.id, at(3))).toMatchObject({
+        stage: "searching",
+      });
+      expect(await service.readCardPress(found.id, at(30))).toMatchObject({
+        stage: "done",
+      });
     });
   });
 

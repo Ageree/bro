@@ -20,6 +20,7 @@ import { deleteCardPhotos, keptPhotoNumbers } from "@shared/cards/photos";
 import type { CardAnswer } from "@shared/cards/response";
 import { type Card, cardSchema } from "@shared/cards/schema";
 import type { AccessScope } from "@shared/identity/access-scope";
+import { readLatestBrowserRunForScope } from "./browser-runs";
 
 /**
  * Cards Bro sends to a chat (`docs/cards.md`), kept behind a link whose id is
@@ -401,6 +402,18 @@ export async function saveCardIntent(
       sql`select pg_advisory_xact_lock(hashtextextended(${`card-intents:${card.workspaceId}`}, 0))`
     );
     await lockCardPresses(transaction, card.id);
+    const [submitted] = await transaction
+      .select({ id: cardResponses.id })
+      .from(cardResponses)
+      .where(
+        and(
+          eq(cardResponses.cardId, card.id),
+          eq(cardResponses.revision, card.revision),
+          eq(cardResponses.kind, "submit")
+        )
+      )
+      .limit(1);
+    if (submitted) return "busy" as const;
     const [waiting] = await transaction
       .select({
         action: cardResponses.action,
@@ -590,7 +603,7 @@ export async function claimCardResponses(now: Date, limit = 10) {
     )
   ).flat();
   if (claimed.length === 0) return [];
-  return db
+  const rows = await db
     .select({
       action: cardResponses.action,
       cardId: cards.id,
@@ -610,45 +623,72 @@ export async function claimCardResponses(now: Date, limit = 10) {
     .from(cardResponses)
     .innerJoin(cards, eq(cardResponses.cardId, cards.id))
     .where(
-      inArray(
-        cardResponses.id,
-        claimed.map(({ id }) => id)
+      and(
+        inArray(
+          cardResponses.id,
+          claimed.map(({ id }) => id)
+        ),
+        eq(cardResponses.state, "received"),
+        eq(cardResponses.claimedAt, now)
       )
     )
     .orderBy(asc(cardResponses.createdAt));
+  return rows.map((row) => Object.assign(row, { claimedAt: now }));
 }
 
 /** The answer became a turn of its chat. */
 export async function markCardResponseDelivered(
   id: ResponseRow["id"],
+  claimedAt: Date,
   now: Date
 ) {
   await db
     .update(cardResponses)
     .set({ deliveredAt: now, state: "delivered" })
-    .where(and(eq(cardResponses.id, id), eq(cardResponses.state, "received")));
+    .where(
+      and(
+        eq(cardResponses.id, id),
+        eq(cardResponses.claimedAt, claimedAt),
+        eq(cardResponses.state, "received")
+      )
+    );
 }
 
 /**
  * A claimed answer that could not be sent goes back to the queue, or fails
  * once it is out of attempts.
  */
-export async function releaseCardResponse(id: ResponseRow["id"]) {
+export async function releaseCardResponse(
+  id: ResponseRow["id"],
+  claimedAt: Date
+) {
   await db
     .update(cardResponses)
     .set({
       claimedAt: null,
       state: sql`case when ${cardResponses.attempts} >= ${attemptLimit} then 'failed' else 'received' end`,
     })
-    .where(and(eq(cardResponses.id, id), eq(cardResponses.state, "received")));
+    .where(
+      and(
+        eq(cardResponses.id, id),
+        eq(cardResponses.claimedAt, claimedAt),
+        eq(cardResponses.state, "received")
+      )
+    );
 }
 
 /** An answer that can never be sent: its card lost its chat. */
-export async function failCardResponse(id: ResponseRow["id"]) {
+export async function failCardResponse(id: ResponseRow["id"], claimedAt: Date) {
   await db
     .update(cardResponses)
     .set({ state: "failed" })
-    .where(and(eq(cardResponses.id, id), eq(cardResponses.state, "received")));
+    .where(
+      and(
+        eq(cardResponses.id, id),
+        eq(cardResponses.claimedAt, claimedAt),
+        eq(cardResponses.state, "received")
+      )
+    );
 }
 
 /**
@@ -757,13 +797,13 @@ export async function readCardPress(cardId: string, now = new Date()) {
       id: cardResponses.id,
       item: cardResponses.item,
       kind: cardResponses.kind,
-      reportDeliveredAt: browserRuns.reportDeliveredAt,
       revision: cardResponses.revision,
-      runStatus: browserRuns.status,
+      runId: cardResponses.runId,
       state: cardResponses.state,
+      userId: cardResponses.userId,
+      workspaceId: cardResponses.workspaceId,
     })
     .from(cardResponses)
-    .leftJoin(browserRuns, eq(browserRuns.id, cardResponses.runId))
     .where(eq(cardResponses.cardId, cardId))
     .orderBy(desc(cardResponses.createdAt))
     .limit(1);
@@ -791,12 +831,17 @@ export async function readCardPress(cardId: string, now = new Date()) {
       stage: busy ? ("queued" as const) : ("waiting" as const),
     };
   }
-  const searching =
-    row.runStatus !== null &&
-    row.reportDeliveredAt === null &&
-    since(row.deliveredAt) < searchMs &&
-    (searchingRunStatuses.has(row.runStatus) || row.finishedAt !== null);
-  if (searching) return { ...press, stage: "searching" as const };
+  if (row.runId !== null && since(row.deliveredAt) < searchMs) {
+    const run = await readLatestBrowserRunForScope(
+      { userId: row.userId, workspaceId: row.workspaceId },
+      row.runId
+    );
+    if (
+      run?.reportDeliveredAt === null &&
+      (searchingRunStatuses.has(run.status) || row.finishedAt !== null)
+    )
+      return { ...press, stage: "searching" as const };
+  }
   const working =
     row.finishedAt === null && since(row.deliveredAt) < openTurnMs;
   return {

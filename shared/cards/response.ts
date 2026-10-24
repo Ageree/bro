@@ -14,9 +14,11 @@ type Field = Extract<Block, { type: "field" }>;
 
 /** The longest text a field takes, by its kind. */
 const fieldLimits = {
+  count: 32,
   date: 10,
   longtext: 1000,
   number: 32,
+  slider: 32,
   text: 200,
   time: 5,
 } as const satisfies Record<Field["input"], number>;
@@ -109,11 +111,26 @@ function fieldSchema(field: Field, needed: boolean) {
       if (text.length > limit) {
         return fail(`Слишком длинно: не больше ${String(limit)} знаков.`);
       }
-      if (field.input === "number") {
+      if (
+        field.input === "number" ||
+        field.input === "count" ||
+        field.input === "slider"
+      ) {
         const plain = text.replaceAll(/\s/gu, "").replace(",", ".");
-        return numberPattern.test(plain)
-          ? Number(plain)
-          : fail("Введите число, например 12 или 2,5.");
+        if (!numberPattern.test(plain))
+          return fail("Введите число, например 12 или 2,5.");
+        const value = Number(plain);
+        if (field.input !== "number") {
+          const offset = (value - (field.min ?? 0)) / (field.step ?? 1);
+          if (
+            (field.min !== undefined && value < field.min) ||
+            (field.max !== undefined && value > field.max) ||
+            Math.abs(offset - Math.round(offset)) > 1e-6 ||
+            (field.input === "count" && !Number.isInteger(value))
+          )
+            return fail("Выберите значение в пределах шкалы.");
+        }
+        return value;
       }
       if (field.input === "date") {
         return calendarDay(text) ? text : fail("Выберите дату.");
@@ -182,10 +199,7 @@ export function cardResponseSchema(card: Card, revision: number) {
   const actions = card.actions.flatMap((action) => {
     if ("submit" in action)
       return [{ id: action.submit, required: action.submit === main }];
-    const intent = z
-      .string()
-      .safeParse("intent" in action ? action.intent : undefined).data;
-    if (intent !== undefined) return [{ id: intent, required: false }];
+    if ("intent" in action) return [{ id: action.intent, required: false }];
     return [];
   });
   const [first, ...rest] = actions.map((action) =>
@@ -231,7 +245,12 @@ function shown(
     return titles.length > 0 ? titles.join(", ") : "ничего не выбрано";
   }
   if (value === undefined) return "не заполнено";
-  if (question.input === "number" && question.unit !== undefined) {
+  if (
+    (question.input === "number" ||
+      question.input === "count" ||
+      question.input === "slider") &&
+    question.unit !== undefined
+  ) {
     return `${String(value)} ${question.unit}`;
   }
   return question.input === "text" || question.input === "longtext"

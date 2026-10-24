@@ -9,6 +9,7 @@ import { useCardAnswer } from "./answer";
 import { BackToBro } from "./telegram";
 
 type Submit = Extract<Card["actions"][number], { submit: string }>;
+type Intent = Extract<Card["actions"][number], { intent: string }>;
 
 /**
  * A button that sends the card's answer (`docs/cards.md`, «Как это
@@ -18,10 +19,12 @@ type Submit = Extract<Card["actions"][number], { submit: string }>;
  * and into «Отправлено» with a tick once the answer is kept; the card's
  * other submit buttons go then. A viewer who may not answer gets none.
  */
-export function SubmitButton({ action }: { readonly action: Submit }) {
+export function SubmitButton({ action }: { readonly action: Submit | Intent }) {
   const answer = useCardAnswer();
+  const id = "submit" in action ? action.submit : action.intent;
+  const primary = "submit" in action && action.primary;
   if (answer.viewer === "sent") {
-    if (answer.answered?.action !== action.submit) return null;
+    if (answer.answered?.action !== id) return null;
     return (
       <p className="type-act flex min-h-11 w-full items-center justify-center gap-1.5 rounded-full border-2 border-success-border bg-success-subtle px-6 py-2.5 text-success">
         <Check aria-hidden className="size-4 stroke-3" />
@@ -36,18 +39,18 @@ export function SubmitButton({ action }: { readonly action: Submit }) {
   ) {
     return null;
   }
-  const sending = answer.sending === action.submit;
-  const ready = answer.ready(action.submit) && answer.sending === undefined;
+  const sending = answer.sending === id;
+  const ready = answer.ready(id) && answer.sending === undefined;
   return (
     <Button
       aria-busy={sending ? true : undefined}
       aria-disabled={ready ? undefined : true}
       className={cn("w-full", !ready && !sending && "opacity-45")}
       onClick={() => {
-        answer.submit(action.submit);
+        answer.submit(id);
       }}
       size="paper"
-      variant={action.primary ? "paper" : "outline"}
+      variant={primary ? "paper" : "outline"}
     >
       {sending ? (
         <>
@@ -87,6 +90,32 @@ export function AnswerStatus() {
   const { failure, viewer } = answer;
   return (
     <div aria-live="polite" className="flex flex-col gap-3 empty:hidden">
+      {answer.notice && (
+        <p className="type-caption text-muted-foreground">{answer.notice}</p>
+      )}
+      {answer.press &&
+        ["waiting", "queued", "working", "searching"].includes(
+          answer.press.stage
+        ) && (
+          <p className="type-row flex items-center gap-2 text-muted-foreground">
+            <Spinner />
+            {answer.press.stage === "searching"
+              ? "Бро ищет на сайте — результат появится здесь"
+              : answer.press.stage === "queued"
+                ? "Последний запрос принят. Бро закончит предыдущий"
+                : "Бро работает — карточку можно не закрывать"}
+          </p>
+        )}
+      {answer.press?.kind === "intent" && answer.press.stage === "failed" && (
+        <p className="type-row text-bro-error">
+          Запрос не дошёл. Нажмите кнопку ещё раз.
+        </p>
+      )}
+      {answer.press?.kind === "intent" && answer.press.stage === "done" && (
+        <p className="type-caption text-muted-foreground">
+          Бро завершил запрос.
+        </p>
+      )}
       {viewer === "sent" && (
         <>
           <p className="type-row text-muted-foreground">

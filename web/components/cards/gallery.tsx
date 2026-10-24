@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import type { Card } from "@shared/cards/schema";
 import { Carousel } from "./carousel";
 import { Lightbox } from "./lightbox";
@@ -19,6 +19,9 @@ export function GalleryBlock({ block }: { readonly block: Gallery }) {
   const [failed, setFailed] = useState<ReadonlySet<string>>(new Set());
   const [current, setCurrent] = useState(0);
   const [opened, setOpened] = useState<number>();
+  const close = useCallback(() => {
+    setOpened(undefined);
+  }, []);
   const photos = block.photos.filter((photo) => !failed.has(photo.url));
   if (photos.length === 0) return null;
   const credit = (photos[current] ?? photos[0])?.credit;
@@ -58,13 +61,7 @@ export function GalleryBlock({ block }: { readonly block: Gallery }) {
           {credit && `Фото: ${credit}`}
         </figcaption>
       )}
-      <Lightbox
-        index={opened}
-        onClose={() => {
-          setOpened(undefined);
-        }}
-        photos={photos}
-      />
+      <Lightbox index={opened} onClose={close} photos={photos} />
     </figure>
   );
 }

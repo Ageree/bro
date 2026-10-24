@@ -7,6 +7,7 @@ import type * as Telegram from "@agent/lib/cards/telegram";
 import type * as Holds from "@agent/lib/delivery/holds";
 import { cardSchema } from "@shared/cards/schema";
 import { awaitsDelivery } from "@agent/lib/delivery/pending";
+import { checkCard } from "@agent/lib/cards/tools";
 
 const mocks = vi.hoisted(() => ({
   update: vi.fn<typeof Cards.updateCard>(),
@@ -75,11 +76,18 @@ const input = {
   },
 };
 
-async function run(given = input, current = context) {
+async function tool() {
   const tools = await patchCard.events["step.started"]?.({}, dynamic);
   if (!tools || !("patch_card" in tools))
     throw new Error("Expected patch_card.");
-  return tools.patch_card.execute(given, current);
+  return tools.patch_card;
+}
+
+async function run(
+  given: Parameters<Awaited<ReturnType<typeof tool>>["execute"]>[0] = input,
+  current = context
+) {
+  return (await tool()).execute(given, current);
 }
 
 beforeEach(() => {
@@ -102,6 +110,108 @@ beforeEach(() => {
 });
 
 describe("patching a card", () => {
+  it.each(["Оплатить", "Заплатить", "Купить", "Перевести"])(
+    "refuses a button promising an unauthorized action: %s",
+    (label) => {
+      const candidate = {
+        ...card,
+        actions: [{ label, submit: "continue", primary: true }],
+      };
+      expect(
+        checkCard(candidate, input.message, "Nothing changed").refusal
+      ).toMatchObject({ status: "refused" });
+    }
+  );
+
+  it.each([
+    "Выбрать",
+    "Заказать выбранное",
+    "Забронировать",
+    "Подготовить бронь",
+    "Выбрать и забронировать",
+  ])(
+    "allows a selection or preparation label without authorizing submission: %s",
+    (label) => {
+      const candidate = {
+        ...card,
+        actions: [{ label, submit: "continue", primary: true }],
+      };
+      expect(
+        checkCard(candidate, input.message, "Nothing changed").refusal
+      ).toBeUndefined();
+    }
+  );
+  it("updates stable option values on append and removes obsolete initials on replace", async () => {
+    expect(
+      await run({
+        ...input,
+        change: {
+          ...input.change,
+          options: [{ value: "nevsky_dvor", title: "Новая цена" }],
+        },
+      })
+    ).toMatchObject({ status: "updated" });
+    const appended = mocks.keep.mock.calls[0]?.[1].blocks.find(
+      (block) => block.type === "choice"
+    );
+    expect(appended?.type === "choice" ? appended.options : []).toHaveLength(3);
+    expect(
+      appended?.type === "choice" ? appended.options[0] : undefined
+    ).toEqual({ value: "nevsky_dvor", title: "Новая цена" });
+    mocks.keep.mockClear();
+    expect(
+      await run({
+        ...input,
+        change: {
+          ...input.change,
+          mode: "replace",
+          options: [
+            { value: "admiral", title: "Адмирал" },
+            { value: "moika", title: "Мойка" },
+          ],
+        },
+      })
+    ).toMatchObject({ status: "updated" });
+    const replaced = mocks.keep.mock.calls[0]?.[1].blocks.find(
+      (block) => block.type === "choice"
+    );
+    expect(replaced?.type === "choice" ? replaced.initial : undefined).toEqual(
+      []
+    );
+  });
+
+  it("supports note-only results but rejects a full choice outside its bounds", async () => {
+    const tools = await patchCard.events["step.started"]?.({}, dynamic);
+    if (!tools || !("patch_card" in tools))
+      throw new Error("Expected patch_card.");
+    expect(
+      await tools.patch_card.execute(
+        { ref: input.ref, message: input.message, note: "Результат поиска." },
+        context
+      )
+    ).toMatchObject({ status: "updated" });
+    expect(mocks.keep.mock.calls[0]?.[1]).toMatchObject({
+      note: "Результат поиска.",
+      blocks: card.blocks,
+    });
+    mocks.keep.mockClear();
+    expect(
+      await run({
+        ...input,
+        change: {
+          ...input.change,
+          options: Array.from({ length: 6 }, (_, index) => ({
+            value: `extra_${String(index)}`,
+            title: "Ещё вариант",
+          })),
+        },
+      })
+    ).toMatchObject({ status: "invalid" });
+    expect(
+      await run({ ...input, change: { ...input.change, mode: "replace" } })
+    ).toMatchObject({ status: "invalid" });
+    expect(mocks.keep).not.toHaveBeenCalled();
+  });
   it("adds options without repeating the card, and notifies the chat when closed", async () => {
     expect(await run()).toMatchObject({
       status: "updated",

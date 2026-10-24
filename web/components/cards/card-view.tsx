@@ -1,4 +1,7 @@
+"use client";
+
 import type { Card } from "@shared/cards/schema";
+import { useCardAnswer } from "./answer";
 import { cn } from "@web/components/class-names";
 import { Badge } from "@web/components/ui/badge";
 import { buttonVariants } from "@web/components/ui/button";
@@ -15,13 +18,18 @@ import { toneStyles } from "./tones";
  * width the page gives it. An updated card says so by its title.
  */
 export function CardView({
-  card,
-  updated = false,
+  card: sentCard,
+  updated: sentUpdated = false,
 }: {
   readonly card: Card;
   readonly updated?: boolean;
 }) {
-  const asks = card.actions.some((action) => "submit" in action);
+  const answer = useCardAnswer();
+  const card = answer.card ?? sentCard;
+  const updated = sentUpdated || (answer.revision ?? 1) > 1;
+  const asks = card.actions.some(
+    (action) => "submit" in action || "intent" in action
+  );
   return (
     <article
       className="group/card w-full overflow-hidden bro-plate"
@@ -58,8 +66,25 @@ export function CardView({
             </p>
           )}
         </header>
+        {card.note && (
+          <output className="type-row rounded-2xl bg-bro-blue/30 p-4">
+            {card.note}
+          </output>
+        )}
         {card.blocks.map((block, position) => (
-          <BlockView block={block} key={`${block.type}-${String(position)}`} />
+          <div
+            className="relative min-w-0"
+            key={`${block.type}-${String(position)}`}
+          >
+            <BlockView block={block} />
+            {answer.changed?.has(position) && (
+              <span
+                aria-hidden
+                key={`${String(answer.revision)}:${String(position)}`}
+                className="pointer-events-none absolute inset-0 rounded-2xl bg-bro-yellow opacity-0 motion-safe:animate-pulse motion-safe:[animation-duration:900ms] motion-safe:[animation-iteration-count:1]"
+              />
+            )}
+          </div>
         ))}
         {card.actions.length > 0 && (
           <div className="flex flex-col gap-3 pt-2">
@@ -77,7 +102,10 @@ export function CardView({
                   {action.label}
                 </CardLink>
               ) : (
-                <SubmitButton action={action} key={action.submit} />
+                <SubmitButton
+                  action={action}
+                  key={"submit" in action ? action.submit : action.intent}
+                />
               )
             )}
           </div>

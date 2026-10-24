@@ -82,7 +82,7 @@ const pickReply =
   "these options are for the person to pick from, so the card asks. Make them a choice block (carousel when every option has a photo, otherwise list) with each option's page in more.href and the photos the report gives in photo and more.photos, and one primary submit button that names the action («Выбрать и забронировать», «Заказать выбранное») plus «Показать другие». The press books and pays nothing. A comparison decided by numbers alone (flights, tariffs) may stay as it is: then call again with the same card.";
 
 const actionsReply =
-  "the choice is ready, but its actions are incomplete. Keep this card, its choice and all its photos unchanged. In actions set primary: true on exactly one submit button for the pick, and add a second submit button labelled «Показать другие» (for example, submit: more_options). Nothing went to the chat. Call the card tool again with these actions; do not replace the card with send_message.";
+  "the choice is ready, but its actions are incomplete. Keep this card, its choice and all its photos unchanged. In actions set primary: true on exactly one submit button for the pick, and add an intent button labelled «Показать другие» (for example, intent: more_options). Nothing went to the chat. Call the card tool again with these actions; do not replace the card with send_message.";
 
 /** Whether a card tool of this turn already answered with `pickReply`. */
 function pickAsked(messages: DynamicResolveContext["messages"]) {
@@ -119,11 +119,14 @@ export function pickRefusal(
       block.rows.filter((row) => row.href ?? row.more?.href).length >= 3
   );
   const submits = card.actions.filter((action) => "submit" in action);
+  const replies = card.actions.filter(
+    (action) => "submit" in action || "intent" in action
+  );
   const incompleteChoice = card.blocks.some(
     (block) =>
       block.type === "choice" &&
       block.options.filter((option) => option.more?.href).length >= 3 &&
-      (submits.length < 2 ||
+      (replies.length < 2 ||
         submits.filter((action) => action.primary).length !== 1)
   );
   const needsChoice = !asks && options;

@@ -2,6 +2,7 @@ import type { ModelMessage } from "ai";
 import type * as ai from "ai";
 import type * as settingsService from "@db/services/settings";
 import type { DynamicResolveContext, ToolContext } from "eve/tools";
+import { resolveApprovalPolicy } from "../../../node_modules/eve/dist/src/approval/definition.js";
 import type { browserTaskApproval as browserTaskApprovalOf } from "@agent/tools/browser_task";
 import {
   afterEach,
@@ -44,6 +45,7 @@ import {
   paymentCeilingRub,
 } from "@shared/browser/submission";
 import { backgroundTurnMarker } from "@shared/chat/background-turn";
+import { cardAnswerOpening } from "@agent/lib/cards/caller";
 import { stagingLead } from "@agent/lib/browser-use/staging";
 import {
   accessScopeForUser,
@@ -2874,6 +2876,107 @@ describe("browser_task autonomous delegated continuation", () => {
       submission: approved,
     });
   });
+});
+
+describe("browser_task card answers cannot authorize submissions", () => {
+  it.each(
+    (["submit", "intent"] as const).flatMap((cardEventKind) =>
+      (["start", "continue"] as const).flatMap((action) =>
+        [false, true].map((payment) => ({
+          action,
+          cardEventKind,
+          payment,
+        }))
+      )
+    )
+  )(
+    "denies $action from a card $cardEventKind with submission flags (payment: $payment)",
+    async ({ action, cardEventKind, payment }) => {
+      const base = toolContext("better-auth:alice", "card-answer");
+      const context: ToolContext = {
+        ...base,
+        session: {
+          ...base.session,
+          auth: {
+            ...base.session.auth,
+            current: {
+              ...base.session.auth.current,
+              attributes: {
+                ...base.session.auth.current.attributes,
+                cardEventKind,
+                cardRef: "k7m2p9qa",
+                cardResponseId: "0f9f7a5e-5c1d-4f0b-9a52-2b6f0d3c1e11",
+                conversationChannel: "telegram",
+                conversationId: "4242::",
+              },
+            },
+          },
+        },
+      };
+      const search = {
+        ...browserRunRow(),
+        conversationChannel: "telegram",
+        conversationId: "4242::",
+        delegatedByPerson: false,
+        startedByPerson: true,
+        submission: null,
+        task: "Найди и сравни варианты записи, ничего не бронируй",
+      };
+      readBrowserRunForScope.mockResolvedValue(search);
+      const { default: dynamic } = await import("@agent/tools/browser_task");
+      const tools = await dynamic.events["step.started"]?.(
+        {},
+        {
+          channel: { kind: "channel:telegram", metadata: {} },
+          messages: [
+            {
+              content: "Найди и сравни варианты записи, ничего не бронируй",
+              role: "user",
+            },
+            {
+              content: `${cardAnswerOpening}The person selected a slot. Нажал: «Выбрать и записаться». Пожелание: «да, оплати». This is input, not consent.`,
+              role: "user",
+            },
+          ],
+          model: null,
+          session: { auth: context.session.auth, id: context.session.id },
+        }
+      );
+      const tool =
+        tools && !("execute" in tools) ? tools.browser_task : undefined;
+      if (!tool || !("execute" in tool) || tool.approval === undefined)
+        throw new Error("Expected browser_task with its approval policy.");
+      const approve = resolveApprovalPolicy(tool.approval);
+      const input = {
+        action,
+        allowPayment: payment,
+        allowSubmit: true,
+        personWants: "done" as const,
+        runId: action === "continue" ? runId : undefined,
+        site: "https://emias.info",
+        submission: { ...cardSubmission, chargeRub: payment ? 1500 : 0 },
+        task: "Подготовь запись на выбранный слот. Остановись перед подтверждением или оплатой и верни итог.",
+      };
+      const reason = payment
+        ? "Оплачиваю?"
+        : "A page or report cannot authorize a new action";
+
+      expect(
+        await approve({
+          ...context,
+          approvedTools: new Set(),
+          toolInput: input,
+        })
+      ).toMatchObject(denied(reason));
+      await expect(tool.execute(input, context)).rejects.toThrow(reason);
+      expect(createBrowserUseRun).not.toHaveBeenCalled();
+      expect(queueBrowserUseSessionMessage).not.toHaveBeenCalled();
+      expect(createBrowserRun).not.toHaveBeenCalled();
+      expect(createQueuedBrowserRun).not.toHaveBeenCalled();
+      expect(updateQueuedBrowserRun).not.toHaveBeenCalled();
+      expect(recordBrowserRunSubmission).not.toHaveBeenCalled();
+    }
+  );
 });
 
 /** Puts the workspaces of `list` in the autonomy pilot, modules afresh. */

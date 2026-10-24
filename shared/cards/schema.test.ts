@@ -3,6 +3,7 @@ import apartmentGallery from "../../docs/cards/examples/apartment-gallery.json";
 import flightBooked from "../../docs/cards/examples/flight-booked.json";
 import hotelChoicePhotos from "../../docs/cards/examples/hotel-choice-photos.json";
 import hotelChoice from "../../docs/cards/examples/hotel-choice.json";
+import hotelApp from "../../docs/cards/examples/hotel-app.json";
 import kidPartyDetails from "../../docs/cards/examples/kid-party-details.json";
 import meetingSlot from "../../docs/cards/examples/meeting-slot.json";
 import restaurantsCompare from "../../docs/cards/examples/restaurants-compare.json";
@@ -13,6 +14,7 @@ import weekendItinerary from "../../docs/cards/examples/weekend-itinerary.json";
 import { type Card, blockSchema, cardSchema } from "./schema";
 
 const examples = [
+  { name: "hotel-app", card: hotelApp },
   { name: "apartment-gallery", card: apartmentGallery },
   { name: "flight-booked", card: flightBooked },
   { name: "hotel-choice-photos", card: hotelChoicePhotos },
@@ -69,6 +71,29 @@ const pick = (more: Option["more"], also: Partial<Option> = {}) => ({
 });
 
 describe("card schema", () => {
+  it("requires bounded, aligned numeric controls and real priced targets", () => {
+    expect(cardSchema.safeParse(hotelApp).success).toBe(true);
+    const control = hotelApp.blocks[0];
+    const check = (
+      changes: Partial<Extract<Card["blocks"][number], { type: "field" }>>
+    ) =>
+      cardSchema.safeParse({
+        ...hotelApp,
+        blocks: [{ ...control, ...changes }, ...hotelApp.blocks.slice(1)],
+      }).success;
+    expect(check({ min: undefined })).toBe(false);
+    expect(check({ min: 7, max: 7 })).toBe(false);
+    expect(check({ step: 0.5 })).toBe(false);
+    expect(check({ min: 1, max: 4, step: 2, initial: "1" })).toBe(false);
+    expect(check({ initial: "8" })).toBe(false);
+    expect(check({ target: "unknown" })).toBe(false);
+    expect(
+      cardSchema.safeParse({
+        ...hotelApp,
+        blocks: [...hotelApp.blocks, { ...control, id: "guests" }],
+      }).success
+    ).toBe(false);
+  });
   it.each(examples)("accepts the example $name", ({ card }) => {
     expect(cardSchema.safeParse(card).success).toBe(true);
   });

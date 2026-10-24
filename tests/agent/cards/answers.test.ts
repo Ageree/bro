@@ -27,6 +27,7 @@ const responseId = "0f9f7a5e-5c1d-4f0b-9a52-2b6f0d3c1e11";
 const row = {
   action: "continue",
   cardId: "A".repeat(43),
+  claimedAt: new Date("2026-10-24T10:00:00Z"),
   conversationChannel: "telegram" as const,
   conversationId: "4242::",
   id: responseId,
@@ -88,6 +89,7 @@ describe("a card's answer as a turn of its chat", () => {
     expect(options.turnPolicy).toBe("queue");
     expect(options.auth).toMatchObject({
       attributes: {
+        cardEventKind: "submit",
         cardRef: "k7m2p9qa",
         conversationChannel: "telegram",
         conversationId: "4242::",
@@ -112,6 +114,7 @@ describe("a card's answer as a turn of its chat", () => {
     );
     expect(services.delivered).toHaveBeenCalledExactlyOnceWith(
       responseId,
+      row.claimedAt,
       expect.any(Date)
     );
     expect(services.release).not.toHaveBeenCalled();
@@ -130,22 +133,67 @@ describe("a card's answer as a turn of its chat", () => {
     expect(message).toContain("without a separate chat acknowledgement");
     expect(message).toContain("no consent to pay");
     expect(options.auth?.authenticator).toBe("card-answer");
+    expect(options.auth?.attributes.cardEventKind).toBe("intent");
   });
 
   it("gives an answer that could not be sent back to the queue, and fails one that can never be", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     send.mockRejectedValue(new Error("The session is gone."));
     await resume();
-    expect(services.release).toHaveBeenCalledExactlyOnceWith(responseId);
+    expect(services.release).toHaveBeenCalledExactlyOnceWith(
+      responseId,
+      row.claimedAt
+    );
     expect(services.delivered).not.toHaveBeenCalled();
 
     vi.clearAllMocks();
     services.claim.mockResolvedValue([{ ...row, conversationId: null }]);
     await resume();
     expect(send).not.toHaveBeenCalled();
-    expect(services.fail).toHaveBeenCalledExactlyOnceWith(responseId);
+    expect(services.fail).toHaveBeenCalledExactlyOnceWith(
+      responseId,
+      row.claimedAt
+    );
     warn.mockRestore();
   });
+
+  it.each(["delivered", "released"] as const)(
+    "settles a slow send that was %s with its own claim, not a later resume's",
+    async (outcome) => {
+      vi.useFakeTimers();
+      const warn = vi
+        .spyOn(console, "warn")
+        .mockImplementation(() => undefined);
+      try {
+        const slow = Promise.withResolvers<{ id: string }>();
+        send.mockReturnValueOnce(slow.promise);
+        const first = resume();
+        await vi.advanceTimersByTimeAsync(20_000);
+        await first;
+        const nextClaim = new Date(row.claimedAt.getTime() + 3 * 60_000);
+        services.claim.mockResolvedValue([{ ...row, claimedAt: nextClaim }]);
+        await resume();
+
+        if (outcome === "delivered") slow.resolve({ id: "session-1" });
+        else slow.reject(new Error("The old send failed."));
+        await vi.advanceTimersByTimeAsync(0);
+
+        const currentDelivery = [responseId, nextClaim, expect.any(Date)];
+        const slowDelivery = [responseId, row.claimedAt, expect.any(Date)];
+        expect(services.delivered.mock.calls).toEqual(
+          outcome === "delivered"
+            ? [currentDelivery, slowDelivery]
+            : [currentDelivery]
+        );
+        expect(services.release.mock.calls).toEqual(
+          outcome === "released" ? [[responseId, row.claimedAt]] : []
+        );
+      } finally {
+        vi.useRealTimers();
+        warn.mockRestore();
+      }
+    }
+  );
 
   it("knows its own turn by the message that opened it, not by a caller eve kept for a later delivery", async () => {
     await resume();

@@ -1,6 +1,7 @@
 import { defineDynamic, defineTool } from "eve/tools";
 import { z } from "zod";
 import { cardsOffered } from "@agent/lib/cards/enabled";
+import { cardUpdateTarget } from "@agent/lib/cards/caller";
 import { keepCardPhotos, photosResult } from "@agent/lib/cards/photos/keep";
 import { patchCardToolName } from "@agent/lib/cards/sent";
 import { sendCardButton } from "@agent/lib/cards/telegram";
@@ -99,10 +100,16 @@ export default defineDynamic({
         [patchCardToolName]: defineTool({
           availableInSubagents: false,
           description:
-            "Update the same card in place without repeating it: give its ref and a note for the person, or change one choice's options. append adds new values at the end and updates existing values; replace gives the whole new set (2–8). Keep existing option values stable. A note answers a question on the card. message is a short answer for the chat if the card is closed; an open card updates silently. New photos must show the actual option. For new screens or a different layout use update_card. No payment or booking is authorized by a card's press.",
+            "Update the same card in place without repeating it: give its ref and a note for the person, or change one choice's options. append adds new values at the end and updates existing values; replace gives the whole new set (2–8). Keep existing option values stable. A note answers a question on the card. message is a short answer for the chat if the card is closed; an open card updates silently. New photos must show the actual option. For other blocks or a different layout use update_card. No payment or booking is authorized by a card's press.",
           inputSchema,
           async execute({ ref, message, note, change }, toolContext) {
             const current = toolContext.session.auth.current;
+            const target = cardUpdateTarget(current);
+            if (target && target !== ref)
+              return {
+                status: "refused" as const,
+                reply: `This interaction may update only its original card ${target}.`,
+              };
             const chat = conversationOf(toolContext);
             if (
               current?.principalType !== "user" ||

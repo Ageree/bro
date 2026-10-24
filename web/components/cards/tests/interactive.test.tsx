@@ -4,6 +4,7 @@ import * as linkedom from "linkedom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import hotelChoicePhotos from "../../../../docs/cards/examples/hotel-choice-photos.json";
 import hotelChoice from "../../../../docs/cards/examples/hotel-choice.json";
+import hotelApp from "../../../../docs/cards/examples/hotel-app.json";
 import kidPartyDetails from "../../../../docs/cards/examples/kid-party-details.json";
 import { CardAnswerScope } from "@web/components/cards/answer";
 import { CardLink } from "@web/components/cards/card-link";
@@ -74,10 +75,13 @@ function openBrowser() {
   return { document, window };
 }
 
+const roots: ReturnType<typeof createRoot>[] = [];
+
 async function mount(browser: ReturnType<typeof openBrowser>, page: ReactNode) {
   const container = browser.document.getElementById("root");
   if (!container) throw new Error("The page has no root.");
   const root = createRoot(container);
+  roots.push(root);
   await act(async () => {
     root.render(page);
   });
@@ -99,6 +103,9 @@ async function click(
 }
 
 afterEach(() => {
+  act(() => {
+    for (const root of roots.splice(0)) root.unmount();
+  });
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
@@ -309,6 +316,12 @@ async function settle() {
   });
 }
 
+async function advance(ms: number) {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(ms);
+  });
+}
+
 /** Whether each box is ticked: React sets `checked` as a property, not an attribute. */
 const ticked = (container: Element, selector: string) =>
   [...container.querySelectorAll(selector)].map(
@@ -322,6 +335,7 @@ const buttonOf = (container: Element, label: string) =>
 
 describe("a card that asks", () => {
   const hotel = cardSchema.parse(hotelChoice);
+  const appCard = cardSchema.parse(hotelApp);
   const party = cardSchema.parse(kidPartyDetails);
   const link = "A".repeat(43);
   const keptAnswer = {
@@ -369,6 +383,222 @@ describe("a card that asks", () => {
       },
     };
   }
+
+  it("calculates nights locally, filters by price, and keeps an over-budget pick visible", async () => {
+    storage();
+    const { sent } = server({ status: "open" });
+    const { container, press, type } = await page(appCard);
+    expect(container.textContent).toContain("12 800 ₽ за 2");
+    await press(
+      container.querySelector('button[aria-label="Увеличить: Ночей"]')
+    );
+    expect(container.textContent).toContain("19 200 ₽ за 3");
+    await type(container.querySelector('input[type="range"]'), "5500");
+    expect(container.textContent).toContain("Показано 2 из 3");
+    expect(container.textContent).toContain("Не подходит под бюджет");
+    expect(container.querySelectorAll('input[type="radio"]')).toHaveLength(2);
+    await press(container.querySelector('input[value="loft"]'));
+    expect(container.textContent).toContain("Показано 1 из 3");
+    expect(container.textContent).toContain("15 600 ₽ за 3");
+    expect(sent().map((body) => body.kind)).toEqual(["open"]);
+  });
+
+  it("accepts repeated intents without locking controls or requiring the final pick", async () => {
+    storage();
+    const { sent } = server(
+      { status: "open" },
+      { status: "intent", outcome: "received" },
+      { status: "intent", outcome: "replaced" }
+    );
+    const { container, press } = await page(appCard);
+    await press(buttonOf(container, "Показать ещё варианты"));
+    expect(container.textContent).toContain("Запрос принят");
+    expect(container.textContent).toContain("Бро работает");
+    expect(
+      container.querySelector('input[type="range"]')?.hasAttribute("disabled")
+    ).toBe(false);
+    await press(buttonOf(container, "Показать ещё варианты"));
+    expect(container.textContent).toContain("Последнее нажатие принято");
+    expect(sent().filter((body) => body.kind === "send")).toHaveLength(2);
+    expect(buttonOf(container, "Выбрать и забронировать")).not.toBeNull();
+  });
+
+  it("rebases an open revision without a reload, preserving edits and naming a removed pick", async () => {
+    vi.useFakeTimers();
+    const drafts = storage();
+    const next = cardSchema.parse({
+      ...appCard,
+      note: "Нашёл ещё один вариант.",
+      blocks: appCard.blocks.map((block) =>
+        block.type === "choice"
+          ? {
+              ...block,
+              initial: [],
+              options: block.options.filter(
+                (option) => option.value !== "nevsky_dvor"
+              ),
+            }
+          : block
+      ),
+    });
+    const { sent } = server(
+      { status: "open" },
+      {
+        status: "watch",
+        revision: 2,
+        card: next,
+        press: { action: "more", kind: "intent", revision: 1, stage: "done" },
+      }
+    );
+    const { container, type, press } = await page(appCard);
+    await type(container.querySelector("textarea"), "Тихий этаж");
+    await press(
+      container.querySelector('button[aria-label="Увеличить: Ночей"]')
+    );
+    await advance(500);
+    expect(container.textContent).toContain("Обновлено");
+    expect(container.textContent).toContain("Нашёл ещё один вариант");
+    expect(container.textContent).toContain("Проверьте выбор: Отель");
+    expect(container.querySelector("textarea")?.value).toBe("Тихий этаж");
+    expect(JSON.parse(drafts.get(`bro-card:${link}:2`) ?? "{}")).toMatchObject({
+      nights: "3",
+      wish: "Тихий этаж",
+      hotel: "",
+    });
+    expect(container.querySelector('[class*="animate-pulse"]')).not.toBeNull();
+    expect(sent().map((body) => body.kind)).toEqual(["open", "watch"]);
+  });
+
+  it("pauses hidden polling, backs off failures, and stops after a finished submit", async () => {
+    vi.useFakeTimers();
+    storage();
+    const browser = openBrowser();
+    let hidden = true;
+    Object.defineProperty(browser.document, "hidden", {
+      configurable: true,
+      get: () => hidden,
+    });
+    const { sent } = server({ status: "open" }, new Error("offline"), {
+      status: "watch",
+      revision: 1,
+      answer: { answer: keptAnswer.answer, delivery: "delivered" },
+      press: { action: "continue", kind: "submit", revision: 1, stage: "done" },
+    });
+    const { container } = await page(appCard, "signed-launch-data", browser);
+    await advance(60_000);
+    expect(sent()).toHaveLength(1);
+    hidden = false;
+    await act(async () => {
+      browser.document.dispatchEvent(
+        new browser.window.Event("visibilitychange")
+      );
+    });
+    expect(sent()).toHaveLength(2);
+    await advance(39_999);
+    expect(sent()).toHaveLength(2);
+    await advance(1);
+    expect(sent()).toHaveLength(3);
+    expect(container.textContent).toContain("Отправлено");
+    await advance(120_000);
+    expect(sent()).toHaveLength(3);
+  });
+
+  it("checks a finished card once on return, so a new revision can reopen it without background polling", async () => {
+    vi.useFakeTimers();
+    storage();
+    const browser = openBrowser();
+    let hidden = false;
+    Object.defineProperty(browser.document, "hidden", {
+      configurable: true,
+      get: () => hidden,
+    });
+    const done = {
+      action: "continue",
+      kind: "submit" as const,
+      revision: 1,
+      stage: "done" as const,
+    };
+    const { sent } = server(
+      { status: "open" },
+      {
+        status: "watch",
+        revision: 1,
+        answer: { answer: keptAnswer.answer, delivery: "delivered" },
+        press: done,
+      },
+      {
+        status: "watch",
+        revision: 2,
+        card: { ...appCard, note: "Появился результат после возвращения." },
+        press: done,
+      }
+    );
+    const { container } = await page(appCard, "signed-launch-data", browser);
+    await advance(500);
+    expect(container.textContent).toContain("Отправлено");
+    await advance(60_000);
+    expect(sent()).toHaveLength(2);
+    hidden = true;
+    await act(async () => {
+      browser.document.dispatchEvent(
+        new browser.window.Event("visibilitychange")
+      );
+    });
+    expect(sent()).toHaveLength(2);
+    hidden = false;
+    await act(async () => {
+      browser.document.dispatchEvent(
+        new browser.window.Event("visibilitychange")
+      );
+    });
+    expect(sent()).toHaveLength(3);
+    expect(container.textContent).toContain(
+      "Появился результат после возвращения"
+    );
+    expect(buttonOf(container, "Выбрать и забронировать")).not.toBeNull();
+  });
+
+  it("never overlaps watch requests and ignores an aborted watch from before a press", async () => {
+    vi.useFakeTimers();
+    storage();
+    let finish: ((response: Response) => void) | undefined;
+    let watches = 0;
+    let firstSignal: AbortSignal | null | undefined;
+    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+      if (url === "/eve/v1/card-answers")
+        return new Response(null, { status: 202 });
+      const body = respondRequestSchema.parse(
+        JSON.parse(z.string().parse(init?.body))
+      );
+      if (body.kind === "open") return Response.json({ status: "open" });
+      if (body.kind === "send")
+        return Response.json({ status: "intent", outcome: "received" });
+      watches += 1;
+      if (watches > 1) return Response.json({ status: "watch", revision: 1 });
+      firstSignal = init?.signal;
+      return new Promise<Response>((resolve) => {
+        finish = resolve;
+      });
+    });
+    const { container, press } = await page(appCard);
+    await advance(500);
+    await advance(60_000);
+    expect(watches).toBe(1);
+    await press(buttonOf(container, "Показать ещё варианты"));
+    expect(firstSignal?.aborted).toBe(true);
+    await act(async () => {
+      finish?.(
+        Response.json({
+          status: "watch",
+          revision: 2,
+          card: { ...appCard, title: "Old response" },
+        })
+      );
+    });
+    expect(container.textContent).not.toContain("Old response");
+    await advance(300);
+    expect(watches).toBe(2);
+  });
 
   it("lets the person choose, sends the answer with the button, and shows it kept", async () => {
     const keptDrafts = storage();

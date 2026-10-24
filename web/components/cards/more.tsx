@@ -3,6 +3,7 @@
 import { XIcon } from "lucide-react";
 import {
   type RefObject,
+  useCallback,
   useId,
   useLayoutEffect,
   useRef,
@@ -15,6 +16,8 @@ import { Carousel } from "./carousel";
 import { Lightbox } from "./lightbox";
 import { PhotoFrame } from "./photo-frame";
 import { holdScreen } from "./telegram";
+import { holdBack } from "./telegram";
+import { useCardAnswer } from "./answer";
 
 type Option = Extract<
   Card["blocks"][number],
@@ -22,6 +25,11 @@ type Option = Extract<
 >["options"][number];
 type More = NonNullable<Option["more"]>;
 type Photo = NonNullable<Option["photo"]>;
+type Selection = Pick<
+  Extract<Card["blocks"][number], { type: "choice" }>,
+  "id" | "multiple"
+> &
+  Pick<Option, "value">;
 
 /** What a row or an option shows of itself behind «Подробнее». */
 interface Item {
@@ -44,9 +52,18 @@ interface Item {
  * panel and goes back to the button, and Escape, the cross or a tap on the
  * dimmed card above it closes it. A photo opens on the full screen over it.
  */
-export function MoreButton({ item }: { readonly item: Item }) {
+export function MoreButton({
+  item,
+  selection,
+}: {
+  readonly item: Item;
+  readonly selection?: Selection;
+}) {
   const [open, setOpen] = useState(false);
   const trigger = useRef<HTMLButtonElement>(null);
+  const close = useCallback(() => {
+    setOpen(false);
+  }, []);
   return (
     <>
       <Button
@@ -64,10 +81,9 @@ export function MoreButton({ item }: { readonly item: Item }) {
         Подробнее
       </Button>
       <MorePanel
+        selection={selection}
         item={item}
-        onClose={() => {
-          setOpen(false);
-        }}
+        onClose={close}
         open={open}
         trigger={trigger}
       />
@@ -85,15 +101,21 @@ function MorePanel({
   onClose,
   open,
   trigger,
+  selection,
 }: {
   readonly item: Item;
   readonly onClose: () => void;
   readonly open: boolean;
   readonly trigger: RefObject<HTMLButtonElement | null>;
+  readonly selection?: Selection;
 }) {
+  const answer = useCardAnswer();
   const titleId = useId();
   const dialog = useRef<HTMLDialogElement>(null);
   const [opened, setOpened] = useState<number>();
+  const closePhoto = useCallback(() => {
+    setOpened(undefined);
+  }, []);
   const [failed, setFailed] = useState<ReadonlySet<string>>(new Set());
   const photos = [
     ...(item.photo ? [item.photo] : []),
@@ -110,14 +132,16 @@ function MorePanel({
     if (!open || !node) return undefined;
     const opener = trigger.current;
     const release = holdScreen();
+    const releaseBack = holdBack(onClose);
     node.showModal();
     node.querySelector<HTMLElement>("h2")?.focus();
     return () => {
       node.close();
       release();
+      releaseBack();
       opener?.focus();
     };
-  }, [open, trigger]);
+  }, [open, trigger, onClose]);
 
   return (
     <dialog
@@ -230,15 +254,34 @@ function MorePanel({
                   Открыть на сайте
                 </CardLink>
               )}
+              {selection && (
+                <Button
+                  size="paper"
+                  disabled={
+                    answer.viewer !== "open" || answer.sending !== undefined
+                  }
+                  onClick={() => {
+                    const current = [answer.draft[selection.id] ?? []].flat();
+                    answer.touch(selection.id);
+                    answer.set(
+                      selection.id,
+                      selection.multiple
+                        ? [...new Set([...current, selection.value])]
+                        : selection.value
+                    );
+                    onClose();
+                  }}
+                >
+                  {[answer.draft[selection.id] ?? []]
+                    .flat()
+                    .includes(selection.value)
+                    ? "Выбрано"
+                    : "Выбрать"}
+                </Button>
+              )}
             </div>
           </div>
-          <Lightbox
-            index={opened}
-            onClose={() => {
-              setOpened(undefined);
-            }}
-            photos={photos}
-          />
+          <Lightbox index={opened} onClose={closePhoto} photos={photos} />
         </div>
       )}
     </dialog>

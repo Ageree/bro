@@ -11,6 +11,12 @@ interface TelegramWebApp {
   setBackgroundColor(color: string): void;
   openLink(url: string): void;
   isVersionAtLeast(version: string): boolean;
+  readonly BackButton?: {
+    show(): void;
+    hide(): void;
+    onClick(callback: () => void): void;
+    offClick(callback: () => void): void;
+  };
   /** Bot API 6.1 and later; older clients have none. */
   readonly HapticFeedback?: {
     impactOccurred(

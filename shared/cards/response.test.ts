@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import hotelChoice from "../../docs/cards/examples/hotel-choice.json";
+import hotelApp from "../../docs/cards/examples/hotel-app.json";
 import kidPartyDetails from "../../docs/cards/examples/kid-party-details.json";
 import subscriptionsCancel from "../../docs/cards/examples/subscriptions-cancel.json";
 import type * as z from "zod";
@@ -21,6 +22,27 @@ const issuesOf = (result: { error?: { issues: { path: PropertyKey[] }[] } }) =>
   (result.error?.issues ?? []).map((issue) => issue.path.join("."));
 
 describe("a card's answer", () => {
+  it("keeps intents repeatable and validates count and slider data even without a required pick", () => {
+    const app = cardSchema.parse(hotelApp);
+    const schema = cardResponseSchema(app, 1);
+    const answer = (values: Draft, action = "more") =>
+      schema.safeParse({ action, revision: 1, values });
+    expect(answer({ hotel: "", nights: "3", budget: "6500" }).data).toEqual({
+      action: "more",
+      values: { nights: 3, budget: 6500 },
+    });
+    expect(answer({ nights: "1.5" }).success).toBe(false);
+    expect(answer({ nights: "8" }).success).toBe(false);
+    expect(answer({ budget: "6550" }).success).toBe(false);
+    expect(answer({ hotel: "unknown" }).success).toBe(false);
+    expect(answer({}, "continue").success).toBe(false);
+    expect(
+      describeCardAnswer(app, {
+        action: "more",
+        values: { nights: 3, budget: 6500 },
+      }).text
+    ).toContain("За ночь, до: 6500 ₽");
+  });
   it("takes the hotel card's answer as the card asks it, and reads it to Bro", () => {
     const parsed = cardResponseSchema(hotel, 1).parse({
       action: "continue",

@@ -89,6 +89,21 @@ afterEach(() => {
 });
 
 describe("keeping a card's photos", () => {
+  it("reuses only this card's already-kept copies when a revision adds photos", async () => {
+    const previous = card([
+      { type: "image", url: `/api/cards/${cardId}/photos/4`, alt: "Номер" },
+    ]);
+    site.set(shot("new").url, image(photo));
+    const next = card([...previous.blocks, { type: "image", ...shot("new") }]);
+
+    const kept = await keepCardPhotos(cardId, next, previous);
+
+    expect(kept.card?.blocks[0]).toEqual(previous.blocks[0]);
+    expect(kept).toMatchObject({ kept: 2, dropped: 0 });
+    expect(network.fetch).toHaveBeenCalledOnce();
+    expect(store.put).toHaveBeenCalledOnce();
+    expect(store.delete).not.toHaveBeenCalled();
+  });
   it("copies each photo under the card's link, without its metadata, and points the card at the copies", async () => {
     for (const name of ["living", "kitchen", "roborock", "dreame"]) {
       site.set(shot(name).url, image(photo));

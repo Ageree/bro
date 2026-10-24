@@ -1,6 +1,7 @@
 import { defineDynamic, defineTool } from "eve/tools";
 import { z } from "zod";
 import { cardsOffered } from "@agent/lib/cards/enabled";
+import { cardUpdateTarget } from "@agent/lib/cards/caller";
 import { keepCardPhotos, photosResult } from "@agent/lib/cards/photos/keep";
 import { updateCardToolName } from "@agent/lib/cards/sent";
 import { sendCardButton } from "@agent/lib/cards/telegram";
@@ -15,7 +16,7 @@ import {
 } from "@agent/lib/cards/tools";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { conversationOf } from "@agent/lib/yoomoney/onboarding";
-import { updateCard } from "@db/services/cards";
+import { cardWatched, updateCard } from "@db/services/cards";
 import { cardsEnabled } from "@shared/cards/pilot";
 import { submitActions } from "@shared/cards/response";
 import { cardSchema } from "@shared/cards/schema";
@@ -49,7 +50,7 @@ const inputSchema = cardSchema.extend({
 });
 
 const description =
-  "Change what a card you sent shows, under its same link: pass its ref and the whole new card, built from the same catalog and by the same rules as send_card. The page marks it updated, and the chat gets your message with the card's button again. Use it when the person's answer or words change the card — the plan rebuilt from what they marked, other options after «Показать другие», a corrected date — not for a new subject, which is a new send_card. Only a card sent to this chat. On invalid or refused, the reason is in the result: fix it and call again.";
+  "Change what a card you sent shows, under its same link: pass its ref and the whole new card, built from the same catalog and by the same rules as send_card. The page marks it updated. An open card updates silently in place; otherwise the chat gets your message with its button again. A short note explains the result on the card. Use it when the person's answer or words change the card — the plan rebuilt from what they marked, other options after «Показать другие», a corrected date — not for a new subject, which is a new send_card. Only a card sent to this chat. On invalid or refused, the reason is in the result: fix it and call again.";
 
 const notThePerson =
   "Nothing changed: a card is updated only in its Telegram chat, in a turn the person's own message, their answer to a card or the report of an errand they gave opened.";
@@ -68,6 +69,12 @@ export default defineDynamic({
           inputSchema,
           async execute({ message, ref, ...input }, toolContext) {
             const current = toolContext.session.auth.current;
+            const target = cardUpdateTarget(current);
+            if (target && target !== ref)
+              return {
+                status: "refused" as const,
+                reply: `This interaction may update only its original card ${target}.`,
+              };
             const chat = conversationOf(toolContext);
             if (
               current?.principalType !== "user" ||
@@ -116,12 +123,17 @@ export default defineDynamic({
               };
             }
             const { note, ...counts } = photosResult(updated.change);
+            const quiet = cardWatched(updated.watchedAt, new Date());
             try {
-              await sendCardButton(
-                chat.conversationId,
-                new URL(`/card/${updated.id}`, applicationOrigin()).toString(),
-                message
-              );
+              if (!quiet)
+                await sendCardButton(
+                  chat.conversationId,
+                  new URL(
+                    `/card/${updated.id}`,
+                    applicationOrigin()
+                  ).toString(),
+                  message
+                );
             } catch (error) {
               console.warn("[cards] the updated card's message did not land", {
                 name: error instanceof Error ? error.name : "unknown",
@@ -137,11 +149,14 @@ export default defineDynamic({
               status: "updated" as const,
               card: ref,
               revision: updated.revision,
+              quiet,
               ...counts,
               reply: `${
-                submitActions(card).length > 0
-                  ? "The card is updated under its link, and its button is in the chat with your message. It asks the person again: their answer comes back by itself as a new turn of this chat, so end the turn now without writing."
-                  : "The card is updated under its link, and its button is in the chat with your message. Send nothing more about it. End the turn unless the person asked for something else too."
+                quiet
+                  ? "The open card updated in place. The person has it; send no chat acknowledgement and end the turn."
+                  : submitActions(card).length > 0
+                    ? "The card is updated under its link, and its button is in the chat with your message. It asks the person again: their answer comes back by itself as a new turn of this chat, so end the turn now without writing."
+                    : "The card is updated under its link, and its button is in the chat with your message. Send nothing more about it. End the turn unless the person asked for something else too."
               }${note}`,
             };
           },
