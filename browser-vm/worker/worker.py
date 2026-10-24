@@ -78,6 +78,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import types
 import urllib.parse
@@ -87,7 +88,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-10-20.2"
+VERSION = "2026-10-24.1"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -1064,6 +1065,76 @@ def prune_trails(keep=TRAIL_RUNS):
         shutil.rmtree(path, ignore_errors=True)
 
 
+# --- Leftovers -----------------------------------------------------------------------------------------
+
+# A pool sandbox under Firecracker comes back from its memory snapshot errand after errand, and what the worker
+# writes outside the profile (runs/, sessions/, /tmp) is on the guest's tmpfs overlay: guest memory. Nothing was
+# ever removed, and the owner's sandbox, up since 10.10, held on 24.10 1.5 GB of its 2 GB overlay: 201 run
+# records with their agent memory, 98 session folders and one browser-use folder of step screenshots per run.
+# 385 MB of 3 GB were left, and the kernel's OOM killer took Chrome in the middle of runs (browser-use:
+# "Reconnection failed — CDP still not connected"). A run, and a session left with none and no tab, is
+# forgotten this long after it ended: Bro settles a run within the hour, a parked runc sandbox forgets them all.
+ENDED_KEPT_S = 2 * 86400
+# browser-use's Agent makes <tmp>/browser_use_agent_<id>_<time>/screenshots/ with a PNG of every step and
+# never removes it. The worker reads none of it (its own trail is in the session's folder).
+AGENT_FOLDERS = "browser_use_agent_*"
+# Chrome hands a mailto: link to xdg-email, which starts the system's default browser: a second Chrome with a
+# profile in the overlay and no proxy, which stays up for good (one was up at the OOM kill of 24.10).
+STRAY_PARENTS = ("xdg-open", "xdg-email")
+
+
+def sweep_agent_folders():
+    """Remove every browser-use agent folder. One run holds the browser at a time and this runs before its
+    agent is made, so none of them is in use. Blocking: run it in a thread."""
+    for path in Path(tempfile.gettempdir()).glob(AGENT_FOLDERS):
+        shutil.rmtree(path, ignore_errors=True)
+
+
+def remove_leftovers(records, folders):
+    """Remove the run records and session folders `Worker.forget_ended` let go. Blocking: run it in a thread."""
+    for path in records:
+        with contextlib.suppress(OSError):
+            path.unlink(missing_ok=True)
+    for path in folders:
+        shutil.rmtree(path, ignore_errors=True)
+
+
+def stray_processes(proc=Path("/proc")):
+    """The pids of xdg-open and xdg-email and of everything they started."""
+    parents, roots = {}, set()
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        with contextlib.suppress(OSError, ValueError, IndexError):
+            stat = (entry / "stat").read_text()
+            # pid (comm) state ppid ...: comm may hold spaces and parentheses, so it ends at the last ")".
+            name, rest = stat[stat.index("(") + 1:stat.rindex(")")], stat[stat.rindex(")") + 1:].split()
+            pid = int(entry.name)
+            parents[pid] = int(rest[1])
+            if name in STRAY_PARENTS:
+                roots.add(pid)
+    stray = set()
+    for pid in parents:
+        ancestor, hops = pid, 0
+        while ancestor in parents and hops < 64:
+            if ancestor in roots:
+                stray.add(pid)
+                break
+            ancestor, hops = parents[ancestor], hops + 1
+    return stray
+
+
+def stop_stray_processes():
+    """Stop a default browser that xdg-open or xdg-email started, and them. Blocking: run it in a thread."""
+    stray = stray_processes()
+    for pid in stray:
+        with contextlib.suppress(OSError):
+            os.kill(pid, signal.SIGKILL)
+    if stray:
+        log.warning("stopped %s processes started by xdg-open or xdg-email", len(stray))
+    return len(stray)
+
+
 def trail_line(summary, url, errors, clean):
     """A step's line of steps.jsonl: Bro's step summary (action names and element indexes, never what was
     typed), the page after the step without its query, and the step's errors, each with every secret's
@@ -1563,6 +1634,30 @@ class Worker:
         self.save_tabs()
         await close_restored_tabs(set().union(*(session.tabs for session in self.sessions.values())))
 
+    def forget_ended(self, now=None):
+        """Forget the runs that ended more than ENDED_KEPT_S ago and the sessions left with no run, no tab and
+        no files Bro put for their next run: out of memory here, and the records and folders to remove (in a
+        thread) are returned. A session folder no session knows any more (its runs went with a restart) goes
+        once it is that old too."""
+        cutoff = (time.time() if now is None else now) - ENDED_KEPT_S
+        stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(cutoff))
+        gone = [run for run in self.runs.values() if run.status in TERMINAL and run is not self.current
+                and (run.finished_at or run.created_at or "") < stamp]
+        for run in gone:
+            del self.runs[run.id]
+        holding = {run.session_id for run in self.runs.values()}
+        left = [session for session in self.sessions.values()
+                if session.id not in holding and not session.tab and not session.tabs and session.direct is None
+                and (session.released or not (SESSIONS / disk_name(session.id) / "uploads").exists())]
+        for session in left:
+            del self.sessions[session.id]
+        known = {disk_name(session.id) for session in self.sessions.values()}
+        folders = [SESSIONS / disk_name(session.id) for session in left]
+        with contextlib.suppress(OSError):
+            folders += [path for path in SESSIONS.iterdir()
+                        if path.name not in known and path not in folders and path.stat().st_mtime < cutoff]
+        return [RUNS / f"{disk_name(run.id)}.json" for run in gone], folders
+
     def accept_generation(self, generation):
         if generation > self.generation:
             self.generation = generation
@@ -2000,6 +2095,10 @@ class Worker:
         from browser_use.agent.views import AgentState
 
         await self.release_direct(session)
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(sweep_agent_folders)
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(stop_stray_processes)
 
         tuning = session.options.get("tuning") or {}
         llm_config = session.llm
@@ -2154,6 +2253,9 @@ class Worker:
             await self.follow_focus(session, browser, before)
             with contextlib.suppress(Exception):
                 await http.aclose()
+            # A mailto: link the run clicked: its browser is not left up for the snapshot to keep.
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(stop_stray_processes)
         with contextlib.suppress(Exception):
             session.agent_state = agent.state.model_dump(mode="json")
         final = history.final_result()
@@ -2346,6 +2448,10 @@ class Worker:
                 raise self.busy_error()
             if self.restarting:
                 raise web.HTTPConflict(text=json.dumps({"error": "busy"}), content_type="application/json")
+            records, folders = self.forget_ended()
+            if records or folders:
+                with contextlib.suppress(Exception):
+                    await asyncio.to_thread(remove_leftovers, records, folders)
             session_id = safe_id(body.get("sessionId") or f"s-{uuid.uuid4()}")
             session = self.sessions.get(session_id)
             if session is None:
