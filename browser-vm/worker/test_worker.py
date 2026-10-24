@@ -1563,6 +1563,50 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(session.latest_run_id, "r3")
                 self.assertEqual(session.agent_state["n_steps"], 9)
 
+    async def test_a_new_run_forgets_runs_and_sessions_ended_days_ago(self):
+        worker.RUNS.mkdir(parents=True)
+        old, recent = "2026-09-20T10:00:00Z", worker.now_iso()
+        for run_id, session_id, finished in [("r-old", "s-old", old), ("r-tab", "s-tab", old),
+                                             ("r-files", "s-files", old), ("r-new", "s-new", recent)]:
+            record = worker.Run(run_id, session_id, "Find a kettle.").public() | {
+                "status": "completed", "createdAt": finished, "finishedAt": finished, "agentState": {"n_steps": 3}}
+            (worker.RUNS / f"{worker.disk_name(run_id)}.json").write_text(json.dumps(record))
+        self.worker = self.restart()
+        self.worker.sessions["s-tab"].tab = "kept-tab"  # a page still waiting for the errand
+        trail = self.worker.sessions["s-old"].workspace / worker.TRAIL / "r-old"
+        trail.mkdir(parents=True)
+        # Bro's files for its next run: an upload leaves the session live.
+        self.worker.sessions["s-files"].released = False
+        (self.worker.sessions["s-files"].workspace / "uploads").mkdir()
+        orphan = worker.SESSIONS / "orphan"
+        orphan.mkdir()
+        os.utime(orphan, (1000, 1000))
+
+        await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Find a kettle."})
+        await self.settled("r1")
+
+        self.assertEqual(sorted(self.worker.runs), ["r-new", "r1"])
+        self.assertEqual(sorted(self.worker.sessions), ["s-files", "s-new", "s-tab", "s1"])
+        self.assertFalse((worker.RUNS / f"{worker.disk_name('r-old')}.json").exists())
+        self.assertTrue((worker.RUNS / f"{worker.disk_name('r-new')}.json").exists())
+        self.assertFalse(trail.exists())
+        self.assertFalse(orphan.exists())
+        self.assertTrue((worker.SESSIONS / worker.disk_name("s-files") / "uploads").exists())
+
+    async def test_a_run_sweeps_browser_use_agent_folders_and_a_default_browser(self):
+        tmp = worker.ROOT / "tmp"
+        old = tmp / "browser_use_agent_0001_1791000000" / "screenshots"
+        old.mkdir(parents=True)
+        (old / "step_1.png").write_bytes(b"png")
+        (tmp / "keep").mkdir()
+        stopped = mock.Mock(return_value=0)
+        with mock.patch.object(worker.tempfile, "gettempdir", return_value=str(tmp)), \
+                mock.patch.object(worker, "stop_stray_processes", stopped):
+            await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Find a kettle."})
+            await self.settled("r1")
+        self.assertEqual([path.name for path in tmp.iterdir()], ["keep"])
+        self.assertEqual(stopped.call_count, 2)  # before the run and after it
+
     async def test_a_restart_keeps_true_order_when_runs_tie_on_the_second(self):
         # now_iso() only has 1-second resolution, so a follow-up dispatched right after the
         # previous run settles, or a retried start after a lost create-answer, can share the same
@@ -3224,6 +3268,16 @@ class StepTrailTest(unittest.IsolatedAsyncioTestCase):
             return b"jpeg"
 
         await trail.record(shoot)  # no exception
+
+    def test_the_processes_xdg_open_started_are_found_and_chrome_is_not(self):
+        proc = self.root / "proc"
+        for pid, name, parent in [(1, "systemd", 0), (100, "chrome", 1), (110, "chrome", 100),
+                                  (200, "xdg-email", 100), (201, "xdg-open", 200), (300, "chrome", 201),
+                                  (301, "chrome (x) y", 300), (400, "python3", 1)]:
+            (proc / str(pid)).mkdir(parents=True)
+            (proc / str(pid) / "stat").write_text(f"{pid} ({name}) S {parent} {pid} {pid} 0 -1\n")
+        (proc / "self").mkdir()
+        self.assertEqual(worker.stray_processes(proc), {200, 201, 300, 301})
 
     def test_only_the_newest_run_trails_stay_on_the_vm(self):
         for number, session in enumerate(["a", "b", "a", "c"]):
