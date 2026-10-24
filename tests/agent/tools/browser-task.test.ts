@@ -7920,6 +7920,7 @@ describe("browser_task takes a code the site emailed from the person's mailbox",
   const letter = {
     code: "482913",
     domain: "ozon.ru",
+    from: "ozon.ru",
     kind: "found" as const,
     receivedAt: new Date(),
   };
@@ -7998,6 +7999,7 @@ describe("browser_task takes a code the site emailed from the person's mailbox",
     });
     mailCodeFromSite.mockResolvedValue({
       domain: "productradar.ru",
+      from: "productradar.ru",
       kind: "link",
       purpose: "password",
       receivedAt: new Date(),
@@ -8037,6 +8039,7 @@ describe("browser_task takes a code the site emailed from the person's mailbox",
     stoppedFor(emailed);
     mailCodeFromSite.mockResolvedValue({
       domain: "ozon.ru",
+      from: "ozon.ru",
       kind: "link",
       purpose: "confirm",
       receivedAt: new Date(),
@@ -9593,6 +9596,7 @@ describe("browser_task keeps sign-ins", () => {
     mailCodeFromSite.mockResolvedValue({
       code: "482913",
       domain: "ozon.ru",
+      from: "ozon.ru",
       kind: "found",
       receivedAt: new Date(),
     });
@@ -9635,6 +9639,7 @@ describe("browser_task keeps sign-ins", () => {
     });
     mailCodeFromSite.mockResolvedValue({
       domain: "ozon.ru",
+      from: "ozon.ru",
       kind: "link",
       purpose: "confirm",
       receivedAt: new Date(),
@@ -10380,6 +10385,7 @@ describe("browser_task registers with Bro's own mailbox", () => {
         "https://www.inaturalist.org/users/confirmation?confirmation_token=abc";
       mailCodeFromSite.mockResolvedValue({
         domain: "inaturalist.org",
+        from: "inaturalist.org",
         kind: "link",
         purpose: "confirm",
         receivedAt: new Date(),
@@ -10412,6 +10418,7 @@ describe("browser_task registers with Bro's own mailbox", () => {
       mailCodeFromSite.mockResolvedValue({
         code: "482913",
         domain: "inaturalist.org",
+        from: "inaturalist.org",
         kind: "found",
         receivedAt: new Date(),
       });
@@ -10471,6 +10478,7 @@ describe("browser_task registers with Bro's own mailbox", () => {
         mailCodeFromSite.mockResolvedValue({
           code: "113355",
           domain: "inaturalist.org",
+          from: "inaturalist.org",
           kind: "found",
           receivedAt: new Date(),
         });
