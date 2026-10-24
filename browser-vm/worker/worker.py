@@ -88,7 +88,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-10-24.1"
+VERSION = "2026-10-24.2"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -502,6 +502,22 @@ async def close_tab(target_id):
         await cdp_command(await browser_socket(), "Target.closeTarget", {"targetId": target_id})
 
 
+async def tab_openers(tab):
+    """The tab and the tabs that opened it, up the chain. A popup (a bank's 3-D Secure window a shop opened
+    with window.open) reports back to its opener, so the opener must stay while the popup does; an opener the
+    popup cannot reach (noopener) does not count. Chrome not answering keeps the tab alone."""
+    infos = {}
+    with contextlib.suppress(Exception):
+        result = await cdp_command(await browser_socket(), "Target.getTargets")
+        infos = {info.get("targetId"): info for info in result.get("targetInfos") or []}
+    chain, current = set(), tab
+    while current and current not in chain and len(chain) < 16:
+        chain.add(current)
+        info = infos.get(current) or {}
+        current = info.get("openerId") if info.get("canAccessOpener", True) else None
+    return chain
+
+
 def owned_tabs():
     """The pages some part of the worker holds: a session's, a keep-alive visit's, the sign-in handoff's."""
     owned = set(worker.visit_tabs)
@@ -548,7 +564,11 @@ class SiteErrors:
     done. So a refusal of the site's own write (POST, PUT, PATCH, DELETE to the page's own site) is also told
     to the agent at its next step (`notices`), a few per run, each answer once. A refused GET is the page
     probing the account in the background (/api/user, /api/user/cart answer 401 or 404 to a guest on every
-    page): it stays in the report, never in front of the agent, and never crowds a refused write out of it."""
+    page): it stays in the report, never in front of the agent, and never crowds a refused write out of it.
+
+    A refused write can be the site's own flow, too: hh.ru's code step answers 400 ACCOUNT_NOT_FOUND for a new
+    address and goes on to its sign-up form (24.10), and the run, told not to report success for it, reported
+    the finished sign-up as failed. So the notice has the agent judge it by the page it is on next."""
 
     LIMIT = 8
     BODY = 600
@@ -680,8 +700,11 @@ class SiteErrors:
             self.notices_sent += 1
             told.append(f"The site's server refused {entry['method']} {clean(entry['address'])}: {entry['status']}"
                         + (f" — {answer}" if answer else " (no answer text)")
-                        + ". The browser saw this request; the page may not show why. Fix what the answer names "
-                          "(a field, a choice, a format) before trying again, and do not report success for it.")
+                        + ". The browser saw this request; the page may not show why. Judge it by what the page "
+                          "shows now: if it went on to the next step of its own form (a new field or question, "
+                          "not an error page), the site answered this way on purpose — carry on and do not report "
+                          "this answer as a failure. Otherwise fix what the answer names (a field, a choice, a "
+                          "format) before trying again, and do not report success for it.")
         return told
 
     def report(self, secrets=None):
@@ -1745,6 +1768,20 @@ class Worker:
             session.tabs.add(focus)
         self.save_tabs()
 
+    async def close_spare_tabs(self, session):
+        """After a run: close the session's tabs but the one the agent ended on and its openers. The next run
+        continues from that tab, and each other one kept its page, its frames' renderers and their memory until
+        the session was released: follow-ups of one errand left three heavy hh.ru pages open (24.10), and the
+        kernel's OOM killer took Chrome under the next one."""
+        if not session.tab or session.tab not in session.tabs:
+            return
+        spare = session.tabs - await tab_openers(session.tab)
+        for tab in spare:
+            await close_tab(tab)
+        if spare:
+            session.tabs -= spare
+            self.save_tabs()
+
     async def browser_session(self, session, options):
         from browser_use import BrowserSession
 
@@ -2251,6 +2288,8 @@ class Worker:
                 run.messages = pending_messages + run.messages
             run.agent = None
             await self.follow_focus(session, browser, before)
+            with contextlib.suppress(Exception):
+                await self.close_spare_tabs(session)
             with contextlib.suppress(Exception):
                 await http.aclose()
             # A mailto: link the run clicked: its browser is not left up for the snapshot to keep.

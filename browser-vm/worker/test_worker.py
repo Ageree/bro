@@ -406,6 +406,7 @@ class FakeChrome:
 
     def __init__(self):
         self.tabs, self.closed, self.shots, self.opened, self.urls = [], [], [], 0, {}
+        self.openers = {}  # tab -> the tab that opened it (window.open)
 
     async def page_targets(self):
         return [{"id": tab, "type": "page", "url": self.urls.get(tab, "")} for tab in self.tabs]
@@ -423,6 +424,13 @@ class FakeChrome:
     async def screenshot(self, target, quality=80):
         self.shots.append(target)
         return b"jpeg"
+
+    async def tab_openers(self, tab):
+        chain = set()
+        while tab and tab not in chain:
+            chain.add(tab)
+            tab = self.openers.get(tab)
+        return chain
 
 
 class FakeAgentState:
@@ -610,6 +618,7 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
             (worker, "chrome_ready", mock.AsyncMock(return_value=True)),
             (worker, "page_targets", self.chrome.page_targets), (worker, "new_tab", self.chrome.new_tab),
             (worker, "close_tab", self.chrome.close_tab), (worker, "screenshot", self.chrome.screenshot),
+            (worker, "tab_openers", self.chrome.tab_openers),
             (worker, "worker", None), (worker.Worker, "browser_session", browser_session),
             (worker.Worker, "tools", lambda self, session, run: None),
             (worker, "CODE", root / "worker.py"), (worker, "PREVIOUS_CODE", root / "worker.py.prev"),
@@ -1947,6 +1956,7 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
             return FakeHistory(True)
 
         FakeAgent.script = opens_a_tab
+        self.chrome.openers["T-new"] = "T1"  # the page it opened reports back to it
         await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Open the offer."})
         await self.settled("r1")
         session = self.worker.sessions["s1"]
@@ -1955,6 +1965,23 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.call("POST", "/v1/sessions/s1/release"))[1], {"status": "stopped"})
         self.assertEqual(sorted(self.chrome.closed), ["T-new", "T1"])
         self.assertEqual(self.chrome.tabs, ["T2"])  # the keep-alive tab is not the errand's
+
+    async def test_a_run_closes_the_tabs_it_left_but_the_one_it_ended_on(self):
+        async def opens_tabs(agent, on_step_start):
+            await on_step_start(agent)
+            self.chrome.tabs += ["T-old", "T-end"]  # the agent's own navigate with new_tab, twice
+            agent.options["browser_session"].agent_focus_target_id = "T-end"
+            await self.call("POST", "/v1/tabs")  # meanwhile Bro opens a tab for a keep-alive visit
+            agent.state.n_steps += 1
+            return FakeHistory(True)
+
+        FakeAgent.script = opens_tabs
+        await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Sign up."})
+        await self.settled("r1")
+        session = self.worker.sessions["s1"]
+        self.assertEqual((session.tab, session.tabs), ("T-end", {"T-end"}))
+        self.assertEqual(sorted(self.chrome.closed), ["T-old", "T1"])
+        self.assertEqual(sorted(self.chrome.tabs), ["T-end", "T2"])  # the keep-alive tab is not the errand's
 
     async def test_a_restarted_worker_keeps_the_session_tab_chrome_still_has(self):
         await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Sign in."})
@@ -3143,6 +3170,8 @@ class SiteErrorsUnitTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Пожалуйста, введите корректный номер телефона <secret>", notices[0])
         self.assertIn("deliveryMethod must be a valid enum value", notices[0])
         self.assertIn("do not report success", notices[0])
+        # hh.ru's code step answers 400 for a new address and goes on to its sign-up form (24.10).
+        self.assertIn("if it went on to the next step of its own form", notices[0])
         for hidden in ("s3cr3t", "79217818876", "/api/user"):
             self.assertNotIn(hidden, notices[0])
         self.assertEqual(self.errors.notices(secrets), [])
