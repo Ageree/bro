@@ -82,6 +82,7 @@ describe("the tools of the skills pilot", () => {
           ...fullDeployment,
           ...taskAgentDeployment,
           AGENT_SANDBOX: "bro-cloudru",
+          BRO_TO_BRO_WORKSPACES: "*",
           LOCATION_WORKSPACES: "workspace-1",
           SIGN_WORKSPACES: "*",
           SUBSCRIPTIONS_WORKSPACES: "*",
@@ -96,8 +97,9 @@ describe("the tools of the skills pilot", () => {
     // geolocation tools of theirs.
     expect(names.has("watch-create")).toBe(true);
     expect(names.has("place_reminder")).toBe(true);
-    // The signing tools of theirs.
+    // The signing tools of theirs, and Bro ↔ Bro's.
     expect(names.has("sign_document")).toBe(true);
+    expect(names.has("bro_talk")).toBe(true);
     expect(
       [...names].filter((name) => !groupedToolNames.includes(name))
     ).toEqual([]);

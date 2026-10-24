@@ -13,6 +13,8 @@ import type * as EnvModule from "@shared/environment";
 import type { redeemChannelLinkToken } from "@db/services/channel-identities";
 import type { mintTelegramLoginLink } from "@db/services/auth/telegram-login";
 import type { ensureTelegramUser } from "@db/services/auth/telegram-user";
+import type { openBroInvite } from "@db/services/bro-to-bro/invites";
+import { broInviteMarker } from "@agent/lib/bro-to-bro/invite";
 import type * as ScopeService from "@db/services/scope";
 // oxlint-disable-next-line import/no-unassigned-import -- Loads the production module so the mocked channel factory can capture its configuration.
 import "@agent/channels/telegram";
@@ -30,6 +32,7 @@ const capture = vi.hoisted(() => ({
     }>
   >(),
   redeemToken: vi.fn<typeof redeemChannelLinkToken>(),
+  openInvite: vi.fn<typeof openBroInvite>(),
 }));
 
 vi.mock("@shared/environment", async (importOriginal) => {
@@ -38,6 +41,7 @@ vi.mock("@shared/environment", async (importOriginal) => {
     ...original,
     env: {
       ...original.env,
+      BRO_TO_BRO_WORKSPACES: ["*"],
       TELEGRAM_BOT_TOKEN: "telegram-test-bot-token",
       TELEGRAM_BOT_USERNAME: "open_instinct_bot",
       TELEGRAM_WEBHOOK_SECRET_TOKEN: "telegram-test-webhook-secret",
@@ -59,6 +63,10 @@ vi.mock("@db/services/channel-identities", () => ({
 }));
 vi.mock("@db/services/auth/telegram-user", () => ({
   ensureTelegramUser: capture.ensureUser,
+  telegramUserName: "Telegram user",
+}));
+vi.mock("@db/services/bro-to-bro/invites", () => ({
+  openBroInvite: capture.openInvite,
 }));
 vi.mock("@db/services/auth/telegram-login", () => ({
   mintTelegramLoginLink: capture.mintLink,
@@ -300,6 +308,57 @@ describe("Telegram inbound authentication", () => {
 
     expect(sent).toHaveBeenCalledTimes(1);
     expect(sent.mock.calls[0]?.[0]).toContain(reason);
+  });
+});
+
+describe("a Bro ↔ Bro invite opened in Telegram", () => {
+  const token = "test-invite-token";
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capture.messageQuotaGate.mockResolvedValue({
+      allowed: true,
+      paywallText: undefined,
+    });
+    capture.claimIntroduction.mockResolvedValue(false);
+    capture.ensureUser.mockResolvedValue({ created: true, userId: "user-1" });
+  });
+
+  it("reaches the model as a marker and what the invite means, never as its token", async () => {
+    capture.openInvite.mockResolvedValue({
+      expiresAt: new Date("2026-10-30T12:00:00Z"),
+      inviterName: "Савелий",
+      kind: "opened",
+    });
+    const { context } = inboundContext();
+
+    const result = await onMessage(
+      context,
+      telegramMessage({ text: `/start bro_${token}` })
+    );
+
+    expect(capture.openInvite).toHaveBeenCalledExactlyOnceWith(
+      token,
+      expect.objectContaining({ userId: "better-auth:user-1" })
+    );
+    expect(result?.message).toBe(broInviteMarker);
+    const lines = result?.context?.join("\n") ?? "";
+    expect(lines).toContain("Савелий");
+    expect(lines).toContain("accept_invite");
+    expect(JSON.stringify(result)).not.toContain(token);
+  });
+
+  it("answers an invite that cannot be accepted with one line and no turn", async () => {
+    capture.openInvite.mockResolvedValue({ kind: "used" });
+    const { context, sent } = inboundContext();
+
+    await expect(
+      onMessage(context, telegramMessage({ text: `/start bro_${token}` }))
+    ).resolves.toBeNull();
+    expect(sent).toHaveBeenCalledExactlyOnceWith(
+      expect.stringContaining("уже воспользовались")
+    );
+    expect(capture.messageQuotaGate).not.toHaveBeenCalled();
   });
 });
 

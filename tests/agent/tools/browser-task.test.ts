@@ -8026,6 +8026,7 @@ describe("browser_task takes a code the site emailed from the person's mailbox",
   const letter = {
     code: "482913",
     domain: "ozon.ru",
+    from: "ozon.ru",
     kind: "found" as const,
     receivedAt: new Date(),
   };
@@ -8104,6 +8105,7 @@ describe("browser_task takes a code the site emailed from the person's mailbox",
     });
     mailCodeFromSite.mockResolvedValue({
       domain: "productradar.ru",
+      from: "productradar.ru",
       kind: "link",
       purpose: "password",
       receivedAt: new Date(),
@@ -8143,6 +8145,7 @@ describe("browser_task takes a code the site emailed from the person's mailbox",
     stoppedFor(emailed);
     mailCodeFromSite.mockResolvedValue({
       domain: "ozon.ru",
+      from: "ozon.ru",
       kind: "link",
       purpose: "confirm",
       receivedAt: new Date(),
@@ -9699,6 +9702,7 @@ describe("browser_task keeps sign-ins", () => {
     mailCodeFromSite.mockResolvedValue({
       code: "482913",
       domain: "ozon.ru",
+      from: "ozon.ru",
       kind: "found",
       receivedAt: new Date(),
     });
@@ -9741,6 +9745,7 @@ describe("browser_task keeps sign-ins", () => {
     });
     mailCodeFromSite.mockResolvedValue({
       domain: "ozon.ru",
+      from: "ozon.ru",
       kind: "link",
       purpose: "confirm",
       receivedAt: new Date(),
@@ -10326,6 +10331,121 @@ describe("browser_task registers with Bro's own mailbox", () => {
     expect(createBrowserUseRun).not.toHaveBeenCalled();
   });
 
+  describe("on a follow-up of the errand", () => {
+    // 24.10, Z-Library: a search found the book behind a sign-in, Bro offered
+    // to register with its own mailbox, and on «давай присылай» continued the
+    // search with its address written into the task. No password was saved,
+    // the site's code was looked for in the person's Gmail, which was not
+    // connected, and the person was asked for a code that went to Bro.
+    const agreed = "давай присылай";
+
+    function searchFound() {
+      readBrowserRunForScope.mockResolvedValue({
+        ...browserRunRow(
+          new Date(),
+          "Result: наблюдения есть, но открыть их можно только после входа\nNeeds: decision\nDetails: нужен аккаунт"
+        ),
+        site: "https://www.inaturalist.org",
+      });
+    }
+
+    async function followUp(input: {
+      readonly signUpWith?: "agent_mail";
+      readonly task: string;
+    }) {
+      const tool = await resolvedBrowserTask([], agreed);
+      return tool.execute(
+        {
+          action: "continue",
+          personSaid: agreed,
+          personWants: "done",
+          runId,
+          ...input,
+        },
+        toolContext("better-auth:alice")
+      );
+    }
+
+    beforeEach(() => {
+      pilot();
+      searchFound();
+    });
+
+    it("registers with Bro's address and a password saved before the run is bound", async () => {
+      resolveBrowserSecretBindings.mockResolvedValue(loginAliases);
+
+      const result = await followUp({
+        signUpWith: "agent_mail",
+        task: "Зарегистрируйся и открой наблюдения",
+      });
+
+      const payload = parseLoginVaultPayload(
+        saveVaultItem.mock.calls[0]?.[1]?.secret ?? ""
+      );
+      expect(payload).toMatchObject({
+        identifier: { type: "email", value: mailbox.email },
+        origin: "https://www.inaturalist.org",
+      });
+      expect(saveVaultItem.mock.invocationCallOrder[0]).toBeLessThan(
+        resolveBrowserSecretBindings.mock.invocationCallOrder[0] ?? 0
+      );
+      const created = createBrowserUseRun.mock.calls[0]?.[0];
+      expect(created?.secretBindings).toEqual(loginAliases.bindings);
+      expect(created?.task).toContain(
+        "This errand registers a new account on the errand's site with Bro's own mailbox, not the person's"
+      );
+      expect(created?.task).not.toContain(mailbox.email);
+      // No account yet to sign in to with the password just made.
+      expect(created?.task).not.toContain(
+        "Never take it for granted that this browser is signed in"
+      );
+      expect(continuationNote(result)).toContain(
+        "The run registers the account with your own AgentMail address"
+      );
+      expect(continuationNote(result)).not.toContain(
+        "The user's saved sign-in for this site is in the vault"
+      );
+    });
+
+    it("takes the saved login out again when the follow-up never starts", async () => {
+      createBrowserUseRun.mockRejectedValueOnce(new Error("cloud is down"));
+
+      await expect(
+        followUp({ signUpWith: "agent_mail", task: "Зарегистрируйся" })
+      ).rejects.toThrow("cloud is down");
+      expect(deleteVaultItem).toHaveBeenCalledWith(
+        expect.anything(),
+        "vault-signup"
+      );
+    });
+
+    it("refuses Bro's address written by hand, on a follow-up or a start", async () => {
+      await expect(
+        followUp({
+          task: `Зарегистрируйся с почтой ${mailbox.email.toUpperCase()} и открой наблюдения`,
+        })
+      ).rejects.toThrow('registered only with signUpWith "agent_mail"');
+
+      const tool = await resolvedBrowserTask(
+        [],
+        "зарегистрируйся на iNaturalist"
+      );
+      await expect(
+        tool.execute(
+          {
+            action: "start",
+            personWants: "done",
+            site: signUp.site,
+            task: `Зарегистрируйся на iNaturalist с почтой ${mailbox.email}`,
+          },
+          toolContext("better-auth:alice")
+        )
+      ).rejects.toThrow('registered only with signUpWith "agent_mail"');
+      expect(saveVaultItem).not.toHaveBeenCalled();
+      expect(createBrowserUseRun).not.toHaveBeenCalled();
+    });
+  });
+
   describe("confirming the address", () => {
     const emailed =
       "Result: форма отправлена, сайт прислал письмо для подтверждения\nNeeds: email_code\nDetails: ссылка в письме на q***@agentmail.to";
@@ -10371,6 +10491,7 @@ describe("browser_task registers with Bro's own mailbox", () => {
         "https://www.inaturalist.org/users/confirmation?confirmation_token=abc";
       mailCodeFromSite.mockResolvedValue({
         domain: "inaturalist.org",
+        from: "inaturalist.org",
         kind: "link",
         purpose: "confirm",
         receivedAt: new Date(),
@@ -10403,6 +10524,7 @@ describe("browser_task registers with Bro's own mailbox", () => {
       mailCodeFromSite.mockResolvedValue({
         code: "482913",
         domain: "inaturalist.org",
+        from: "inaturalist.org",
         kind: "found",
         receivedAt: new Date(),
       });
@@ -10462,6 +10584,7 @@ describe("browser_task registers with Bro's own mailbox", () => {
         mailCodeFromSite.mockResolvedValue({
           code: "113355",
           domain: "inaturalist.org",
+          from: "inaturalist.org",
           kind: "found",
           receivedAt: new Date(),
         });
@@ -10513,6 +10636,60 @@ describe("browser_task registers with Bro's own mailbox", () => {
           14 * 60_000
         );
       });
+    });
+
+    it("sends a code Bro copied from a letter back to codeFrom, not to the person", async () => {
+      // 24.10: Bro read Z-Library's code in its own inbox and wrote it into
+      // the task; told to ask the person, it said the site takes it only
+      // from them.
+      readBrowserRunForScope.mockResolvedValue({
+        ...browserRunRow(new Date(), emailed),
+        site: "https://www.inaturalist.org",
+      });
+      const said = "а как мне в твою почту зайти";
+      const tool = await resolvedBrowserTask([], said);
+
+      const sent = tool.execute(
+        {
+          action: "continue",
+          personSaid: said,
+          personWants: "done",
+          runId,
+          task: "Код подтверждения из письма: 8211",
+        },
+        toolContext("better-auth:alice")
+      );
+
+      await expect(sent).rejects.toThrow(
+        'continue this run with codeFrom "mail" and no task'
+      );
+      await expect(sent).rejects.not.toThrow("ask the user for it");
+      expect(createBrowserUseRun).not.toHaveBeenCalled();
+    });
+
+    it("lets a report turn have the site send a new letter", async () => {
+      // What the tool tells a report turn to do when the letter never came;
+      // refused, that turn asked the person for a code sent to Bro.
+      readBrowserRunForScope.mockResolvedValue({
+        ...browserRunRow(new Date(), emailed),
+        site: "https://www.inaturalist.org",
+      });
+      const tool = await resolvedBrowserTask(
+        [],
+        `${backgroundTurnMarker}\nBrowser run ${runId} finished.`
+      );
+
+      await tool.execute(
+        {
+          action: "continue",
+          personWants: "look",
+          runId,
+          task: "Попроси сайт прислать письмо ещё раз и остановись с NEEDS: email_code",
+        },
+        toolContext("better-auth:alice", "browser-result")
+      );
+
+      expect(createBrowserUseRun).toHaveBeenCalledOnce();
     });
 
     it("looks in the person's Gmail when the site's login is theirs", async () => {

@@ -1,5 +1,5 @@
 {
-  "id": "5784d809-b6d2-40a2-98e1-df7bb5b107c4",
+  "id": "34a8f2b3-dba5-4054-9a59-edaf5c9d04b8",
   "prevId": "3a275155-1668-49cc-a4ac-7870c52cf361",
   "version": "7",
   "dialect": "postgresql",
@@ -814,6 +814,1071 @@
         "payments_amount_rub_check": {
           "name": "payments_amount_rub_check",
           "value": "\"payments\".\"amount_rub\" >= 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.bro_invites": {
+      "name": "bro_invites",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "token_hash": {
+          "name": "token_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "inviter_workspace_id": {
+          "name": "inviter_workspace_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "inviter_user_id": {
+          "name": "inviter_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "label": {
+          "name": "label",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "opened_by_workspace_id": {
+          "name": "opened_by_workspace_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "opened_at": {
+          "name": "opened_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "redeemed_at": {
+          "name": "redeemed_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "redeemed_by_workspace_id": {
+          "name": "redeemed_by_workspace_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "bro_invites_token_hash_uidx": {
+          "name": "bro_invites_token_hash_uidx",
+          "columns": [
+            {
+              "expression": "token_hash",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "bro_invites_inviter_created_idx": {
+          "name": "bro_invites_inviter_created_idx",
+          "columns": [
+            {
+              "expression": "inviter_workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "bro_invites_opened_idx": {
+          "name": "bro_invites_opened_idx",
+          "columns": [
+            {
+              "expression": "opened_by_workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "opened_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "bro_invites_inviter_workspace_id_fkey": {
+          "name": "bro_invites_inviter_workspace_id_fkey",
+          "tableFrom": "bro_invites",
+          "tableTo": "workspaces",
+          "columnsFrom": ["inviter_workspace_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "bro_invites_opened_by_workspace_id_fkey": {
+          "name": "bro_invites_opened_by_workspace_id_fkey",
+          "tableFrom": "bro_invites",
+          "tableTo": "workspaces",
+          "columnsFrom": ["opened_by_workspace_id"],
+          "columnsTo": ["id"],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "bro_invites_label_check": {
+          "name": "bro_invites_label_check",
+          "value": "char_length(\"bro_invites\".\"label\") <= 200"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.bro_links": {
+      "name": "bro_links",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "workspace_id": {
+          "name": "workspace_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "peer_workspace_id": {
+          "name": "peer_workspace_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "peer_user_id": {
+          "name": "peer_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "invite_id": {
+          "name": "invite_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "calendar": {
+          "name": "calendar",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "share_notes": {
+          "name": "share_notes",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "peer_label": {
+          "name": "peer_label",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "removed_at": {
+          "name": "removed_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "bro_links_live_pair_uidx": {
+          "name": "bro_links_live_pair_uidx",
+          "columns": [
+            {
+              "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "peer_workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"bro_links\".\"removed_at\" IS NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "bro_links_workspace_id_fkey": {
+          "name": "bro_links_workspace_id_fkey",
+          "tableFrom": "bro_links",
+          "tableTo": "workspaces",
+          "columnsFrom": ["workspace_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "bro_links_peer_workspace_id_fkey": {
+          "name": "bro_links_peer_workspace_id_fkey",
+          "tableFrom": "bro_links",
+          "tableTo": "workspaces",
+          "columnsFrom": ["peer_workspace_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "bro_links_invite_id_fkey": {
+          "name": "bro_links_invite_id_fkey",
+          "tableFrom": "bro_links",
+          "tableTo": "bro_invites",
+          "columnsFrom": ["invite_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "bro_links_status_check": {
+          "name": "bro_links_status_check",
+          "value": "\"bro_links\".\"status\" IN ('pending', 'active')"
+        },
+        "bro_links_pair_check": {
+          "name": "bro_links_pair_check",
+          "value": "\"bro_links\".\"workspace_id\" <> \"bro_links\".\"peer_workspace_id\""
+        },
+        "bro_links_share_notes_check": {
+          "name": "bro_links_share_notes_check",
+          "value": "char_length(\"bro_links\".\"share_notes\") <= 2000"
+        },
+        "bro_links_peer_label_check": {
+          "name": "bro_links_peer_label_check",
+          "value": "char_length(\"bro_links\".\"peer_label\") <= 200"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.bro_messages": {
+      "name": "bro_messages",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "thread_id": {
+          "name": "thread_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "seq": {
+          "name": "seq",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "side": {
+          "name": "side",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "action": {
+          "name": "action",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "body": {
+          "name": "body",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "proposal": {
+          "name": "proposal",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "accepts_message_id": {
+          "name": "accepts_message_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "approved_by_owner": {
+          "name": "approved_by_owner",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "bro_messages_thread_seq_uidx": {
+          "name": "bro_messages_thread_seq_uidx",
+          "columns": [
+            {
+              "expression": "thread_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "seq",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "bro_messages_created_idx": {
+          "name": "bro_messages_created_idx",
+          "columns": [
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "bro_messages_thread_id_fkey": {
+          "name": "bro_messages_thread_id_fkey",
+          "tableFrom": "bro_messages",
+          "tableTo": "bro_threads",
+          "columnsFrom": ["thread_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "bro_messages_side_check": {
+          "name": "bro_messages_side_check",
+          "value": "\"bro_messages\".\"side\" IN ('initiator', 'responder')"
+        },
+        "bro_messages_action_check": {
+          "name": "bro_messages_action_check",
+          "value": "\"bro_messages\".\"action\" IN ('message', 'propose', 'accept', 'decline', 'ask_owner', 'close')"
+        },
+        "bro_messages_proposal_check": {
+          "name": "bro_messages_proposal_check",
+          "value": "(\"bro_messages\".\"action\" = 'propose') = (\"bro_messages\".\"proposal\" IS NOT NULL)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.bro_reports": {
+      "name": "bro_reports",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "workspace_id": {
+          "name": "workspace_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "thread_id": {
+          "name": "thread_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "payload": {
+          "name": "payload",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "target": {
+          "name": "target",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "lease_token": {
+          "name": "lease_token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lease_expires_at": {
+          "name": "lease_expires_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "attempts": {
+          "name": "attempts",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "last_error": {
+          "name": "last_error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "dedupe_key": {
+          "name": "dedupe_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "delivered_at": {
+          "name": "delivered_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "bro_reports_dedupe_key_uidx": {
+          "name": "bro_reports_dedupe_key_uidx",
+          "columns": [
+            {
+              "expression": "dedupe_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "bro_reports_due_idx": {
+          "name": "bro_reports_due_idx",
+          "columns": [
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"bro_reports\".\"status\" IN ('pending', 'leased')",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "bro_reports_workspace_id_fkey": {
+          "name": "bro_reports_workspace_id_fkey",
+          "tableFrom": "bro_reports",
+          "tableTo": "workspaces",
+          "columnsFrom": ["workspace_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "bro_reports_thread_id_fkey": {
+          "name": "bro_reports_thread_id_fkey",
+          "tableFrom": "bro_reports",
+          "tableTo": "bro_threads",
+          "columnsFrom": ["thread_id"],
+          "columnsTo": ["id"],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "bro_reports_kind_check": {
+          "name": "bro_reports_kind_check",
+          "value": "\"bro_reports\".\"kind\" IN ('invite_accepted', 'link_ready', 'question', 'held', 'agreed', 'confirmed', 'declined', 'answered', 'alert', 'expired', 'stalled', 'cancelled', 'link_removed')"
+        },
+        "bro_reports_status_check": {
+          "name": "bro_reports_status_check",
+          "value": "\"bro_reports\".\"status\" IN ('pending', 'leased', 'delivered', 'dropped')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.bro_thread_sides": {
+      "name": "bro_thread_sides",
+      "schema": "",
+      "columns": {
+        "thread_id": {
+          "name": "thread_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "side": {
+          "name": "side",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "workspace_id": {
+          "name": "workspace_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "mandate": {
+          "name": "mandate",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "owner_answers": {
+          "name": "owner_answers",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "waiting_owner": {
+          "name": "waiting_owner",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "pending_question": {
+          "name": "pending_question",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "held_message": {
+          "name": "held_message",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "confirmed_proposal_id": {
+          "name": "confirmed_proposal_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "confirmed_at": {
+          "name": "confirmed_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "declined_at": {
+          "name": "declined_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "alerted_categories": {
+          "name": "alerted_categories",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'"
+        },
+        "report_target": {
+          "name": "report_target",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "calendar_state": {
+          "name": "calendar_state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "calendar_event_id": {
+          "name": "calendar_event_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "calendar_attempts": {
+          "name": "calendar_attempts",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "calendar_next_at": {
+          "name": "calendar_next_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "bro_thread_sides_workspace_idx": {
+          "name": "bro_thread_sides_workspace_idx",
+          "columns": [
+            {
+              "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "bro_thread_sides_calendar_due_idx": {
+          "name": "bro_thread_sides_calendar_due_idx",
+          "columns": [
+            {
+              "expression": "calendar_next_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"bro_thread_sides\".\"calendar_state\" = 'pending'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "bro_thread_sides_thread_id_fkey": {
+          "name": "bro_thread_sides_thread_id_fkey",
+          "tableFrom": "bro_thread_sides",
+          "tableTo": "bro_threads",
+          "columnsFrom": ["thread_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "bro_thread_sides_workspace_id_fkey": {
+          "name": "bro_thread_sides_workspace_id_fkey",
+          "tableFrom": "bro_thread_sides",
+          "tableTo": "workspaces",
+          "columnsFrom": ["workspace_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "bro_thread_sides_pkey": {
+          "name": "bro_thread_sides_pkey",
+          "columns": ["thread_id", "side"]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "bro_thread_sides_side_check": {
+          "name": "bro_thread_sides_side_check",
+          "value": "\"bro_thread_sides\".\"side\" IN ('initiator', 'responder')"
+        },
+        "bro_thread_sides_mandate_check": {
+          "name": "bro_thread_sides_mandate_check",
+          "value": "\"bro_thread_sides\".\"mandate\" IS NULL OR \"bro_thread_sides\".\"side\" = 'initiator'"
+        },
+        "bro_thread_sides_calendar_state_check": {
+          "name": "bro_thread_sides_calendar_state_check",
+          "value": "\"bro_thread_sides\".\"calendar_state\" IN ('pending', 'created', 'skipped_no_calendar', 'skipped_read_only', 'skipped_no_time', 'failed')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.bro_threads": {
+      "name": "bro_threads",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "initiator_workspace_id": {
+          "name": "initiator_workspace_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "responder_workspace_id": {
+          "name": "responder_workspace_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "topic": {
+          "name": "topic",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'negotiating'"
+        },
+        "next_side": {
+          "name": "next_side",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "next_at": {
+          "name": "next_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lease_token": {
+          "name": "lease_token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lease_expires_at": {
+          "name": "lease_expires_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "agreed_proposal_id": {
+          "name": "agreed_proposal_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "version": {
+          "name": "version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "envoy_messages": {
+          "name": "envoy_messages",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "failed_steps": {
+          "name": "failed_steps",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "deadline_at": {
+          "name": "deadline_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "closed_at": {
+          "name": "closed_at",
+          "type": "timestamp (3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "bro_threads_due_idx": {
+          "name": "bro_threads_due_idx",
+          "columns": [
+            {
+              "expression": "next_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"bro_threads\".\"status\" = 'negotiating'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "bro_threads_deadline_idx": {
+          "name": "bro_threads_deadline_idx",
+          "columns": [
+            {
+              "expression": "deadline_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"bro_threads\".\"status\" IN ('negotiating', 'agreed')",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "bro_threads_pair_created_idx": {
+          "name": "bro_threads_pair_created_idx",
+          "columns": [
+            {
+              "expression": "initiator_workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "responder_workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "bro_threads_closed_idx": {
+          "name": "bro_threads_closed_idx",
+          "columns": [
+            {
+              "expression": "closed_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"bro_threads\".\"closed_at\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "bro_threads_initiator_workspace_id_fkey": {
+          "name": "bro_threads_initiator_workspace_id_fkey",
+          "tableFrom": "bro_threads",
+          "tableTo": "workspaces",
+          "columnsFrom": ["initiator_workspace_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "bro_threads_responder_workspace_id_fkey": {
+          "name": "bro_threads_responder_workspace_id_fkey",
+          "tableFrom": "bro_threads",
+          "tableTo": "workspaces",
+          "columnsFrom": ["responder_workspace_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "bro_threads_status_check": {
+          "name": "bro_threads_status_check",
+          "value": "\"bro_threads\".\"status\" IN ('negotiating', 'agreed', 'confirmed', 'answered', 'declined', 'cancelled', 'expired', 'stalled')"
+        },
+        "bro_threads_next_side_check": {
+          "name": "bro_threads_next_side_check",
+          "value": "\"bro_threads\".\"next_side\" IN ('initiator', 'responder')"
+        },
+        "bro_threads_pair_check": {
+          "name": "bro_threads_pair_check",
+          "value": "\"bro_threads\".\"initiator_workspace_id\" <> \"bro_threads\".\"responder_workspace_id\""
+        },
+        "bro_threads_closed_check": {
+          "name": "bro_threads_closed_check",
+          "value": "(\"bro_threads\".\"closed_at\" IS NULL) = (\"bro_threads\".\"status\" IN ('negotiating', 'agreed'))"
         }
       },
       "isRLSEnabled": false
@@ -2785,19 +3850,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "kind": {
-          "name": "kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'submit'"
-        },
-        "item": {
-          "name": "item",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "state": {
           "name": "state",
           "type": "text",
@@ -2821,18 +3873,6 @@
         "delivered_at": {
           "name": "delivered_at",
           "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "finished_at": {
-          "name": "finished_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "run_id": {
-          "name": "run_id",
-          "type": "text",
           "primaryKey": false,
           "notNull": false
         },
@@ -2862,44 +3902,6 @@
             }
           ],
           "isUnique": true,
-          "where": "\"card_responses\".\"kind\" = 'submit'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "card_responses_card_created_idx": {
-          "name": "card_responses_card_created_idx",
-          "columns": [
-            {
-              "expression": "card_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "card_responses_run_idx": {
-          "name": "card_responses_run_idx",
-          "columns": [
-            {
-              "expression": "run_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"card_responses\".\"run_id\" IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -2969,10 +3971,6 @@
         "card_responses_state_check": {
           "name": "card_responses_state_check",
           "value": "\"card_responses\".\"state\" IN ('received', 'delivered', 'failed')"
-        },
-        "card_responses_kind_check": {
-          "name": "card_responses_kind_check",
-          "value": "\"card_responses\".\"kind\" IN ('submit', 'intent')"
         }
       },
       "isRLSEnabled": false
@@ -3045,12 +4043,6 @@
         },
         "updated_at": {
           "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "watched_at": {
-          "name": "watched_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false

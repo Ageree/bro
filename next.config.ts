@@ -25,6 +25,8 @@ const nextConfig: NextConfig = {
         // addresses and the one its answer goes to.
         /\/card\/[^/?]+(?:\?|$)/u,
         /\/api\/cards\//u,
+        // A Bro link invite's token, and sign-in on the way to its card.
+        /bro_invite(?:=|%3D)/u,
       ],
     },
   },

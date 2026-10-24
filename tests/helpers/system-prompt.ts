@@ -94,6 +94,7 @@ export function stubDeployment(environment: Record<string, string>) {
     ...Object.keys(taskAgentDeployment),
     "AGENT_SANDBOX",
     "BACKGROUND_ACTIONS_WORKSPACES",
+    "BRO_TO_BRO_WORKSPACES",
     "ERRAND_AUTONOMY_WORKSPACES",
     "LOCATION_WORKSPACES",
     "ROUTINE_SETUP_WORKSPACES",

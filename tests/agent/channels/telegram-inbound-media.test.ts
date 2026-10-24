@@ -72,6 +72,7 @@ vi.mock("@db/services/auth/telegram-user", () => ({
     const identity = await capture.findIdentity("telegram", telegramUserId);
     return identity && { created: false, userId: identity.userId };
   },
+  telegramUserName: "Telegram user",
 }));
 vi.mock("@db/services/scope", async (importOriginal) => ({
   ...(await importOriginal<typeof ScopeService>()),

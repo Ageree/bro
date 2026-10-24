@@ -198,6 +198,7 @@ import {
   personLoginSources,
   savePersonLogin,
 } from "@agent/lib/browser-use/given-login";
+import { ensureAgentMailbox } from "@agent/lib/agent-mail/client";
 import { agentMailboxEnabled } from "@db/services/agent-mail";
 import {
   carriesVehicleDocumentNumbers,
@@ -406,9 +407,9 @@ const shortInputSchema = browserTaskSchema(shortTexts);
  * (`tests/agent/tools/flag-off.test.ts`).
  */
 const signUpTexts = {
-  full: 'Only on start, in a turn the user\'s own message started, when they asked you to register or create an account on this site (or their errand needs one and they asked for it): "agent_mail" registers it with your own AgentMail address and a password the tool makes and saves in the vault, so later errands on this site sign in by themselves. It shares none of the user\'s details, so it is not acting in their name: no allowSubmit, no submission, no card and no question about which email — start it at once, with site. Leave allowSubmit and allowPayment out. Their name, phone, own email, address or a payment still go only by the usual rules. The site\'s letter comes to your mailbox: on NEEDS: email_code continue with codeFrom "mail", which takes the code or the confirmation link from it.',
+  full: 'On start, or on continue of an errand on that site, in a turn the user\'s own message started, when they asked you to register or create an account on this site (or agreed to the account you offered): "agent_mail" registers it with your own AgentMail address and a password the tool makes and saves in the vault, so later errands on this site sign in by themselves. It shares none of the user\'s details, so it is not acting in their name: no allowSubmit, no submission, no card and no question about which email — call it at once, with site on start. Leave allowSubmit and allowPayment out, and never write your address into task. Their name, phone, own email, address or a payment still go only by the usual rules. The site\'s letter comes to your mailbox: on NEEDS: email_code continue with codeFrom "mail", which takes the code or the confirmation link from it.',
   short:
-    '"agent_mail" on start, in the user\'s own turn, when they asked for an account on this site: the run registers with your own AgentMail address and a password the tool makes and saves. None of their details, so no allowSubmit, no submission, no question; pass site. On NEEDS: email_code continue with codeFrom "mail".',
+    '"agent_mail" on start or on continue of the errand on that site, in the user\'s own turn, when they asked for an account there or agreed to yours: the run registers with your own AgentMail address and a password the tool makes and saves. None of their details, so no allowSubmit, no submission, no question, never your address in task; pass site on start. On NEEDS: email_code continue with codeFrom "mail".',
 };
 
 function withSignUp(schema: typeof inputSchema, text: string) {
@@ -1804,8 +1805,12 @@ export function composeBrowserContinuation(options: {
   readonly message: string;
   readonly searching: boolean;
   readonly site: string | undefined;
-  /** The errand registers an account with Bro's own mailbox. */
-  readonly signUp?: { readonly username: string };
+  /**
+   * The errand registers an account with Bro's own mailbox; `begins`: this
+   * follow-up is the one that registers, so there is no account yet to
+   * check a sign-in against.
+   */
+  readonly signUp?: { readonly begins?: boolean; readonly username: string };
   /** The person asked for the errand to be done, not only found. */
   readonly staging?: Staging;
   /** The last run broke off with a payment allowed (`brokeOffPaying`). */
@@ -1872,7 +1877,9 @@ export function composeBrowserContinuation(options: {
       : formFieldsLine,
     credentialsLine(options.aliases, options.site),
     vaultCardLaterLine(options),
-    accountStateLine(options.aliases),
+    options.signUp?.begins === true
+      ? undefined
+      : accountStateLine(options.aliases),
     rememberSignInLine,
     gosuslugiSignInRule(options.site, options.consent?.kind === "confirmed"),
     captchaLine(),
@@ -2937,6 +2944,14 @@ function codeAwaited(row: ErrandRow) {
   );
 }
 
+/** Whether the errand's last run stopped for a code the site emailed. */
+function mailCodeAwaited(row: ErrandRow) {
+  return (
+    row.completedAt !== null &&
+    waitsForMailCode(endedNeeding(row.outcome), row.outcome)
+  );
+}
+
 /**
  * A one-time code the call carries that the person did not send. On 25.09
  * a report turn that had just asked the person for their Госуслуги SMS code
@@ -2945,11 +2960,17 @@ function codeAwaited(row: ErrandRow) {
  * rejected it twice, which can lock the account. A code reaches the site
  * only from the person's own words of this turn, digit for digit; a turn the
  * person said nothing in (`words` null) — a report, a worker — passes none.
+ *
+ * `mailed`: the run stopped for a code the site emailed. On 24.10 Bro read
+ * Z-Library's code in its own AgentMail inbox and wrote it into the task;
+ * told to ask the person, it wrote them that the site takes the code only
+ * from them. Such a code is the tool's to take from the letter.
  */
 function inventedCodeRefusal(
   texts: readonly (string | undefined)[],
   awaitingCode: boolean,
-  words: readonly string[] | null
+  words: readonly string[] | null,
+  mailed = false
 ) {
   const codes = texts.flatMap((text) => {
     if (text === undefined) return [];
@@ -2964,6 +2985,9 @@ function inventedCodeRefusal(
   // unsent would have the model ask them for it again.
   const unsent = codesNotFromPerson(codes, words ?? []);
   if (unsent.length === 0) return undefined;
+  if (mailed) {
+    return `Nothing was sent: ${unsent.join(", ")} reads as a one-time code, and the user did not send it in their own message this turn. Never copy a code from a letter into task, from your own AgentMail inbox or the user's mail: continue this run with codeFrom "mail" and no task — the tool takes the code or the link from the site's own letter, in your mailbox when the site wrote there, and types it without anyone seeing it. Do not ask the user for a code that went to your own address.`;
+  }
   return `Nothing was sent: ${unsent.join(", ")} reads as a one-time code, and the user did not send it in their own message this turn. Never make up a code, reuse an old one or fill in its digits. When the site waits for a code, ask the user for it in your one message, naming the phone or address exactly as the report masks it, and wait: their reply is what continues the run. A number that is not a code — an amount, a date — leave out of task, or give it with its unit.`;
 }
 
@@ -2972,6 +2996,11 @@ function inventedCodeRefusal(
  * sent, their approval in the app, a sign-in, 3-D Secure — waits for their
  * own reply. A turn Bro opened has nothing of theirs to pass on, and a
  * follow-up from it could only resend a code or type one it made up.
+ *
+ * Not a code the site emailed: the tool takes it from the letter, and when
+ * there is none it tells the report turn to have the site send a new one —
+ * a follow-up that carries no code, which `inventedCodeRefusal` still holds
+ * to. Refused here, that turn asked the person for a code sent to Bro.
  */
 function waitingOnPersonRefusal(
   row: ErrandRow,
@@ -2981,6 +3010,7 @@ function waitingOnPersonRefusal(
   if (!answeredInPlaceNeeds.has(endedNeeding(row.outcome) ?? "")) {
     return undefined;
   }
+  if (mailCodeAwaited(row)) return undefined;
   return "Nothing was sent: this run is waiting for something only the user can give — the code the site sent, their approval in the app, a sign-in or 3-D Secure. Ask them for it in your one message, naming the phone or address exactly as the report masks it, never with digits filled in, and end the turn: their own reply continues the run. Never continue it with a code or an answer they did not send.";
 }
 
@@ -3027,7 +3057,8 @@ function unsentWordsRefusal(
     inventedCodeRefusal(
       [input.task, input.personSaid],
       codeAwaited(row),
-      words
+      words,
+      mailCodeAwaited(row)
     ) ??
     (words === null ? undefined : unsaidRefusal(input.personSaid, words))
   );
@@ -3197,6 +3228,46 @@ const signUpWithoutSiteRefusal =
   'Nothing was started: signUpWith "agent_mail" needs the site to register on — its https origin, such as https://www.example.com.';
 const signUpOffRefusal =
   "Nothing was started: this workspace has no AgentMail mailbox of its own, so an account cannot be registered with it. Start the errand without signUpWith.";
+const signUpQueuedRefusal =
+  'Nothing was sent: this errand still waits for a browser, so it cannot register yet. Start a new errand on the site with signUpWith "agent_mail" instead, or continue this one with it once it has run.';
+
+/**
+ * What a call that gives the site Bro's own address by hand is told. On
+ * 24.10 Bro offered to register on Z-Library mid-errand, and on the
+ * person's «давай» continued the search with its AgentMail address written
+ * into the task: no password was saved, the run had none to type, and the
+ * site's code was looked for in the person's Gmail, which was not even
+ * connected. The person was asked for a code that went to Bro.
+ */
+const ownAddressRefusal =
+  'Nothing was sent: the task gives the site your own AgentMail address by hand. An account with your mailbox is registered only with signUpWith "agent_mail" — on start, or on continue of the errand on that site: the tool makes and saves its password, the run types your address and the password by name, and codeFrom "mail" then takes the site\'s letter from your own inbox. Call again with signUpWith "agent_mail" and without the address in task or personSaid.';
+
+/**
+ * Whether a call writes Bro's own AgentMail address into what the run
+ * reads, instead of registering with it through `signUpWith`. Only a
+ * workspace with its mailbox, and only text with an «@» in it, reads the
+ * mailbox; one that cannot be read lets the call go.
+ */
+async function writesOwnAddress(
+  scope: AccessScope,
+  texts: readonly (string | undefined)[]
+) {
+  const written = texts.filter(
+    (text): text is string => text?.includes("@") === true
+  );
+  if (written.length === 0 || !agentMailboxEnabled(scope)) return false;
+  try {
+    const mailbox = await ensureAgentMailbox(scope);
+    if (!mailbox) return false;
+    const address = mailbox.email.toLowerCase();
+    return written.some((text) => text.toLowerCase().includes(address));
+  } catch (error) {
+    console.warn("[browser-use] the agent mailbox could not be read", {
+      cause: error,
+    });
+    return false;
+  }
+}
 
 /** What Bro hears about the account a start registers with its mailbox. */
 function signUpNote(kind: "again" | "new" | "saved") {
@@ -3222,20 +3293,21 @@ async function undoneOnFailure<T>(
 }
 
 /**
- * The account a start registers with Bro's own mailbox (`signUpWith`), or
+ * The account an errand registers with Bro's own mailbox (`signUpWith`), or
  * a refusal: only in the person's own turn, on a site, without anything in
- * their name.
+ * their name. `site`: the start's, or the errand's on a continue.
  */
 async function signUpFor(
   input: BrowserTaskInput,
   scope: AccessScope,
-  byPerson: boolean
+  byPerson: boolean,
+  site = input.site
 ) {
   if (input.signUpWith === undefined) return undefined;
   if (actsForPerson(input)) throw new Error(signUpWithConsentRefusal);
   if (!byPerson) throw new Error(signUpOutsidePersonRefusal);
-  if (input.site === undefined) throw new Error(signUpWithoutSiteRefusal);
-  const signUp = await agentMailSignUp(scope, input.site);
+  if (site === undefined) throw new Error(signUpWithoutSiteRefusal);
+  const signUp = await agentMailSignUp(scope, site);
   if (signUp === undefined) {
     throw new Error(
       agentMailboxEnabled(scope) ? signUpWithoutSiteRefusal : signUpOffRefusal
@@ -3300,6 +3372,8 @@ async function codeFromMail(
   console.info("[browser-use] code from mail", {
     // Never the code or the link itself.
     domain: found.kind === "no_site" ? undefined : found.domain,
+    from:
+      found.kind === "found" || found.kind === "link" ? found.from : undefined,
     mailbox: agentMailbox === undefined ? "person" : "agent",
     result: found.kind,
     runId: row.id,
@@ -4673,6 +4747,12 @@ async function runBrowserTask(
     }
     const inventedCode = inventedCodeRefusal([errand], false, words);
     if (inventedCode) throw new Error(inventedCode);
+    if (
+      input.signUpWith === undefined &&
+      (await writesOwnAddress(scope, [errand]))
+    ) {
+      throw new Error(ownAddressRefusal);
+    }
     // In the autonomy pilot the numbers of a car's СТС and of a driving
     // licence go to the official fines check alone, whatever the call says.
     const finesCheck =
@@ -5051,7 +5131,12 @@ async function runBrowserTask(
     // only they received, a step only they can take, words only they said.
     const refusal =
       (fromMail ? undefined : waitingOnPersonRefusal(row, words)) ??
-      inventedCodeRefusal([task, input.personSaid], codeAwaited(row), words);
+      inventedCodeRefusal(
+        [task, input.personSaid],
+        codeAwaited(row),
+        words,
+        mailCodeAwaited(row)
+      );
     if (refusal) throw new Error(refusal);
     // A follow-up goes to its errand's site: the СТС and licence numbers
     // reach it only when that is the official fines check.
@@ -5095,6 +5180,19 @@ async function runBrowserTask(
     if (words !== null && !mail) {
       const unsaid = unsaidRefusal(input.personSaid, words);
       if (unsaid) throw new Error(unsaid);
+    }
+    // An account the person asked for mid-errand is registered on the
+    // errand's own site with Bro's mailbox, as a start with signUpWith does:
+    // its login saved, so the site's letter is looked for in that mailbox.
+    const signUp = mail
+      ? undefined
+      : await signUpFor(input, scope, byPerson, row.site ?? undefined);
+    if (
+      input.signUpWith === undefined &&
+      !mail &&
+      (await writesOwnAddress(scope, [task, input.personSaid]))
+    ) {
+      throw new Error(ownAddressRefusal);
     }
     // A confirmation stays with its errand: a code, an answer or the
     // payment its card already named needs no second card. A background
@@ -5149,7 +5247,9 @@ async function runBrowserTask(
     const contacts = contactCut(
       sharesDetails(
         consent,
-        done ? undefined : stagingFor(input.personWants, byPerson)
+        done || signUp !== undefined
+          ? undefined
+          : stagingFor(input.personWants, byPerson)
       )
         ? undefined
         : contactsNotIn(await readOwnContacts(scope), spoken.typed),
@@ -5195,6 +5295,7 @@ async function runBrowserTask(
       );
     }
     if (row.status === "queued") {
+      if (signUp !== undefined) throw new Error(signUpQueuedRefusal);
       const heldForQueue = await reserveConsentForRun(scope, consent, {
         paymentAllowed: allowPayment,
         replacingRunId: row.id,
@@ -5317,6 +5418,9 @@ async function runBrowserTask(
       }
     };
     const paymentDispatch = { sent: false };
+    // The login a sign-up saved for this follow-up, taken out again when
+    // no run starts.
+    let signUpLogin: string | undefined;
     const continueErrandRun = () =>
       releasedOnFailure(undefined, async () => {
         // Both are round trips to the cloud and neither needs the other's answer.
@@ -5368,11 +5472,13 @@ async function runBrowserTask(
           !row.paymentAllowed &&
           row.submission === null &&
           (await flashSearchPilot(scope));
-        // A login the person just sent is bound only to a run started now.
+        // A login the person just sent, or one a sign-up saves, is bound
+        // only to a run started now.
         if (
           live &&
           !bindsCardNow &&
           !loginSaved &&
+          signUp === undefined &&
           !intoSearchRun &&
           row.sessionId !== null
         ) {
@@ -5460,6 +5566,11 @@ async function runBrowserTask(
         // What the run this follow-up replaces was told: whether its errand
         // signs in by phone and is to be done carries on from there.
         const replaced = await replacedRunTask(row);
+        // Saved before the secrets are read, as on start, so the follow-up
+        // is bound to it (`login_username`, `login_password`).
+        if (signUp?.kind === "new") {
+          signUpLogin = await saveAgentMailLogin(scope, signUp);
+        }
         // No quota gate: `browserRunQuotaGate` counts as it reads, and a
         // continuation is the same errand the month was already charged for.
         const [bound, facts] = await Promise.all([
@@ -5530,9 +5641,11 @@ async function runBrowserTask(
           message: withCodeEntry(instruction, codeEntry, carriesCode),
           searching: mail ? false : followUpSearches(said, row.outcome),
           signUp:
-            signUpMailbox === undefined
-              ? undefined
-              : { username: signUpUsername(signUpMailbox.email) },
+            signUp !== undefined && signUp.kind !== "saved"
+              ? { begins: true, username: signUp.username }
+              : signUpMailbox === undefined
+                ? undefined
+                : { username: signUpUsername(signUpMailbox.email) },
           site: sentSite,
           // An errand the person asked to be done stays so until they say
           // otherwise; a search stays a search.
@@ -5662,6 +5775,11 @@ async function runBrowserTask(
           secrets,
         };
       });
+    const forgetSignUpLogin = async () => {
+      if (signUpLogin !== undefined) {
+        await forgetAgentMailLogin(scope, signUpLogin);
+      }
+    };
     let continued: Awaited<ReturnType<typeof continueErrandRun>>;
     // The follow-up that took the kept page gives it back when it does not
     // start: the idle stop then closes it cleanly.
@@ -5669,6 +5787,7 @@ async function runBrowserTask(
       continued = await continueErrandRun();
     } catch (error) {
       await giveBackPage();
+      await forgetSignUpLogin();
       if (placeholder) {
         if (stickyPayment && paymentDispatch.sent)
           throw unknownPaymentDispatch(error);
@@ -5680,6 +5799,7 @@ async function runBrowserTask(
     // nothing started.
     if (continued.kind === "no_credits" || continued.kind === "replied") {
       await giveBackPage();
+      await forgetSignUpLogin();
     }
     if (continued.kind === "replied" || continued.kind === "no_credits") {
       if (stickyPayment && paymentDispatch.sent) {
@@ -5814,8 +5934,11 @@ async function runBrowserTask(
           : mail.mailbox === "agent"
             ? agentMailTakenNote(mail.domain, mail.kind)
             : mailCodeTakenNote(mail.domain, mail.kind),
+        signUp === undefined ? undefined : signUpNote(signUp.kind),
         nothingDoneYetNote(),
-        boundSignInNote(secrets.aliases),
+        signUp === undefined || signUp.kind === "saved"
+          ? boundSignInNote(secrets.aliases)
+          : undefined,
         contacts.note(),
       ]
         .filter((line) => line !== undefined)

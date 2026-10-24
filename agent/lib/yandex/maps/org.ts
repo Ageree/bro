@@ -30,6 +30,7 @@ const card = z.object({
   reviews: z.array(review).max(3),
   site: z.string().nullable(),
   week: z.array(z.string()).max(7),
+  yclients: z.number().int().positive().nullable(),
 });
 
 /**
@@ -123,6 +124,7 @@ export const mapsOrgOperation = defineYandexOperation({
           )
           .join(",")
       ),
+      yclients: mapsYclients(i.booking),
     },
   };
 }`,

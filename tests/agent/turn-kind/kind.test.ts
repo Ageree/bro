@@ -143,6 +143,49 @@ describe("the tools of a step", () => {
     }
   });
 
+  it("holds a Bro ↔ Bro report's turn to telling the owner, whatever the pilots", () => {
+    const context = catalogContext("web");
+    const report = {
+      ...context,
+      session: {
+        ...context.session,
+        auth: {
+          ...context.session.auth,
+          current: {
+            ...context.session.auth.current,
+            attributes: {
+              ...context.session.auth.current.attributes,
+              broReportId: "11111111-1111-4111-8111-111111111111",
+              broReportToken: "22222222-2222-4222-8222-222222222222",
+            },
+            authenticator: "bro-result",
+          },
+        },
+      },
+    };
+    const kind = turnKind(report, {
+      sessionId: "session-1",
+      stepIndex: 0,
+      turnId: "turn_1",
+    });
+    expect(kind).toBe("bro-report");
+    for (const stableContext of [false, true]) {
+      const tools = turnTools({
+        ...quiet,
+        browserFiles: true,
+        kind,
+        stableContext,
+        taskAgent: true,
+      });
+      expect(tools.offeredTools).toEqual([
+        "send_message",
+        "react_to_message",
+        "calculate",
+      ]);
+      expect(tools.withheldTools).toContain("ask_question");
+    }
+  });
+
   it("withholds outside the pilot what it withheld before", () => {
     expect(
       turnTools({

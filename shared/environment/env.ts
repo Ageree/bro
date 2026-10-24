@@ -204,6 +204,18 @@ export const env = createEnv({
     // Telegram chat as a button to a Mini App (`agent/tools/send_card.ts`,
     // `docs/cards.md`): workspace ids or *. Unset, nobody.
     CARDS_WORKSPACES: workspaceListSchema.optional(),
+    // Bro ↔ Bro (docs/bro-to-bro.md): workspace ids or *. Unset, off for
+    // everyone, links included; set, also on for every workspace with an
+    // active link, so the person who accepted an invite gets it with the link.
+    BRO_TO_BRO_WORKSPACES: workspaceListSchema
+      .refine(
+        (entries) => entries.every((entry) => !entry.includes("@")),
+        "BRO_TO_BRO_WORKSPACES takes workspace ids or *, not emails"
+      )
+      .optional(),
+    // The model of the envoys and of their outgoing gate; unset,
+    // `openai/gpt-6-luna` (agent/lib/bro-to-bro/model.ts).
+    BRO_TO_BRO_MODEL: trimmedValue.optional(),
     // Geolocation (`agent/tools/location.ts`, `docs/location.md`): workspace
     // ids or *. Unset, nobody: a shared location stays what it was (an empty
     // Telegram turn, a file note in iMessage).
@@ -1248,6 +1260,13 @@ export const env = createEnv({
     // `timepad_events`, a read-only search of its events
     // (`agent/tools/timepad_events.ts`). Unset, the tool is absent.
     TIMEPAD_API_KEY: pastedKeySchema.optional(),
+    // The token YClients' own public booking widget sends to its API
+    // (YClients gives no partner tokens for now): with it and the pilot
+    // below, interactive turns get `yclients`, online booking at salons and
+    // studios by API from the person's browser (`agent/tools/yclients.ts`).
+    YCLIENTS_TOKEN: pastedKeySchema.optional(),
+    // The pilot of `yclients`: workspace ids or `*`. Unset, nobody.
+    YCLIENTS_WORKSPACES: workspaceListSchema.optional(),
     // The pilot of the model router: workspace ids or owners' emails, or `*`
     // for every workspace, whose task agent works on the model its job's kind
     // is routed to (`agent/lib/model/router/task.ts`). Unset, it works on

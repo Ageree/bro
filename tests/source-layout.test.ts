@@ -33,6 +33,7 @@ describe("source layout", () => {
     expect(files("web")).toEqual([]);
     expect(directories("shared")).toEqual([
       "agent-mail",
+      "bro-to-bro",
       "browser",
       "calendar",
       "cards",

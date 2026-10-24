@@ -38,8 +38,23 @@ import {
   turnSends,
 } from "../lib/delivery/turn-sends";
 import { stepStartedEventSchema } from "../lib/turn-kind/step";
+import { broReportCaller } from "@agent/lib/bro-to-bro/report-caller";
+import { renewBroReportTurn } from "@agent/lib/bro-to-bro/report-turn";
 import { phoneReportCaller } from "@agent/lib/phone/report-caller";
 import { renewPhoneReportTurn } from "@agent/lib/phone/report-lease";
+
+/** A report's turn whose report may already be settled: a call's or a Bro ↔ Bro one. */
+type ReportTurn = "bro" | "phone";
+
+/** Whether the report this turn is for still waits for it; its lease runs on. */
+function renewReportTurn(
+  report: ReportTurn,
+  context: Parameters<typeof renewPhoneReportTurn>[0]
+) {
+  return report === "phone"
+    ? renewPhoneReportTurn(context)
+    : renewBroReportTurn(context);
+}
 
 /** What a conversation channel can do with a delivered message. */
 interface ChannelDelivery {
@@ -183,7 +198,7 @@ function defineSendMessage(
   loadSkill: boolean,
   taskReport: boolean,
   earlyReply: boolean,
-  phoneReport: boolean,
+  report: ReportTurn | undefined,
   sharedLinks: readonly string[],
   cardsDue: boolean
 ) {
@@ -214,15 +229,18 @@ function defineSendMessage(
           ? { ...sent, text: withGroupedRoubles(sent.text) }
           : sent;
       };
-      if (!phoneReport) return emit();
-      return renewPhoneReportTurn(context).then((current) =>
-        current ? emit() : { skipped: "phone-stale" as const }
+      if (report === undefined) return emit();
+      return renewReportTurn(report, context).then((current) =>
+        current ? emit() : { skipped: `${report}-stale` as const }
       );
     },
     toModelOutput(output) {
-      if ("skipped" in output && output.skipped === "phone-stale")
+      if (
+        "skipped" in output &&
+        (output.skipped === "phone-stale" || output.skipped === "bro-stale")
+      )
         return toolOutput.text(
-          "Not sent: this phone report is stale or already delivered. End this turn silently; do not repeat, rephrase or react to it."
+          `Not sent: this ${output.skipped === "phone-stale" ? "phone" : "Bro ↔ Bro"} report is stale or already delivered. End this turn silently; do not repeat, rephrase or react to it.`
         );
       const refused = sendRefusalSchema.safeParse(output).data;
       if (refused && "skipped" in refused) {
@@ -304,7 +322,7 @@ function withHttpsLinksInText(message: SentMessage): SentMessage {
 function defineReactToMessage(
   delivery: ChannelDelivery,
   pastAnswer: boolean,
-  phoneReport: boolean
+  report: ReportTurn | undefined
 ) {
   const toggle = delivery.reactions === "toggle";
   return defineTool({
@@ -318,11 +336,11 @@ function defineReactToMessage(
       // An error result is no reaction: channels post only what parses as
       // one.
       if (pastAnswer) throw new Error(pastAnswerReaction);
-      if (!phoneReport) return reaction;
-      return renewPhoneReportTurn(context).then((current) => {
+      if (report === undefined) return reaction;
+      return renewReportTurn(report, context).then((current) => {
         if (!current)
           throw new Error(
-            "Not sent: stale or delivered phone reports cannot react."
+            `Not sent: stale or delivered ${report === "phone" ? "phone" : "Bro ↔ Bro"} reports cannot react.`
           );
         return reaction;
       });
@@ -342,8 +360,12 @@ export default defineDynamic({
     "step.started": async (event, context) => {
       const delivery = channelDelivery.get(context.channel.kind ?? "");
       const pastAnswer = reportPastAnswer(context);
-      const phoneReport =
-        phoneReportCaller(context.session.auth.current) !== undefined;
+      const report: ReportTurn | undefined =
+        phoneReportCaller(context.session.auth.current) !== undefined
+          ? "phone"
+          : broReportCaller(context.session.auth.current) !== undefined
+            ? "bro"
+            : undefined;
       const send_message = defineSendMessage(
         turnSends(context.messages),
         pastAnswer,
@@ -352,7 +374,7 @@ export default defineDynamic({
         skillsLayout(context) === "core",
         // By the conversation's mark, not the files pilot alone: a report
         // carries the files' content after the flag is cleared too.
-        phoneReport ||
+        report !== undefined ||
           (turnOpenedByBackgroundTask(context.messages) &&
             (await reportTurnHoldsFiles(context))),
         // The verdict the model's resolver got for this turn, which tells
@@ -361,7 +383,7 @@ export default defineDynamic({
           context,
           stepStartedEventSchema.safeParse(event).data
         ),
-        phoneReport,
+        report,
         // The links the task agent's files have in this conversation.
         taskFilesOfCaller(context) ? knownSharedLinks(context.messages) : [],
         cardsOffered(context) &&
@@ -376,7 +398,7 @@ export default defineDynamic({
             react_to_message: defineReactToMessage(
               delivery,
               pastAnswer,
-              phoneReport
+              report
             ),
             send_message,
           }

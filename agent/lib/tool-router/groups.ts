@@ -21,6 +21,9 @@ import { type RouterGroup, routerGroups } from "./questions";
  * - The signing tools (their own pilot, `SIGN_WORKSPACES`), as in the skills
  *   pilot's core: the person's «да» to Bro's signing question must reach
  *   `sign_document` whatever groups the router chose for that turn.
+ * - Bro ↔ Bro (`BRO_TO_BRO_WORKSPACES`): the owner's «да» to a report must
+ *   reach `bro_talk confirm`, and the groups' questions were checked by the
+ *   evaluation word for word, so no group asks about it.
  */
 const alwaysTools = [
   "send_message",
@@ -47,6 +50,8 @@ const alwaysTools = [
   "calendar-list-events",
   "sign_document",
   "signature",
+  "bro_network",
+  "bro_talk",
 ] as const;
 
 /** The stop tools of the core (above). */
@@ -69,7 +74,13 @@ const alwaysStopTools = [
  * the catalog lacks costs nothing.
  */
 const groupTools = {
-  browser: ["browser_files", "site-login-link", "site_sign_ins", "list_orders"],
+  browser: [
+    "browser_files",
+    "site-login-link",
+    "site_sign_ins",
+    "list_orders",
+    "yclients",
+  ],
   calendar: [
     "calendar-check-availability",
     "calendar-create-event",
@@ -138,7 +149,7 @@ const groupTools = {
   ],
   schedules: ["schedules-create", "watch-create", "parcel-watch"],
   settings: ["form_of_address", "link_telegram", "request_vault_setup"],
-  yandex: ["yandex", "yandex_purchase"],
+  yandex: ["yandex", "yandex_purchase", "yclients"],
 } as const satisfies Readonly<Record<RouterGroup, readonly string[]>>;
 
 const coreTools: ReadonlySet<string> = new Set([

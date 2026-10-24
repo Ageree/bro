@@ -17,6 +17,9 @@ import { readMailConnection } from "@db/services/mail";
 import { mailEnabled } from "@shared/mail/providers";
 import { mailProviderNames, mailProviderSchema } from "@shared/mail/schema";
 import { paidPeriodDays, readBillingState } from "@db/services/billing";
+import { openBroInvite } from "@db/services/bro-to-bro/invites";
+import { listBroLinks } from "@db/services/bro-to-bro/links";
+import { listBroThreads } from "@db/services/bro-to-bro/threads";
 import { readChannelIdentity } from "@db/services/channel-identities";
 import { photonLineFor } from "@db/services/photon-users";
 import { wakeProactiveWatch } from "@db/services/proactive";
@@ -56,7 +59,11 @@ import { artifactStorageConfigured } from "@shared/object-storage/artifacts";
 import { resolveTimeZone } from "@shared/user-profile/schema";
 import type { VaultItem } from "@shared/vault/schema";
 import { isAdminScope } from "@web/auth/admin";
+import { broToBroAccess, broToBroSwitchedOn } from "@web/auth/bro-to-bro";
 import { requestSession, requireRequestScope } from "@web/auth/request-scope";
+import { broInviteRefusals, broInviteTokenSchema } from "@web/trpc/bro-to-bro";
+import { BroInviteAcceptance } from "./_components/bro-links/acceptance";
+import { BroLinksSection } from "./_components/bro-links/section";
 import { ConnectedAppAction } from "./_components/connected-app-action";
 import { GoogleWorkspaceAction } from "./_components/google-workspace-action";
 import { PersonalMailAction } from "./_components/personal-mail-action";
@@ -69,6 +76,9 @@ import { CabinetVault } from "./_components/vault/cabinet";
 export const metadata: Metadata = { title: "Кабинет" };
 
 const dayMs = 24 * 60 * 60 * 1000;
+
+/** How many of the latest Bro threads the cabinet lists. */
+const broThreadsShown = 20;
 
 /** A status in the header row: a roomy pill, not the tiny default badge. */
 const statusPill =
@@ -84,7 +94,16 @@ function paidDaysUsed(paidUntil: Date) {
 }
 
 export default async function Page({ searchParams }: PageProps<"/workspace">) {
-  const { google, status, mail, mailStatus, yoomoney } = await searchParams;
+  const {
+    bro,
+    bro_invite: broInvite,
+    google,
+    status,
+    mail,
+    mailStatus,
+    yoomoney,
+  } = await searchParams;
+  const broInviteToken = broInviteTokenSchema.safeParse(broInvite);
   const shownApps = cabinetAppSchema.options.filter((app) =>
     connectedAppConfigured(app)
   );
@@ -108,6 +127,8 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
     memories,
     imessageLine,
     introduced,
+    broToBro,
+    broInviteShown,
   ] = await Promise.all([
     requestSession(),
     mailEnabled(scope)
@@ -147,6 +168,22 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
       read?.user.phoneNumber ? photonLineFor(read.user.phoneNumber) : undefined
     ),
     workspaceIntroduced(scope),
+    broToBroAccess(scope).then(async (access) => {
+      if (access === "off") return undefined;
+      const [links, threads] = await Promise.all([
+        listBroLinks(scope),
+        listBroThreads(scope, { limit: broThreadsShown }),
+      ]);
+      return { access, links, threads };
+    }),
+    // Showing the card records who opened the invite; only «Принять» on it
+    // accepts.
+    broInviteToken.success && broToBroSwitchedOn()
+      ? openBroInvite(broInviteToken.data, scope).then((card) => ({
+          card,
+          token: broInviteToken.data,
+        }))
+      : undefined,
   ]);
   if (google === "connected" && googleWorkspace.state === "connected") {
     // Connect sends the person back here after consent. Bro's own mail and
@@ -194,8 +231,25 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
         imessageConfigured={photonConfigured()}
         imessagePhoneNumber={imessageLine ?? env.IMESSAGE_PHONE_NUMBER}
         telegramHref={telegramConfigured ? telegramStartUrl() : undefined}
-        welcome={!introduced}
+        // Someone who came by an invite link reads the invite first.
+        welcome={!introduced && broInviteShown === undefined}
       />
+
+      {broInviteShown === undefined ? null : broInviteShown.card.kind ===
+        "opened" ? (
+        <BroInviteAcceptance
+          inviterName={broInviteShown.card.inviterName}
+          token={broInviteShown.token}
+        />
+      ) : (
+        <Flash>{broInviteRefusals[broInviteShown.card.kind]}</Flash>
+      )}
+      {bro === "accepted" ? (
+        <Flash>
+          Приглашение в Бро-связи принято. Связь заработает, когда пригласивший
+          подтвердит, что это именно ты.
+        </Flash>
+      ) : null}
 
       {google === "unavailable" ? (
         <Flash>
@@ -269,6 +323,14 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
       />
       <CabinetVault items={vaultItems} />
       <MemorySection count={memories.length} />
+      {broToBro ? (
+        <BroLinksSection
+          access={broToBro.access}
+          links={broToBro.links}
+          threads={broToBro.threads}
+          timeZone={timeZone}
+        />
+      ) : null}
       <TimeZoneSection timeZone={timeZone} />
 
       <Section headingId="connections-heading" title="Подключения">

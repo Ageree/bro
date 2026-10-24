@@ -45,6 +45,7 @@ afterEach(() => {
 
 const optionalServices = [
   "AGENT_SANDBOX",
+  "BRO_TO_BRO_WORKSPACES",
   "BROWSER_USE_API_KEY",
   "BROWSER_USE_PROXY_HOST",
   "BROWSER_USE_PROXY_PORT",
@@ -275,6 +276,25 @@ describe("privacy", () => {
       ).tool
     );
     expect(watching.kept.join("\n")).toContain("никому другому");
+  });
+
+  // Bro ↔ Bro: what its own model call gets, and how long its threads stay.
+  it("names what Bro ↔ Bro sends its model and keeps only where it is on", async () => {
+    const routerAi = {
+      MODEL_PROVIDER: "routerai",
+      ROUTERAI_API_KEY: "routerai-test-key",
+    };
+    const outside = await overview((await withServices(routerAi)).tool);
+    expect(JSON.stringify(outside)).not.toContain("Бро ↔ Бро");
+    const pilot = await overview(
+      (await withServices({ ...routerAi, BRO_TO_BRO_WORKSPACES: "*" })).tool
+    );
+    expect(pilot.processors.join("\n")).toContain(
+      "через RouterAI: он получает ваше имя и часовой пояс"
+    );
+    expect(pilot.kept.join("\n")).toContain(
+      "стираются через 30 дней после того, как переговоры закончились"
+    );
   });
 
   it("names RouterAI, not OpenRouter, once the model runs there", async () => {

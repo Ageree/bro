@@ -1,3 +1,4 @@
+import { broToBroModelId } from "@agent/lib/bro-to-bro/model";
 import { browserUseConfigured } from "@agent/lib/browser-use/client";
 import { customProxy } from "@agent/lib/browser-use/proxy";
 import { browserVmConfigured } from "@agent/lib/browser-vm/backend";
@@ -22,6 +23,8 @@ import { yoomoneyConfigured } from "@shared/yoomoney/api";
  */
 export function keptData(
   options: {
+    /** Bro ↔ Bro is on for the workspace (`broToBroStanding`). */
+    readonly broToBro?: boolean;
     /** The workspace is in the cross-channel pilot (`conversation_log`). */
     readonly conversationLog?: boolean;
     /** The workspace is in the geolocation pilot (`location_points`). */
@@ -73,6 +76,11 @@ export function keptData(
             : []),
         ]
       : []),
+    ...(options.broToBro === true
+      ? [
+          "Бро ↔ Бро: связи с Бро других людей и что вы каждому открыли (время по календарю, «что можно рассказывать»), переговоры и журнал того, что ваш Бро и Бро собеседника сказали друг другу, — в той же базе Postgres; журнал хранится 180 дней. Поручения, ваши ответы Бро в переговорах, его вопросы вам, задержанные черновики и тема переговоров стираются через 30 дней после того, как переговоры закончились; «что можно рассказывать» и ваша подпись к связи — через 30 дней после того, как связь разорвана, подпись к приглашению — через 30 дней после того, как его приняли или оно истекло. Когда оба подтвердили встречу, Бро сам ставит её в ваш Google Календарь, если Google подключён с полным доступом: название, время, место и строка «Договорились Бро ↔ Бро с …» — без поручения и переписки; id этого события остаётся в базе.",
+        ]
+      : []),
     ...(options.conversationLog === true
       ? [
           "Сообщения человека в веб-чате, Telegram и iMessage (каждое до 500 знаков) 14 дней хранятся и в той же базе Postgres, чтобы в одном чате Бро знал, о чём человек писал в другом; «удали всё, что ты про меня помнишь» стирает их сразу; что уже попало в сводку другого чата, остаётся в истории того чата, как вся переписка. Стёртые и истёкшие строки ещё до 14 дней остаются в ночных зашифрованных резервных копиях базы.",
@@ -94,12 +102,16 @@ export function dataProcessors(
   {
     memoryDigest = false,
     agentMail = false,
+    broToBro = false,
     decisionModel = false,
     location = false,
     phone = false,
+    yclients = false,
   }: {
     readonly memoryDigest?: boolean;
     readonly agentMail?: boolean;
+    /** Bro ↔ Bro is on for the workspace (`broToBroStanding`). */
+    readonly broToBro?: boolean;
     /**
      * The workspace's messages reach a decision model: the tool router's
      * pilot, the kit router's, or the model router's with routes
@@ -108,6 +120,8 @@ export function dataProcessors(
     readonly decisionModel?: boolean;
     readonly location?: boolean;
     readonly phone?: boolean;
+    /** The workspace books salons through YClients (`yclientsPilot`). */
+    readonly yclients?: boolean;
   } = {}
 ) {
   const direct = directModelProviderName();
@@ -167,6 +181,11 @@ export function dataProcessors(
           `Раз в сутки сводка памяти отправляет тексты записей памяти (кроме правил, предпочтений и записей, помеченных как только локальные) модели ${memoryDigestModelId()} через ${direct}, чтобы найти разовые, повторяющиеся и устаревшие записи; модель отвечает только номерами записей.`,
         ]
       : []),
+    ...(direct !== undefined && broToBro
+      ? [
+          `Переговоры с Бро других людей (Бро ↔ Бро) ведёт отдельный вызов модели ${broToBroModelId()} через ${direct}: он получает ваше имя и часовой пояс, свободные варианты времени из календаря (без названий событий), поручение этих переговоров, ваши ответы на его вопросы и «что можно рассказывать». Проверка перед отправкой — второй вызов той же модели — видит только сообщение, цель, варианты времени и «что можно рассказывать». Память, почту и чаты с Бро ни один из них не видит; Бро собеседника получает только сообщения, прошедшие проверку.`,
+        ]
+      : []),
     ...(env.MAIL_WORKSPACES === undefined
       ? []
       : [
@@ -200,6 +219,11 @@ export function dataProcessors(
       : [
           "Поиск мероприятий идёт через Timepad: ему уходят город, слова поиска и даты, без имени и контактов.",
         ]),
+    ...(yclients
+      ? [
+          "Запись в салоны, студии и клиники, которые принимают её через YClients, Бро делает через API YClients: свободное время он смотрит без ваших данных, а при записи салон получает ваши имя, телефон и почту — как с формы записи на его сайте.",
+        ]
+      : []),
     ...(yooKassaConfigured()
       ? [
           "Оплату подписки принимает ЮKassa: карту человек вводит на её странице, а Бро передаёт ей только сумму и номер кабинета; данные карты Бро не видит и не хранит.",
