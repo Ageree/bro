@@ -1,5 +1,6 @@
 import type { DynamicResolveContext, ToolContext } from "eve/tools";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import flightBooked from "../../../docs/cards/examples/flight-booked.json";
 import restaurantsCompare from "../../../docs/cards/examples/restaurants-compare.json";
 import vacuumCompare from "../../../docs/cards/examples/vacuum-compare.json";
@@ -65,6 +66,10 @@ import messaging from "@agent/tools/messaging";
 import sendCardTools from "@agent/tools/send_card";
 
 const message = "Собрал билеты в карточку: время, багаж и код брони.";
+const shot = (name: string) => ({
+  alt: `Фото ${name}`,
+  url: `https://cdn.worldota.net/t/1024x768/${name}.jpeg`,
+});
 const telegramChat = {
   conversationChannel: "telegram",
   conversationId: "4242::",
@@ -221,14 +226,27 @@ describe("the card tool's exposure", () => {
 });
 
 describe("the card instructions", () => {
-  it("ask an errand for the options' own photo links where the look helps to choose", async () => {
+  it("leave the options' photo links to the errand, which asks for them by itself", async () => {
     const content = JSON.stringify(
       await cardsInstructions.events["turn.started"]?.({}, dynamicContext({}))
     );
+    const { composeBrowserTask } = await import("@agent/tools/browser_task");
 
-    expect(content).toContain("browser_task");
-    expect(content).toContain("прямую ссылку на главное фото с его страницы");
-    expect(content).toContain("Для рейсов, билетов и тарифов фото не проси");
+    expect(content).not.toContain("прямую ссылку на главное фото");
+    expect(
+      composeBrowserTask({
+        aliases: [],
+        allowPayment: false,
+        cardPhotos: true,
+        collectImages: false,
+        consent: undefined,
+        deliveryAddress: undefined,
+        errand: "Найди три отеля у Невского",
+        facts: undefined,
+        home: undefined,
+        site: "https://ostrovok.ru",
+      })
+    ).toContain("one direct https:// link to its main photo");
   });
 
   it("are read where the tool is offered, and nowhere else", async () => {
@@ -798,6 +816,204 @@ describe("a browser report's turn", () => {
     }
     expect(services.create).not.toHaveBeenCalled();
     expect(services.markDelivered).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])(
+    "sends options to pick from back once to be a choice, even with an unrelated submit (%s), and the same card out the second time",
+    async (hasSubmit) => {
+      const rows = [
+        ["NordKapp", "5 900 ₽", "https://ostrovok.ru/hotel/nordkapp/"],
+        ["Апельсин", "6 400 ₽", "https://ostrovok.ru/hotel/apelsin/"],
+        ["Восстания", "6 950 ₽", "https://ostrovok.ru/hotel/vosstaniya/"],
+      ];
+      const list = {
+        ...cardSchema.parse({
+          actions: hasSubmit ? [{ label: "Продолжить", submit: "next" }] : [],
+          blocks: [
+            {
+              rows: rows.map(([title, side, href]) => ({ href, side, title })),
+              type: "list",
+            },
+          ],
+          title: "Отели у Невского",
+        }),
+        message,
+      };
+      const found = await reportTool();
+      if (!found) throw new Error("Expected send_card.");
+
+      const refused = await found.execute(list, reportCall());
+      expect(refused).toMatchObject({ status: "refused" });
+      expect(JSON.stringify(refused)).toContain("choice block");
+      expect(JSON.stringify(refused)).toContain("«Выбрать и забронировать»");
+      expect(services.create).not.toHaveBeenCalled();
+
+      const again = await reportTool([
+        user(errand),
+        report(),
+        {
+          content: [
+            {
+              input: list,
+              toolCallId: "pick-1",
+              toolName: "send_card",
+              type: "tool-call" as const,
+            },
+          ],
+          role: "assistant" as const,
+        },
+        {
+          content: [
+            {
+              output: hasSubmit
+                ? { type: "text" as const, value: JSON.stringify(refused) }
+                : {
+                    type: "json" as const,
+                    value: z
+                      .object({ reply: z.string(), status: z.string() })
+                      .parse(refused),
+                  },
+              toolCallId: "pick-1",
+              toolName: "send_card",
+              type: "tool-result" as const,
+            },
+          ],
+          role: "tool" as const,
+        },
+      ]);
+      if (!again) throw new Error("Expected send_card.");
+      expect(await again.execute(list, reportCall())).toMatchObject({
+        status: "sent",
+      });
+    }
+  );
+
+  it("takes a hotel's main photo once though it comes again behind «Подробнее»", async () => {
+    const gallery = {
+      ...cardSchema.parse({
+        actions: [
+          { label: "Выбрать и забронировать", primary: true, submit: "book" },
+          { label: "Показать другие", submit: "more_options" },
+        ],
+        blocks: [
+          {
+            id: "hotel",
+            label: "Какой отель берём",
+            layout: "carousel",
+            options: ["nordkapp", "apelsin", "vosstaniya"].map((name) => ({
+              more: {
+                href: `https://ostrovok.ru/hotel/${name}/`,
+                photos: [
+                  shot(name),
+                  ...[1, 2, 3, 4, 5].map((n) => shot(`${name}-${String(n)}`)),
+                ],
+              },
+              photo: shot(name),
+              side: "6 000 ₽",
+              title: name,
+              value: name,
+            })),
+            type: "choice",
+          },
+        ],
+        title: "Отели у Невского",
+      }),
+      message,
+    };
+    const found = await reportTool();
+    if (!found) throw new Error("Expected send_card.");
+
+    expect(await found.execute(gallery, reportCall())).toMatchObject({
+      status: "sent",
+    });
+    const kept = services.keep.mock.calls[0]?.[1];
+    const choice = kept?.blocks[0];
+    if (choice?.type !== "choice") throw new Error("Expected the choice.");
+    expect(choice.options.map((option) => option.more?.photos?.length)).toEqual(
+      [5, 5, 5]
+    );
+    expect(choice.options[0]?.more?.photos?.[0]?.url).toBe(
+      "https://cdn.worldota.net/t/1024x768/nordkapp-1.jpeg"
+    );
+  });
+
+  it.each(["missing-secondary", "missing-primary"])(
+    "returns a pick with %s once to complete its actions",
+    async (missing) => {
+      const found = await reportTool();
+      if (!found) throw new Error("Expected send_card.");
+      const input = {
+        ...cardSchema.parse({
+          title: "Отели",
+          blocks: [
+            {
+              type: "choice",
+              id: "hotel",
+              label: "Какой отель берём",
+              options: ["nordkapp", "apelsin", "vosstaniya"].map((name) => ({
+                value: name,
+                title: name,
+                more: { href: `https://ostrovok.ru/hotel/${name}/` },
+              })),
+            },
+          ],
+          actions:
+            missing === "missing-secondary"
+              ? [
+                  {
+                    label: "Выбрать и забронировать",
+                    primary: true,
+                    submit: "book",
+                  },
+                ]
+              : [
+                  { label: "Выбрать и забронировать", submit: "book" },
+                  { label: "Показать другие", submit: "others" },
+                ],
+        }),
+        message,
+      };
+      const result = await found.execute(input, reportCall());
+      expect(result).toMatchObject({
+        status: "refused",
+      });
+      expect(JSON.stringify(result)).toContain(
+        "Keep this card, its choice and all its photos unchanged"
+      );
+      expect(services.create).not.toHaveBeenCalled();
+    }
+  );
+
+  it("lets a choice through at once, and a list of options in the person's own turn", async () => {
+    const found = await reportTool();
+    if (!found) throw new Error("Expected send_card.");
+    expect(await found.execute(hotels, reportCall())).toMatchObject({
+      status: "sent",
+    });
+
+    const own = await tool();
+    if (!own) throw new Error("Expected send_card.");
+    expect(
+      await own.execute(
+        {
+          ...cardSchema.parse({
+            blocks: [
+              {
+                rows: ["a", "b", "c"].map((name) => ({
+                  href: `https://example.com/${name}`,
+                  side: "1 000 ₽",
+                  title: name,
+                })),
+                type: "list",
+              },
+            ],
+            title: "Варианты",
+          }),
+          message,
+        },
+        callContext()
+      )
+    ).toMatchObject({ status: "sent" });
   });
 
   it("keeps the turn's limit and every check of a card", async () => {

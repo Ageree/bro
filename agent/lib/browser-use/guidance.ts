@@ -142,10 +142,13 @@ export const itemsInstruction =
  * `docs/cards.md` said where the model reads it last. The report's own lines
  * ask for a list in the message (`itemsInstruction`, the links), and on
  * 24.10 the owner's three hotels came as such a list though a card was
- * offered; a soft line in the instructions did not outweigh them.
+ * offered; a soft line in the instructions did not outweigh them. The next
+ * card was a plain list with no way to pick a hotel or see its photos, so the
+ * line says how a card to pick from is built: a choice with a submit button,
+ * each option's page and photos behind «Подробнее» (`more`).
  */
 export const reportCardInstruction =
-  "This chat takes Bro's cards, and that changes how this outcome goes out. When it is three or more options with three or more facts each — hotels, goods, flights or places to compare and pick from — or a plan, a schedule or a list of six or more lines, send it as one card with send_card instead of a list in send_message: each option a row of a list or a table with its facts and its link, and a photo only where this report gives a direct photo link of that very option. The card's message is the answer in one or two lines, the gist and your pick, and no list of the same options follows in the chat. A single option, a booking or a fact that fits three lines, a failure, or a question with two answers stays one send_message.";
+  "This chat takes Bro's cards, and that changes how this outcome goes out. When it is three or more options with three or more facts each, or a plan, a schedule or a list of six or more lines, send it as one card with send_card instead of a list in send_message. Options the person picks to book, order, buy or sign up for — hotels, flats, goods, gifts, places, slots — are a choice block (carousel when every option has a photo, otherwise list) with one primary submit button that names the action («Выбрать и забронировать», «Заказать выбранное») and a second one «Показать другие». Each option carries its facts in title, detail and side, and in more its page (href), the facts that did not fit and the photos this report gives for it: its main photo as photo (on every option or on none), its other photos as more.photos; never a photo the report does not give. The press books and pays nothing: its answer comes back to you, and you prepare the booking and ask for «да» in the chat. Flights, tickets and tariffs compared by numbers take no photos. The card's message is one or two lines, the gist and your pick, and no list of the same options follows in the chat. A single option, a booking or a fact that fits three lines, a failure, or a question with two answers stays one send_message.";
 
 /**
  * «Висит 500 ₽ к оплате» is not an answer to «нет ли у меня штрафов и

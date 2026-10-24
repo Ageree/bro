@@ -8,6 +8,7 @@ import { ChoiceBlock } from "./choice";
 import { Copyable } from "./copyable";
 import { FieldBlock } from "./field";
 import { GalleryBlock } from "./gallery";
+import { MoreButton } from "./more";
 import { PhotoFrame } from "./photo-frame";
 import { toneStyles } from "./tones";
 
@@ -91,10 +92,30 @@ function StatBlock({ block }: { readonly block: BlockOf<"stat"> }) {
   );
 }
 
+type Row = BlockOf<"list">["rows"][number];
+
+/** A row's «Подробнее», its own link going into the panel. */
+function RowMore({ row }: { readonly row: Row }) {
+  if (!row.more) return null;
+  return (
+    <MoreButton
+      item={{
+        href: row.href,
+        more: row.more,
+        note: row.subtitle,
+        photo: row.photo,
+        side: row.side,
+        title: row.title,
+      }}
+    />
+  );
+}
+
 /**
  * Options as cards in a strip (`layout: "carousel"`): a 4:3 photo on top, the
  * title, the price, the detail and the chip under it, the next card peeking
- * in. A card with an address is a link as a whole.
+ * in. A card with an address is a link as a whole; one with `more` is not,
+ * and its «Подробнее» opens the panel that carries the link.
  */
 function ListCarousel({ block }: { readonly block: BlockOf<"list"> }) {
   return (
@@ -121,12 +142,17 @@ function ListCarousel({ block }: { readonly block: BlockOf<"list"> }) {
                   Фото: {row.photo.credit}
                 </span>
               )}
+              {row.more && (
+                <span className="mt-auto flex pt-2">
+                  <RowMore row={row} />
+                </span>
+              )}
             </span>
           </>
         );
         const card =
           "flex w-full flex-col overflow-hidden rounded-lg border border-bro-line bg-card";
-        return row.href ? (
+        return row.href && !row.more ? (
           <CardLink
             className={cn(
               card,
@@ -171,13 +197,18 @@ function ListBlock({ block }: { readonly block: BlockOf<"list"> }) {
               {row.chip && (
                 <ChipView chip={row.chip} className="mt-1.5 self-start" />
               )}
+              {row.more && (
+                <span className="mt-2 flex">
+                  <RowMore row={row} />
+                </span>
+              )}
             </span>
             {row.side && (
               <span className="type-row max-w-[40%] shrink-0 text-right wrap-anywhere">
                 <span className="font-[600]">{row.side}</span>
               </span>
             )}
-            {row.href && (
+            {row.href && !row.more && (
               <ChevronRight
                 aria-hidden
                 className="mt-0.5 size-4 shrink-0 text-muted-foreground"
@@ -190,7 +221,7 @@ function ListBlock({ block }: { readonly block: BlockOf<"list"> }) {
             className="border-t border-bro-line first:border-t-0"
             key={row.title}
           >
-            {row.href ? (
+            {row.href && !row.more ? (
               <CardLink
                 className="-mx-3 flex items-start gap-3 rounded-lg p-3 transition-colors outline-none hover:bg-secondary focus-visible:outline-2 focus-visible:outline-foreground motion-reduce:transition-none"
                 href={row.href}

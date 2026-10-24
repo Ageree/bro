@@ -11,6 +11,7 @@ import {
   cardTurnCaller,
   cardTurnOpener,
   checkCard,
+  pickRefusal,
 } from "@agent/lib/cards/tools";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { conversationOf } from "@agent/lib/yoomoney/onboarding";
@@ -88,6 +89,13 @@ export default defineDynamic({
             }
             const checked = checkCard(input, message, "Nothing changed");
             if (checked.refusal) return checked.refusal;
+            const pick = pickRefusal(
+              checked.card,
+              opener,
+              context.messages,
+              "Nothing changed"
+            );
+            if (pick) return pick;
             const updated = await updateCard(
               scope,
               { conversationId: chat.conversationId, ref },

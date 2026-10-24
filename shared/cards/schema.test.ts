@@ -10,7 +10,7 @@ import subscriptionsCancel from "../../docs/cards/examples/subscriptions-cancel.
 import vacuumCompare from "../../docs/cards/examples/vacuum-compare.json";
 import weekendIdeasPhotos from "../../docs/cards/examples/weekend-ideas-photos.json";
 import weekendItinerary from "../../docs/cards/examples/weekend-itinerary.json";
-import { blockSchema, cardSchema } from "./schema";
+import { type Card, blockSchema, cardSchema } from "./schema";
 
 const examples = [
   { name: "apartment-gallery", card: apartmentGallery },
@@ -37,6 +37,36 @@ function listParses(rows: readonly Row[], layout: "rows" | "carousel") {
     blocks: [{ type: "list", rows, layout }],
   }).success;
 }
+
+const photos = (count: number, block: number) =>
+  Array.from({ length: count }, (_, n) => ({
+    url: `https://example.com/${String(block)}-${String(n)}.jpg`,
+    alt: "Фото",
+  }));
+
+const morePhoto = (name: string) => ({
+  alt: `Фото ${name}`,
+  url: `https://example.com/${name}.jpg`,
+});
+type Option = Extract<
+  Card["blocks"][number],
+  { type: "choice" }
+>["options"][number];
+const pick = (more: Option["more"], also: Partial<Option> = {}) => ({
+  actions: [{ label: "Выбрать и забронировать", submit: "book" }],
+  blocks: [
+    {
+      id: "hotel",
+      label: "Какой отель берём",
+      options: [
+        { title: "NordKapp", value: "nordkapp", more, ...also },
+        { title: "Апельсин", value: "apelsin", ...also },
+      ],
+      type: "choice",
+    },
+  ],
+  title: "Отели",
+});
 
 describe("card schema", () => {
   it.each(examples)("accepts the example $name", ({ card }) => {
@@ -103,6 +133,11 @@ describe("card schema", () => {
     const card = { title: "Тест", blocks: [field], actions: [send] };
     expect(cardSchema.safeParse(card).success).toBe(true);
     expect(cardSchema.safeParse({ ...card, actions: [] }).success).toBe(false);
+    const missingButton = cardSchema.safeParse({ ...card, actions: [] });
+    expect(missingButton.error?.issues[0]?.path).toEqual(["actions"]);
+    expect(missingButton.error?.issues[0]?.message).toContain(
+      "needs a submit button"
+    );
     expect(
       cardSchema.safeParse({ ...card, blocks: [field, field] }).success
     ).toBe(false);
@@ -170,21 +205,97 @@ describe("card schema", () => {
     expect(listParses(without, "carousel")).toBe(false);
   });
 
-  it("limits a gallery to two to eight photos and a card to twelve", () => {
-    const photo = { url: "https://example.com/a.jpg", alt: "Фото" };
-    const photos = (count: number) =>
-      Array.from({ length: count }, () => photo);
+  it("limits a gallery to two to eight photos and a card to eighteen", () => {
     const parse = (...counts: number[]) =>
       cardSchema.safeParse({
         title: "Тест",
-        blocks: counts.map((count) => ({
+        blocks: counts.map((count, block) => ({
           type: "gallery",
-          photos: photos(count),
+          photos: photos(count, block),
         })),
       }).success;
     expect(parse(1)).toBe(false);
     expect(parse(2)).toBe(true);
     expect(parse(9)).toBe(false);
-    expect(parse(8, 5)).toBe(false);
+    expect(parse(8, 5)).toBe(true);
+    expect(parse(8, 8, 2)).toBe(true);
+    expect(parse(8, 8, 3)).toBe(false);
+  });
+});
+
+describe("«Подробнее» of a row or an option", () => {
+  it("takes photos, facts, a text and a link, on any of the options", () => {
+    expect(
+      cardSchema.safeParse(
+        pick({
+          facts: [{ label: "Заезд", value: "с 14:00" }],
+          href: "https://ostrovok.ru/hotel/nordkapp/",
+          photos: [morePhoto("hall"), morePhoto("room")],
+          text: "Тихий двор, до Невского три минуты.",
+        })
+      ).success
+    ).toBe(true);
+    expect(
+      cardSchema.safeParse({
+        blocks: [
+          {
+            rows: [{ more: { text: "Окна во двор" }, title: "Номер" }],
+            type: "list",
+          },
+        ],
+        title: "Номер",
+      }).success
+    ).toBe(true);
+  });
+
+  it("refuses one with nothing in it, a link that is not https, or too many photos", () => {
+    expect(cardSchema.safeParse(pick({})).success).toBe(false);
+    expect(
+      cardSchema.safeParse(pick({ href: "http://ostrovok.ru/" })).success
+    ).toBe(false);
+    expect(
+      cardSchema.safeParse(
+        pick({
+          photos: Array.from({ length: 9 }, (_, n) => morePhoto(String(n))),
+        })
+      ).success
+    ).toBe(false);
+  });
+
+  it("counts its photos toward the card's eighteen, once each, and leaves the rows' own photo rule to the rows", () => {
+    const many = (option: number) => ({
+      photos: Array.from({ length: 8 }, (_, n) =>
+        morePhoto(`${String(option)}-${String(n)}`)
+      ),
+    });
+    const card = (count: number) => ({
+      actions: [{ label: "Выбрать", submit: "book" }],
+      blocks: [
+        {
+          id: "hotel",
+          label: "Какой отель берём",
+          options: Array.from({ length: count }, (_, n) => ({
+            more: many(n),
+            photo: morePhoto(`main-${String(n)}`),
+            title: `Отель ${String(n)}`,
+            value: `hotel_${String(n)}`,
+          })),
+          type: "choice",
+        },
+      ],
+      title: "Отели",
+    });
+    expect(cardSchema.safeParse(card(2)).success).toBe(true);
+    expect(cardSchema.safeParse(card(3)).success).toBe(false);
+    const repeated = card(3);
+    for (const option of repeated.blocks[0]?.options ?? []) {
+      option.more = {
+        photos: [option.photo, ...option.more.photos.slice(0, 4)],
+      };
+    }
+    expect(cardSchema.safeParse(repeated).success).toBe(true);
+    expect(
+      cardSchema.safeParse(pick({ photos: [morePhoto("hall")] })).success
+    ).toBe(true);
   });
 });
