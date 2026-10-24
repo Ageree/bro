@@ -1175,6 +1175,34 @@ describe("settling a browser run", () => {
     expect(parkBrowserRunForRetry).toHaveBeenCalledOnce();
   });
 
+  it("tries a fresh browser for a run that never took a step", async () => {
+    // 24.10, Z-Library: the browser had no page left, the follow-up failed on
+    // step one five times, and Bro told the person the site was broken.
+    readBrowserRun.mockResolvedValue({
+      ...row,
+      paymentAllowed: false,
+      site: "https://z-library.sk",
+      submission: null,
+    });
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    readBrowserUseRun.mockResolvedValue({
+      error:
+        "The agent stopped without finishing (after 0 steps; stopped=False, failures=5).",
+      id: runId,
+      result: null,
+      sessionId: "session-1",
+      status: "failed",
+      task: "Зарегистрируйся на Z-Library",
+    });
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    expect(send).not.toHaveBeenCalled();
+    expect(parkBrowserRunForRetry).toHaveBeenCalledOnce();
+  });
+
   it("reports «nothing found» that mentions a fallback's error as it is", async () => {
     readBrowserRun.mockResolvedValue({
       ...row,

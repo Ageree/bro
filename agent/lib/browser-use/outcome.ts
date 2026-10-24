@@ -495,6 +495,31 @@ export function unreachableRun(run: {
 }
 
 /**
+ * How the worker words a run that never took a step (`unfinished_reason` in
+ * `browser-vm/worker/worker.py`): browser-use failed before its first action,
+ * so nothing happened on the site. 24.10, Z-Library: twice the browser had no
+ * page left («The browser exposes no page»), the follow-up failed five times
+ * on step one, and Bro told the person the site was broken.
+ */
+const strandedPattern =
+  /^The agent stopped without finishing \(after 0 steps[;)]/u;
+
+/**
+ * Whether a run ended with no report and without a single step: a browser
+ * that never got going, which a fresh one is tried for like a page the
+ * network did not deliver.
+ */
+export function strandedRun(run: {
+  readonly error?: string | null;
+  readonly result?: string | null;
+}) {
+  return (
+    (run.result ?? "").trim() === "" &&
+    strandedPattern.test((run.error ?? "").trim())
+  );
+}
+
+/**
  * The network error a walled run names as its own outcome — in RESULT or
  * DETAILS, or a failed run's error with no report — never one a skipped
  * fallback site gave somewhere in the prose.

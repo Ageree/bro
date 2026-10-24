@@ -10444,6 +10444,25 @@ describe("browser_task registers with Bro's own mailbox", () => {
       expect(saveVaultItem).not.toHaveBeenCalled();
       expect(createBrowserUseRun).not.toHaveBeenCalled();
     });
+
+    // 24.10, Z-Library: «вставь секрет email_code» in a start sent the run
+    // after a secret it did not have, off the code step.
+    it("refuses a task that names the code's secret the run does not carry", async () => {
+      const tool = await resolvedBrowserTask(
+        [],
+        "зарегистрируйся на iNaturalist"
+      );
+      const start = (task: string) =>
+        tool.execute({ ...signUp, task }, toolContext("better-auth:alice"));
+
+      await expect(
+        start("Зарегистрируйся и вставь в поле кода секрет email_code")
+      ).rejects.toThrow("which this run does not carry");
+      expect(createBrowserUseRun).not.toHaveBeenCalled();
+
+      await start("Зарегистрируйся и остановись с NEEDS: email_code");
+      expect(createBrowserUseRun).toHaveBeenCalledOnce();
+    });
   });
 
   describe("confirming the address", () => {
