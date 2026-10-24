@@ -58,7 +58,9 @@ const serviceIds = z
   .array(z.number().int().positive())
   .min(1)
   .max(5)
-  .describe("Service ids from services");
+  .describe(
+    "Service ids from services of this same company; several are one visit, one after another"
+  );
 
 const inputSchema = z.discriminatedUnion("action", [
   z.object({
@@ -128,6 +130,26 @@ const notThePerson =
   "Nothing was done: bookings through YClients are made only in a turn the person's own message opened. Ask the person.";
 const unavailable =
   "YClients did not answer as expected. Try once more, or do the booking with browser_task. Never quote an error text or a status code to the person.";
+/**
+ * What a 404 of a read means (24.10, probes from the pool browser): an id
+ * of no company answers with no envelope; a service the company has not,
+ * or a master who takes none of the services, in YClients' own one.
+ */
+const noCompany =
+  "YClients has no company with that id. Take the place's `yclients` id from maps.search or maps.org, or call find with its site; never make an id up.";
+const notItsServices =
+  "This place has no such services. Service ids come only from services of this same company: call services with it, then ask again with its ids.";
+const notItsMaster =
+  "That master takes no bookings for these services. Call staff with the services, or ask slots with staff 0.";
+
+function readRefusal(error: YclientsError) {
+  if (error.status !== 404) return unavailable;
+  if (!error.envelope) return noCompany;
+  // YClients' own words, read by the code only: «Сотрудник недоступен…».
+  return /сотрудник|staff|master/iu.test(error.message)
+    ? notItsMaster
+    : notItsServices;
+}
 
 const bookformSchema = z.object({
   company_id: z.coerce.number().nullish(),
@@ -491,7 +513,7 @@ async function slots(
           },
         ];
   });
-  return {
+  const found = {
     days,
     readThrough,
     laterDays: [...open]
@@ -499,6 +521,13 @@ async function slots(
       .toSorted()
       .slice(0, 5),
     ok: true as const,
+  };
+  // 24.10: the model asked a haircut and a pricier haircut together, as
+  // alternatives, and read «no time» for the day.
+  if (days.length > 0 || input.services.length < 2) return found;
+  return {
+    ...found,
+    note: `No free time fits these ${String(input.services.length)} services together, one after another in one visit. Services that are alternatives are asked one at a time.`,
   };
 }
 
@@ -827,14 +856,20 @@ async function callYclients(
       codes: error instanceof YclientsError ? error.codes : undefined,
       error: error instanceof Error ? error.name : null,
       page: error instanceof YclientsPageError ? error.message : undefined,
+      envelope: error instanceof YclientsError ? error.envelope : undefined,
       status: error instanceof YclientsError ? error.status : undefined,
     });
+    if (!(error instanceof YclientsError)) {
+      return { ok: false as const, reply: unavailable };
+    }
     return {
       ok: false as const,
       reply:
-        error instanceof YclientsError && input.action === "book"
+        input.action === "book"
           ? refusal(error)
-          : unavailable,
+          : input.action === "find"
+            ? unavailable
+            : readRefusal(error),
     };
   }
 }
