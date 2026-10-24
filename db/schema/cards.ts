@@ -26,7 +26,9 @@ import { workspaceMemberships } from "./workspaces";
  * copies it whole, and no part of the secret. The chat it was sent to is
  * where the person's answer goes back and the only chat that may update
  * it; `revision` counts the updates, and an answer names the one it saw.
- * Cards sent before answers existed have no chat.
+ * Cards sent before answers existed have no chat. `watchedAt` is when the
+ * page of the person it was sent to last asked how the card stands: while it
+ * is fresh, the card is open in front of them and Bro changes it in place.
  */
 export const cards = pgTable(
   "cards",
@@ -46,6 +48,7 @@ export const cards = pgTable(
       .defaultNow()
       .notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }),
+    watchedAt: timestamp("watched_at", { withTimezone: true }),
   },
   (table) => [
     foreignKey({
@@ -65,17 +68,22 @@ export const cards = pgTable(
 );
 
 /**
- * The person's answer to a card (`shared/cards/response.ts`): the submit
- * button they pressed and what they chose and typed, checked against the
- * card at `revision`, `summary` as Bro reads it against that revision's
- * labels, and the Telegram user that proved it was them. One
- * answer per revision: pressing again, reloading the page or a lost
- * response finds the answer already kept.
+ * A press on a card's page (`shared/cards/response.ts`): the button the
+ * person pressed and what they chose and typed, checked against the card at
+ * `revision`, `summary` as Bro reads it against that revision's labels,
+ * and the Telegram user that proved it was them. `kind` is what the press
+ * was: a `submit` button's answer, one per revision — pressing again,
+ * reloading the page or a lost response finds the answer already kept — or
+ * an `intent`, a question to Bro the card stays open for, as many as the
+ * limits let through. `item` is the option whose screen the press came
+ * from, if any.
  *
  * `state` is how far it got to Bro: `received` waits to become a turn of
  * the card's chat (`agent/lib/cards/answers.ts`), which claims it with
  * `claimedAt` and counts its `attempts`; `delivered` became one;
- * `failed` never will.
+ * `failed` never will. The turn's own hook (`agent/hooks/card-turn.ts`)
+ * marks it `finishedAt` once it ended, and names the browser run it
+ * started, `runId`, whose report the card waits for.
  */
 export const cardResponses = pgTable(
   "card_responses",
@@ -91,12 +99,18 @@ export const cardResponses = pgTable(
     values: jsonb("values").$type<CardAnswer["values"]>().notNull(),
     summary: text("summary").notNull(),
     telegramUserId: text("telegram_user_id").notNull(),
+    kind: text("kind", { enum: ["submit", "intent"] })
+      .default("submit")
+      .notNull(),
+    item: text("item"),
     state: text("state", { enum: ["received", "delivered", "failed"] })
       .default("received")
       .notNull(),
     attempts: integer("attempts").default(0).notNull(),
     claimedAt: timestamp("claimed_at", { withTimezone: true }),
     deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+    runId: text("run_id"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -109,10 +123,13 @@ export const cardResponses = pgTable(
         workspaceMemberships.userId,
       ],
     }).onDelete("cascade"),
-    uniqueIndex("card_responses_card_revision_idx").on(
-      table.cardId,
-      table.revision
-    ),
+    uniqueIndex("card_responses_card_revision_idx")
+      .on(table.cardId, table.revision)
+      .where(sql`${table.kind} = 'submit'`),
+    index("card_responses_card_created_idx").on(table.cardId, table.createdAt),
+    index("card_responses_run_idx")
+      .on(table.runId)
+      .where(sql`${table.runId} IS NOT NULL`),
     index("card_responses_received_idx")
       .on(table.createdAt)
       .where(sql`${table.state} = 'received'`),
@@ -123,6 +140,10 @@ export const cardResponses = pgTable(
     check(
       "card_responses_state_check",
       sql`${table.state} IN ('received', 'delivered', 'failed')`
+    ),
+    check(
+      "card_responses_kind_check",
+      sql`${table.kind} IN ('submit', 'intent')`
     ),
   ]
 );

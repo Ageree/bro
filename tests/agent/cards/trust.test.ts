@@ -75,9 +75,12 @@ async function cardAnswer(wish: string) {
     {
       action: "plan",
       cardId: "A".repeat(43),
+      claimedAt: new Date("2026-10-24T10:00:00Z"),
       conversationChannel: "telegram",
       conversationId: "4242::",
       id: "0f9f7a5e-5c1d-4f0b-9a52-2b6f0d3c1e11",
+      item: null,
+      kind: "submit",
       payload: cardSchema.parse(kidPartyDetails),
       ref: "k7m2p9qa",
       revision: 1,

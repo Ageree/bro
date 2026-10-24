@@ -6,7 +6,7 @@ import type { Card } from "@shared/cards/schema";
 import { cn } from "@web/components/class-names";
 import { Button } from "@web/components/ui/button";
 import { Carousel } from "./carousel";
-import { holdScreen } from "./telegram";
+import { holdBack, holdScreen } from "./telegram";
 
 type Photo = Extract<
   Card["blocks"][number],
@@ -51,14 +51,16 @@ export function Lightbox({
     if (!open || !node) return undefined;
     const opener = document.activeElement;
     const release = holdScreen();
+    const releaseBack = holdBack(onClose);
     node.showModal();
     node.querySelector<HTMLElement>("ul")?.focus();
     return () => {
       node.close();
       release();
+      releaseBack();
       if (opener instanceof HTMLElement) opener.focus();
     };
-  }, [open]);
+  }, [open, onClose]);
 
   const release = () => {
     const pulled = pull;

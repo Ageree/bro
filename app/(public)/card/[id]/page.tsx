@@ -32,6 +32,7 @@ export default async function Page(props: PageProps<"/card/[id]">) {
           <div className="mx-auto flex w-full max-w-[30rem] flex-col gap-4">
             {found ? (
               <CardAnswerScope
+                key={found.id}
                 card={found.card}
                 link={found.id}
                 revision={found.revision}

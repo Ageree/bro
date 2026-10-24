@@ -8,6 +8,7 @@ import { Carousel } from "./carousel";
 import { MoreButton } from "./more";
 import { PhotoFrame } from "./photo-frame";
 import { haptic } from "./telegram";
+import { Button } from "@web/components/ui/button";
 
 type Choice = Extract<Card["blocks"][number], { type: "choice" }>;
 type Option = Choice["options"][number];
@@ -65,6 +66,41 @@ export function ChoiceBlock({ block }: { readonly block: Choice }) {
   const error = answer.errors[block.id];
   const errorId = `card-question-${block.id}-error`;
   const framed = block.layout !== "list";
+  const sliders =
+    answer.card?.blocks.filter(
+      (each) =>
+        each.type === "field" &&
+        each.input === "slider" &&
+        each.target === block.id
+    ) ?? [];
+  const budget = Math.min(
+    Infinity,
+    ...sliders.map((each) =>
+      each.type === "field"
+        ? Number(answer.draft[each.id] ?? initialValue(each))
+        : Infinity
+    )
+  );
+  const options = block.options.filter(
+    (option) =>
+      option.price === undefined ||
+      option.price <= budget ||
+      picked.has(option.value)
+  );
+  const count = answer.card?.blocks.find(
+    (each) =>
+      each.type === "field" &&
+      each.input === "count" &&
+      each.target === block.id
+  );
+  const amount =
+    count?.type === "field"
+      ? Number(answer.draft[count.id] ?? initialValue(count))
+      : 1;
+  const total =
+    block.options
+      .filter((option) => picked.has(option.value))
+      .reduce((sum, option) => sum + (option.price ?? 0), 0) * amount;
 
   const tile = (option: Option, position: number) => {
     const checked = picked.has(option.value);
@@ -159,6 +195,11 @@ export function ChoiceBlock({ block }: { readonly block: Choice }) {
                 {option.detail}
               </span>
             )}
+            {checked && option.price !== undefined && option.price > budget && (
+              <span className="type-caption text-bro-error">
+                Не подходит под бюджет
+              </span>
+            )}
           </span>
           {!framed && option.side && (
             <span className="type-row max-w-[40%] shrink-0 text-right wrap-anywhere">
@@ -177,6 +218,11 @@ export function ChoiceBlock({ block }: { readonly block: Choice }) {
         {label}
         <div className={framed ? "px-3 pb-3" : "pl-8"}>
           <MoreButton
+            selection={{
+              id: block.id,
+              multiple: block.multiple,
+              value: option.value,
+            }}
             item={{
               more: option.more,
               note: option.detail,
@@ -198,14 +244,43 @@ export function ChoiceBlock({ block }: { readonly block: Choice }) {
       <legend className="type-cards-question mb-2 wrap-anywhere">
         {block.label}
       </legend>
-      {block.layout === "list" && block.options.map(tile)}
+      {Number.isFinite(budget) && (
+        <p className="type-caption text-muted-foreground">
+          Показано {options.length} из {block.options.length}
+        </p>
+      )}
+      {options.length === 0 && (
+        <div className="flex flex-col gap-2">
+          <p className="type-row">
+            Под этот бюджет вариантов нет. Измените цену или попросите Бро
+            поискать ещё.
+          </p>
+          <Button
+            variant="outline"
+            onClick={() => {
+              for (const slider of sliders)
+                if (slider.type === "field")
+                  answer.set(slider.id, String(slider.max));
+            }}
+          >
+            Сбросить фильтр
+          </Button>
+        </div>
+      )}
+      {block.layout === "list" && options.map(tile)}
       {block.layout === "tiles" && (
-        <div className="grid grid-cols-2 gap-2">{block.options.map(tile)}</div>
+        <div className="grid grid-cols-2 gap-2">{options.map(tile)}</div>
       )}
       {block.layout === "carousel" && (
         <Carousel label={block.label} slideClassName="w-70 py-1">
-          {block.options.map(tile)}
+          {options.map(tile)}
         </Carousel>
+      )}
+      {count?.type === "field" && total > 0 && (
+        <p className="type-row rounded-2xl bg-background p-3">
+          Ориентир: {new Intl.NumberFormat("ru-RU").format(total)} ₽ за {amount}{" "}
+          {count.unit ?? "шт."}. Бро перепроверит цену.
+        </p>
       )}
       {error !== undefined && (
         <p className="type-caption text-bro-error" id={errorId}>

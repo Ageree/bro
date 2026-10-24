@@ -68,6 +68,27 @@ export function haptic(kind: "error" | "selection" | "success" | "warning") {
 
 /** How many layers hold the page still, and its scrolling from before them. */
 const held = { count: 0, overflow: "" };
+const backLayers: (() => void)[] = [];
+const back = () => backLayers.at(-1)?.();
+
+/** Routes Telegram's back button to the topmost open card layer. */
+export function holdBack(onBack: () => void) {
+  const button = window.Telegram?.WebApp?.BackButton;
+  if (!button) return () => undefined;
+  if (backLayers.length === 0) {
+    button.show();
+    button.onClick(back);
+  }
+  backLayers.push(onBack);
+  return () => {
+    const index = backLayers.lastIndexOf(onBack);
+    if (index >= 0) backLayers.splice(index, 1);
+    if (backLayers.length === 0) {
+      button.offClick(back);
+      button.hide();
+    }
+  };
+}
 
 /**
  * Holds the page still under a layer over it — the photo viewer, a variant's

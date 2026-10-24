@@ -74,6 +74,7 @@ export const reportTurnCardTools = [
   "find_images",
   "send_card",
   "update_card",
+  "patch_card",
 ] as const;
 
 /**

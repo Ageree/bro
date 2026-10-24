@@ -63,6 +63,11 @@ type Viewer =
   | "unverified";
 
 interface AnswerContext {
+  readonly card?: Card;
+  readonly revision?: number;
+  readonly changed?: ReadonlySet<number>;
+  readonly notice?: string;
+  readonly press?: Extract<Reply, { status: "watch" }>["press"];
   readonly answered?: {
     readonly action: string;
     readonly delivery: Kept["delivery"];
@@ -83,7 +88,13 @@ interface AnswerContext {
 export function initialValue(
   question: ReturnType<typeof cardQuestions>[number]
 ) {
-  if (question.type === "field") return question.initial ?? "";
+  if (question.type === "field")
+    return (
+      question.initial ??
+      (question.input === "count" || question.input === "slider"
+        ? String(question.min ?? 0)
+        : "")
+    );
   return question.multiple ? question.initial : (question.initial[0] ?? "");
 }
 
@@ -176,13 +187,17 @@ const secretMessages = {
  */
 async function respond(
   link: string,
-  body: z.input<typeof respondRequestSchema>
+  body: z.input<typeof respondRequestSchema>,
+  signal?: AbortSignal
 ) {
   const response = await fetch(`/api/cards/${link}/respond`, {
     body: JSON.stringify(body),
     headers: { "Content-Type": "application/json" },
     method: "POST",
     referrerPolicy: "strict-origin",
+    signal: signal
+      ? AbortSignal.any([signal, AbortSignal.timeout(10_000)])
+      : AbortSignal.timeout(10_000),
   });
   if (response.status >= 500) throw new Error("The card's server failed.");
   return respondReplySchema.parse(await response.json());
@@ -193,10 +208,10 @@ async function respond(
  * questions and buttons.
  */
 export function CardAnswerScope({
-  card,
+  card: sentCard,
   children,
   link,
-  revision,
+  revision: sentRevision,
 }: {
   readonly card: Card;
   readonly children: ReactNode;
@@ -204,6 +219,10 @@ export function CardAnswerScope({
   readonly revision: number;
 }) {
   const launch = useTelegramLaunch();
+  const [{ card, revision }, setCurrent] = useState(() => ({
+    card: sentCard,
+    revision: sentRevision,
+  }));
   const storageKey = `bro-card:${link}:${String(revision)}`;
   const schema = useMemo(
     () => cardResponseSchema(card, revision),
@@ -218,6 +237,10 @@ export function CardAnswerScope({
   const [answered, setAnswered] = useState<AnswerContext["answered"]>();
   const [sending, setSending] = useState<string>();
   const [failure, setFailure] = useState<AnswerContext["failure"]>();
+  const [press, setPress] = useState<AnswerContext["press"]>();
+  const [notice, setNotice] = useState<string>();
+  const [changed, setChanged] = useState<ReadonlySet<number>>(() => new Set());
+  const [watchGeneration, setWatchGeneration] = useState(0);
   const viewer: Viewer =
     launch === null
       ? "checking"
@@ -272,6 +295,13 @@ export function CardAnswerScope({
         });
         if (reply.status === "sent" || reply.status === "answered") {
           settle(reply);
+          setPress({
+            action,
+            kind: "submit",
+            revision,
+            stage: reply.delivery === "failed" ? "failed" : "waiting",
+          });
+          setWatchGeneration((now) => now + 1);
           haptic(reply.status === "sent" ? "success" : "warning");
           if (reply.delivery === "received") {
             void fetch(cardAnswersPath, {
@@ -279,6 +309,28 @@ export function CardAnswerScope({
               method: "POST",
             }).catch(() => undefined);
           }
+          return;
+        }
+        if (reply.status === "intent") {
+          setPress(
+            reply.press ?? {
+              action,
+              kind: "intent",
+              revision,
+              stage: "waiting",
+            }
+          );
+          setNotice(
+            reply.outcome === "replaced"
+              ? "Последнее нажатие принято. Бро учтёт новые параметры."
+              : "Запрос принят. Карточка остаётся открытой."
+          );
+          setWatchGeneration((now) => now + 1);
+          haptic("success");
+          void fetch(cardAnswersPath, {
+            keepalive: true,
+            method: "POST",
+          }).catch(() => undefined);
           return;
         }
         haptic("error");
@@ -323,6 +375,11 @@ export function CardAnswerScope({
     };
     const main = mainSubmit(card)?.submit;
     const value: AnswerContext = {
+      card,
+      revision,
+      changed,
+      notice,
+      press,
       answered,
       draft,
       errors: {
@@ -363,6 +420,9 @@ export function CardAnswerScope({
     return { apply: settle, context: value };
   }, [
     answered,
+    changed,
+    notice,
+    press,
     card,
     draft,
     failure,
@@ -398,6 +458,174 @@ export function CardAnswerScope({
       current = false;
     };
   }, [launch, link, revision, verdict]);
+
+  const watch = useEffectEvent(async (signal: AbortSignal) => {
+    if (!launch) return undefined;
+    const reply = await respond(
+      link,
+      { initData: launch, kind: "watch", revision },
+      signal
+    );
+    if (signal.aborted) return undefined;
+    if (reply.status !== "watch") {
+      if (reply.status === "unverified" || reply.status === "foreign")
+        setVerdict(reply.status);
+      else setVerdict("closed");
+      return undefined;
+    }
+    if (reply.card && reply.revision !== revision) {
+      const next = reply.card;
+      const nextDraft = initialDraft(next);
+      const lost: string[] = [];
+      for (const question of cardQuestions(next)) {
+        const old = cardQuestions(card).find((each) => each.id === question.id);
+        if (
+          !old ||
+          old.type !== question.type ||
+          (old.type === "field" &&
+            question.type === "field" &&
+            old.input !== question.input)
+        )
+          continue;
+        const value = draft[question.id];
+        if (value === undefined) continue;
+        if (question.type === "choice") {
+          const picked = [value].flat();
+          const kept = picked.filter((key) =>
+            question.options.some((option) => option.value === key)
+          );
+          if (kept.length !== picked.length) lost.push(question.label);
+          nextDraft[question.id] = question.multiple
+            ? kept
+            : (kept[0] ?? initialValue(question));
+        } else nextDraft[question.id] = value;
+      }
+      const action = next.actions.find(
+        (each) => "intent" in each || "submit" in each
+      );
+      if (action && !("href" in action)) {
+        const parsed = cardResponseSchema(next, reply.revision).safeParse({
+          action: "intent" in action ? action.intent : action.submit,
+          revision: reply.revision,
+          values: nextDraft,
+        });
+        for (const issue of parsed.error?.issues ?? []) {
+          const id =
+            issue.path[0] === "values" ? String(issue.path[1]) : undefined;
+          const question = cardQuestions(next).find((each) => each.id === id);
+          if (question) {
+            const initial = initialValue(question);
+            if (
+              JSON.stringify(nextDraft[question.id]) !== JSON.stringify(initial)
+            )
+              lost.push(question.label);
+            nextDraft[question.id] = initial;
+          }
+        }
+      }
+      setDraft(nextDraft);
+      setCurrent({ card: next, revision: reply.revision });
+      setChanged(
+        new Set(
+          next.blocks.flatMap((block, index) =>
+            JSON.stringify(block) === JSON.stringify(card.blocks[index])
+              ? []
+              : [index]
+          )
+        )
+      );
+      setTouched(new Set());
+      setServerErrors({});
+      setFailure(undefined);
+      setAnswered(undefined);
+      setVerdict("open");
+      setNotice(
+        lost.length > 0
+          ? `Карточка обновлена. Проверьте выбор: ${lost.join(", ")}.`
+          : "Бро обновил карточку. Ваши параметры сохранены."
+      );
+      keepDraft(`bro-card:${link}:${String(reply.revision)}`, nextDraft);
+    }
+    if (reply.answer) {
+      setAnswered({
+        action: reply.answer.answer.action,
+        delivery: reply.answer.delivery,
+      });
+      setDraft(answerDraft(reply.card ?? card, reply.answer.answer));
+      setVerdict("sent");
+    }
+    setPress(reply.press);
+    return reply.press?.stage;
+  });
+
+  const canWatch = viewer === "open" || viewer === "sent" || viewer === "stale";
+  const watching =
+    canWatch &&
+    !(
+      viewer === "sent" &&
+      (press?.stage === "done" || press?.stage === "failed")
+    );
+  useEffect(() => {
+    if (!launch || !canWatch) return undefined;
+    const controller = new AbortController();
+    const stopped = () => controller.signal.aborted;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let pending = false;
+    let failures = 0;
+    const started = Date.now();
+    async function run() {
+      clearTimeout(timer);
+      if (stopped() || document.hidden || pending) return;
+      pending = true;
+      let busy = false;
+      try {
+        const stage = await watch(controller.signal);
+        failures = 0;
+        busy =
+          stage === "waiting" ||
+          stage === "queued" ||
+          stage === "working" ||
+          stage === "searching";
+      } catch {
+        failures += 1;
+      } finally {
+        pending = false;
+      }
+      if (stopped() || !watching) return;
+      const elapsed = Date.now() - started;
+      const base = busy
+        ? elapsed < 20_000
+          ? 2000
+          : elapsed < 120_000
+            ? 5000
+            : 15_000
+        : 20_000;
+      timer = setTimeout(
+        () => {
+          void run();
+        },
+        Math.min(60_000, base * 2 ** failures)
+      );
+    }
+    const visible = () => {
+      if (!document.hidden) void run();
+    };
+    if (watching)
+      timer = setTimeout(
+        () => {
+          void run();
+        },
+        watchGeneration > 0 ? 300 : 500
+      );
+    document.addEventListener("visibilitychange", visible);
+    window.addEventListener("pageshow", visible);
+    return () => {
+      controller.abort();
+      clearTimeout(timer);
+      document.removeEventListener("visibilitychange", visible);
+      window.removeEventListener("pageshow", visible);
+    };
+  }, [launch, canWatch, watching, watchGeneration]);
 
   return <Answer value={context}>{children}</Answer>;
 }

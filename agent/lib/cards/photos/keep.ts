@@ -229,8 +229,11 @@ export async function keepCardPhotos(
   card: Card,
   previous?: Card
 ) {
-  const first =
-    Math.max(-1, ...(previous ? keptPhotoNumbers(cardId, previous) : [])) + 1;
+  const previousNumbers = previous ? keptPhotoNumbers(cardId, previous) : [];
+  const retained = new Map(
+    previousNumbers.map((number) => [cardPhotoPath(cardId, number), number])
+  );
+  const first = Math.max(-1, ...previousNumbers) + 1;
   const sets = card.blocks.flatMap((block, position) =>
     blockPhotoSets(block).flatMap(({ set, urls, whole }) =>
       urls.map((url) => ({ block: position, set, url, whole }))
@@ -241,7 +244,7 @@ export async function keepCardPhotos(
     ...sets.filter((job) => job.whole),
     ...sets.filter((job) => !job.whole),
   ].map(({ block, set, url, whole }) => {
-    const number = copies.get(url) ?? first + copies.size;
+    const number = copies.get(url) ?? retained.get(url) ?? first + copies.size;
     copies.set(url, number);
     return { block, set, url, whole, number };
   });
@@ -257,12 +260,13 @@ export async function keepCardPhotos(
   };
   if (!artifactStorageConfigured()) {
     console.warn("[cards] photos were not kept: no object storage");
-    for (const job of jobs) fail(job);
+    for (const job of jobs) if (!retained.has(job.url)) fail(job);
   }
   const deadline = AbortSignal.timeout(keepingTimeoutMs);
   const queue = new Map(jobs.map((job) => [job.number, job])).values();
   const work = async () => {
     for (const job of queue) {
+      if (retained.has(job.url)) continue;
       const uses = jobs.filter((each) => each.url === job.url);
       if (
         uses.every(

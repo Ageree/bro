@@ -95,6 +95,7 @@ const optionSchema = z.strictObject({
   side: shortText(40).optional(),
   photo: photoSchema.optional(),
   more: moreSchema.optional(),
+  price: z.number().int().min(0).max(1_000_000_000).optional(),
 });
 
 const place = z.strictObject({
@@ -293,7 +294,19 @@ export const blockSchema = z.discriminatedUnion("type", [
     type: z.literal("field"),
     id: identifier,
     label: shortText(80),
-    input: z.enum(["text", "longtext", "number", "date", "time"]),
+    input: z.enum([
+      "text",
+      "longtext",
+      "number",
+      "date",
+      "time",
+      "count",
+      "slider",
+    ]),
+    min: z.number().min(0).max(1_000_000_000).optional(),
+    max: z.number().min(0).max(1_000_000_000).optional(),
+    step: z.number().positive().max(1_000_000_000).optional(),
+    target: identifier.optional(),
     unit: shortText(12).optional(),
     hint: shortText(120).optional(),
     placeholder: shortText(60).optional(),
@@ -315,6 +328,11 @@ const submitAction = z.strictObject({
   primary: z.boolean().optional(),
 });
 
+const intentAction = z.strictObject({
+  label: shortText(30),
+  intent: identifier,
+});
+
 export const cardSchema = z
   .strictObject({
     kicker: shortText(40).optional(),
@@ -323,17 +341,22 @@ export const cardSchema = z
     tone: toneSchema.default("neutral"),
     blocks: z.array(blockSchema).min(1).max(16),
     actions: z
-      .array(z.union([linkAction, submitAction]))
+      .array(z.union([linkAction, submitAction, intentAction]))
       .max(3)
       .default([]),
     footnote: shortText(200).optional(),
+    note: shortText(300).optional(),
   })
   .superRefine((card, context) => {
     const ids = card.blocks.flatMap((block) =>
       block.type === "choice" || block.type === "field" ? [block.id] : []
     );
     const submits = card.actions.flatMap((action) =>
-      "submit" in action ? [action.submit] : []
+      "submit" in action
+        ? [action.submit]
+        : "intent" in action
+          ? [action.intent]
+          : []
     );
     const photos = new Set(
       card.blocks.flatMap((block) => {
@@ -375,6 +398,68 @@ export const cardSchema = z
           "a card carries at most 18 unique photos, including more.photos; keep the main photos and trim extra photos",
         path: ["blocks"],
       });
+    }
+    const targets = new Set<string>();
+    for (const [index, block] of card.blocks.entries()) {
+      if (block.type !== "field") continue;
+      const numeric = block.input === "count" || block.input === "slider";
+      const bad = (message: string) => {
+        context.addIssue({ code: "custom", message, path: ["blocks", index] });
+      };
+      if (!numeric) {
+        if (
+          block.min !== undefined ||
+          block.max !== undefined ||
+          block.step !== undefined ||
+          block.target !== undefined
+        )
+          bad("bounds and target belong to count or slider controls");
+        continue;
+      }
+      if (
+        block.min === undefined ||
+        block.max === undefined ||
+        block.min >= block.max ||
+        (block.input === "count" &&
+          (!Number.isInteger(block.min) ||
+            !Number.isInteger(block.max) ||
+            !Number.isInteger(block.step ?? 1)))
+      ) {
+        bad(
+          "count and slider require valid min < max; a count and its step are integers"
+        );
+      }
+      const steps = ((block.max ?? 0) - (block.min ?? 0)) / (block.step ?? 1);
+      if (Math.abs(steps - Math.round(steps)) > 1e-6)
+        bad("max must align with min and step");
+      if (block.initial !== undefined) {
+        const value = Number(block.initial);
+        const step = block.step ?? 1;
+        const offset = (value - (block.min ?? 0)) / step;
+        if (
+          !Number.isFinite(value) ||
+          value < (block.min ?? 0) ||
+          value > (block.max ?? 0) ||
+          Math.abs(offset - Math.round(offset)) > 1e-6
+        )
+          bad("initial must lie within the control's bounds and step");
+      }
+      if (block.target === undefined) continue;
+      const choice = card.blocks.find(
+        (each) => each.type === "choice" && each.id === block.target
+      );
+      if (
+        choice?.type !== "choice" ||
+        choice.options.some((option) => option.price === undefined)
+      )
+        bad(
+          "target names a choice whose every option has a numeric price in rubles"
+        );
+      if (block.input === "count") {
+        if (targets.has(block.target))
+          bad("a choice has at most one count multiplier");
+        targets.add(block.target);
+      }
     }
   });
 

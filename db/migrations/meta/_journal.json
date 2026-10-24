@@ -603,6 +603,13 @@
       "when": 1792781847341,
       "tag": "0085_bro_to_bro",
       "breakpoints": true
+    },
+    {
+      "idx": 86,
+      "version": "7",
+      "when": 1792853760990,
+      "tag": "0086_card_events",
+      "breakpoints": true
     }
   ]
 }

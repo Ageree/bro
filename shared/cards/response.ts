@@ -14,9 +14,11 @@ type Field = Extract<Block, { type: "field" }>;
 
 /** The longest text a field takes, by its kind. */
 const fieldLimits = {
+  count: 32,
   date: 10,
   longtext: 1000,
   number: 32,
+  slider: 32,
   text: 200,
   time: 5,
 } as const satisfies Record<Field["input"], number>;
@@ -109,11 +111,26 @@ function fieldSchema(field: Field, needed: boolean) {
       if (text.length > limit) {
         return fail(`Слишком длинно: не больше ${String(limit)} знаков.`);
       }
-      if (field.input === "number") {
+      if (
+        field.input === "number" ||
+        field.input === "count" ||
+        field.input === "slider"
+      ) {
         const plain = text.replaceAll(/\s/gu, "").replace(",", ".");
-        return numberPattern.test(plain)
-          ? Number(plain)
-          : fail("Введите число, например 12 или 2,5.");
+        if (!numberPattern.test(plain))
+          return fail("Введите число, например 12 или 2,5.");
+        const value = Number(plain);
+        if (field.input !== "number") {
+          const offset = (value - (field.min ?? 0)) / (field.step ?? 1);
+          if (
+            (field.min !== undefined && value < field.min) ||
+            (field.max !== undefined && value > field.max) ||
+            Math.abs(offset - Math.round(offset)) > 1e-6 ||
+            (field.input === "count" && !Number.isInteger(value))
+          )
+            return fail("Выберите значение в пределах шкалы.");
+        }
+        return value;
       }
       if (field.input === "date") {
         return calendarDay(text) ? text : fail("Выберите дату.");
@@ -179,14 +196,20 @@ function choiceSchema(
 export function cardResponseSchema(card: Card, revision: number) {
   const questions = cardQuestions(card);
   const main = mainSubmit(card)?.submit;
-  const [first, ...rest] = submitActions(card).map((action) =>
+  const actions = card.actions.flatMap((action) => {
+    if ("submit" in action)
+      return [{ id: action.submit, required: action.submit === main }];
+    if ("intent" in action) return [{ id: action.intent, required: false }];
+    return [];
+  });
+  const [first, ...rest] = actions.map((action) =>
     z.strictObject({
-      action: z.literal(action.submit),
+      action: z.literal(action.id),
       revision: z.literal(revision),
       values: z.strictObject(
         Object.fromEntries(
           questions.map((question) => {
-            const needed = question.required && action.submit === main;
+            const needed = question.required && action.required;
             return [
               question.id,
               question.type === "choice"
@@ -222,7 +245,12 @@ function shown(
     return titles.length > 0 ? titles.join(", ") : "ничего не выбрано";
   }
   if (value === undefined) return "не заполнено";
-  if (question.input === "number" && question.unit !== undefined) {
+  if (
+    (question.input === "number" ||
+      question.input === "count" ||
+      question.input === "slider") &&
+    question.unit !== undefined
+  ) {
     return `${String(value)} ${question.unit}`;
   }
   return question.input === "text" || question.input === "longtext"
@@ -239,8 +267,11 @@ function shown(
  */
 export function describeCardAnswer(card: Card, answer: CardAnswer) {
   const pressed =
-    submitActions(card).find((action) => action.submit === answer.action)
-      ?.label ?? answer.action;
+    card.actions.find(
+      (action) =>
+        ("submit" in action && action.submit === answer.action) ||
+        ("intent" in action && action.intent === answer.action)
+    )?.label ?? answer.action;
   const lines = cardQuestions(card).map(
     (question) =>
       `${question.label}: ${shown(question, answer.values[question.id])}`

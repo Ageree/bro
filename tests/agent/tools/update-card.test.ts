@@ -19,7 +19,10 @@ const services = vi.hoisted(() => ({
   workspaces: Array.from<string>([]),
 }));
 
-vi.mock("@db/services/cards", () => ({ updateCard: services.update }));
+vi.mock("@db/services/cards", () => ({
+  updateCard: services.update,
+  cardWatched: (at: Date | null) => at !== null,
+}));
 vi.mock("@shared/environment", async (importOriginal) => {
   const original = await importOriginal<typeof EnvModule>();
   return {
@@ -125,12 +128,32 @@ beforeEach(() => {
       change: changed,
       id: cardId,
       revision: changed.card ? 2 : undefined,
+      watchedAt: null,
     };
   });
   services.button.mockResolvedValue();
 });
 
 describe("updating a card", () => {
+  it("updates a watched card quietly and records the result as delivered", async () => {
+    services.update.mockImplementation(async (_scope, _target, change) => {
+      const changed = await change({ card: kept, id: cardId });
+      return {
+        id: cardId,
+        revision: changed.card ? 2 : undefined,
+        watchedAt: new Date(),
+        change: changed,
+      };
+    });
+    const found = await tool();
+    if (!found) throw new Error("Expected update_card.");
+    expect(await found.execute(hotel, callContext())).toMatchObject({
+      status: "updated",
+      quiet: true,
+    });
+    expect(services.button).not.toHaveBeenCalled();
+    expect(services.markDelivered).toHaveBeenCalledOnce();
+  });
   it("is offered where a card may be sent, and not in a turn Bro opened", async () => {
     expect(await tool()).toBeDefined();
     expect(

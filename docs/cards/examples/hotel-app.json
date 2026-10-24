@@ -1,0 +1,117 @@
+{
+  "kicker": "Пример · Отель",
+  "title": "Отель на выходные",
+  "subtitle": "Демонстрационные варианты: параметры меняются на этой странице, новые варианты ищет Бро.",
+  "tone": "info",
+  "blocks": [
+    {
+      "type": "field",
+      "id": "nights",
+      "label": "Ночей",
+      "input": "count",
+      "min": 1,
+      "max": 7,
+      "initial": "2",
+      "unit": "ночи",
+      "target": "hotel"
+    },
+    {
+      "type": "field",
+      "id": "budget",
+      "label": "За ночь, до",
+      "input": "slider",
+      "min": 3000,
+      "max": 9000,
+      "step": 100,
+      "initial": "7000",
+      "unit": "₽",
+      "target": "hotel"
+    },
+    {
+      "type": "choice",
+      "id": "hotel",
+      "label": "Отель",
+      "layout": "carousel",
+      "initial": ["nevsky_dvor"],
+      "options": [
+        {
+          "value": "nevsky_dvor",
+          "title": "Невский Двор",
+          "detail": "Пример: 400 м до Невского, завтрак",
+          "side": "6 400 ₽ за ночь",
+          "price": 6400,
+          "photo": {
+            "url": "https://example.com/photos/nevsky-dvor-lobby.jpg",
+            "alt": "Демонстрационное фото отеля"
+          },
+          "more": {
+            "photos": [
+              {
+                "url": "https://example.com/photos/nevsky-dvor-room.jpg",
+                "alt": "Демонстрационное фото номера"
+              }
+            ],
+            "facts": [
+              { "label": "Завтрак", "value": "Входит в пример тарифа" }
+            ],
+            "text": "Это пример структуры карточки, а не найденное предложение.",
+            "href": "https://example.com/hotels/nevsky-dvor"
+          }
+        },
+        {
+          "value": "admiral",
+          "title": "Адмирал",
+          "detail": "Пример: тихий двор",
+          "side": "5 900 ₽ за ночь",
+          "price": 5900,
+          "photo": {
+            "url": "https://example.com/photos/admiral-room.jpg",
+            "alt": "Демонстрационное фото номера"
+          },
+          "more": {
+            "text": "Параметры, наличие и итоговую цену Бро проверяет перед подготовкой брони.",
+            "href": "https://example.com/hotels/admiral"
+          }
+        },
+        {
+          "value": "loft",
+          "title": "Лофт на Лиговском",
+          "detail": "Пример: номер с кухней",
+          "side": "5 200 ₽ за ночь",
+          "price": 5200,
+          "photo": {
+            "url": "https://example.com/photos/loft-kitchen.jpg",
+            "alt": "Демонстрационное фото кухни"
+          },
+          "more": {
+            "facts": [
+              { "label": "Кухня", "value": "Есть в демонстрационном варианте" }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "type": "field",
+      "id": "wish",
+      "label": "Пожелание",
+      "input": "longtext",
+      "required": false,
+      "placeholder": "Например, тихий этаж"
+    },
+    {
+      "type": "callout",
+      "tone": "warning",
+      "text": "Кнопка только готовит бронь. Бронировать и платить — лишь после вашего «да» в чате. Итог здесь — ориентир, не подтверждённая цена."
+    }
+  ],
+  "actions": [
+    {
+      "label": "Выбрать и забронировать",
+      "submit": "continue",
+      "primary": true
+    },
+    { "label": "Показать ещё варианты", "intent": "more" }
+  ],
+  "footnote": "Демонстрация каталога, не предложение отеля."
+}

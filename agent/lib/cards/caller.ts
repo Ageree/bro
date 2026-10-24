@@ -5,6 +5,7 @@ import { personErrandRunId } from "@agent/lib/browser-use/report-caller";
 import { reportedRunOf } from "@agent/lib/delivery/browser-report";
 import { startsTurn } from "@agent/lib/delivery/turn-sends";
 import { backgroundTurnMarker } from "@shared/chat/background-turn";
+import { cardOfReport } from "./report";
 
 /**
  * The turns Bro's code opens that the card tools act in besides the
@@ -21,7 +22,11 @@ export const cardAnswerAuthenticator = "card-answer";
 export const cardAnswerOpening = `${backgroundTurnMarker}\n\n[Card answer] `;
 
 const callerSchema = z.object({
-  attributes: z.object({ cardRef: z.string() }),
+  attributes: z.object({
+    cardRef: z.string(),
+    cardResponseId: z.string().optional(),
+    cardEventKind: z.enum(["submit", "intent"]).optional(),
+  }),
   authenticator: z.literal(cardAnswerAuthenticator),
 });
 
@@ -30,6 +35,21 @@ export function answeredCardRef(
   caller: ToolContext["session"]["auth"]["current"]
 ) {
   return callerSchema.safeParse(caller).data?.attributes.cardRef;
+}
+
+/** The only card an intent or its browser report may change. */
+export function cardUpdateTarget(
+  caller: ToolContext["session"]["auth"]["current"]
+) {
+  const answer = callerSchema.safeParse(caller).data?.attributes;
+  return answer?.cardEventKind === "intent"
+    ? answer.cardRef
+    : cardOfReport(caller)?.ref;
+}
+
+/** The press on a card's page (`card_responses`) the caller brings, if it brings one. */
+export function cardPressOf(caller: ToolContext["session"]["auth"]["current"]) {
+  return callerSchema.safeParse(caller).data?.attributes.cardResponseId;
 }
 
 function openingText(message: ModelMessage) {
@@ -64,7 +84,7 @@ export function openedByPersonErrandReport(
   messages: readonly ModelMessage[],
   caller: ToolContext["session"]["auth"]["current"]
 ) {
-  const runId = personErrandRunId(caller);
+  const runId = personErrandRunId(caller) ?? cardOfReport(caller)?.runId;
   const opener = messages.findLast(startsTurn);
   return (
     runId !== undefined &&

@@ -3,11 +3,13 @@ import { z } from "zod";
 
 export const sendCardToolName = "send_card";
 export const updateCardToolName = "update_card";
+export const patchCardToolName = "patch_card";
 
 /** The card tools whose message, with its button, is a reply in the chat. */
 export const cardToolNames: ReadonlySet<string> = new Set([
   sendCardToolName,
   updateCardToolName,
+  patchCardToolName,
 ]);
 
 /**
@@ -23,7 +25,7 @@ const cardInChatSchema = z.object({ status: z.enum(["sent", "updated"]) });
 export const cardToolResultSchema = z.object({
   kind: z.literal("tool-result"),
   output: cardInChatSchema,
-  toolName: z.enum([sendCardToolName, updateCardToolName]),
+  toolName: z.enum([sendCardToolName, updateCardToolName, patchCardToolName]),
 });
 
 /** Whether a card tool's result in the history put its message in the chat. */

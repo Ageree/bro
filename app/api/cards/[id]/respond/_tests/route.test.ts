@@ -14,16 +14,22 @@ import { cardSchema } from "@shared/cards/schema";
 const mocks = vi.hoisted(() => ({
   account: vi.fn<typeof Identities.channelAccountScope>(),
   count: vi.fn<typeof Cards.countCardResponses>(),
+  press: vi.fn<typeof Cards.readCardPress>(),
   read: vi.fn<typeof Cards.readCardByLink>(),
   response: vi.fn<typeof Cards.readCardResponse>(),
   save: vi.fn<typeof Cards.saveCardResponse>(),
+  intent: vi.fn<typeof Cards.saveCardIntent>(),
+  watched: vi.fn<typeof Cards.markCardWatched>(),
 }));
 
 vi.mock("@db/services/cards", () => ({
   countCardResponses: mocks.count,
+  markCardWatched: mocks.watched,
   readCardByLink: mocks.read,
+  readCardPress: mocks.press,
   readCardResponse: mocks.response,
   saveCardResponse: mocks.save,
+  saveCardIntent: mocks.intent,
 }));
 vi.mock("@db/services/channel-identities", () => ({
   channelAccountScope: mocks.account,
@@ -94,6 +100,9 @@ beforeEach(() => {
   );
   mocks.response.mockResolvedValue(undefined);
   mocks.count.mockResolvedValue(0);
+  mocks.press.mockResolvedValue(undefined);
+  mocks.watched.mockResolvedValue();
+  mocks.intent.mockResolvedValue("received");
   mocks.save.mockResolvedValue({
     answer,
     outcome: "received",
@@ -102,6 +111,103 @@ beforeEach(() => {
 });
 
 describe("a card's answer from its page", () => {
+  it.each(["received", "replaced", "repeat"] as const)(
+    "keeps a repeatable intent as %s without requiring a final selection",
+    async (outcome) => {
+      const current = {
+        ...card,
+        card: cardSchema.parse({
+          ...hotel,
+          actions: [
+            { label: "Продолжить", submit: "continue", primary: true },
+            { label: "Показать ещё", intent: "more" },
+          ],
+        }),
+      };
+      mocks.read.mockResolvedValue(current);
+      mocks.intent.mockResolvedValue(outcome);
+      expect(
+        await post({
+          action: "more",
+          kind: "send",
+          initData: launchData(4242),
+          item: "admiral",
+          revision: 1,
+          values: {},
+        })
+      ).toEqual({ body: { status: "intent", outcome }, status: 200 });
+      expect(mocks.intent).toHaveBeenCalledWith(
+        current,
+        expect.objectContaining({
+          answer: { action: "more", values: {} },
+          item: "admiral",
+          telegramUserId: "4242",
+        })
+      );
+      expect(mocks.save).not.toHaveBeenCalled();
+    }
+  );
+
+  it("rejects an undeclared intent or item, and respects the persisted intent limit", async () => {
+    mocks.read.mockResolvedValue({
+      ...card,
+      card: cardSchema.parse({
+        ...hotel,
+        actions: [
+          { label: "Продолжить", submit: "continue", primary: true },
+          { label: "Показать ещё", intent: "more" },
+        ],
+      }),
+    });
+    const request = {
+      action: "more",
+      kind: "send" as const,
+      initData: launchData(4242),
+      revision: 1,
+      values: {},
+    };
+    expect(await post({ ...request, action: "pay" })).toMatchObject({
+      status: 422,
+      body: { status: "invalid" },
+    });
+    expect(await post({ ...request, item: "unknown" })).toMatchObject({
+      status: 422,
+      body: { status: "invalid" },
+    });
+    expect(mocks.intent).not.toHaveBeenCalled();
+    mocks.intent.mockResolvedValue("busy");
+    expect(await post(request)).toEqual({
+      status: 429,
+      body: { status: "busy" },
+    });
+  });
+
+  it("does not reopen a submitted revision with an intent", async () => {
+    mocks.read.mockResolvedValue({
+      ...card,
+      card: cardSchema.parse({
+        ...hotel,
+        actions: [
+          { label: "Продолжить", submit: "continue", primary: true },
+          { label: "Показать ещё", intent: "more" },
+        ],
+      }),
+    });
+    mocks.response.mockResolvedValue({ ...answer, state: "delivered" });
+    expect(
+      await post({
+        action: "more",
+        kind: "send",
+        initData: launchData(4242),
+        revision: 1,
+        values: {},
+      })
+    ).toEqual({
+      status: 409,
+      body: { status: "answered", answer, delivery: "delivered" },
+    });
+    expect(mocks.intent).not.toHaveBeenCalled();
+  });
   it("is taken from the person the card was sent to, and kept with what Bro reads", async () => {
     expect(await send({ extras: ["parking"], hotel: "nevsky_dvor" })).toEqual({
       body: { answer, delivery: "received", status: "sent" },
@@ -235,5 +341,56 @@ describe("a card's answer from its page", () => {
       body: { answer, delivery: "delivered", status: "answered" },
       status: 409,
     });
+  });
+});
+
+describe("a card's open page", () => {
+  const watch = (revision = 1, userId = 4242) =>
+    post({ initData: launchData(userId), kind: "watch", revision });
+  const press = {
+    action: "more",
+    item: undefined,
+    kind: "intent" as const,
+    revision: 1,
+    stage: "working" as const,
+  };
+
+  it("tells the person how the card and their latest press stand, and notes the card open in front of them", async () => {
+    mocks.press.mockResolvedValue(press);
+
+    expect(await watch()).toEqual({
+      body: { press, revision: 1, status: "watch" },
+      status: 200,
+    });
+    expect(mocks.watched).toHaveBeenCalledExactlyOnceWith(id, expect.any(Date));
+    expect(mocks.press).toHaveBeenCalledExactlyOnceWith(id);
+  });
+
+  it("brings the card itself only once it is newer than the page's, with the answer kept for it", async () => {
+    mocks.read.mockResolvedValue({ ...card, revision: 2 });
+    mocks.response.mockResolvedValue({ ...answer, state: "delivered" });
+
+    expect(await watch(1)).toEqual({
+      body: {
+        answer: { answer, delivery: "delivered" },
+        card: hotel,
+        revision: 2,
+        status: "watch",
+      },
+      status: 200,
+    });
+    expect(mocks.response).toHaveBeenCalledExactlyOnceWith(id, 2);
+    expect((await watch(2)).body).not.toHaveProperty("card");
+  });
+
+  it("tells nobody else, and notes nothing for them", async () => {
+    expect(await watch(1, 777)).toEqual({
+      body: { status: "foreign" },
+      status: 403,
+    });
+    vi.stubEnv("CARDS_WORKSPACES", "workspace:bob");
+    expect(await watch()).toMatchObject({ body: { status: "closed" } });
+    expect(mocks.watched).not.toHaveBeenCalled();
+    expect(mocks.press).not.toHaveBeenCalled();
   });
 });

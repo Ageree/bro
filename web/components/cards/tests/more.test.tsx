@@ -83,12 +83,15 @@ function openBrowser() {
 }
 
 type Browser = ReturnType<typeof openBrowser>;
+const roots: ReturnType<typeof createRoot>[] = [];
 
 async function mount(browser: Browser, page: ReactNode) {
   const container = browser.document.getElementById("root");
   if (!container) throw new Error("The page has no root.");
+  const root = createRoot(container);
+  roots.push(root);
   await act(async () => {
-    createRoot(container).render(page);
+    root.render(page);
   });
   return container;
 }
@@ -167,6 +170,12 @@ const hotels = cardSchema.parse({
 
 function telegram() {
   return {
+    BackButton: {
+      show: vi.fn<() => void>(),
+      hide: vi.fn<() => void>(),
+      onClick: vi.fn<(callback: () => void) => void>(),
+      offClick: vi.fn<(callback: () => void) => void>(),
+    },
     HapticFeedback: {
       notificationOccurred: vi.fn<(type: string) => void>(),
       selectionChanged: vi.fn<() => void>(),
@@ -213,10 +222,43 @@ async function hotelsPage(browser: Browser) {
 }
 
 afterEach(() => {
+  act(() => {
+    for (const root of roots.splice(0)) root.unmount();
+  });
   vi.unstubAllGlobals();
 });
 
 describe("«Подробнее» of an option", () => {
+  it("routes Telegram Back to the top layer, then chooses on the same draft without sending", async () => {
+    const browser = openBrowser();
+    const { app, container } = await hotelsPage(browser);
+    await fire(
+      browser,
+      container.querySelectorAll('input[type="radio"]')[1],
+      "click"
+    );
+    await fire(browser, buttonOf(container, "Подробнее: NordKapp"), "click");
+    const back = app.BackButton.onClick.mock.calls[0]?.[0];
+    if (!back) throw new Error("No native back handler.");
+    await fire(
+      browser,
+      container.querySelector("dialog[open] ul button"),
+      "click"
+    );
+    expect(container.querySelectorAll("dialog[open]")).toHaveLength(2);
+    act(() => {
+      back();
+    });
+    expect(container.querySelectorAll("dialog[open]")).toHaveLength(1);
+    expect(app.BackButton.hide).not.toHaveBeenCalled();
+    await fire(browser, buttonOf(container, "Выбрать"), "click");
+    expect(picked(container)).toEqual([true, false, false]);
+    expect(container.querySelectorAll("dialog[open]")).toHaveLength(0);
+    expect(app.BackButton.show).toHaveBeenCalledOnce();
+    expect(app.BackButton.hide).toHaveBeenCalledOnce();
+    expect(app.BackButton.offClick).toHaveBeenCalledWith(back);
+    expect(vi.mocked(fetch)).toHaveBeenCalledOnce();
+  });
   it("is offered only where the option has more, outside its label", async () => {
     const browser = openBrowser();
     const { container } = await hotelsPage(browser);
