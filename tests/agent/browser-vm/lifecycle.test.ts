@@ -2519,7 +2519,13 @@ describe("routing the VM's browser through a Russian exit", () => {
     expect(prepared.proxyExit).toMatchObject({ ip: "95.24.1.21" });
     expect(warn).toHaveBeenCalledWith(
       "[browser-vm] the exit stopped carrying the browser",
-      { failing: 3, lastStatus: 502, renewExit: false, workspaceId }
+      {
+        failing: 3,
+        lastStatus: 502,
+        lost: false,
+        renewExit: false,
+        workspaceId,
+      }
     );
   });
 
@@ -2567,6 +2573,45 @@ describe("routing the VM's browser through a Russian exit", () => {
       await lifecycle.prepareBrowserVmSession(vm, now, { renewExit: true })
     ).toBe(vm);
     expect(worker.setBrowserVmWorkerProxy).not.toHaveBeenCalled();
+  });
+
+  it("starts the renewal past a session a check just found dead", async () => {
+    // 24.10: the exit died between two checks, a page's check found nothing
+    // on it, and the renewal checked the same dead session for 20 s, past the
+    // turn's budget, so it never reached the next rotation.
+    const lifecycle = await loadLifecycle();
+    rows.set(workspaceId, vmRow());
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+    // The sandbox woke from its park: the page sets the proxy again.
+    worker.readBrowserVmWorkerHealth.mockResolvedValueOnce(
+      health({ proxy: false })
+    );
+    worker.setBrowserVmWorkerProxy
+      .mockResolvedValueOnce({
+        ...proxySetup({ country: "RU", ip: "95.24.1.2" }),
+        exit: { error: "TimeoutError: " },
+      })
+      .mockResolvedValue(proxySetup({ country: "RU", ip: "95.24.1.30" }));
+
+    await expect(
+      lifecycle.prepareBrowserVmSession(stored(), now, { rotate: false })
+    ).rejects.toMatchObject({ name: "BrowserUseError" });
+    const renewed = await lifecycle.prepareBrowserVmSession(stored(), now, {
+      inTurn: true,
+      renewExit: true,
+      rotate: false,
+    });
+
+    expect(
+      worker.setBrowserVmWorkerProxy.mock.calls.map(
+        ([, proxy]) => proxy.username
+      )
+    ).toEqual([
+      expect.stringMatching(/^user-session-bro[\da-f]{12}$/u),
+      expect.stringMatching(/r1$/u),
+    ]);
+    expect(renewed.proxyExit).toMatchObject({ ip: "95.24.1.30" });
   });
 
   it("checks a fresh exit the worker saw die when the person writes, one check at a time", async () => {

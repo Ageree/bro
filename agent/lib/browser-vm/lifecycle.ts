@@ -636,6 +636,17 @@ const exitWarmUps = new Set<string>();
  */
 const exitsOnTrial = new Set<string>();
 
+/**
+ * The sticky session each workspace's check last got no address through at
+ * all, the proxy's refusal of the login aside: ipinfo.io did not answer
+ * through it, so the exit carries nothing. Kept, with when, until a check
+ * keeps an exit (`foundDeadLately`).
+ */
+const exitsFoundDead = new Map<
+  string,
+  { readonly at: number; readonly session: string }
+>();
+
 /** `check` once the workspace's earlier exit preparations are over. */
 async function oneExitCheckAtATime<T>(
   workspaceId: string,
@@ -725,12 +736,18 @@ async function prepareAfterWarmUp(
   // network either. 20.10 the owner's sticky exit died, every Yandex call
   // failed on it, and only a message of theirs that happened to find the
   // check stale moved it. A person waits on most of these paths, so the
-  // search stops as a turn's does.
-  const doubted = renewExit || exitStoppedCarrying(health);
+  // search stops as a turn's does. A stored session a check found dead lately
+  // is in doubt too, and the search starts past it: 24.10 the owner's exit
+  // died between two checks, a page went out through it ahead of its check,
+  // and the renewal that followed spent the turn's budget on the same dead
+  // session (20 s to ipinfo's timeout) and moved nowhere.
+  const lost = foundDeadLately(vm);
+  const doubted = renewExit || lost || exitStoppedCarrying(health);
   if (doubted) {
     console.warn("[browser-vm] the exit stopped carrying the browser", {
       failing: health.tunnel?.failing ?? null,
       lastStatus: health.tunnel?.lastStatus ?? null,
+      lost,
       renewExit,
       workspaceId: vm.workspaceId,
     });
@@ -742,6 +759,7 @@ async function prepareAfterWarmUp(
   if (!movable) {
     if (doubted) {
       return routeThroughRussia(vm, now, {
+        next: lost,
         rotations: exitRotations,
         searchUntil: doubtedUntil,
       });
@@ -776,9 +794,23 @@ async function prepareAfterWarmUp(
     return vm;
   }
   return routeThroughRussia(vm, now, {
+    next: lost,
     rotations: exitRotations,
     searchUntil: doubted ? doubtedUntil : searchUntil,
   });
+}
+
+/**
+ * A check found the workspace's stored sticky session dead,
+ * `deadExitWindowSeconds` ago at most (`exitsFoundDead`).
+ */
+function foundDeadLately(vm: BrowserVm) {
+  const dead = exitsFoundDead.get(vm.workspaceId);
+  return (
+    dead !== undefined &&
+    dead.session === vm.proxySession &&
+    Date.now() - dead.at <= deadExitWindowSeconds * 1000
+  );
 }
 
 /**
@@ -1925,6 +1957,7 @@ async function tryExit(
       now
     );
     exitsOnTrial.delete(vm.workspaceId);
+    exitsFoundDead.delete(vm.workspaceId);
     return kept;
   }
   console.warn("[browser-vm] the proxy exit checked", check);
@@ -1932,6 +1965,9 @@ async function tryExit(
   // meets the same answer, so only the owner's account can change it, and
   // only the other proxy may serve the errand meanwhile.
   const refusal = proxyRefusal(exit.error);
+  if (!exit.ip && refusal === undefined) {
+    exitsFoundDead.set(vm.workspaceId, { at: Date.now(), session });
+  }
   if (refusal !== undefined) {
     const waiting =
       other === undefined
