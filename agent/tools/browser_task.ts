@@ -1977,6 +1977,7 @@ async function typeCodeIntoRunBrowser(
       // Never the code itself, and never the challenge URL: it carries tokens.
       inFrame: entry.inFrame,
       searched: entry.searched,
+      seen: entry.seen,
       sessionId,
       submitted: entry.submitted,
       typed: entry.typed,

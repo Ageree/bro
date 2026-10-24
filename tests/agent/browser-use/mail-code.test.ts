@@ -7,6 +7,7 @@ import {
   codeInLetter,
   codeSentEarlier,
   confirmationLinkInLetter,
+  mailCodeInstruction,
   trackedConfirmationLink,
   trackedLinkTarget,
   mailCodeFromSite,
@@ -316,6 +317,16 @@ describe("a run that stopped for a code by email", () => {
       )
     ).toBe(false);
     expect(waitsForMailCode("decision", "Needs: decision")).toBe(false);
+  });
+});
+
+describe("the run a code from the mail is handed to", () => {
+  // 24.10, Z-Library: the run that stopped for the code went on to the book
+  // page, and the follow-up found no code step and could not get it back.
+  it("sends it back to the code step it left, on Bro's own account only", () => {
+    const back = "the code step was left: get back to it the ordinary way";
+    expect(mailCodeInstruction("z-library.sk", "agent")).toContain(back);
+    expect(mailCodeInstruction("ozon.ru")).not.toContain(back);
   });
 });
 
