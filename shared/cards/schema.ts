@@ -61,12 +61,40 @@ const photoSchema = z.strictObject({
  */
 const identifier = z.string().regex(/^[a-z][a-z0-9_]{0,31}$/u);
 
+/**
+ * What a row or an option shows behind «Подробнее» (`docs/cards.md`, «Фото в
+ * карточках»): its own photos to leaf through, the facts that did not fit
+ * the row, a few lines about it and its page on its site. A set's rule — a
+ * photo on every row or on none — is the row's `photo`; these may come with
+ * any of them.
+ */
+const moreSchema = z
+  .strictObject({
+    photos: z.array(photoSchema).min(1).max(8).optional(),
+    facts: z
+      .array(z.strictObject({ label: shortText(40), value: shortText(120) }))
+      .min(1)
+      .max(8)
+      .optional(),
+    text: shortText(400).optional(),
+    href: httpsUrl.optional(),
+  })
+  .refine(
+    (more) =>
+      more.photos !== undefined ||
+      more.facts !== undefined ||
+      more.text !== undefined ||
+      more.href !== undefined,
+    "more carries photos, facts, a text or a link"
+  );
+
 const optionSchema = z.strictObject({
   value: identifier,
   title: shortText(80),
   detail: shortText(120).optional(),
   side: shortText(40).optional(),
   photo: photoSchema.optional(),
+  more: moreSchema.optional(),
 });
 
 const place = z.strictObject({
@@ -81,8 +109,26 @@ function allOrNone(photos: readonly unknown[]) {
   return photos.every(Boolean) || !photos.some(Boolean);
 }
 
-/** Photos one card may carry, whatever the blocks are. */
-const maximumPhotos = 12;
+/**
+ * Photos one card may carry, whatever the blocks are, those behind
+ * «Подробнее» included: three options with a photo and five more each. A
+ * photo shown twice — an option's own one again behind «Подробнее» — is one
+ * photo: Bro keeps one copy of it (`checkCard`).
+ */
+const maximumPhotos = 18;
+
+/** The addresses of the photos a row or an option shows: its own, and those behind «Подробнее». */
+function itemPhotos(item: {
+  readonly more?:
+    | { readonly photos?: readonly { readonly url: string }[] }
+    | undefined;
+  readonly photo?: { readonly url: string } | undefined;
+}) {
+  return [
+    ...(item.photo ? [item.photo.url] : []),
+    ...(item.more?.photos?.map((photo) => photo.url) ?? []),
+  ];
+}
 
 export const blockSchema = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("heading"), text: shortText(80) }),
@@ -122,6 +168,7 @@ export const blockSchema = z.discriminatedUnion("type", [
             chip: chipSchema.optional(),
             href: httpsUrl.optional(),
             photo: photoSchema.optional(),
+            more: moreSchema.optional(),
           })
         )
         .min(1)
@@ -281,30 +328,54 @@ export const cardSchema = z
       .default([]),
     footnote: shortText(200).optional(),
   })
-  .refine((card) => {
+  .superRefine((card, context) => {
     const ids = card.blocks.flatMap((block) =>
       block.type === "choice" || block.type === "field" ? [block.id] : []
     );
     const submits = card.actions.flatMap((action) =>
       "submit" in action ? [action.submit] : []
     );
-    const photos = card.blocks.reduce((count, block) => {
-      if (block.type === "image") return count + 1;
-      if (block.type === "gallery") return count + block.photos.length;
-      if (block.type === "list") {
-        return count + block.rows.filter((row) => row.photo).length;
-      }
-      if (block.type === "choice") {
-        return count + block.options.filter((option) => option.photo).length;
-      }
-      return count;
-    }, 0);
-    return (
-      new Set(ids).size === ids.length &&
-      new Set(submits).size === submits.length &&
-      (ids.length === 0 || submits.length > 0) &&
-      photos <= maximumPhotos
-    );
-  }, "field and choice ids are unique, button ids are unique, a card with fields has a button that sends them, and a card carries at most 12 photos");
+    const photos = new Set(
+      card.blocks.flatMap((block) => {
+        if (block.type === "image") return [block.url];
+        if (block.type === "gallery") {
+          return block.photos.map((photo) => photo.url);
+        }
+        if (block.type === "list") return block.rows.flatMap(itemPhotos);
+        if (block.type === "choice") return block.options.flatMap(itemPhotos);
+        return [];
+      })
+    ).size;
+    if (new Set(ids).size !== ids.length) {
+      context.addIssue({
+        code: "custom",
+        message: "field and choice ids must be unique",
+        path: ["blocks"],
+      });
+    }
+    if (new Set(submits).size !== submits.length) {
+      context.addIssue({
+        code: "custom",
+        message: "submit button ids must be unique",
+        path: ["actions"],
+      });
+    }
+    if (ids.length > 0 && submits.length === 0) {
+      context.addIssue({
+        code: "custom",
+        message:
+          'a choice or field needs a submit button in actions: { label: "Выбрать и забронировать", submit: "pick", primary: true }. Keep the options and photos; add the button',
+        path: ["actions"],
+      });
+    }
+    if (photos > maximumPhotos) {
+      context.addIssue({
+        code: "custom",
+        message:
+          "a card carries at most 18 unique photos, including more.photos; keep the main photos and trim extra photos",
+        path: ["blocks"],
+      });
+    }
+  });
 
 export type Card = z.infer<typeof cardSchema>;

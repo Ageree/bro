@@ -4,7 +4,6 @@ import { submitActions } from "@shared/cards/response";
 import { CardAnswerScope } from "@web/components/cards/answer";
 import { CardView } from "@web/components/cards/card-view";
 import { BackToBro, TelegramScope } from "@web/components/cards/telegram";
-import { Capsule } from "@web/components/paper/capsule";
 
 export const metadata: Metadata = {
   title: { absolute: "Карточка — bro" },
@@ -18,7 +17,9 @@ export const metadata: Metadata = {
  * page asks for no sign-in. One that expired and one that never was look
  * the same. A card that asks takes an answer only from the person it was
  * sent to, whom Telegram's launch data names (`CardAnswerScope`); the
- * answer itself is never in this page's markup.
+ * answer itself is never in this page's markup. Telegram draws its own
+ * header over the Mini App, so the page has none: the card starts 16 px
+ * below it.
  */
 export default async function Page(props: PageProps<"/card/[id]">) {
   const { id } = await props.params;
@@ -27,8 +28,7 @@ export default async function Page(props: PageProps<"/card/[id]">) {
   return (
     <TelegramScope>
       <div className="flex min-h-svh flex-col">
-        <Capsule items={[]} />
-        <main className="mx-auto w-full max-w-[72rem] flex-1 px-bro-pad pt-[5.5rem] pb-12">
+        <main className="mx-auto w-full max-w-[72rem] flex-1 px-bro-pad pt-4 pb-12">
           <div className="mx-auto flex w-full max-w-[30rem] flex-col gap-4">
             {found ? (
               <CardAnswerScope

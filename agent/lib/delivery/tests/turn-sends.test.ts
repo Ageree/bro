@@ -3028,20 +3028,40 @@ describe("a list of options in a report turn that may send a card", () => {
     expect(due(sentBack, hotels)).toBeUndefined();
   });
 
-  it("is left alone where no card may go, or once a card was tried", () => {
+  it("is left alone where no card may go, or once a card reached the chat", () => {
     expect(sendRefusal(message(hotels), turnSends([report]))).toBeUndefined();
     const carded = [
       report,
       ...toolStep(
         "send_card",
-        {
-          reply: "Nothing was sent: the card does not fit the catalog.",
-          status: "invalid",
-        },
+        { card: "k7m2p9qa", status: "sent" },
         { message: "Три отеля у Невского — в карточке." }
       ),
     ];
     expect(due(carded, hotels)).toBeUndefined();
+  });
+
+  it("still sends the list back once after a card the tool refused", () => {
+    for (const refused of [
+      {
+        reply: "Nothing was sent: the card does not fit the catalog.",
+        status: "invalid",
+      },
+      {
+        reply:
+          "Nothing was sent: these options are for the person to pick from, so the card asks.",
+        status: "refused",
+      },
+    ]) {
+      const tried = [
+        report,
+        ...toolStep("send_card", refused, {
+          message: "Три отеля у Невского — в карточке.",
+        }),
+      ];
+      expect(turnSends(tried).cardTried).toBe(false);
+      expect(due(tried, hotels)).toEqual({ rewrite: "card" });
+    }
   });
 
   it.each([

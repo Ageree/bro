@@ -66,6 +66,38 @@ export function haptic(kind: "error" | "selection" | "success" | "warning") {
   feedback.notificationOccurred(kind);
 }
 
+/** How many layers hold the page still, and its scrolling from before them. */
+const held = { count: 0, overflow: "" };
+
+/**
+ * Holds the page still under a layer over it — the photo viewer, a variant's
+ * «Подробнее» — until the release it returns is called: the page does not
+ * scroll, and inside Telegram (7.7 and later) the Mini App's own
+ * pull-to-close waits, so a pull closes the layer and not the card. Layers
+ * opened over each other share one hold, and the last one released lets go.
+ */
+export function holdScreen() {
+  const page = document.documentElement;
+  const app = window.Telegram?.WebApp;
+  const telegram =
+    app?.initData && app.isVersionAtLeast("7.7") ? app : undefined;
+  if (held.count === 0) {
+    held.overflow = page.style.overflow;
+    page.style.overflow = "hidden";
+    telegram?.disableVerticalSwipes?.();
+  }
+  held.count += 1;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    held.count -= 1;
+    if (held.count > 0) return;
+    page.style.overflow = held.overflow;
+    telegram?.enableVerticalSwipes?.();
+  };
+}
+
 /** Back to the chat: the Mini App closes onto it. Only inside Telegram. */
 export function BackToBro({
   variant = "paper",

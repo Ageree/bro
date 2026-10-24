@@ -5,6 +5,7 @@ import type { Card } from "@shared/cards/schema";
 import { cn } from "@web/components/class-names";
 import { initialValue, useCardAnswer } from "./answer";
 import { Carousel } from "./carousel";
+import { MoreButton } from "./more";
 import { PhotoFrame } from "./photo-frame";
 import { haptic } from "./telegram";
 
@@ -52,7 +53,9 @@ function Marker({
  * `tiles` they stand two to a row and as a `carousel` in a strip to swipe,
  * each with its photo on top and the dot or the tick on the photo. A press
  * anywhere on a tile, its photo too, picks it. Once the card is answered or
- * cannot be by this viewer, the tiles only show what is chosen.
+ * cannot be by this viewer, the tiles only show what is chosen. An option
+ * with `more` has «Подробнее» under its text, outside the tile's label, so
+ * opening it picks nothing and changes nothing that was picked.
  */
 export function ChoiceBlock({ block }: { readonly block: Choice }) {
   const answer = useCardAnswer();
@@ -65,23 +68,33 @@ export function ChoiceBlock({ block }: { readonly block: Choice }) {
 
   const tile = (option: Option, position: number) => {
     const checked = picked.has(option.value);
-    return (
+    const frame = cn(
+      "bg-card transition-colors motion-reduce:transition-none",
+      framed
+        ? cn(
+            "overflow-hidden rounded-lg border",
+            checked
+              ? "border-foreground ring-1 ring-foreground"
+              : "border-bro-line"
+          )
+        : cn(
+            "rounded-2xl",
+            checked
+              ? "border-2 border-foreground p-[0.9375rem]"
+              : "border border-bro-line p-4"
+          )
+    );
+    const label = (
       <label
         className={cn(
-          "group/tile relative flex w-full bg-card transition-colors has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-foreground motion-reduce:transition-none",
-          framed
-            ? cn(
-                "flex-col overflow-hidden rounded-lg border",
-                checked
-                  ? "border-foreground ring-1 ring-foreground"
-                  : "border-bro-line"
-              )
+          "group/tile relative flex w-full",
+          option.more
+            ? "has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-foreground"
             : cn(
-                "items-start gap-3 rounded-2xl",
-                checked
-                  ? "border-2 border-foreground p-[0.9375rem]"
-                  : "border border-bro-line p-4"
+                frame,
+                "has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-foreground"
               ),
+          framed ? "flex-col" : "items-start gap-3",
           locked ? "cursor-default" : "cursor-pointer hover:bg-secondary"
         )}
         key={option.value}
@@ -154,6 +167,26 @@ export function ChoiceBlock({ block }: { readonly block: Choice }) {
           )}
         </span>
       </label>
+    );
+    if (!option.more) return label;
+    return (
+      <div
+        className={cn("flex w-full flex-col", frame, !framed && "gap-3")}
+        key={option.value}
+      >
+        {label}
+        <div className={framed ? "px-3 pb-3" : "pl-8"}>
+          <MoreButton
+            item={{
+              more: option.more,
+              note: option.detail,
+              photo: option.photo,
+              side: option.side,
+              title: option.title,
+            }}
+          />
+        </div>
+      </div>
     );
   };
 

@@ -5,6 +5,7 @@ import type { ApprovalStatus } from "eve/tools/approval";
 import { z } from "zod";
 import { skillsLayout } from "@agent/lib/skills/pilot";
 import { resolveModeValue, startedByPerson } from "@agent/lib/mode";
+import { cardsEnabled } from "@shared/cards/pilot";
 import { agencyApproval } from "@agent/lib/agency/approval";
 import { journaledAgencyCall } from "@agent/lib/agency/journal";
 import { delegatingRun } from "@agent/lib/schedules/delegation/pilot";
@@ -630,6 +631,16 @@ function imagesContract(collectImages: boolean) {
       : `Save nothing else under ${browserRunImagePrefix}.`,
   ].join(" ");
 }
+
+/**
+ * The photos a card shows of the options a run finds (`docs/cards.md`, «Фото
+ * в карточках»): in a chat that takes Bro's cards every errand asks for them,
+ * so the person can leaf through a hotel's rooms before picking it. The
+ * coordinator was told to ask (`46-cards.ts`) and on 24.10 did not, so the
+ * errand's text asks by itself; the run decides whether looks matter.
+ */
+const cardPhotosLine =
+  "If the options are places to stay, places, goods or gifts — things whose look helps to choose — give for each, next to it in the report, one direct https:// link to its main photo (the image file itself, taken from the option's own page) and up to five more such links from its gallery there. Flights, tickets, tariffs and services without a look of their own need no photos.";
 
 /**
  * Where the person lives decides which sites can do the errand at all: a
@@ -1554,6 +1565,8 @@ const rememberSignInLine =
 export function composeBrowserTask(options: {
   readonly aliases: readonly string[];
   readonly allowPayment: boolean;
+  /** The chat takes Bro's cards: the run brings the options' photo links. */
+  readonly cardPhotos?: boolean;
   readonly collectImages: boolean;
   readonly consent: SubmissionConsent | undefined;
   /** The one saved delivery address, for an errand about delivery. */
@@ -1609,6 +1622,7 @@ export function composeBrowserTask(options: {
     publicServiceLine(options.errand),
     homeLine(options.home),
     searchLine(),
+    options.cardPhotos === true ? cardPhotosLine : undefined,
     commitmentLine(
       options.consent,
       address !== undefined,
@@ -1773,6 +1787,8 @@ async function takeKeptPage(row: ErrandRow) {
 export function composeBrowserContinuation(options: {
   readonly aliases: readonly string[];
   readonly allowPayment: boolean;
+  /** The chat takes Bro's cards: options it finds bring their photo links. */
+  readonly cardPhotos?: boolean;
   readonly collectImages: boolean;
   readonly consent: SubmissionConsent | undefined;
   /** The one saved delivery address, for an errand about delivery. */
@@ -1852,6 +1868,9 @@ export function composeBrowserContinuation(options: {
     address,
     paymentLine(options.allowPayment),
     options.searching ? budgetLine(options.allowPayment) : undefined,
+    options.searching && options.cardPhotos === true
+      ? cardPhotosLine
+      : undefined,
     options.consent || own ? options.facts : undefined,
     (options.consent || own ? options.facts : address) === undefined
       ? undefined
@@ -4878,6 +4897,9 @@ async function runBrowserTask(
           const task = composeBrowserTask({
             aliases: secrets.aliases,
             allowPayment,
+            cardPhotos:
+              conversation.conversationChannel === "telegram" &&
+              cardsEnabled(scope),
             consent,
             collectImages: input.collectImages === true,
             deliveryAddress: aboutDelivery(input.deliveryAddress, errand)
@@ -5596,6 +5618,9 @@ async function runBrowserTask(
         const continuation = composeBrowserContinuation({
           aliases: secrets.aliases,
           allowPayment,
+          cardPhotos:
+            conversation.conversationChannel === "telegram" &&
+            cardsEnabled(scope),
           brokeOff:
             allowPayment &&
             brokeOffPaying(row) &&
