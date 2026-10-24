@@ -2038,6 +2038,14 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   повторяется раз — чтение всегда, изменение лишь если функция не запускалась.
   Проверки выхода воркспейса идут по одной (`oneExitCheckAtATime`). Строки журнала:
   `the exit stopped carrying the browser`, `[yandex] the page did not reach the site`.
+- Проверка выхода — ipinfo через выход и мегабайт со speed.cloudflare.com (`configure_session`
+  в `worker.py`, до 20 + 25 с); скорость с 14.10 ничего не решает, только пишется в журнал.
+  24.10 на 0,53 Мбит/с она шла 18,7 с (ipinfo 3,4 с), и `maps.search` ждал вкладку 19 с:
+  после парковки песочницы worker забывает прокси, и первая вкладка ставит его этой проверкой.
+  Вкладка API (`createBrowserVmBrowser`, `page`) ждёт любую идущую проверку не дольше 3 с, а
+  дальше идёт через выход worker, если последняя проверка нашла российский на той же sticky-сессии,
+  что сейчас у worker (не на пробной ротации, `exitsOnTrial`), и туннели не рвутся (`aheadOfCheck`,
+  строка `a page went ahead of the exit check`); поручение ждёт проверку как раньше.
 - Запасной прокси (`BROWSER_VM_PROXY_FALLBACK`, NodeMaven `gate.nodemaven.com:8080`,
   логин `<база>-country-ru-sid-{session}-ttl-24h`): нет российского выхода на всех
   ротациях основного или отказ 402/403/407 — воркспейс переезжает на запасной, метка

@@ -1407,7 +1407,7 @@ describe("a VM session's browser", () => {
     expect(lifecycle.prepareBrowserVmSession).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({ workspaceId }),
       expect.any(Date),
-      { rotate: false }
+      { page: true, rotate: false }
     );
 
     records.readBrowserVm.mockResolvedValue(vmRow({ state: "stopped" }));

@@ -2122,6 +2122,103 @@ describe("routing the VM's browser through a Russian exit", () => {
     expect(prepared.proxyExit?.ip).toBe("95.24.1.8");
   });
 
+  it("lets a page go out through the exit the worker carries while a slow check goes on behind it", async () => {
+    // 24.10: `maps.search` waited 19 s for its tab on a check that pulled a
+    // megabyte through a 0.53 Mbit/s exit.
+    const lifecycle = await loadLifecycle();
+    const vm = vmRow({
+      proxyExit: {
+        at: minutesAgo(90).toISOString(),
+        city: "Moscow",
+        country: "RU",
+        ip: "95.24.1.2",
+        org: "AS8402 Beeline",
+      },
+    });
+    rows.set(workspaceId, vm);
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+    vi.useFakeTimers({ now, toFake: ["Date", "setTimeout", "clearTimeout"] });
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
+    // The sandbox woke from its park: the worker forgot the proxy until the
+    // check sets it again.
+    worker.readBrowserVmWorkerHealth.mockResolvedValueOnce(
+      health({ proxy: false })
+    );
+    const answer = Promise.withResolvers<ReturnType<typeof proxySetup>>();
+    worker.setBrowserVmWorkerProxy.mockReturnValue(answer.promise);
+
+    const opened = vi.fn<(prepared: BrowserVmRow) => void>();
+    void lifecycle
+      .prepareBrowserVmSession(vm, now, { page: true, rotate: false })
+      .then(opened);
+    await vi.advanceTimersByTimeAsync(3_000);
+    await vi.waitFor(() => {
+      expect(opened.mock.calls[0]?.[0].proxyExit).toMatchObject({
+        ip: "95.24.1.2",
+      });
+    });
+    expect(worker.setBrowserVmWorkerProxy).toHaveBeenCalledOnce();
+
+    // An errand right after it waits for that check rather than starting a
+    // second one beside it.
+    const errand = lifecycle.prepareBrowserVmSession(vm, now, {
+      inTurn: true,
+    });
+    answer.resolve(
+      proxySetup({ country: "RU", ip: "95.24.1.8", latencyMs: 3_408 })
+    );
+    expect(await errand).toMatchObject({ proxyExit: { ip: "95.24.1.8" } });
+    expect(worker.setBrowserVmWorkerProxy).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a page waiting while the worker tries a session no check has kept yet", async () => {
+    const lifecycle = await loadLifecycle();
+    const vm = vmRow({
+      proxyExit: {
+        at: minutesAgo(31).toISOString(),
+        city: "Moscow",
+        country: "RU",
+        ip: "95.24.1.2",
+        org: "AS8402 Beeline",
+      },
+    });
+    rows.set(workspaceId, vm);
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.useFakeTimers({ now, toFake: ["Date", "setTimeout", "clearTimeout"] });
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
+    // An errand's check found the stored exit abroad and tries the next
+    // rotation, while the record still names the old exit.
+    const answer = Promise.withResolvers<ReturnType<typeof proxySetup>>();
+    worker.setBrowserVmWorkerProxy
+      .mockResolvedValueOnce(proxySetup({ country: "DE", ip: "5.1.1.1" }))
+      .mockReturnValueOnce(answer.promise);
+    const errand = lifecycle.prepareBrowserVmSession(vm, now);
+    await vi.waitFor(() => {
+      expect(worker.setBrowserVmWorkerProxy).toHaveBeenCalledTimes(2);
+    });
+
+    const opened = vi.fn<(prepared: BrowserVmRow) => void>();
+    const page = lifecycle
+      .prepareBrowserVmSession(vm, now, { page: true, rotate: false })
+      .then(opened);
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(opened).not.toHaveBeenCalled();
+    answer.resolve(proxySetup({ country: "RU", ip: "95.24.1.9" }));
+    await errand;
+    await page;
+    expect(opened).toHaveBeenCalledOnce();
+    expect(opened.mock.calls[0]?.[0].proxyExit).toMatchObject({
+      ip: "95.24.1.9",
+    });
+    expect(worker.setBrowserVmWorkerProxy).toHaveBeenCalledTimes(2);
+  });
+
   it("leaves a fresh exit alone when the person writes", async () => {
     const lifecycle = await loadLifecycle();
     rows.set(workspaceId, vmRow());
