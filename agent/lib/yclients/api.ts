@@ -1,24 +1,27 @@
 import { z } from "zod";
 import { env } from "@shared/environment";
+import { type PageAnswer, sendInPage } from "./page";
 
 /**
  * YClients' REST API for online booking (developers.yclients.com/ru, the
- * «Онлайн-запись» section): the booking form's own calls, which need only
- * the partner token — no sign-in of the salon or of the person. Every
+ * «Онлайн-запись» section: `bookform`, `book_services`, `book_staff`,
+ * `book_dates`, `book_times`, `book_code`, `book_record`, `company`). It
+ * takes YClients' own booking widget token (YCLIENTS_TOKEN): YClients
+ * gives no partner tokens while it remakes its API (23.10, ticket
+ * #4754816), and every salon's public booking form sends that token. Every
  * answer is an envelope `{success, data, meta}`; a refusal carries its
- * reasons in `meta.errors` with YClients' own codes (433: the time is taken).
+ * reasons in `meta.errors` with YClients' own codes (433: the time is
+ * taken). The calls go from the person's own pool browser (`page.ts`).
  */
-const apiBase = "https://api.yclients.com/api/v1";
-const requestTimeoutMs = 15_000;
 
 /**
  * Whether the workspace books through YClients (YCLIENTS_WORKSPACES: its id
- * or `*`) and the deployment has the partner token. Unset, nobody does.
+ * or `*`) and the deployment has the token. Unset, nobody does.
  */
 export function yclientsPilot(scope: { readonly workspaceId: string }) {
   const list = env.YCLIENTS_WORKSPACES ?? [];
   return (
-    env.YCLIENTS_PARTNER_TOKEN !== undefined &&
+    env.YCLIENTS_TOKEN !== undefined &&
     (list.includes("*") || list.includes(scope.workspaceId))
   );
 }
@@ -45,8 +48,9 @@ const envelopeSchema = z.object({
 });
 
 /**
- * A refusal of YClients: the HTTP status and its error codes. The message
- * is YClients' own text, for the log only: the model repeats what it reads.
+ * A refusal of YClients, or no answer: the HTTP status (0 when none came)
+ * and its error codes. The message is YClients' own text, for the log
+ * only: the model repeats what it reads.
  */
 export class YclientsError extends Error {
   override readonly name = "YclientsError";
@@ -60,66 +64,91 @@ export class YclientsError extends Error {
   }
 }
 
-/**
- * One call of the API with the partner token. Answers the envelope's data;
- * throws `YclientsError` on a refusal and the fetch's own error when the
- * request did not go through — for a booking the two differ: after a
- * network error the booking may exist.
- */
-export async function yclientsCall(
-  method: "GET" | "POST",
-  path: string,
-  options: {
-    readonly body?: z.core.util.JSONType;
-    readonly query?: URLSearchParams;
-    readonly signal?: AbortSignal;
-  } = {}
-) {
-  const token = env.YCLIENTS_PARTNER_TOKEN;
-  if (token === undefined) {
-    throw new YclientsError(0, [], "YCLIENTS_PARTNER_TOKEN is not set.");
+/** One call of the API, its path under `/api/v1`. */
+export interface YclientsRequest {
+  readonly body?: z.core.util.JSONType;
+  readonly method: "GET" | "POST";
+  readonly path: string;
+  readonly query?: URLSearchParams;
+}
+
+/** A call's outcome: its data, or YClients' refusal (or no answer). */
+type YclientsAnswer =
+  | { readonly data: z.core.util.JSONType; readonly kind: "ok" }
+  | { readonly error: YclientsError; readonly kind: "refused" };
+
+/** The data of an answer, or its refusal thrown. */
+export function dataOf(answer: YclientsAnswer | undefined) {
+  if (answer === undefined) {
+    throw new YclientsError(0, [], "No answer for the call.");
   }
-  const query = options.query?.toString();
-  const init: RequestInit = {
-    headers: {
-      accept: "application/vnd.yclients.v2+json",
-      authorization: `Bearer ${token}`,
-      "content-type": "application/json",
-    },
-    method,
-    signal: AbortSignal.any([
-      AbortSignal.timeout(requestTimeoutMs),
-      ...(options.signal === undefined ? [] : [options.signal]),
-    ]),
-  };
-  if (options.body !== undefined) init.body = JSON.stringify(options.body);
-  const response = await fetch(
-    `${apiBase}${path}${query ? `?${query}` : ""}`,
-    init
+  if (answer.kind === "refused") throw answer.error;
+  return answer.data;
+}
+
+/**
+ * The calls, made together from one tab, and each one's outcome in order.
+ * Throws `YclientsPageError` when the tab could not make them; its `sent`
+ * says whether they may have gone out (`writes`: a change is among them).
+ */
+export async function yclientsCalls(
+  workspaceId: string,
+  requests: readonly YclientsRequest[],
+  options: { readonly writes?: boolean } = {}
+): Promise<YclientsAnswer[]> {
+  const token = env.YCLIENTS_TOKEN;
+  if (token === undefined) {
+    return requests.map(() => ({
+      error: new YclientsError(0, [], "YCLIENTS_TOKEN is not set."),
+      kind: "refused",
+    }));
+  }
+  const answers = await sendInPage(
+    workspaceId,
+    token,
+    requests.map((one) => {
+      const query = one.query?.toString();
+      return {
+        body: one.body === undefined ? null : JSON.stringify(one.body),
+        method: one.method,
+        path: `/api/v1${one.path}${query ? `?${query}` : ""}`,
+      };
+    }),
+    options.writes ?? false
   );
-  const text = await response.text();
-  // book_check may answer 201 with nothing in it (developers.yclients.com).
-  if (response.ok && text.trim() === "") return null;
-  const parsed = envelopeSchema.safeParse(parseJson(text));
+  return answers.map(readAnswer);
+}
+
+function readAnswer(answer: PageAnswer): YclientsAnswer {
+  const ok = answer.status >= 200 && answer.status < 300;
+  // book_check and book_code may answer 201 with nothing in it.
+  if (ok && answer.text.trim() === "") return { data: null, kind: "ok" };
+  const parsed = envelopeSchema.safeParse(parseJson(answer.text));
   if (!parsed.success) {
-    throw new YclientsError(
-      response.status,
-      [],
-      `HTTP ${String(response.status)} with no envelope`
-    );
+    return {
+      error: new YclientsError(
+        answer.status,
+        [],
+        `HTTP ${String(answer.status)} with no envelope`
+      ),
+      kind: "refused",
+    };
   }
   const envelope = parsed.data;
-  if (!response.ok || !envelope.success) {
+  if (!ok || !envelope.success) {
     const meta = Array.isArray(envelope.meta) ? undefined : envelope.meta;
-    throw new YclientsError(
-      response.status,
-      (meta?.errors ?? []).flatMap((error) =>
-        error.code === undefined ? [] : [error.code]
+    return {
+      error: new YclientsError(
+        answer.status,
+        (meta?.errors ?? []).flatMap((error) =>
+          error.code === undefined ? [] : [error.code]
+        ),
+        meta?.message ?? `HTTP ${String(answer.status)}`
       ),
-      meta?.message ?? `HTTP ${String(response.status)}`
-    );
+      kind: "refused",
+    };
   }
-  return envelope.data ?? null;
+  return { data: envelope.data ?? null, kind: "ok" };
 }
 
 function parseJson(text: string) {

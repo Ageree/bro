@@ -3,6 +3,7 @@ import { mapsOrgOperation } from "@agent/lib/yandex/maps/org";
 import {
   mapsSearchOperation,
   sameBuildingNote,
+  yclientsBookingNote,
 } from "@agent/lib/yandex/maps/search";
 import { type FakeResponse, dataOf, fixture, runInPage } from "./page";
 
@@ -91,6 +92,32 @@ describe("maps.search", () => {
     expect(Number(signature)).toBe(referenceSign(signedQuery ?? ""));
   });
 
+  it("names the YClients company of a place booked through YClients", async () => {
+    // 24.10: Maps' booking of a salon is "yclients__664163", its company.
+    const { page } = await mapsPage([
+      ["/maps/api/search", { body: await fixture("maps/search.json") }],
+    ]);
+    const answer = await runInPage(
+      mapsSearchOperation.run,
+      mapsSearchOperation.args.parse({ query: "барбершоп" }),
+      page
+    );
+    const parsed = mapsSearchOperation.result.parse(dataOf(answer));
+    const places = "places" in parsed ? parsed.places : [];
+
+    expect(places.map((place) => [place.name, place.yclients])).toEqual([
+      ["Тестовая Пиццерия", null],
+      ["Вымышленная Траттория", null],
+      ["Тестовый Барбершоп", 664_163],
+    ]);
+    expect(yclientsBookingNote(parsed)).toContain("«Тестовый Барбершоп»");
+    expect(
+      yclientsBookingNote({
+        places: places.filter((place) => place.yclients === null),
+      })
+    ).toBeUndefined();
+  });
+
   it("takes a stale token once, from the answer that carries the new one", async () => {
     const { page, requests } = await mapsPage([
       [
@@ -172,6 +199,7 @@ const salon = (id: string, name: string, at: [number, number] | null) => ({
   ratingCount: null,
   site: null,
   url: `https://yandex.ru/maps/org/x/${id}/`,
+  yclients: null,
 });
 
 describe("places in one building", () => {

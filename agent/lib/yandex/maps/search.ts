@@ -22,6 +22,7 @@ const place = z.object({
   ratingCount: z.number().nullable(),
   site: z.string().nullable(),
   url: z.string(),
+  yclients: z.number().int().positive().nullable(),
 });
 
 /** Places closer than this stand in one building, for `sameBuildingNote`. */
@@ -63,6 +64,32 @@ export function sameBuildingNote(result: JsonValue) {
     return address === undefined ? names : `${names} (${address})`;
   });
   return `Note: these places share a building — ${lines.join("; ")}. When the person means one particular place there («в моём доме», one they go to) without naming it, ask which one before you book, call or write there; when any of them will do, choose yourself.`;
+}
+
+/**
+ * A note for the places a result names with a YClients company (\`yclients\`
+ * of a place or of a card): they book with the yclients tool in seconds,
+ * where browser_task clicks through the same form for minutes (23.10, 59
+ * steps). Undefined when none has one.
+ */
+export function yclientsBookingNote(result: JsonValue) {
+  const found = z
+    .union([
+      z.object({
+        places: z.array(
+          z.object({ name: z.string(), yclients: z.number().nullable() })
+        ),
+      }),
+      z
+        .object({ name: z.string(), yclients: z.number().nullable() })
+        .transform((card) => ({ places: [card] })),
+    ])
+    .safeParse(result);
+  if (!found.success) return undefined;
+  const booked = found.data.places.filter((one) => one.yclients !== null);
+  if (booked.length === 0) return undefined;
+  const names = booked.map((one) => `«${one.name}»`).join(", ");
+  return `Online booking: ${names} book${booked.length === 1 ? "s" : ""} through YClients — to book or see free times there, call the yclients tool with its \`yclients\` id as company (services, then slots, then book), not browser_task.`;
 }
 
 /** Metres between two [longitude, latitude] points a short way apart. */
@@ -133,6 +160,7 @@ export const mapsSearchOperation = defineYandexOperation({
       ratingCount: i.ratingData ? i.ratingData.ratingCount : null,
       site: (i.urls || [])[0] ? i.urls[0].split("?")[0] : null,
       url: "https://yandex.ru/maps/org/" + i.seoname + "/" + i.id + "/",
+      yclients: mapsYclients(i.booking),
     }));
   return { status: "ok", data: { places, total: d.totalResultCount } };
 }`,

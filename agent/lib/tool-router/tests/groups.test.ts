@@ -68,7 +68,7 @@ const everyPilot = {
   VIDEO_WORKSPACES: "*",
   YANDEX_MAIL_CLIENT_ID: "yandex-mail-test-id",
   YANDEX_MAIL_CLIENT_SECRET: "yandex-mail-test-secret",
-  YCLIENTS_PARTNER_TOKEN: "yclients-test-token",
+  YCLIENTS_TOKEN: "yclients-test-token",
   YCLIENTS_WORKSPACES: "*",
 };
 

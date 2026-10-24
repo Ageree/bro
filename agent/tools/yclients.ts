@@ -2,12 +2,15 @@
  * Books a salon, a barbershop, a clinic or a studio that takes online
  * bookings through YClients, by its API in seconds: on 23.10 a haircut at
  * the person's own building took the browser 59 steps and four minutes on
- * the same booking form, and twelve more on a second salon.
+ * the same booking form, and twelve more on a second salon. The calls go
+ * from the person's own pool browser with the booking widget's token
+ * (`agent/lib/yclients/`); Yandex Maps names a place's YClients company
+ * (`yclients` of `maps.search` and `maps.org`).
  *
- * Only in the pilot (YCLIENTS_WORKSPACES, with YCLIENTS_PARTNER_TOKEN), and
- * only in a turn the person's own message opened: a booking is made in
- * their name, with their name and phone, and no worker or report turn makes
- * one. Nothing here logs what the person booked or their contacts.
+ * Only in the pilot (YCLIENTS_WORKSPACES, with YCLIENTS_TOKEN), and only in
+ * a turn the person's own message opened: a booking is made in their name,
+ * with their name and phone, and no worker or report turn makes one.
+ * Nothing here logs what the person booked or their contacts.
  */
 
 import { defineDynamic, defineTool, type ToolContext } from "eve/tools";
@@ -24,10 +27,13 @@ import {
 } from "@agent/lib/turn-kind/step";
 import {
   YclientsError,
-  yclientsCall,
+  type YclientsRequest,
+  dataOf,
+  yclientsCalls,
   yclientsPilot,
 } from "@agent/lib/yclients/api";
 import { bookingLinksOf } from "@agent/lib/yclients/links";
+import { YclientsPageError } from "@agent/lib/yclients/page";
 import { readUserProfile } from "@db/services/user-profile";
 
 /** Slots are read for this many days of a range at most. */
@@ -45,7 +51,9 @@ const company = z
   .number()
   .int()
   .positive()
-  .describe("The YClients company id from find");
+  .describe(
+    "The YClients company: a place's `yclients` id from maps.search or maps.org, or a company from find"
+  );
 const serviceIds = z
   .array(z.number().int().positive())
   .min(1)
@@ -114,7 +122,7 @@ const inputSchema = z.discriminatedUnion("action", [
 
 type Input = z.output<typeof inputSchema>;
 
-const description = `Book a salon, barbershop, nail or beauty studio, clinic, fitness or other studio that takes online bookings through YClients — in seconds, instead of browser_task clicking through its booking form. Steps: find with the place's site (maps.org's site) or its YClients link answers the company (when several branches come back, take the one at the address the person meant); services lists the services with prices and minutes; slots gives the free times on days (staff 0 is any master); staff lists the masters for the services; book books one slot. Book only a time inside what the person asked for — the day, and «закончить до 16:00» counts the service's minutes — at the place they meant, and only once; then tell them the place, service, day, time, master and price in one message. When find finds no YClients booking or a call fails, do the booking with browser_task as before. When book says an SMS code was sent, ask the person for it and call book again with the same arguments and the code.`;
+const description = `Book a salon, barbershop, nail or beauty studio, clinic, fitness or other studio that takes online bookings through YClients — in seconds, instead of browser_task clicking through its booking form. A place of maps.search or maps.org with a \`yclients\` id books here: that id is its company — go straight to services with it. Steps: services lists the services with prices and minutes and names the place; slots gives the free times on days (staff 0 is any master); staff lists the masters for the services; book books one slot. find, with the place's site or a YClients booking link (…yclients.com), answers the company of a place Maps did not name (when several branches come back, take the one at the address the person meant). Book only a time inside what the person asked for — the day, and «закончить до 16:00» counts the service's minutes — at the place they meant, and only once; then tell them the place, service, day, time, master and price in one message. When the place has no YClients id or a call fails twice, do the booking with browser_task as before. When book says an SMS code was sent, ask the person for it and call book again with the same arguments and the code.`;
 
 const notThePerson =
   "Nothing was done: bookings through YClients are made only in a turn the person's own message opened. Ask the person.";
@@ -255,7 +263,21 @@ function placeOf(
   };
 }
 
-async function find(link: string, signal: AbortSignal) {
+const companySchema = z.object({
+  address: z.string().nullish(),
+  city: z.string().nullish(),
+  id: z.coerce.number(),
+  title: z.string().nullish(),
+});
+
+/** A company's own card, or nothing when YClients did not give it. */
+function companyRow(answer: Parameters<typeof dataOf>[0]) {
+  if (answer?.kind !== "ok") return undefined;
+  const row = companySchema.safeParse(answer.data);
+  return row.success ? row.data : undefined;
+}
+
+async function find(link: string, workspaceId: string) {
   const url = URL.parse(/^https?:\/\//iu.test(link) ? link : `https://${link}`);
   if (url === null) {
     return {
@@ -273,92 +295,100 @@ async function find(link: string, signal: AbortSignal) {
           : "No YClients booking was found there: the place books some other way. Do the booking with browser_task (its site or the «Записаться» button of its Yandex Maps card).",
     };
   }
-  // A form's company, or for a network's form (`group_id`) every branch of
-  // the network: its `company_id` is only the form's default branch, and
-  // the person may mean another one (developers.yclients.com, bookform).
+  // Up to five links: their forms are read together.
+  const formIds = found.links.flatMap((one) =>
+    one.form === undefined ? [] : [one.form]
+  );
+  const formAnswers =
+    formIds.length === 0
+      ? []
+      : await yclientsCalls(
+          workspaceId,
+          formIds.map((form) => ({
+            method: "GET" as const,
+            path: `/bookform/${String(form)}`,
+          }))
+        );
+  const forms = new Map(
+    formIds.map((form, index) => [
+      form,
+      bookformSchema.parse(dataOf(formAnswers[index])),
+    ])
+  );
+  // A form's company, and for a network's form (`group_id`) every branch of
+  // the network too: its `company_id` is only the form's default branch,
+  // and the person may mean another one (developers.yclients.com, bookform).
   const companies = new Map<
     number,
     { form?: number; phoneConfirmation?: boolean }
   >();
   const groups = new Map<number, number>();
-  // Up to five links: their forms are read together.
-  const forms = await Promise.all(
-    found.links.map(async (one) =>
-      one.form === undefined
-        ? undefined
-        : bookformSchema.parse(
-            await yclientsCall("GET", `/bookform/${String(one.form)}`, {
-              signal,
-            })
-          )
-    )
-  );
-  for (const [index, one] of found.links.entries()) {
-    const form = forms[index];
+  for (const one of found.links) {
+    const form = one.form === undefined ? undefined : forms.get(one.form);
     const group = form?.group_id ?? 0;
     // A network's form says nothing of SMS: each branch has its own setting.
     const phoneConfirmation =
       group > 0 ? undefined : (form?.phone_confirmation ?? undefined);
-    if (one.company !== undefined) {
-      companies.set(one.company, { form: one.form, phoneConfirmation });
-    } else if (group > 0 && one.form !== undefined) {
-      groups.set(group, one.form);
-    } else if ((form?.company_id ?? 0) > 0) {
-      companies.set(form?.company_id ?? 0, {
-        form: one.form,
-        phoneConfirmation,
-      });
-    }
+    if (group > 0 && one.form !== undefined) groups.set(group, one.form);
+    const id = one.company ?? form?.company_id ?? 0;
+    if (id > 0) companies.set(id, { form: one.form, phoneConfirmation });
   }
-  const branches = (
-    await Promise.all(
-      [...groups].map(async ([group, form]) =>
-        companiesSchema
-          .parse(
-            await yclientsCall("GET", "/companies", {
-              query: new URLSearchParams({
-                active: "1",
-                group_id: String(group),
-              }),
-              signal,
-            })
-          )
-          // A branch's own SMS setting is not in the list: book finds out.
-          .map((branch) => placeOf(branch.id, branch, form, undefined))
-      )
-    )
-  ).flat();
-  const known = await Promise.all(
-    [...companies].map(async ([id, from]) => {
-      const rows = companiesSchema.safeParse(
-        await yclientsCall("GET", "/companies", {
-          query: new URLSearchParams({ id: String(id) }),
-          signal,
-        }).catch(() => [])
-      );
-      const row = rows.success ? rows.data[0] : undefined;
-      return placeOf(id, row, from.form, from.phoneConfirmation);
-    })
+  const known = [...companies];
+  const networks = [...groups];
+  const answers = await yclientsCalls(workspaceId, [
+    ...known.map(([id]) => ({
+      method: "GET" as const,
+      path: `/company/${String(id)}`,
+    })),
+    ...networks.map(([group]) => ({
+      method: "GET" as const,
+      path: "/companies",
+      query: new URLSearchParams({ active: "1", group_id: String(group) }),
+    })),
+  ]);
+  const places = known.map(([id, from], index) =>
+    placeOf(id, companyRow(answers[index]), from.form, from.phoneConfirmation)
   );
-  const all = [...known, ...branches];
-  const places = all.slice(0, maximumBranches);
+  const branches = networks.flatMap(([, form], index) => {
+    const answer = answers[known.length + index];
+    const rows = companiesSchema.safeParse(
+      answer?.kind === "ok" ? answer.data : null
+    );
+    // A branch's own SMS setting is not in the list: book finds out.
+    return rows.success
+      ? rows.data
+          .filter((branch) => !companies.has(branch.id))
+          .map((branch) => placeOf(branch.id, branch, form, undefined))
+      : [];
+  });
+  const all = [...places, ...branches];
   return {
     ok: true as const,
-    places,
+    places: all.slice(0, maximumBranches),
     // The model hears that the list is cut, and can name the address.
     total: all.length,
   };
 }
 
-async function services(companyId: number, signal: AbortSignal) {
-  const found = servicesSchema.parse(
-    await yclientsCall("GET", `/book_services/${String(companyId)}`, { signal })
-  );
+async function services(companyId: number, workspaceId: string) {
+  const [list, card] = await yclientsCalls(workspaceId, [
+    { method: "GET", path: `/book_services/${String(companyId)}` },
+    { method: "GET", path: `/company/${String(companyId)}` },
+  ]);
+  const found = servicesSchema.parse(dataOf(list));
   const categories = new Map(
     (found.category ?? []).map((one) => [one.id, one.title])
   );
+  const row = companyRow(card);
   return {
     ok: true as const,
+    place:
+      row === undefined
+        ? null
+        : {
+            address: [row.city, row.address].filter(Boolean).join(", ") || null,
+            title: row.title ?? null,
+          },
     services: found.services.slice(0, maximumServices).map((one) => ({
       category: categories.get(one.category_id ?? 0) ?? null,
       id: one.id,
@@ -373,17 +403,19 @@ async function services(companyId: number, signal: AbortSignal) {
 async function staff(
   companyId: number,
   ids: readonly number[],
-  signal: AbortSignal
+  workspaceId: string
 ) {
-  const found = staffSchema.parse(
-    await yclientsCall("GET", `/book_staff/${String(companyId)}`, {
+  const [answer] = await yclientsCalls(workspaceId, [
+    {
+      method: "GET",
+      path: `/book_staff/${String(companyId)}`,
       query: servicesQuery(ids),
-      signal,
-    })
-  );
+    },
+  ]);
   return {
     ok: true as const,
-    staff: found
+    staff: staffSchema
+      .parse(dataOf(answer))
       .filter((one) => one.bookable !== false)
       .map((one) => ({
         id: one.id,
@@ -395,7 +427,7 @@ async function staff(
 
 async function slots(
   input: Extract<Input, { action: "slots" }>,
-  signal: AbortSignal
+  workspaceId: string
 ) {
   const to =
     input.to === undefined || input.to < input.from ? input.from : input.to;
@@ -404,44 +436,50 @@ async function slots(
   )
     .toISOString()
     .slice(0, 10);
-  const dates = datesSchema.parse(
-    await yclientsCall("GET", `/book_dates/${String(input.company)}`, {
+  const read = daysBetween(input.from, to, maximumSlotDays);
+  // A range longer than the days read: the rest counts as later days.
+  const readThrough = read.at(-1) ?? input.from;
+  // The open days and every read day's times in one go: a closed day's
+  // times are not looked at.
+  const [dates, ...times] = await yclientsCalls(workspaceId, [
+    {
+      method: "GET",
+      path: `/book_dates/${String(input.company)}`,
       query: servicesQuery(input.services, {
         date_from: input.from,
         date_to: ahead > to ? ahead : to,
         staff_id: String(input.staff),
       }),
-      signal,
-    })
-  );
+    },
+    ...read.map((date): YclientsRequest => ({
+      method: "GET",
+      path: `/book_times/${String(input.company)}/${String(input.staff)}/${date}`,
+      query: servicesQuery(input.services),
+    })),
+  ]);
   const open = new Set(
-    (dates.booking_dates ?? []).map((moment) => moment.slice(0, 10))
+    (datesSchema.parse(dataOf(dates)).booking_dates ?? []).map((moment) =>
+      moment.slice(0, 10)
+    )
   );
-  const read = daysBetween(input.from, to, maximumSlotDays);
-  // A range longer than the days read: the rest counts as later days.
-  const readThrough = read.at(-1) ?? input.from;
-  const asked = read.filter((one) => open.has(one));
-  const days = await Promise.all(
-    asked.map(async (date) => {
-      const times = timesSchema.parse(
-        await yclientsCall(
-          "GET",
-          `/book_times/${String(input.company)}/${String(input.staff)}/${date}`,
-          { query: servicesQuery(input.services), signal }
-        )
-      );
-      return {
-        date,
-        times: times.map((one) => ({
-          datetime: one.datetime,
-          minutes: minutesOf(one.seance_length),
-          time: one.time,
-        })),
-      };
-    })
-  );
+  const days = read.flatMap((date, index) => {
+    if (!open.has(date)) return [];
+    const free = timesSchema.parse(dataOf(times[index]));
+    return free.length === 0
+      ? []
+      : [
+          {
+            date,
+            times: free.map((one) => ({
+              datetime: one.datetime,
+              minutes: minutesOf(one.seance_length),
+              time: one.time,
+            })),
+          },
+        ];
+  });
   return {
-    days: days.filter((one) => one.times.length > 0),
+    days,
     readThrough,
     laterDays: [...open]
       .filter((one) => one > readThrough)
@@ -549,12 +587,7 @@ async function book(
     return { ok: false as const, reply: notThePerson };
   bookingClaims.set(claim, "claimed");
   try {
-    const result = await bookOnce(
-      input,
-      code,
-      scopeFromPrincipal(caller),
-      context.abortSignal
-    );
+    const result = await bookOnce(input, code, scopeFromPrincipal(caller));
     bookingClaims.set(claim, result.booked ? "booked" : "open");
     return result;
   } catch (error) {
@@ -578,9 +611,9 @@ async function book(
 
 /**
  * A `book_record` that went out and came back with no sure refusal: a
- * network error, a 5xx or an answer that is no envelope. The booking may
- * exist, so it is never sent again (dev-notes: a 5xx can come after the
- * order exists).
+ * network error, a 5xx, an answer that is no envelope, or a tab that failed
+ * after sending. The booking may exist, so it is never sent again
+ * (dev-notes: a 5xx can come after the order exists).
  */
 class BookingSent extends Error {
   override readonly name = "BookingSent";
@@ -593,9 +626,9 @@ class BookingSent extends Error {
 async function bookOnce(
   input: Extract<Input, { action: "book" }>,
   code: string | undefined,
-  scope: ReturnType<typeof scopeFromPrincipal>,
-  signal: AbortSignal
+  scope: ReturnType<typeof scopeFromPrincipal>
 ) {
+  const { workspaceId } = scope;
   const [profile, ownPhone] = await Promise.all([
     readUserProfile(scope),
     readOwnPhone(scope),
@@ -621,10 +654,18 @@ async function bookOnce(
     };
   }
   const sendCode = async () => {
-    await yclientsCall("POST", `/book_code/${String(input.company)}`, {
-      body: { fullname, phone },
-      signal,
-    });
+    const [sent] = await yclientsCalls(
+      workspaceId,
+      [
+        {
+          body: { fullname, phone },
+          method: "POST",
+          path: `/book_code/${String(input.company)}`,
+        },
+      ],
+      { writes: true }
+    );
+    dataOf(sent);
     return {
       booked: false,
       codeSent: true,
@@ -634,33 +675,31 @@ async function bookOnce(
     };
   };
   if (code === undefined && input.form !== undefined && input.form > 0) {
-    const form = bookformSchema.parse(
-      await yclientsCall("GET", `/bookform/${String(input.form)}`, { signal })
-    );
+    const [answer] = await yclientsCalls(workspaceId, [
+      { method: "GET", path: `/bookform/${String(input.form)}` },
+    ]);
+    const form = bookformSchema.parse(dataOf(answer));
     // A network's form leaves SMS to each branch: book_record says so (432).
     if ((form.group_id ?? 0) === 0 && form.phone_confirmation === true) {
       return sendCode();
     }
   }
-  const appointments = [
-    {
-      datetime: input.datetime,
-      id: 1,
-      services: input.services,
-      staff_id: input.staff,
-    },
-  ];
-  await yclientsCall("POST", `/book_check/${String(input.company)}`, {
-    body: { appointments },
-    signal,
-  });
   const comment = input.comment?.trim() ?? "";
   // The code and the comment go only when there is one.
   const optional = new Map<string, string>();
   if (code !== undefined) optional.set("code", code);
   if (comment !== "") optional.set("comment", comment);
+  // No book_check first: book_record refuses a taken time itself (433),
+  // and every call is a tab.
   const recordBody = {
-    appointments,
+    appointments: [
+      {
+        datetime: input.datetime,
+        id: 1,
+        services: input.services,
+        staff_id: input.staff,
+      },
+    ],
     email: profile.email ?? "",
     fullname,
     phone,
@@ -668,15 +707,21 @@ async function bookOnce(
   };
   let answer: z.core.util.JSONType;
   try {
-    answer = await yclientsCall(
-      "POST",
-      `/book_record/${String(input.company)}`,
-      {
-        body: recordBody,
-        signal,
-      }
+    const [record] = await yclientsCalls(
+      workspaceId,
+      [
+        {
+          body: recordBody,
+          method: "POST",
+          path: `/book_record/${String(input.company)}`,
+        },
+      ],
+      { writes: true }
     );
+    answer = dataOf(record);
   } catch (error) {
+    // The tab never sent it: nothing was booked.
+    if (error instanceof YclientsPageError && !error.sent) throw error;
     if (!(error instanceof YclientsError) || !refusedForSure(error)) {
       throw new BookingSent(
         error instanceof YclientsError ? error.status : null
@@ -707,25 +752,26 @@ async function callYclients(
   words: {
     readonly said: readonly string[] | null;
     readonly step: StepIdentity;
-  }
+  },
+  workspaceId: string
 ) {
-  const signal = context.abortSignal;
   try {
-    if (input.action === "find") return await find(input.link, signal);
+    if (input.action === "find") return await find(input.link, workspaceId);
     if (input.action === "services") {
-      return await services(input.company, signal);
+      return await services(input.company, workspaceId);
     }
     if (input.action === "staff") {
-      return await staff(input.company, input.services, signal);
+      return await staff(input.company, input.services, workspaceId);
     }
-    if (input.action === "slots") return await slots(input, signal);
+    if (input.action === "slots") return await slots(input, workspaceId);
     return await book(input, context, words);
   } catch (error) {
-    if (signal.aborted) throw error;
+    if (context.abortSignal.aborted) throw error;
     console.warn("[yclients] call failed", {
       action: input.action,
       codes: error instanceof YclientsError ? error.codes : undefined,
       error: error instanceof Error ? error.name : null,
+      page: error instanceof YclientsPageError ? error.message : undefined,
       status: error instanceof YclientsError ? error.status : undefined,
     });
     return {
@@ -778,7 +824,12 @@ export default defineDynamic({
             if (input.action === "book" && words.said === null) {
               return { ok: false as const, reply: notThePerson };
             }
-            return callYclients(input, toolContext, words);
+            return callYclients(
+              input,
+              toolContext,
+              words,
+              currentScope.workspaceId
+            );
           },
         }),
       };
