@@ -222,6 +222,7 @@ describe("the tools of a step", () => {
       "find_images",
       "send_card",
       "update_card",
+      "patch_card",
     ]);
     // Elsewhere the report's block is what it was, byte for byte.
     expect(turnTools({ ...pilot, cards: false }).offeredTools).toEqual(

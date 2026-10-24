@@ -78,6 +78,8 @@ async function cardAnswer(wish: string) {
       conversationChannel: "telegram",
       conversationId: "4242::",
       id: "0f9f7a5e-5c1d-4f0b-9a52-2b6f0d3c1e11",
+      item: null,
+      kind: "submit",
       payload: cardSchema.parse(kidPartyDetails),
       ref: "k7m2p9qa",
       revision: 1,

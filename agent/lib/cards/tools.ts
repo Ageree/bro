@@ -17,6 +17,7 @@ import {
   openedByPersonErrandReport,
 } from "./caller";
 import { cardSentInHistory, cardToolNames } from "./sent";
+import { cardOfReport } from "./report";
 
 /**
  * What `send_card` and `update_card` share: the turns they act in, how many
@@ -66,7 +67,10 @@ export function cardTurnCaller(
   const caller = context.session.auth.current;
   if (opener === "person") return startedByPerson(context);
   if (opener === "card-answer") return answeredCardRef(caller) !== undefined;
-  return personErrandRunId(caller) !== undefined;
+  return (
+    personErrandRunId(caller) !== undefined ||
+    cardOfReport(caller) !== undefined
+  );
 }
 
 /** Cards one turn may put in the chat, sent or updated: a loop would post one after another. */
@@ -104,6 +108,21 @@ export function checkCard(card: Card, message: string, nothing: string) {
       refusal: {
         status: "invalid" as const,
         reply: `${nothing}: the card does not fit the catalog. Fix these and call again (links are https://, a button may also be tel: or mailto:).\n${z.prettifyError(checked.error)}`,
+      },
+    };
+  }
+  const payment = checked.data.actions.find(
+    (action) =>
+      !("href" in action) &&
+      /(?:^|[^\p{L}])(?:оплатить|заплатить|купить|перевести|pay|buy)(?!\p{L})/iu.test(
+        action.label
+      )
+  );
+  if (payment) {
+    return {
+      refusal: {
+        status: "refused" as const,
+        reply: `${nothing}: a card button cannot authorize a payment. Label «${payment.label}» as preparation or a selection instead; ask for payment with the exact total and wait for the person's plain yes in the chat.`,
       },
     };
   }

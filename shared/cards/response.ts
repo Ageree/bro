@@ -179,14 +179,23 @@ function choiceSchema(
 export function cardResponseSchema(card: Card, revision: number) {
   const questions = cardQuestions(card);
   const main = mainSubmit(card)?.submit;
-  const [first, ...rest] = submitActions(card).map((action) =>
+  const actions = card.actions.flatMap((action) => {
+    if ("submit" in action)
+      return [{ id: action.submit, required: action.submit === main }];
+    const intent = z
+      .string()
+      .safeParse("intent" in action ? action.intent : undefined).data;
+    if (intent !== undefined) return [{ id: intent, required: false }];
+    return [];
+  });
+  const [first, ...rest] = actions.map((action) =>
     z.strictObject({
-      action: z.literal(action.submit),
+      action: z.literal(action.id),
       revision: z.literal(revision),
       values: z.strictObject(
         Object.fromEntries(
           questions.map((question) => {
-            const needed = question.required && action.submit === main;
+            const needed = question.required && action.required;
             return [
               question.id,
               question.type === "choice"
@@ -239,8 +248,11 @@ function shown(
  */
 export function describeCardAnswer(card: Card, answer: CardAnswer) {
   const pressed =
-    submitActions(card).find((action) => action.submit === answer.action)
-      ?.label ?? answer.action;
+    card.actions.find(
+      (action) =>
+        ("submit" in action && action.submit === answer.action) ||
+        ("intent" in action && action.intent === answer.action)
+    )?.label ?? answer.action;
   const lines = cardQuestions(card).map(
     (question) =>
       `${question.label}: ${shown(question, answer.values[question.id])}`

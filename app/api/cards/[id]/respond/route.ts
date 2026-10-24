@@ -2,9 +2,12 @@ import { NextResponse } from "next/server";
 import type * as z from "zod";
 import {
   countCardResponses,
+  markCardWatched,
   readCardByLink,
+  readCardPress,
   readCardResponse,
   saveCardResponse,
+  saveCardIntent,
 } from "@db/services/cards";
 import { channelAccountScope } from "@db/services/channel-identities";
 import { cardsEnabled } from "@shared/cards/pilot";
@@ -31,7 +34,9 @@ const reply = (body: z.input<typeof respondReplySchema>, status = 200) =>
  * The answer of an interactive card (`docs/cards.md`), from its page
  * (`app/(public)/card/[id]`): `open` asks whether this viewer may answer and
  * what they already answered, `send` keeps the answer the person gave with a
- * submit button. Only the person the card was sent to: Telegram's signed
+ * submit button, and `watch` tells the open page how the card and their
+ * latest press stand (`docs/cards-apps.md`, 3.1), noting that the card is
+ * open in front of them. Only the person the card was sent to: Telegram's signed
  * launch data of the Mini App (`telegramWebAppUser`) names the user, and
  * their Telegram is bound to the card's owner. Anyone else who opens a
  * forwarded link reads the card, never an answer, and cannot send one.
@@ -68,6 +73,26 @@ export async function POST(
     owner.workspaceId !== found.workspaceId
   ) {
     return reply({ status: "foreign" }, 403);
+  }
+  if (body.data.kind === "watch") {
+    const [, press, answered] = await Promise.all([
+      markCardWatched(found.id, new Date()),
+      readCardPress(found.id),
+      readCardResponse(found.id, found.revision),
+    ]);
+    return reply({
+      answer:
+        answered === undefined
+          ? undefined
+          : {
+              answer: { action: answered.action, values: answered.values },
+              delivery: answered.state,
+            },
+      card: body.data.revision === found.revision ? undefined : found.card,
+      press,
+      revision: found.revision,
+      status: "watch",
+    });
   }
   if (body.data.revision !== found.revision) {
     return reply({ status: "stale" }, 409);
@@ -107,6 +132,49 @@ export async function POST(
   const secret = secretInAnswer(found.card, parsed.data);
   if (secret !== undefined) {
     return reply({ id: secret.id, kind: secret.kind, status: "secret" }, 422);
+  }
+  const sent = body.data;
+  const intent = found.card.actions.some(
+    (action) => "intent" in action && action.intent === sent.action
+  );
+  if (
+    body.data.item !== undefined &&
+    !found.card.blocks.some(
+      (block) =>
+        block.type === "choice" &&
+        block.options.some((option) => option.value === sent.item)
+    )
+  ) {
+    return reply(
+      {
+        status: "invalid",
+        issues: [{ id: null, message: "Такого варианта в карточке нет." }],
+      },
+      422
+    );
+  }
+  if (intent) {
+    if (kept)
+      return reply(
+        {
+          status: "answered",
+          answer: { action: kept.action, values: kept.values },
+          delivery: kept.state,
+        },
+        409
+      );
+    const outcome = await saveCardIntent(found, {
+      answer: parsed.data,
+      item: body.data.item,
+      summary: describeCardAnswer(found.card, parsed.data).text,
+      telegramUserId,
+    });
+    if (outcome === "busy") return reply({ status: "busy" }, 429);
+    return reply({
+      status: "intent",
+      outcome,
+      press: await readCardPress(found.id),
+    });
   }
   if (
     kept === undefined &&

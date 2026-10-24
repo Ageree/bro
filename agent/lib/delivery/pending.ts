@@ -3,6 +3,7 @@ import { z } from "zod";
 import {
   cardSentInHistory,
   cardToolNames,
+  patchCardToolName,
   sendCardToolName,
   updateCardToolName,
 } from "@agent/lib/cards/sent";
@@ -26,6 +27,7 @@ const deliveryToolNames = new Set([
   "react_to_message",
   sendCardToolName,
   updateCardToolName,
+  patchCardToolName,
 ]);
 
 /**
@@ -117,6 +119,7 @@ export function awaitsDelivery(messages: readonly ModelMessage[]) {
     if (reachedPerson(message, "send_message")) return false;
     if (reachedPerson(message, sendCardToolName)) return false;
     if (reachedPerson(message, updateCardToolName)) return false;
+    if (reachedPerson(message, patchCardToolName)) return false;
     if (reachedPerson(message, "react_to_message")) reaction = true;
     if (message.role === "assistant") steps += 1;
     if (message.role !== "user") continue;

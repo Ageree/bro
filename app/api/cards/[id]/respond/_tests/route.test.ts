@@ -14,14 +14,18 @@ import { cardSchema } from "@shared/cards/schema";
 const mocks = vi.hoisted(() => ({
   account: vi.fn<typeof Identities.channelAccountScope>(),
   count: vi.fn<typeof Cards.countCardResponses>(),
+  press: vi.fn<typeof Cards.readCardPress>(),
   read: vi.fn<typeof Cards.readCardByLink>(),
   response: vi.fn<typeof Cards.readCardResponse>(),
   save: vi.fn<typeof Cards.saveCardResponse>(),
+  watched: vi.fn<typeof Cards.markCardWatched>(),
 }));
 
 vi.mock("@db/services/cards", () => ({
   countCardResponses: mocks.count,
+  markCardWatched: mocks.watched,
   readCardByLink: mocks.read,
+  readCardPress: mocks.press,
   readCardResponse: mocks.response,
   saveCardResponse: mocks.save,
 }));
@@ -94,6 +98,8 @@ beforeEach(() => {
   );
   mocks.response.mockResolvedValue(undefined);
   mocks.count.mockResolvedValue(0);
+  mocks.press.mockResolvedValue(undefined);
+  mocks.watched.mockResolvedValue();
   mocks.save.mockResolvedValue({
     answer,
     outcome: "received",
@@ -235,5 +241,56 @@ describe("a card's answer from its page", () => {
       body: { answer, delivery: "delivered", status: "answered" },
       status: 409,
     });
+  });
+});
+
+describe("a card's open page", () => {
+  const watch = (revision = 1, userId = 4242) =>
+    post({ initData: launchData(userId), kind: "watch", revision });
+  const press = {
+    action: "more",
+    item: undefined,
+    kind: "intent" as const,
+    revision: 1,
+    stage: "working" as const,
+  };
+
+  it("tells the person how the card and their latest press stand, and notes the card open in front of them", async () => {
+    mocks.press.mockResolvedValue(press);
+
+    expect(await watch()).toEqual({
+      body: { press, revision: 1, status: "watch" },
+      status: 200,
+    });
+    expect(mocks.watched).toHaveBeenCalledExactlyOnceWith(id, expect.any(Date));
+    expect(mocks.press).toHaveBeenCalledExactlyOnceWith(id);
+  });
+
+  it("brings the card itself only once it is newer than the page's, with the answer kept for it", async () => {
+    mocks.read.mockResolvedValue({ ...card, revision: 2 });
+    mocks.response.mockResolvedValue({ ...answer, state: "delivered" });
+
+    expect(await watch(1)).toEqual({
+      body: {
+        answer: { answer, delivery: "delivered" },
+        card: hotel,
+        revision: 2,
+        status: "watch",
+      },
+      status: 200,
+    });
+    expect(mocks.response).toHaveBeenCalledExactlyOnceWith(id, 2);
+    expect((await watch(2)).body).not.toHaveProperty("card");
+  });
+
+  it("tells nobody else, and notes nothing for them", async () => {
+    expect(await watch(1, 777)).toEqual({
+      body: { status: "foreign" },
+      status: 403,
+    });
+    vi.stubEnv("CARDS_WORKSPACES", "workspace:bob");
+    expect(await watch()).toMatchObject({ body: { status: "closed" } });
+    expect(mocks.watched).not.toHaveBeenCalled();
+    expect(mocks.press).not.toHaveBeenCalled();
   });
 });

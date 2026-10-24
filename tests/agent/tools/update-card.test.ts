@@ -125,6 +125,7 @@ beforeEach(() => {
       change: changed,
       id: cardId,
       revision: changed.card ? 2 : undefined,
+      watchedAt: null,
     };
   });
   services.button.mockResolvedValue();
