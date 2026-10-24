@@ -147,6 +147,15 @@ describe("an account registered with Bro's own mailbox", () => {
     );
   });
 
+  // 24.10: Bro's task said «подтверди email кодом из письма (бери письмо
+  // сам)», and the run went to agentmail.to instead of stopping for the code,
+  // which Z-Library had already mailed to Bro's inbox.
+  it("stops the run for the code rather than sending it to a mailbox", () => {
+    expect(signUpLine("quietfox42")).toContain(
+      "never open a mail site or webmail (agentmail.to, Gmail, Mail.ru or any other) to look for the letter"
+    );
+  });
+
   it("saves the account as the site's login in the vault", async () => {
     const id = await saveAgentMailLogin(scope, {
       email: mailbox.email,
