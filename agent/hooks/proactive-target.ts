@@ -1,5 +1,6 @@
 import { defineHook, type HookContext } from "eve/hooks";
 import { z } from "zod";
+import { broReportAuthenticator } from "@agent/lib/bro-to-bro/report-caller";
 import { browserNoticeAuthenticator } from "@agent/lib/browser-use/report-caller";
 import { resolveModeValue } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
@@ -20,12 +21,14 @@ export default defineHook({
       if (resolveModeValue(ctx, { interactive: true }) !== true) return;
       const caller = ctx.session.auth.current;
       // A finished browser errand wakes the conversation it started in, which
-      // is not necessarily where the person talks now.
+      // is not necessarily where the person talks now; so do a call's and a
+      // Bro ↔ Bro report.
       if (
         caller?.principalType !== "user" ||
         caller.authenticator === "browser-result" ||
         caller.authenticator === browserNoticeAuthenticator ||
-        caller.authenticator === "phone-result"
+        caller.authenticator === "phone-result" ||
+        caller.authenticator === broReportAuthenticator
       ) {
         return;
       }

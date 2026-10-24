@@ -48,6 +48,7 @@ import {
   readTurnTranscript,
 } from "@db/services/turn-log";
 import { isAdminScope } from "@web/auth/admin";
+import { broToBroRouter } from "./bro-to-bro";
 import { createTRPCRouter, protectedProcedure } from "./init";
 
 /**
@@ -110,6 +111,7 @@ export const appRouter = createTRPCRouter({
         }));
       }),
   },
+  broToBro: broToBroRouter,
   chats: {
     /** The next page of «Все чаты», after the last chat already shown. */
     page: protectedProcedure

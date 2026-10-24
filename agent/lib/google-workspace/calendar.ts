@@ -331,7 +331,7 @@ export async function listCalendarEvents(
   });
 }
 
-const freeBusyResponseSchema = z.object({
+export const freeBusyResponseSchema = z.object({
   calendars: z
     .record(
       z.string(),
@@ -486,41 +486,84 @@ export function parseCalendarAvailability(
   return value;
 }
 
+/**
+ * A calendar event's id that is the same every time it is derived from the
+ * same words: hex, which Google's base32hex ids allow, 32 characters.
+ */
+export function calendarEventId(seed: string) {
+  return createHash("sha256").update(seed).digest("hex").slice(0, 32);
+}
+
+/**
+ * Inserts a private, confirmed event under an id the caller derived, so a
+ * call made again never adds a second one: Google answers 409 for an id
+ * that is taken, and the event under it is read instead. Attendees are
+ * mailed only as `sendUpdates` says.
+ */
+export async function insertCalendarEvent(
+  google: GoogleClient,
+  input: {
+    readonly calendarId: string;
+    readonly eventId: string;
+    readonly event: {
+      readonly attendees?: readonly string[];
+      readonly description?: string | undefined;
+      readonly end: string;
+      readonly location?: string | undefined;
+      readonly start: string;
+      readonly summary: string;
+      readonly timeZone: string;
+    };
+    readonly sendUpdates?: "all" | "none";
+  }
+) {
+  const { event, eventId } = input;
+  try {
+    return await google.json(googleEventSchema, {
+      body: {
+        attendees: event.attendees?.map((email) => ({ email })),
+        description: event.description,
+        end: { dateTime: event.end, timeZone: event.timeZone },
+        id: eventId,
+        location: event.location,
+        start: { dateTime: event.start, timeZone: event.timeZone },
+        status: "confirmed",
+        summary: event.summary,
+        visibility: "private",
+      },
+      method: "POST",
+      url: eventsUrl(input.calendarId, "", { sendUpdates: input.sendUpdates }),
+    });
+  } catch (error) {
+    if (googleApiErrorStatus(error) !== 409) throw error;
+    return google.json(googleEventSchema, {
+      url: eventsUrl(input.calendarId, `/${encodeURIComponent(eventId)}`),
+    });
+  }
+}
+
 export async function createCalendarEvent(
   ctx: ToolContext,
   payload: z.infer<typeof calendarEventSchema>
 ) {
-  const eventId = createHash("sha256")
-    .update(`${ctx.session.id}:${ctx.callId}`)
-    .digest("hex")
-    .slice(0, 32);
+  const eventId = calendarEventId(`${ctx.session.id}:${ctx.callId}`);
   const timeZone = payload.timezone ?? (await personTimeZone(ctx));
-  return withGoogleAuth(ctx, async (google) => {
-    try {
-      return await google.json(googleEventSchema, {
-        body: {
-          attendees: payload.attendees.map((email) => ({ email })),
-          description: payload.description,
-          end: { dateTime: payload.end, timeZone },
-          id: eventId,
-          location: payload.location,
-          start: { dateTime: payload.start, timeZone },
-          status: "confirmed",
-          summary: payload.summary,
-          visibility: "private",
-        },
-        method: "POST",
-        url: eventsUrl(payload.calendarId, "", {
-          sendUpdates: payload.attendees.length ? "all" : "none",
-        }),
-      });
-    } catch (error) {
-      if (googleApiErrorStatus(error) !== 409) throw error;
-      return google.json(googleEventSchema, {
-        url: eventsUrl(payload.calendarId, `/${encodeURIComponent(eventId)}`),
-      });
-    }
-  });
+  return withGoogleAuth(ctx, async (google) =>
+    insertCalendarEvent(google, {
+      calendarId: payload.calendarId,
+      event: {
+        attendees: payload.attendees,
+        description: payload.description,
+        end: payload.end,
+        location: payload.location,
+        start: payload.start,
+        summary: payload.summary,
+        timeZone,
+      },
+      eventId,
+      sendUpdates: payload.attendees.length ? "all" : "none",
+    })
+  );
 }
 
 /**

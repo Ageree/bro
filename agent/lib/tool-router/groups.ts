@@ -21,6 +21,9 @@ import { type RouterGroup, routerGroups } from "./questions";
  * - The signing tools (their own pilot, `SIGN_WORKSPACES`), as in the skills
  *   pilot's core: the person's «да» to Bro's signing question must reach
  *   `sign_document` whatever groups the router chose for that turn.
+ * - Bro ↔ Bro (`BRO_TO_BRO_WORKSPACES`): the owner's «да» to a report must
+ *   reach `bro_talk confirm`, and the groups' questions were checked by the
+ *   evaluation word for word, so no group asks about it.
  */
 const alwaysTools = [
   "send_message",
@@ -47,6 +50,8 @@ const alwaysTools = [
   "calendar-list-events",
   "sign_document",
   "signature",
+  "bro_network",
+  "bro_talk",
 ] as const;
 
 /** The stop tools of the core (above). */

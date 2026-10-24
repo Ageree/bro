@@ -623,6 +623,133 @@ export function signAnswer(words: readonly string[] | null) {
   return plainAnswer(words, signSets);
 }
 
+/**
+ * The owner's answer to Bro ↔ Bro's one question before a held draft goes,
+ * a meeting is confirmed, an invite is accepted or a link is confirmed:
+ * «да», «давай, отправляй», «принимаю», «ставь», «верно», «да, это он»,
+ * «ладно, договорились», «да, всё так», "yes" are yes, and so is a message
+ * of «👍», «✅» or «+» alone; «ок, позже гляну», «а что за место?», «да, но
+ * без адреса» answer nothing. «это он» and «это она» count as one word, so
+ * «это» or «он» alone is no yes.
+ */
+const broToBroSets = {
+  fillers: new Set([
+    "бро",
+    "все",
+    "ну",
+    "пожалуйста",
+    "please",
+    "так",
+    "точно",
+  ]),
+  no: noWords,
+  yes: new Set([
+    "ага",
+    "ahead",
+    "go",
+    "ok",
+    "okay",
+    "please",
+    "sure",
+    "yeah",
+    "yep",
+    "yes",
+    "бро",
+    "верно",
+    "все",
+    "го",
+    "да",
+    "давай",
+    "действуй",
+    "договорились",
+    "идет",
+    "конечно",
+    "ладно",
+    "можно",
+    "ну",
+    "ок",
+    "окей",
+    "отлично",
+    "отправляй",
+    "отправь",
+    "передавай",
+    "передай",
+    "подтверди",
+    "подтверждай",
+    "подтверждаю",
+    "пожалуйста",
+    "приму",
+    "принять",
+    "прими",
+    "принимай",
+    "принимаю",
+    "согласен",
+    "согласна",
+    "ставь",
+    "так",
+    "точно",
+    "угу",
+    "хорошо",
+    "этоон",
+    "этоона",
+  ]),
+};
+
+/** A message of signs that say yes and nothing else: «👍», «✅», «+». */
+const yesSignsPattern =
+  /^\s*(?:(?:\u{1F44D}[\u{1F3FB}-\u{1F3FF}]?|\u2705|\+)\uFE0F?\s*)+$/u;
+
+/** How the owner may call the person they invited: «мой брат», «моя сестра». */
+const kinWords = ["мой", "моя", "брат", "сестра", "друг", "подруга"];
+
+/**
+ * The owner's answer to Bro ↔ Bro's question (`broToBroSets`). With
+ * `people` — the name and the owner's label of the person who accepted an
+ * invite, for «Это он?» — the words naming that person may ride with a yes,
+ * «да, это Петя», «да, это мой брат», but never make one: a word naming
+ * them shares its first three letters with a word of theirs («Петя» for
+ * «Пётр»).
+ */
+export function broToBroAnswer(
+  words: readonly string[] | null,
+  people: readonly (string | null)[] = []
+) {
+  const said =
+    words?.map((text) =>
+      text.replaceAll(/(?<!\p{L})это\s+(он|она)(?!\p{L})/giu, "это$1")
+    ) ?? null;
+  const names = people.flatMap((name) =>
+    comparable(name ?? "")
+      .split(" ")
+      .filter((word) => word.length >= 3)
+  );
+  const naming =
+    people.length === 0
+      ? []
+      : [
+          "это",
+          ...kinWords,
+          ...(said ?? [])
+            .flatMap((text) => comparable(spokenWords(text)).split(" "))
+            .filter(
+              (word) =>
+                word.length >= 3 &&
+                names.some((name) => name.slice(0, 3) === word.slice(0, 3))
+            ),
+        ];
+  const answer = plainAnswer(said, {
+    fillers: new Set([...broToBroSets.fillers, ...naming]),
+    no: broToBroSets.no,
+    yes: new Set([...broToBroSets.yes, ...naming]),
+  });
+  if (answer !== undefined) return answer;
+  return said !== null &&
+    said.length > 0 &&
+    said.every((text) => yesSignsPattern.test(spokenWords(text)))
+    ? ("yes" as const)
+    : undefined;
+}
+
 /** A word that makes a number next to it a one-time code: «SMS», "OTP". */
 const codeContextPattern =
   /(?<!\p{L})(?:смс|sms|otp|одноразов\p{L}*|one[\s-]time|verification)(?!\p{L})/iu;

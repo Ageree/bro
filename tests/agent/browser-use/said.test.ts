@@ -2,6 +2,7 @@ import type { ModelMessage } from "ai";
 import { describe, expect, it } from "vitest";
 import {
   bareOpening,
+  broToBroAnswer,
   codesNotFromPerson,
   nothingAskedYet,
   oneTimeCodesIn,
@@ -586,6 +587,63 @@ function sent(text: string, id = "send-1"): ModelMessage[] {
     },
   ];
 }
+
+describe("the owner's answer to Bro ↔ Bro's question", () => {
+  // A held draft, a meeting, an invite and a link go only on a plain yes:
+  // a reply about something else must not let the other Bro's draft out.
+  it("takes only a plain yes, typed or said aloud, as a yes", () => {
+    for (const yes of [
+      "да",
+      "Давай, отправляй",
+      "принимаю",
+      "ставь",
+      "Да, это он",
+      "это она",
+      "yes",
+      "[голосом] (ты: «Это Пётр?»)\nверно",
+    ])
+      expect([yes, broToBroAnswer([yes])]).toEqual([yes, "yes"]);
+    for (const other of [
+      "ок, позже гляну",
+      "а что за место?",
+      "да, но без адреса",
+      "это",
+      "он",
+    ])
+      expect([other, broToBroAnswer([other])]).toEqual([other, undefined]);
+  });
+
+  it("takes the everyday ways of saying yes, and a thumb or a plus alone", () => {
+    for (const yes of [
+      "можно",
+      "Ладно, договорились",
+      "ну да, всё так",
+      "идёт",
+      "го",
+      "отлично, подтверждай",
+      "приму",
+      "👍",
+      "✅",
+      "+",
+    ])
+      expect([yes, broToBroAnswer([yes])]).toEqual([yes, "yes"]);
+    for (const other of ["ну", "всё так", "👍 но без адреса", "+7 999"])
+      expect([other, broToBroAnswer([other])]).toEqual([other, undefined]);
+  });
+
+  it("lets the person's name or the owner's word for them ride with a yes to «Это он?», never make one", () => {
+    const people = ["Пётр", "брат"];
+    for (const yes of ["да, это Петя", "да, это мой брат", "Верно, это Пётр"])
+      expect([yes, broToBroAnswer([yes], people)]).toEqual([yes, "yes"]);
+    for (const other of ["это Петя", "да, это Вася"])
+      expect([other, broToBroAnswer([other], people)]).toEqual([
+        other,
+        undefined,
+      ]);
+    // Without the person, a name is just a word that answers nothing.
+    expect(broToBroAnswer(["да, это Петя"])).toBeUndefined();
+  });
+});
 
 // Owner 26.09: the one question Bro still asks is before paying, in text,
 // and the person answers it in text.
