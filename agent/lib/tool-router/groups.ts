@@ -69,7 +69,13 @@ const alwaysStopTools = [
  * the catalog lacks costs nothing.
  */
 const groupTools = {
-  browser: ["browser_files", "site-login-link", "site_sign_ins", "list_orders"],
+  browser: [
+    "browser_files",
+    "site-login-link",
+    "site_sign_ins",
+    "list_orders",
+    "yclients",
+  ],
   calendar: [
     "calendar-check-availability",
     "calendar-create-event",
@@ -138,7 +144,7 @@ const groupTools = {
   ],
   schedules: ["schedules-create", "watch-create", "parcel-watch"],
   settings: ["form_of_address", "link_telegram", "request_vault_setup"],
-  yandex: ["yandex", "yandex_purchase"],
+  yandex: ["yandex", "yandex_purchase", "yclients"],
 } as const satisfies Readonly<Record<RouterGroup, readonly string[]>>;
 
 const coreTools: ReadonlySet<string> = new Set([

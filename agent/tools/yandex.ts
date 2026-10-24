@@ -10,9 +10,11 @@ import {
 import { nearFromPosition } from "@agent/lib/location/near";
 import { operationArguments } from "@agent/lib/yandex/operations";
 import { afishaPricesOperation } from "@agent/lib/yandex/afisha/prices";
+import { mapsOrgOperation } from "@agent/lib/yandex/maps/org";
 import {
   mapsSearchOperation,
   sameBuildingNote,
+  yclientsBookingNote,
 } from "@agent/lib/yandex/maps/search";
 import {
   afishaPurchasePilot,
@@ -34,6 +36,7 @@ import {
   type YandexOutcome,
   runYandexOperation,
 } from "@agent/lib/yandex/transport";
+import { yclientsPilot } from "@agent/lib/yclients/api";
 import { locationPilot } from "@db/services/location";
 
 const [firstOperation, ...otherOperations] = yandexOperations;
@@ -176,13 +179,24 @@ async function callYandex(
     const answer = { data: outcome.data, ok: true as const };
     const placed = located ? { ...answer, positionNear: located.said } : answer;
     // The note comes last: it is what the model reads just before it writes.
+    // A place booked through YClients is booked by its tool, where the
+    // workspace has it: the prompt sends every booking to browser_task.
+    const booking = yclientsPilot({ workspaceId })
+      ? yclientsBookingNote(outcome.data)
+      : undefined;
     const note =
       operation.id === afishaPricesOperation.id &&
       afishaPurchasePilot({ workspaceId })
         ? `${operation.answerNote ?? ""} ${afishaBuyNote}`
         : operation.id === mapsSearchOperation.id
-          ? joinedNotes(operation.answerNote, sameBuildingNote(outcome.data))
-          : operation.answerNote;
+          ? joinedNotes(
+              operation.answerNote,
+              sameBuildingNote(outcome.data),
+              booking
+            )
+          : operation.id === mapsOrgOperation.id
+            ? joinedNotes(operation.answerNote, booking)
+            : operation.answerNote;
     return note === undefined ? placed : { ...placed, note };
   }
   return refused(outcome, context);

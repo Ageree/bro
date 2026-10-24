@@ -275,6 +275,138 @@
         "tzOffset": 10800
       },
       {
+        "type": "business",
+        "id": "1000000000003",
+        "title": "Тестовый Барбершоп",
+        "shortTitle": "Тестовая Пиццерия",
+        "seoname": "testovyy_barbershop",
+        "address": "Тестовая улица, 1",
+        "fullAddress": "Москва, Тестовая улица, 1",
+        "coordinates": [37.6301, 55.7502],
+        "uri": "ymapsbm1://org?oid=1000000000001",
+        "status": "open",
+        "ratingData": {
+          "ratingValue": 4.6,
+          "ratingCount": 1200,
+          "reviewCount": 600
+        },
+        "categories": [
+          {
+            "name": "Барбершоп"
+          }
+        ],
+        "workingTimeText": "ежедневно, 10:00–22:00",
+        "workingTime": [
+          [
+            {
+              "from": {
+                "hours": 10,
+                "minutes": 0
+              },
+              "to": {
+                "hours": 22,
+                "minutes": 0
+              }
+            }
+          ],
+          [
+            {
+              "from": {
+                "hours": 10,
+                "minutes": 0
+              },
+              "to": {
+                "hours": 22,
+                "minutes": 0
+              }
+            }
+          ],
+          [
+            {
+              "from": {
+                "hours": 10,
+                "minutes": 0
+              },
+              "to": {
+                "hours": 22,
+                "minutes": 0
+              }
+            }
+          ],
+          [
+            {
+              "from": {
+                "hours": 10,
+                "minutes": 0
+              },
+              "to": {
+                "hours": 22,
+                "minutes": 0
+              }
+            }
+          ],
+          [
+            {
+              "from": {
+                "hours": 10,
+                "minutes": 0
+              },
+              "to": {
+                "hours": 22,
+                "minutes": 0
+              }
+            }
+          ],
+          [
+            {
+              "from": {
+                "hours": 10,
+                "minutes": 0
+              },
+              "to": {
+                "hours": 22,
+                "minutes": 0
+              }
+            }
+          ],
+          [
+            {
+              "from": {
+                "hours": 10,
+                "minutes": 0
+              },
+              "to": {
+                "hours": 22,
+                "minutes": 0
+              }
+            }
+          ]
+        ],
+        "currentWorkingStatus": {
+          "isOpenNow": true,
+          "text": "Открыто до 22:00",
+          "shortText": "До 22:00",
+          "tag": []
+        },
+        "phones": [
+          {
+            "number": "+7 (495) 000-00-01",
+            "type": "phone",
+            "value": "+74950000001"
+          }
+        ],
+        "urls": ["https://pizza.example.test/?utm_source=geoadv_maps"],
+        "tzOffset": 10800,
+        "booking": {
+          "originalId": "yclients__664163",
+          "partner": {
+            "name": "Yclients"
+          },
+          "slotsWidgetAvailable": false,
+          "bookingType": "beauty"
+        }
+      },
+      {
         "type": "collection",
         "title": "Подборка пиццерий"
       }

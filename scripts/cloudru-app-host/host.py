@@ -818,11 +818,11 @@ REQUIRED = ("DATABASE_URL", "WORKFLOW_POSTGRES_URL", "BETTER_AUTH_URL", "BETTER_
 # key that reaches people or production's stores: no messengers or payments; no Vercel Blob (the same paths
 # as production's), Supermemory or Composio (connected accounts copied from production could send mail);
 # nothing that bills with no scheduler to settle it: Browser Use, the browser VM and pool pilots, the code
-# sandbox pilot. The operator brings one back in stand.json when a rehearsal needs it on purpose.
+# sandbox pilot; no YClients booking, which books real salons in a person's name. The operator brings one back in stand.json when a rehearsal needs it on purpose.
 STAND_DROPPED = re.compile(r"AGENTMAIL_.*|(TELEGRAM_|IMESSAGE_|YOOKASSA_|YOOMONEY_|BLOB_|BROWSER_USE_|BROWSER_HOST_).*|"
                            r"MAILRU_MAIL_.*|YANDEX_MAIL_.*|MAIL_WORKSPACES|"
                            r"SUPERMEMORY_API_KEY|COMPOSIO_API_KEY|BROWSER_VM_TWOCAPTCHA_API_KEY|"
-                           r"BROWSER_POOL_WORKSPACES|BROWSER_VM_WORKSPACES|SANDBOX_WORKSPACES")
+                           r"BROWSER_POOL_WORKSPACES|BROWSER_VM_WORKSPACES|SANDBOX_WORKSPACES|YCLIENTS_.*")
 # Keys of production's own stores and accounts: on the stand each is named when it is there (from stand.json).
 PRODUCTION_STORES = re.compile(r"(BLOB_|BROWSER_USE_API_KEY).*|SUPERMEMORY_API_KEY|"
                                r"MAILRU_MAIL_.*|YANDEX_MAIL_.*|"

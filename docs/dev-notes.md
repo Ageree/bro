@@ -2281,9 +2281,30 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   `maps.org`), а запись — виджет YClients кликами: 59 шагов, 4 мин, потом ещё 12 мин
   на другой салон. Места одного здания `maps.search` называет в `note`
   (`sameBuildingNote`, по зданиям): Бро спрашивает, какое, если человек имел в виду
-  конкретное («в моём доме»), а не «любую». API YClients (`book_*`, нужен лишь
-  partner token) — заявка владельца в работе; спецификация — Redoc
-  `developers.yclients.com/ru/` (страница 10 МБ, спека в `__redoc_state`).
+  конкретное («в моём доме»), а не «любую».
+- Запись через API YClients (`yclients`, `agent/tools/yclients.ts`; пилот
+  `YCLIENTS_WORKSPACES` и `YCLIENTS_TOKEN`, без них инструмента нет). Партнёрский токен
+  YClients не даёт (23.10, тикет #4754816: новых партнёров не подключают, пока
+  переделывают API), поэтому `YCLIENTS_TOKEN` — общий токен их виджета записи (Bearer в
+  каждом запросе формы `n<форма>.yclients.com`): им классический API (`bookform`,
+  `book_services`, `book_staff`, `book_dates`, `book_times`, `book_code`, `book_record`,
+  `company/<id>`) отвечает без прочих заголовков (24.10). Новый виджет ходит в
+  `platform.yclients.com/api/v1/b2c/…` с `x-app-client-context`, но `x-app-signature` у
+  него пустая. С адреса облачной сессии WAF отвечает `book_times`/`book_services` 403,
+  поэтому вызовы идут из вкладки браузера пула человека на `api.yclients.com/robots.txt`
+  пачкой (`agent/lib/yclients/page.ts`), 0,3–0,5 с каждый. Компанию даёт Карты:
+  `booking.originalId` места — `yclients__<id компании>` (`mapsYclients` в
+  `agent/lib/yandex/maps/page.ts`, поле `yclients` у `maps.search`/`maps.org`, и тогда
+  результат `yandex` велит звать `yclients`); `find` — по ссылке сайта или формы. У
+  сетевой формы (`group_id`) её `company_id` — лишь филиал по умолчанию. Записывает лишь
+  ход человека, раз за ход: заявка ставится до первого await и снимается только верным
+  отказом (4xx с кодом YClients) или вкладкой, не отправившей запрос
+  (`YclientsPageError.sent`); сеть, 5xx и не-конверт после `book_record` — «неизвестно,
+  не повторять». Заявка — в памяти процесса. 432 без кода — Бро сам шлёт SMS
+  (`book_code`). `book_check` отвечает `201 Created` без записи; `book_record` вживую не
+  проверен. Пробы формы — `yandex-probe.py` режимом `page` (пускает и `*.yclients.com`,
+  пишет заголовки запросов). Стенду токен не идёт (`STAND_DROPPED`): записал бы в
+  настоящий салон.
 - Отказы сервера сайта (XHR и fetch со статусом ≥ 400) worker пула пишет сам
   блоком `SITE ERRORS` в начало отчёта (`SiteErrors`, стенд
   `test_site_errors.py`): модель запуска перехват через `evaluate` по просьбе

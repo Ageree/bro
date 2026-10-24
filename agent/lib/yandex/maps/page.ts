@@ -47,6 +47,12 @@ const mapsCall = async (session, path, params) => {
   if (j.error) return { error: "api_" + j.error.code };
   return j.data === undefined ? { error: "no_data" } : j.data;
 };
+// A place booked through YClients names its YClients company:
+// \`booking.originalId\` is "yclients__664163" (24.10, the yclients tool).
+const mapsYclients = (booking) => {
+  const id = booking && /^yclients__([1-9]\\d{0,11})$/.exec(booking.originalId || "");
+  return id ? Number(id[1]) : null;
+};
 const mapsAnswer = (x) =>
   x.wall ? { status: "signed_out" } : x.error ? { status: "ok", data: { error: x.error } } : null;
 `;

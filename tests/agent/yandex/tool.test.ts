@@ -15,6 +15,7 @@ const services = vi.hoisted(() => ({
   makeLink: vi.fn<typeof makeLoginHandoff>(),
   pilot: vi.fn<typeof yandexPilot>(),
   run: vi.fn<typeof runYandexOperation>(),
+  yclientsPilot: vi.fn<() => boolean>(() => false),
 }));
 
 vi.mock("@agent/lib/login-handoff/make", () => ({
@@ -41,6 +42,9 @@ vi.mock("@agent/lib/yandex/pilot", () => ({
 }));
 vi.mock("@agent/lib/yandex/transport", () => ({
   runYandexOperation: services.run,
+}));
+vi.mock("@agent/lib/yclients/api", () => ({
+  yclientsPilot: services.yclientsPilot,
 }));
 
 import yandexTools from "@agent/tools/yandex";
@@ -148,6 +152,7 @@ const mapsPlace = (id: string, name: string, at: [number, number]) => ({
   ratingCount: null,
   site: null,
   url: `https://yandex.ru/maps/org/x/${id}/`,
+  yclients: null,
 });
 
 describe("Yandex Maps around the person's shared point", () => {
@@ -219,6 +224,25 @@ describe("Yandex Maps around the person's shared point", () => {
 
     expect(Object.keys(result).at(-1)).toBe("note");
     expect(JSON.stringify(result)).toContain("«Glow&Go», «Топган»");
+  });
+
+  it("sends a place booked through YClients to the yclients tool, where the workspace has it", async () => {
+    services.run.mockResolvedValue({
+      data: {
+        places: [
+          mapsPlace("1", "Glow&Go", [37.4805, 55.6935]),
+          { ...mapsPlace("2", "Топган", [37.49, 55.7]), yclients: 664_163 },
+        ],
+        total: 2,
+      },
+      kind: "ok",
+    });
+
+    expect(JSON.stringify(await search({}))).not.toContain("yclients tool");
+    services.yclientsPilot.mockReturnValueOnce(true);
+    const result = await search({});
+    expect(JSON.stringify(result)).toContain("«Топган» books through YClients");
+    expect(JSON.stringify(result)).not.toContain("«Glow&Go» book");
   });
 });
 
