@@ -28,10 +28,17 @@ type Block = Card["blocks"][number];
 const maximumPhotoBytes = 8 * 1024 * 1024;
 /** One hop of one photo, its body included. */
 const photoHopTimeoutMs = 8000;
-/** All the photos of a card: the person waits for the card meanwhile. */
-const keepingTimeoutMs = 20_000;
-/** Photos in flight at once, which also bounds the memory they take. */
-const keepingConcurrency = 4;
+/**
+ * All the photos of a card: the person waits for the card meanwhile. Up to
+ * 18 photos (three options with five more each) at 6 at a time are three
+ * rounds of a download (0.3–2 s) and a copy to the store (1.5–3 s by day,
+ * 8 s at worst, `docs/dev-notes.md`). Thirty seconds bounds the wait without
+ * promising every photo: the rows' own photos go first, then those behind
+ * «Подробнее»; a slow site or store may still lose either.
+ */
+const keepingTimeoutMs = 30_000;
+/** Photos in flight at once, which also bounds the memory they take (8 MB each). */
+const keepingConcurrency = 6;
 
 /** Sites that look at what a client accepts get one of the three types a card shows. */
 const photoRequestHeaders = {
@@ -39,61 +46,120 @@ const photoRequestHeaders = {
 };
 
 /**
- * The photo addresses of a block, in the order it shows them: one for an
- * image, each of a gallery, and each row's or option's when the set has them.
+ * The photos of a block by set, in the order it shows them. The block's own
+ * set — an image, a gallery, the rows' or options' photos — shows whole or
+ * not at all (`whole`); each row's or option's photos behind «Подробнее»
+ * (`more`, by its position) show those that were kept.
  */
-function blockPhotos(block: Block) {
+const ownPhotoSet = (urls: readonly string[]) => [
+  { set: "own", urls, whole: true },
+];
+const morePhotoSets = (
+  items: readonly {
+    readonly more?:
+      | { readonly photos?: readonly { readonly url: string }[] }
+      | undefined;
+  }[]
+) =>
+  items.map((item, position) => ({
+    set: `more-${String(position)}`,
+    urls: item.more?.photos?.map((photo) => photo.url) ?? [],
+    whole: false,
+  }));
+
+function blockPhotoSets(block: Block) {
   switch (block.type) {
     case "image":
-      return [block.url];
+      return ownPhotoSet([block.url]);
     case "gallery":
-      return block.photos.map((photo) => photo.url);
+      return ownPhotoSet(block.photos.map((photo) => photo.url));
     case "list":
-      return block.rows.flatMap((row) => (row.photo ? [row.photo.url] : []));
+      return [
+        ...ownPhotoSet(
+          block.rows.flatMap((row) => (row.photo ? [row.photo.url] : []))
+        ),
+        ...morePhotoSets(block.rows),
+      ];
     case "choice":
-      return block.options.flatMap((option) =>
-        option.photo ? [option.photo.url] : []
-      );
+      return [
+        ...ownPhotoSet(
+          block.options.flatMap((option) =>
+            option.photo ? [option.photo.url] : []
+          )
+        ),
+        ...morePhotoSets(block.options),
+      ];
     default:
       return [];
   }
 }
 
+type More = NonNullable<
+  Extract<Block, { type: "choice" }>["options"][number]["more"]
+>;
+
 /**
- * The block with Bro's addresses in place of its photos', in order; without
- * `paths`, the block as it reads without photos. A set never shows half its
- * photos, so the photos of a list and of a choice go together, and a layout
- * that needs them falls back to the plain one; an image and a gallery are
- * nothing but photos and go entirely.
+ * A row's or an option's «Подробнее» with Bro's addresses for the photos that
+ * were kept and without those that were not; one left with nothing to show
+ * is gone.
  */
-function withPhotos(block: Block, paths: readonly string[] | undefined) {
+function withMorePhotos(
+  more: More | undefined,
+  paths: readonly (string | undefined)[] | undefined
+) {
+  if (!more?.photos) return more;
+  const { photos, ...rest } = more;
+  const kept = photos.flatMap((photo, position) => {
+    const url = paths?.[position];
+    return url === undefined ? [] : [{ ...photo, url }];
+  });
+  const shown = kept.length > 0 ? { ...rest, photos: kept } : rest;
+  return Object.keys(shown).length > 0 ? shown : undefined;
+}
+
+/**
+ * The block with Bro's addresses in place of its photos', in order: `paths`
+ * gives each set's addresses, one per photo, undefined for a photo not kept.
+ * A set that shows whole and lost a photo shows none, so the photos of a list
+ * and of a choice go together, and a layout that needs them falls back to the
+ * plain one; an image and a gallery are nothing but photos and go entirely.
+ */
+function withPhotos(
+  block: Block,
+  paths: (set: string) => readonly (string | undefined)[] | undefined
+) {
+  const own = paths("own");
+  const whole =
+    own?.every((url) => url !== undefined) === true ? own : undefined;
   let position = 0;
   const next = <Photo extends { readonly url: string }>(photo: Photo) => {
-    const url = paths?.[position] ?? photo.url;
+    const url = whole?.[position] ?? photo.url;
     position += 1;
     return { ...photo, url };
   };
   switch (block.type) {
     case "image":
-      return paths ? next(block) : undefined;
+      return whole ? next(block) : undefined;
     case "gallery":
-      return paths ? { ...block, photos: block.photos.map(next) } : undefined;
+      return whole ? { ...block, photos: block.photos.map(next) } : undefined;
     case "list":
       return {
         ...block,
-        layout: paths ? block.layout : ("rows" as const),
-        rows: block.rows.map((row) => ({
+        layout: whole || !own ? block.layout : ("rows" as const),
+        rows: block.rows.map((row, at) => ({
           ...row,
-          photo: paths && row.photo ? next(row.photo) : undefined,
+          more: withMorePhotos(row.more, paths(`more-${String(at)}`)),
+          photo: whole && row.photo ? next(row.photo) : undefined,
         })),
       };
     case "choice":
       return {
         ...block,
-        layout: paths ? block.layout : ("list" as const),
-        options: block.options.map((option) => ({
+        layout: whole || !own ? block.layout : ("list" as const),
+        options: block.options.map((option, at) => ({
           ...option,
-          photo: paths && option.photo ? next(option.photo) : undefined,
+          more: withMorePhotos(option.more, paths(`more-${String(at)}`)),
+          photo: whole && option.photo ? next(option.photo) : undefined,
         })),
       };
     default:
@@ -104,8 +170,13 @@ function withPhotos(block: Block, paths: readonly string[] | undefined) {
 interface PhotoJob {
   readonly block: number;
   readonly number: number;
+  readonly set: string;
   readonly url: string;
+  readonly whole: boolean;
 }
+
+const setOf = (job: Pick<PhotoJob, "block" | "set">) =>
+  `${String(job.block)}:${job.set}`;
 
 /** Why a photo was not kept, in words safe to log: never its address. */
 async function keepPhoto(cardId: string, job: PhotoJob, signal: AbortSignal) {
@@ -143,8 +214,10 @@ async function keepPhoto(cardId: string, job: PhotoJob, signal: AbortSignal) {
  * choice's options, a gallery, an image) whose photo was not kept for any
  * reason shows none, so the card that comes back may have fewer photos, or
  * fewer blocks, than the one given, and none at all when it had nothing but
- * photos. `kept` and `dropped` count the photos, `droppedBlocks` names the
- * blocks that lost theirs, by position.
+ * photos. A row's or an option's photos behind «Подробнее» show those that
+ * were kept; they are copied after every set's own, which get priority while
+ * the person waits. `kept` and `dropped` count the photos,
+ * `droppedBlocks` names the blocks that lost any, by position.
  *
  * `previous` is the card as it was kept before, for a card that is updated:
  * the new copies take numbers past its own, so a page that still holds an old
@@ -158,40 +231,63 @@ export async function keepCardPhotos(
 ) {
   const first =
     Math.max(-1, ...(previous ? keptPhotoNumbers(cardId, previous) : [])) + 1;
-  const jobs = card.blocks
-    .flatMap((block, position) =>
-      blockPhotos(block).map((url) => ({ block: position, url }))
+  const sets = card.blocks.flatMap((block, position) =>
+    blockPhotoSets(block).flatMap(({ set, urls, whole }) =>
+      urls.map((url) => ({ block: position, set, url, whole }))
     )
-    .map(({ block, url }, index) => ({ block, number: first + index, url }));
+  );
+  const copies = new Map<string, number>();
+  const jobs: PhotoJob[] = [
+    ...sets.filter((job) => job.whole),
+    ...sets.filter((job) => !job.whole),
+  ].map(({ block, set, url, whole }) => {
+    const number = copies.get(url) ?? first + copies.size;
+    copies.set(url, number);
+    return { block, set, url, whole, number };
+  });
   if (jobs.length === 0) {
     return { card, droppedBlocks: [], dropped: 0, kept: 0 };
   }
-  const failed = new Set<number>();
+  const failedSets = new Set<string>();
+  const failedJobs = new Set<number>();
   const stored = new Set<number>();
+  const fail = (job: PhotoJob) => {
+    failedJobs.add(job.number);
+    if (job.whole) failedSets.add(setOf(job));
+  };
   if (!artifactStorageConfigured()) {
     console.warn("[cards] photos were not kept: no object storage");
-    for (const job of jobs) failed.add(job.block);
+    for (const job of jobs) fail(job);
   }
   const deadline = AbortSignal.timeout(keepingTimeoutMs);
-  const queue = jobs.values();
+  const queue = new Map(jobs.map((job) => [job.number, job])).values();
   const work = async () => {
     for (const job of queue) {
-      if (failed.has(job.block)) continue;
+      const uses = jobs.filter((each) => each.url === job.url);
+      if (
+        uses.every(
+          (each) => failedJobs.has(each.number) || failedSets.has(setOf(each))
+        )
+      )
+        continue;
       // oxlint-disable-next-line eslint/no-await-in-loop -- Each worker keeps one photo at a time: the workers are the concurrency.
       const reason = await keepPhoto(cardId, job, deadline);
       if (reason === undefined || reason === "storage") stored.add(job.number);
       if (reason !== undefined) {
-        failed.add(job.block);
+        for (const each of uses) fail(each);
         console.warn("[cards] a photo was not kept", { reason });
       }
     }
   };
   await Promise.all(Array.from({ length: keepingConcurrency }, work));
 
-  const lost = jobs.filter((job) => failed.has(job.block));
-  const orphans = lost.flatMap((job) =>
-    stored.has(job.number) ? [job.number] : []
+  const isLost = (job: PhotoJob) =>
+    failedJobs.has(job.number) || failedSets.has(setOf(job));
+  const lost = jobs.filter(isLost);
+  const shownCopies = new Set(
+    jobs.filter((job) => !isLost(job)).map((job) => job.number)
   );
+  const orphans = [...stored].filter((number) => !shownCopies.has(number));
   try {
     if (orphans.length > 0) await deleteCardPhotos(cardId, orphans);
   } catch (error) {
@@ -200,16 +296,23 @@ export async function keepCardPhotos(
     });
   }
   const blocks = card.blocks.flatMap((block, position) => {
-    const paths = jobs.flatMap((job) =>
-      job.block === position ? [cardPhotoPath(cardId, job.number)] : []
-    );
-    if (paths.length === 0) return [block];
-    const shown = withPhotos(block, failed.has(position) ? undefined : paths);
+    const own = jobs.filter((job) => job.block === position);
+    if (own.length === 0) return [block];
+    const shown = withPhotos(block, (set) => {
+      const ofSet = own.filter((job) => job.set === set);
+      return ofSet.length === 0
+        ? undefined
+        : ofSet.map((job) =>
+            isLost(job) ? undefined : cardPhotoPath(cardId, job.number)
+          );
+    });
     return shown ? [shown] : [];
   });
   return {
     card: cardSchema.safeParse({ ...card, blocks }).data,
-    droppedBlocks: [...failed].toSorted((a, b) => a - b),
+    droppedBlocks: [...new Set(lost.map((job) => job.block))].toSorted(
+      (a, b) => a - b
+    ),
     dropped: lost.length,
     kept: jobs.length - lost.length,
   };

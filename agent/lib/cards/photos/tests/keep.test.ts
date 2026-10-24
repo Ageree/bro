@@ -138,7 +138,7 @@ describe("keeping a card's photos", () => {
     });
     expect(JSON.stringify(kept.card?.blocks[1])).not.toContain("photo");
     const listCopies = new Set(
-      [2, 3, 4].map((number) => cardPhotoObject(cardId, number))
+      [1, 2, 3].map((number) => cardPhotoObject(cardId, number))
     );
     const deleted = store.delete.mock.calls.map(([object]) => object);
     for (const object of stored().filter((path) => listCopies.has(path))) {
@@ -146,7 +146,7 @@ describe("keeping a card's photos", () => {
     }
     expect(urls(kept.card)).toEqual([
       `"/api/cards/${cardId}/photos/0"`,
-      `"/api/cards/${cardId}/photos/1"`,
+      `"/api/cards/${cardId}/photos/0"`,
     ]);
   });
 
@@ -274,11 +274,11 @@ describe("keeping a card's photos", () => {
 
     expect(urls(kept.card)).toEqual([
       `"/api/cards/${cardId}/photos/3"`,
-      `"/api/cards/${cardId}/photos/4"`,
+      `"/api/cards/${cardId}/photos/3"`,
     ]);
   });
 
-  it("downloads no more than four photos at once", async () => {
+  it("downloads no more than six photos at once", async () => {
     let open = 0;
     let most = 0;
     network.fetch.mockImplementation(async () => {
@@ -293,7 +293,7 @@ describe("keeping a card's photos", () => {
     expect(
       await keepCardPhotos(cardId, card([gallery(...names)]))
     ).toMatchObject({ kept: 8 });
-    expect(most).toBe(4);
+    expect(most).toBe(6);
   });
 
   it("keeps nothing, and asks no site, without object storage", async () => {
@@ -303,5 +303,152 @@ describe("keeping a card's photos", () => {
       await keepCardPhotos(cardId, card([carousel("roborock", "dreame")]))
     ).toMatchObject({ dropped: 2, kept: 0 });
     expect(network.fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe("keeping the photos behind «Подробнее»", () => {
+  it("preserves each gallery's order when its photos reuse earlier copies", async () => {
+    site.set(shot("a").url, image(photo));
+    site.set(shot("b").url, image(photo));
+    const kept = await keepCardPhotos(
+      cardId,
+      card([
+        gallery("a", "b"),
+        {
+          type: "list",
+          rows: [{ title: "Номер", more: { photos: [shot("b"), shot("a")] } }],
+        },
+      ])
+    );
+    expect(urls(kept.card)).toEqual(
+      [0, 1, 1, 0].map(
+        (number) => `"/api/cards/${cardId}/photos/${String(number)}"`
+      )
+    );
+    expect(store.put).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps one copy of a shared photo even when another set loses it", async () => {
+    site.set(shot("shared").url, image(photo));
+    const kept = await keepCardPhotos(
+      cardId,
+      card([
+        gallery("shared", "missing"),
+        {
+          type: "list",
+          rows: [{ title: "Номер", more: { photos: [shot("shared")] } }],
+        },
+      ])
+    );
+    expect(kept.card?.blocks).toHaveLength(1);
+    expect(urls(kept.card)).toEqual([`"/api/cards/${cardId}/photos/0"`]);
+    expect(
+      network.fetch.mock.calls.filter(
+        ([url]) => url.href === shot("shared").url
+      )
+    ).toHaveLength(1);
+    expect(stored()).toEqual([cardPhotoObject(cardId, 0)]);
+    expect(store.delete).not.toHaveBeenCalled();
+  });
+
+  const options = (...names: string[]) => ({
+    id: "hotel",
+    label: "Какой отель берём",
+    layout: "carousel",
+    options: names.map((name) => ({
+      more: {
+        href: `https://ostrovok.ru/hotel/${name}/`,
+        photos: [1, 2, 3].map((n) => shot(`${name}-${String(n)}`)),
+      },
+      photo: shot(name),
+      title: name,
+      value: name,
+    })),
+    type: "choice",
+  });
+
+  it("copies the options' own photos first, then those behind «Подробнее», all under the card's link", async () => {
+    const names = ["nordkapp", "apelsin", "vosstaniya"];
+    for (const name of names) {
+      site.set(shot(name).url, image(photo));
+      for (const n of [1, 2, 3])
+        site.set(shot(`${name}-${String(n)}`).url, image(photo));
+    }
+
+    const kept = await keepCardPhotos(
+      cardId,
+      cardSchema.parse({
+        actions: [{ label: "Выбрать и забронировать", submit: "book" }],
+        blocks: [options(...names)],
+        title: "Отели",
+      })
+    );
+
+    expect(kept).toMatchObject({ droppedBlocks: [], dropped: 0, kept: 12 });
+    const choice = kept.card?.blocks[0];
+    if (choice?.type !== "choice") throw new Error("Expected the choice.");
+    expect(choice.options.map((option) => option.photo?.url)).toEqual(
+      [0, 1, 2].map((number) => `/api/cards/${cardId}/photos/${String(number)}`)
+    );
+    expect(choice.options[0]?.more?.photos?.map((each) => each.url)).toEqual(
+      [3, 4, 5].map((number) => `/api/cards/${cardId}/photos/${String(number)}`)
+    );
+    expect(choice.options[0]?.more?.href).toBe(
+      "https://ostrovok.ru/hotel/nordkapp/"
+    );
+  });
+
+  it("drops only the photos behind «Подробнее» that failed, and keeps the set's own", async () => {
+    for (const name of ["nordkapp", "apelsin"])
+      site.set(shot(name).url, image(photo));
+    site.set(shot("nordkapp-1").url, image(photo));
+    site.set(shot("nordkapp-3").url, image(photo));
+
+    const kept = await keepCardPhotos(
+      cardId,
+      cardSchema.parse({
+        actions: [{ label: "Выбрать", submit: "book" }],
+        blocks: [options("nordkapp", "apelsin")],
+        title: "Отели",
+      })
+    );
+
+    const choice = kept.card?.blocks[0];
+    if (choice?.type !== "choice") throw new Error("Expected the choice.");
+    expect(choice.layout).toBe("carousel");
+    expect(choice.options.every((option) => option.photo !== undefined)).toBe(
+      true
+    );
+    expect(choice.options[0]?.more?.photos).toHaveLength(2);
+    expect(choice.options[1]?.more?.photos).toBeUndefined();
+    expect(choice.options[1]?.more?.href).toBe(
+      "https://ostrovok.ru/hotel/apelsin/"
+    );
+    expect(kept).toMatchObject({ droppedBlocks: [0], dropped: 4, kept: 4 });
+  });
+
+  it("leaves no «Подробнее» that had nothing but photos, none of them kept", async () => {
+    site.set(shot("room").url, image(photo));
+
+    const kept = await keepCardPhotos(
+      cardId,
+      card([
+        {
+          rows: [
+            {
+              more: { photos: [shot("hall")] },
+              title: "Номер",
+              photo: shot("room"),
+            },
+          ],
+          type: "list",
+        },
+      ])
+    );
+
+    const list = kept.card?.blocks[0];
+    if (list?.type !== "list") throw new Error("Expected the list.");
+    expect(list.rows[0]?.photo?.url).toBe(`/api/cards/${cardId}/photos/0`);
+    expect(list.rows[0]?.more).toBeUndefined();
   });
 });

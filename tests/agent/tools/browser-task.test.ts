@@ -4700,6 +4700,9 @@ describe("browser_task consent boundaries", () => {
       expect(
         await browserTaskApproval(call, approvalSession("browser-result"))
       ).toEqual(paymentQuestion);
+      expect(
+        await browserTaskApproval(call, approvalSession("card-answer"))
+      ).toEqual(paymentQuestion);
     });
 
     it("never starts an unrequested errand on a report or standing permission", async () => {
@@ -4713,7 +4716,7 @@ describe("browser_task consent boundaries", () => {
       expect(createBrowserUseRun).not.toHaveBeenCalled();
     });
 
-    it.each(["browser-result", "scheduled-worker"])(
+    it.each(["browser-result", "scheduled-worker", "card-answer"])(
       "never steers a confirmed errand from %s",
       async (authenticator) => {
         const result = await continueErrand({
@@ -11033,5 +11036,91 @@ describe("browser_task pays on the person's own request in the direct-purchase p
     expect(
       await off.browserTaskApproval(stage, person(), directTurn(said))
     ).toMatchObject(denied("instead of the one option"));
+  });
+});
+
+describe("browser_task in a chat that takes Bro's cards", () => {
+  const photoLine = "one direct https:// link to its main photo";
+  const options = {
+    aliases: [],
+    allowPayment: false,
+    collectImages: false,
+    consent: undefined,
+    deliveryAddress: undefined,
+    errand: "Найди три отеля у Невского на выходные до 7 000 ₽ за ночь",
+    facts: undefined,
+    home: "Москва, Россия",
+    site: "https://ostrovok.ru",
+  } as const;
+
+  it("asks the run for each option's photo links, and leaves the rest of the errand as it was", async () => {
+    const { composeBrowserContinuation, composeBrowserTask } =
+      await import("@agent/tools/browser_task");
+
+    const task = composeBrowserTask({ ...options, cardPhotos: true });
+    expect(task).toContain(photoLine);
+    expect(task).toContain("up to five more such links from its gallery");
+    expect(task).toContain(
+      "Flights, tickets, tariffs and services without a look of their own need no photos."
+    );
+    expect(composeBrowserTask(options)).not.toContain(photoLine);
+    expect(
+      task.replace(/\n\nIf the options are places to stay[^\n]*/u, "")
+    ).toBe(composeBrowserTask(options));
+
+    const more = { ...options, message: "Покажи другие", searching: true };
+    expect(composeBrowserContinuation({ ...more, cardPhotos: true })).toContain(
+      photoLine
+    );
+    expect(
+      composeBrowserContinuation({
+        ...more,
+        cardPhotos: true,
+        searching: false,
+      })
+    ).not.toContain(photoLine);
+  });
+
+  it("puts the photo line into an errand started from a Telegram chat in the cards pilot", async () => {
+    vi.resetModules();
+    vi.stubEnv("CARDS_WORKSPACES", "*");
+    createBrowserUseRun.mockResolvedValue({
+      id: runId,
+      model: "hosted-agent",
+      sessionId,
+      status: "running",
+    });
+    const { browserTask } = await import("@agent/tools/browser_task");
+    const context = toolContext("better-auth:alice");
+    await browserTask.execute(
+      {
+        action: "start",
+        personWants: "look",
+        site: "https://ostrovok.ru",
+        task: "Найди три отеля у Невского на выходные до 7 000 ₽ за ночь",
+      },
+      {
+        ...context,
+        session: {
+          ...context.session,
+          auth: {
+            ...context.session.auth,
+            current: {
+              ...context.session.auth.current,
+              attributes: {
+                ...context.session.auth.current.attributes,
+                conversationChannel: "telegram",
+                conversationId: "4242::",
+              },
+            },
+          },
+        },
+      }
+    );
+
+    expect(String(createBrowserUseRun.mock.calls.at(-1)?.[0].task)).toContain(
+      photoLine
+    );
+    vi.stubEnv("CARDS_WORKSPACES", "");
   });
 });

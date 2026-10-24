@@ -315,6 +315,56 @@ describe("updating a card in a browser report's turn", () => {
     expect(services.markDelivered).toHaveBeenCalledOnce();
   });
 
+  it("sends options to pick from back once to be a choice", async () => {
+    const context = dynamicContext([report]);
+    const tools = await updateCardTools.events["step.started"]?.(
+      {},
+      {
+        ...context,
+        session: {
+          ...context.session,
+          auth: { current: reportCaller, initiator: null },
+        },
+      }
+    );
+    const found =
+      tools && "update_card" in tools ? tools.update_card : undefined;
+    if (!found) throw new Error("Expected update_card.");
+    const call = callContext();
+
+    const refused = await found.execute(
+      {
+        ...cardSchema.parse({
+          blocks: [
+            {
+              rows: ["nordkapp", "apelsin", "vosstaniya"].map((name) => ({
+                href: `https://ostrovok.ru/hotel/${name}/`,
+                side: "6 000 ₽",
+                title: name,
+              })),
+              type: "list",
+            },
+          ],
+          title: "Ещё отели",
+        }),
+        message,
+        ref,
+      },
+      {
+        ...call,
+        session: {
+          ...call.session,
+          auth: { current: reportCaller, initiator: null },
+        },
+      }
+    );
+    expect(refused).toMatchObject({ status: "refused" });
+    expect(JSON.stringify(refused)).toContain(
+      "Nothing changed: these options are for the person to pick from"
+    );
+    expect(services.update).not.toHaveBeenCalled();
+  });
+
   it("is not offered in the report of an errand Bro gave itself", async () => {
     const context = dynamicContext([report]);
     expect(

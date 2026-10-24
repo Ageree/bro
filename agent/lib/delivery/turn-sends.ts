@@ -182,7 +182,7 @@ const rewriteNotices = {
   declined: `${rewritePrefix} it says something was done — a reminder, task or schedule set or changed, an event added, a letter or a Slack message sent, something remembered or forgotten, an order placed — but its tool call was declined on its card, refused or failed, so it was not done. Say plainly that it was not done and why — the person declined the card, or the call was refused or failed — and keep the rest of the message. Do not present it as done, and do not try it again unless the person asks.`,
   undone: `${rewritePrefix} it says something was done — a reminder or schedule set or changed, a letter or a Slack message sent, something remembered or forgotten — but no tool result of this turn shows it. If you called its tool in this same step, its result is in now: send again and say what it shows, without calling that tool again. If an earlier conversation or turn did it, say so plainly («уже стоит с прошлого раза»). Otherwise do it with its tool first and tell what the result shows, or say it is not done yet.`,
   calendar: `${rewritePrefix} it says the calendar is being or has been changed, but no calendar event was created, changed or deleted in this turn. Make the change with the calendar tool first and report its result, or say you will add it once the person confirms the details; never present a slot you picked yourself as booked.`,
-  card: `${rewritePrefix} it lists three or more options with their facts, and this chat takes Bro's cards: send them as one card with send_card instead — each option a row with its facts and its link, the card's message one or two lines with the gist and your pick. If no card can be built from them, send this same message again unchanged.`,
+  card: `${rewritePrefix} it lists three or more options with their facts, and this chat takes Bro's cards: send them as one card with send_card instead — options the person picks to book or buy as a choice with a submit button that names the action, each with its facts, its page and its photos in more; the card's message one or two lines with the gist and your pick. If no card can be built from them, send this same message again unchanged.`,
   "calendar-later": `${rewritePrefix} it says the calendar is being or has been changed, but no calendar event was created, changed or deleted in this turn, and in a browser report's turn the calendar tool comes back only once this message has reached the person. Keep the outcome and say the calendar step in the future tense — «добавлю в календарь», once they confirm the card — never «добавляю» or «добавил»; then call the calendar tool right after this message.`,
   found: `${rewritePrefix} it says you picked or found several options — «подобрал три места», «нашёл пять вариантов» — but names none of them, and no search, read or report of this turn has returned any yet, so the list would follow as a second message. Put the options themselves in this one message, each with the facts that matter and its link. If they have to be looked up, look them up first — a search you called in this same step has returned by now — and until then say only what you started, never that options are picked. Keep the rest of the message.`,
   report: `${rewritePrefix} it only announces what you are about to tell, and the browser report is already in front of you. Tell the person now, in this one message, what the run found or where the errand stands, with the facts the report names.`,
@@ -1004,7 +1004,6 @@ export function turnSends(messages: readonly ModelMessage[]) {
         if (input) inputs.set(part.toolCallId, input);
       }
       if (part.type === "tool-call" && cardToolNames.has(part.toolName)) {
-        cardTried = true;
         const text = cardMessageSchema.safeParse(part.input).data?.message;
         if (text) inputs.set(part.toolCallId, { kind: "message", text });
       }
@@ -1057,6 +1056,9 @@ export function turnSends(messages: readonly ModelMessage[]) {
       if (refusal === "skipped") skipped += 1;
       if (refusal === "rewrite") rewrites += 1;
       if (sentBackForCard(part.output)) cardTried = true;
+      if (cardToolNames.has(part.toolName) && cardSentInHistory(part.output)) {
+        cardTried = true;
+      }
       if (
         part.output.type === "text" &&
         part.output.value === skipNotices.started
@@ -1115,8 +1117,10 @@ export function turnSends(messages: readonly ModelMessage[]) {
   return {
     actions,
     /**
-     * Whether the turn called a card tool, or had a list sent back to be a
-     * card (`card` rewrite): either way no list is sent back for one again.
+     * Whether the turn put a card in the chat, or had a list sent back to be
+     * a card (`card` rewrite): either way no list is sent back for one again.
+     * A card the tool refused (not in the catalog, options to pick from sent
+     * as a list) is no card: the list the model falls back to goes back once.
      */
     cardTried,
     delivered,

@@ -3191,6 +3191,24 @@ describe("the report of the person's errand in a chat that takes cards", () => {
     expect(ledger.report).not.toContain(reportCardInstruction);
   });
 
+  it("asks for a card to pick from, with each option's page and photos behind «Подробнее», and no payment by the press", async () => {
+    const { reportCardInstruction } =
+      await import("@agent/lib/browser-use/guidance");
+
+    expect(reportCardInstruction).toContain("are a choice block");
+    expect(reportCardInstruction).toContain("«Выбрать и забронировать»");
+    expect(reportCardInstruction).toContain("«Показать другие»");
+    expect(reportCardInstruction).toContain("its main photo as photo");
+    expect(reportCardInstruction).toContain("its other photos as more.photos");
+    expect(reportCardInstruction).toContain(
+      "never a photo the report does not give"
+    );
+    expect(reportCardInstruction).toContain("The press books and pays nothing");
+    expect(reportCardInstruction).toContain(
+      "Flights, tickets and tariffs compared by numbers take no photos"
+    );
+  });
+
   it("keeps the steps it asks for in its closing paragraph", async () => {
     const { calendarInstruction } =
       await import("@agent/lib/browser-use/guidance");

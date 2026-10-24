@@ -6,6 +6,7 @@ import type { Card } from "@shared/cards/schema";
 import { cn } from "@web/components/class-names";
 import { Button } from "@web/components/ui/button";
 import { Carousel } from "./carousel";
+import { holdScreen } from "./telegram";
 
 type Photo = Extract<
   Card["blocks"][number],
@@ -49,19 +50,12 @@ export function Lightbox({
     const node = dialog.current;
     if (!open || !node) return undefined;
     const opener = document.activeElement;
-    const page = document.documentElement;
-    const overflow = page.style.overflow;
-    const app = window.Telegram?.WebApp;
-    const telegram =
-      app?.initData && app.isVersionAtLeast("7.7") ? app : undefined;
-    page.style.overflow = "hidden";
-    telegram?.disableVerticalSwipes?.();
+    const release = holdScreen();
     node.showModal();
     node.querySelector<HTMLElement>("ul")?.focus();
     return () => {
       node.close();
-      page.style.overflow = overflow;
-      telegram?.enableVerticalSwipes?.();
+      release();
       if (opener instanceof HTMLElement) opener.focus();
     };
   }, [open]);
@@ -77,7 +71,8 @@ export function Lightbox({
     <dialog
       aria-label={`Фото ${String(current + 1)} из ${String(photos.length)}`}
       className="m-0 size-full max-h-none max-w-none touch-none overflow-hidden bg-foreground p-0 text-background backdrop:bg-foreground"
-      onClose={() => {
+      onClose={(event) => {
+        event.stopPropagation();
         if (open) onClose();
       }}
       onPointerCancel={release}
