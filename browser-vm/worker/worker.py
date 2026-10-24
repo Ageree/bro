@@ -564,7 +564,11 @@ class SiteErrors:
     done. So a refusal of the site's own write (POST, PUT, PATCH, DELETE to the page's own site) is also told
     to the agent at its next step (`notices`), a few per run, each answer once. A refused GET is the page
     probing the account in the background (/api/user, /api/user/cart answer 401 or 404 to a guest on every
-    page): it stays in the report, never in front of the agent, and never crowds a refused write out of it."""
+    page): it stays in the report, never in front of the agent, and never crowds a refused write out of it.
+
+    A refused write can be the site's own flow, too: hh.ru's code step answers 400 ACCOUNT_NOT_FOUND for a new
+    address and goes on to its sign-up form (24.10), and the run, told not to report success for it, reported
+    the finished sign-up as failed. So the notice has the agent judge it by the page it is on next."""
 
     LIMIT = 8
     BODY = 600
@@ -696,8 +700,11 @@ class SiteErrors:
             self.notices_sent += 1
             told.append(f"The site's server refused {entry['method']} {clean(entry['address'])}: {entry['status']}"
                         + (f" — {answer}" if answer else " (no answer text)")
-                        + ". The browser saw this request; the page may not show why. Fix what the answer names "
-                          "(a field, a choice, a format) before trying again, and do not report success for it.")
+                        + ". The browser saw this request; the page may not show why. Judge it by what the page "
+                          "shows now: if it went on to the next step of its own form (a new field or question, "
+                          "not an error page), the site answered this way on purpose — carry on and do not report "
+                          "this answer as a failure. Otherwise fix what the answer names (a field, a choice, a "
+                          "format) before trying again, and do not report success for it.")
         return told
 
     def report(self, secrets=None):

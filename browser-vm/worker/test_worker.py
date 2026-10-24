@@ -3170,6 +3170,8 @@ class SiteErrorsUnitTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Пожалуйста, введите корректный номер телефона <secret>", notices[0])
         self.assertIn("deliveryMethod must be a valid enum value", notices[0])
         self.assertIn("do not report success", notices[0])
+        # hh.ru's code step answers 400 for a new address and goes on to its sign-up form (24.10).
+        self.assertIn("if it went on to the next step of its own form", notices[0])
         for hidden in ("s3cr3t", "79217818876", "/api/user"):
             self.assertNotIn(hidden, notices[0])
         self.assertEqual(self.errors.notices(secrets), [])
