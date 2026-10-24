@@ -296,6 +296,26 @@ describe("go.book", () => {
     });
   });
 
+  it("keeps a passenger whose number is not the account's", async () => {
+    const { page, sent } = await goPage({
+      "/3.0/launch": {
+        body: {
+          orders: [],
+          phone: "+79990001122",
+          phones: { "+79990001122": true },
+        },
+      },
+    });
+    await runInPage(
+      goBookOperation.run,
+      book({ passengerPhone: "+79161234567", quietOwnRide: true }),
+      page
+    );
+    expect(sent("/external/3.0/orderdraft")[0]?.body).toMatchObject({
+      extra_contact_phone: "+79161234567",
+    });
+  });
+
   it("books nothing for another person where the tariff refuses it", async () => {
     const { page, sent } = await goPage({
       "/3.0/routestats": {

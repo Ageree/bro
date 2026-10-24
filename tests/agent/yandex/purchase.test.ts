@@ -1170,6 +1170,29 @@ describe("Yandex Go for another person", () => {
     );
     expect(JSON.stringify(result)).not.toContain("passenger");
   });
+
+  it("keeps a passenger whose number shares the person's phone field with theirs", async () => {
+    services.run.mockResolvedValue(booked);
+    services.ownContacts.mockResolvedValue({
+      emails: [],
+      phones: ["+7 903 111-22-33, жена +7 916 123-45-67"],
+    });
+    const tool = await resolve([
+      {
+        role: "user",
+        content: "Закажи такси жене до Гвидона, её номер 8 916 123-45-67",
+      },
+    ]);
+    await tool?.execute(
+      { ...ride, passengerPhone: "+79161234567" },
+      callContext()
+    );
+    expect(services.run).toHaveBeenCalledExactlyOnceWith(
+      scope.workspaceId,
+      expect.objectContaining({ id: "go.book" }),
+      expect.objectContaining({ passengerPhone: "+79161234567" })
+    );
+  });
 });
 
 describe("the person's own Yandex Go ride", () => {
@@ -1210,6 +1233,24 @@ describe("the person's own Yandex Go ride", () => {
       expect.objectContaining({ id: "go.book" }),
       expect.objectContaining({ quietOwnRide: true })
     );
+    expect(JSON.stringify(result)).toContain("their Yandex Go app");
+  });
+
+  it("tells of the person's own ride when Go found the passenger's number to be the account's", async () => {
+    services.ownRidePilot.mockReturnValue(true);
+    services.passengerPilot.mockReturnValue(true);
+    services.run.mockResolvedValue(answer(booked));
+    const tool = await resolve([
+      {
+        role: "user",
+        content: "Вызови мне такси до Гвидона, мой номер 8 916 123-45-67",
+      },
+    ]);
+    const result = await tool?.execute(
+      { ...ride, passengerPhone: "+79161234567" },
+      callContext()
+    );
+    expect(JSON.stringify(result)).not.toContain("passenger");
     expect(JSON.stringify(result)).toContain("their Yandex Go app");
   });
 

@@ -221,7 +221,7 @@ const goReplies = {
   booked:
     "The ride is booked and Yandex is looking for a car. Tell the person the route, the price and the payment in one short message. Nothing watches the ride: do not promise to report the car; yandex go.ride shows it when the person asks.",
   bookedOwnRide:
-    "The ride is booked in the person's own Yandex Go, as their app books it, and Yandex is looking for a car. Tell the person the route, the price and the payment in one short message, and that the car and the driver show in their Yandex Go app. Nothing watches the ride: do not promise to report the car; yandex go.ride shows it when the person asks.",
+    "The ride is booked in the person's own Yandex Go, as their app books it, and Yandex is looking for a car; Yandex sends no SMS about it. Tell the person the route, the price and the payment in one short message, and that the car and the driver show in their Yandex Go app. Nothing watches the ride: do not promise to report the car; yandex go.ride shows it when the person asks.",
   bookedForPassenger:
     "The ride is booked for the passenger and Yandex is looking for a car. Tell the person the route, the price and the payment in one short message, and that Yandex texts the passenger the car, the driver and how to reach them; the ride is in the person's own Yandex Go and they pay for it. Nothing watches the ride: do not promise to report the car; yandex go.ride shows it when the person asks.",
   already_active:
@@ -548,9 +548,12 @@ async function ridePassenger(
   const none = { passengerName: undefined, passengerPhone: undefined };
   if (given === "" || !goPassengerPilot(scope)) return none;
   const phone = normalizeAuthPhoneNumber(given);
+  // A whole field, not a number in it: «…, жена +7 903…» is someone else.
   if (
     phone !== undefined &&
-    (await ownPhones(scope)).some((own) => writesPhone(own, phone))
+    (await ownPhones(scope)).some(
+      (own) => normalizeAuthPhoneNumber(own) === phone
+    )
   )
     return none;
   const known =
