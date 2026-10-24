@@ -19,7 +19,8 @@ import { runYandexOperation } from "@agent/lib/yandex/transport";
  * The spec is JSON in Object Storage (an ops argument cannot hold it):
  * `{workspace, op, args}` runs a registered operation as the tool does;
  * `{workspace, page, steps, waitMs}` opens a Yandex page or a YClients booking
- * form with every fetch and XHR of the page recorded (method, URL, bodies),
+ * form with every fetch and XHR of the page recorded (method, URL, headers,
+ * bodies),
  * runs each step — an expression awaited in the page — and waits; `{direct: "afisha.search",
  * args, times, pauseMs}` sends Afisha's search from this server with no
  * browser, as YANDEX_DIRECT does, and keeps of each answer only its status,
@@ -56,9 +57,16 @@ const specSchema = z.union([
 const recorder = String.raw`(() => {
   const log = (window.__probe = []);
   const cut = (text) => (typeof text === "string" ? text.slice(0, 50000) : null);
+  const headersOf = (headers) => {
+    try {
+      return Object.fromEntries([...new Headers(headers ?? {})].map(([name, value]) => [name, value.slice(0, 300)]));
+    } catch {
+      return null;
+    }
+  };
   const native = window.fetch;
   window.fetch = async (input, init) => {
-    const entry = { method: init?.method ?? input?.method ?? "GET", url: String(input?.url ?? input), request: cut(init?.body) };
+    const entry = { method: init?.method ?? input?.method ?? "GET", url: String(input?.url ?? input), headers: headersOf(init?.headers ?? input?.headers), request: cut(init?.body) };
     log.push(entry);
     const response = await native(input, init);
     entry.status = response.status;
@@ -67,9 +75,14 @@ const recorder = String.raw`(() => {
   };
   const open = XMLHttpRequest.prototype.open;
   const send = XMLHttpRequest.prototype.send;
+  const setHeader = XMLHttpRequest.prototype.setRequestHeader;
   XMLHttpRequest.prototype.open = function (method, url) {
-    this.__probe = { method, url: String(url) };
+    this.__probe = { method, url: String(url), headers: {} };
     return open.apply(this, arguments);
+  };
+  XMLHttpRequest.prototype.setRequestHeader = function (name, value) {
+    if (this.__probe) this.__probe.headers[String(name).toLowerCase()] = String(value).slice(0, 300);
+    return setHeader.apply(this, arguments);
   };
   XMLHttpRequest.prototype.send = function (body) {
     const entry = { ...this.__probe, request: cut(body) };
