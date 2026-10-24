@@ -40,6 +40,7 @@ export default {
     "scripts/cloudru-app-host/ops/migrate.ts",
     "scripts/cloudru-app-host/ops/agent-mail.ts",
     "scripts/cloudru-app-host/ops/owner-login.ts",
+    "scripts/cloudru-app-host/ops/test-accounts.ts",
     "scripts/cloudru-app-host/ops/yandex-probe.ts",
     "scripts/cloudru-app-host/ops/yandex-session-probe.ts",
     "taze.config.ts",

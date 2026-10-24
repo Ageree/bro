@@ -376,8 +376,9 @@ Outbox bro_reports, по образцу deliverPhoneReports (agent/lib/phone/rep
   answered, alert, expired, stalled, cancelled, link_removed.
 - Куда: у инициатора — разговор, где вызвали bro_talk start (маршрут как в
   agent/lib/phone/route.ts); у остальных — мессенджер из
-  readRememberedConversations / rememberedMessenger; иначе — только кабинет
-  (dropped с причиной).
+  readRememberedConversations / rememberedMessenger, а без мессенджера —
+  последний веб-чат (webConversationId, как у отчёта расписания); иначе —
+  только кабинет (dropped с причиной).
 - Ход: turnPolicy "queue", authenticator "bro-result", атрибуты
   { workspaceId, broReportId, broReportToken, broThreadId? }; тип хода
   bro-report в agent/lib/turn-kind/kind.ts, инструменты — send_message,
@@ -512,9 +513,6 @@ agent/lib/tool-router/groups.ts): вопросы групп сверены эв�
 - Перепроверки занятости автора предложения на agreed: если между
   предложением и согласием у него появилось событие, это видно только при
   подтверждении.
-- Отчётов человеку без мессенджера: у веб-only пользователя они уходят в
-  dropped, и о принятии приглашения или вопросе посла он узнаёт только в
-  кабинете.
 - Известные ограничения (ревью 23.10, оставлены сознательно):
   - без календаря любой ответ владельца, даже не про время, разрешает послу
     принять время собеседника (у accept нет proposal, время фильтр не
