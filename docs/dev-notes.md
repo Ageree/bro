@@ -2337,7 +2337,8 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   (`sameBuildingNote`, по зданиям): Бро спрашивает, какое, если человек имел в виду
   конкретное («в моём доме»), а не «любую».
 - Запись через API YClients (`yclients`, `agent/tools/yclients.ts`; пилот
-  `YCLIENTS_WORKSPACES` и `YCLIENTS_TOKEN`, без них инструмента нет). Партнёрский токен
+  `YCLIENTS_WORKSPACES` и `YCLIENTS_TOKEN`, без них инструмента нет; с 24.10 в проде `*`,
+  владелец — сразу всем; откат — id владельца в `prod.json` и `host.py env`). Партнёрский токен
   YClients не даёт (23.10, тикет #4754816: новых партнёров не подключают, пока
   переделывают API), поэтому `YCLIENTS_TOKEN` — общий токен их виджета записи (Bearer в
   каждом запросе формы `n<форма>.yclients.com`): им классический API (`bookform`,
@@ -2349,7 +2350,9 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   пачкой (`agent/lib/yclients/page.ts`), 0,3–0,5 с каждый. Компанию даёт Карты:
   `booking.originalId` места — `yclients__<id компании>` (`mapsYclients` в
   `agent/lib/yandex/maps/page.ts`, поле `yclients` у `maps.search`/`maps.org`, и тогда
-  результат `yandex` велит звать `yclients`); `find` — по ссылке сайта или формы. У
+  результат `yandex` велит звать `yclients`); `find` — по ссылке сайта или формы, но
+  сайт часто грузит форму скриптом, и `find` её не видит (топган.рф, 24.10): компанию
+  берут из Карт, при нужде через `open_tools yandex`, как велит отказ `find`. У
   сетевой формы (`group_id`) её `company_id` — лишь филиал по умолчанию. Записывает лишь
   ход человека, раз за ход: заявка ставится до первого await и снимается только верным
   отказом (4xx с кодом YClients) или вкладкой, не отправившей запрос
