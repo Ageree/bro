@@ -154,6 +154,10 @@ describe("an account registered with Bro's own mailbox", () => {
     expect(signUpLine("quietfox42")).toContain(
       "never open a mail site or webmail (agentmail.to, Gmail, Mail.ru or any other) to look for the letter"
     );
+    // The same day the next run went on to the book page past the code step.
+    expect(signUpLine("quietfox42")).toContain(
+      "once the page waits for the code, do not open another page, tab or link"
+    );
   });
 
   it("saves the account as the site's login in the vault", async () => {

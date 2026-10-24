@@ -60,6 +60,10 @@ const injectionSchema = z.object({
   boxes: z.number().int().optional(),
   /** After the boxes were filled: whether they hold the code. */
   matches: z.boolean().optional(),
+  /** On a miss, the visible fields it looked at and how many take one
+   *  character: what the log says of a page whose code field it missed. */
+  fields: z.number().int().optional(),
+  oneChar: z.number().int().optional(),
   ok: z.boolean(),
   partial: z.boolean().optional(),
   score: z.number().optional(),
@@ -94,6 +98,9 @@ export interface OneTimeCodeEntry {
   readonly partial: boolean;
   /** How many frame contexts were searched. One means the top document alone. */
   readonly searched: number;
+  /** When no field was taken: the most visible fields one context offered,
+   *  and how many of them take one character. */
+  readonly seen?: { readonly fields: number; readonly oneChar: number };
   /** A confirm button was pressed afterwards. Never a pay or order button. */
   readonly submitted: boolean;
   readonly typed: boolean;
@@ -266,7 +273,7 @@ const injectionProgram = `function (raw, mode) {
   // No bare "the only input on the page" escape hatch: a score of zero with no
   // focus signal is not evidence this is the right field.
   const targetOk = Boolean(target && (score(target) > 0 || active === target));
-  if (!useBoxes && !targetOk) return miss;
+  if (!useBoxes && !targetOk) return { ...miss, fields: inputs.length, oneChar: boxes.length };
   const partial = Boolean(!useBoxes && target instanceof HTMLInputElement && target.maxLength === 1 && value.length > 1);
   if (!mode) return { ok: true, score: useBoxes ? ${String(boxesScore)} : score(target), partial: partial, typed: false, submitted: false };
   if (useBoxes) {
@@ -425,7 +432,22 @@ export async function typeOneTimeCodeOverCdp(
       if (candidate.context.depth > 0 && score < minFrameScore) continue;
       if (!best || score > (best.injection?.score ?? 0)) best = candidate;
     }
-    if (!best) return { ...nothingTyped, searched: contexts.length };
+    if (!best) {
+      return {
+        ...nothingTyped,
+        searched: contexts.length,
+        seen: {
+          fields: Math.max(
+            0,
+            ...scored.map(({ injection }) => injection?.fields ?? 0)
+          ),
+          oneChar: Math.max(
+            0,
+            ...scored.map(({ injection }) => injection?.oneChar ?? 0)
+          ),
+        },
+      };
+    }
     const applied = await evaluate(connection, best.context, value, true);
     const where = {
       inFrame: best.context.depth > 0,

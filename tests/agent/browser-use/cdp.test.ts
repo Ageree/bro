@@ -360,6 +360,25 @@ describe("the code entry program on a page", () => {
     ]);
   });
 
+  it("says what fields it saw on a page whose code field it missed", async () => {
+    // 24.10, Z-Library: the entry missed the code step and the log said only
+    // that nothing was typed.
+    const fixture = await fake({
+      documents: {
+        1: Array.from({ length: 4 }, () => ({ tag: "input" })),
+      },
+      injections: {},
+      sessions: onePage,
+    });
+
+    const entry = await typeOneTimeCodeOverCdp(fixture.url, code);
+
+    expect(entry).toMatchObject({
+      seen: { fields: 4, oneChar: 0 },
+      typed: false,
+    });
+  });
+
   it("never fills a password field, in a shadow root or out of one", async () => {
     const password: FakeElementSpec = {
       attributes: {
