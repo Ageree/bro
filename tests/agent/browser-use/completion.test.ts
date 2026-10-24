@@ -3084,6 +3084,25 @@ describe("settling a sign-up with Bro's own mailbox", () => {
     await settled("RESULT: что-то пошло не так\nNEEDS: none");
     expect(settleSignUpLogin.mock.calls[0]?.[2]).toBe("kept");
   });
+
+  // Stepik (24.10): the site refused agentmail.to, the run tried to sign in,
+  // and Bro offered to sign up with the same mailbox again.
+  it("offers no sign-up with Bro's mailbox after one ended on a sign-in", async () => {
+    const prompt = await settled(
+      "RESULT: сайт отклонил адрес\nNEEDS: password\nDETAILS: 400 Bad email address."
+    );
+
+    expect(prompt).toContain(
+      "Never offer to sign up there with your own mailbox again"
+    );
+    expect(prompt).not.toContain("you sign up on the site yourself");
+  });
+
+  it("still offers Bro's mailbox to any other errand stopped on a sign-in", async () => {
+    await expect(
+      settled("RESULT: нужен вход\nNEEDS: password", "Найди курс на Stepik")
+    ).resolves.toContain("you sign up on the site yourself");
+  });
 });
 
 describe("the caller of a run's report", () => {

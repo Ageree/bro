@@ -56,7 +56,7 @@ const personStepInstructions: Partial<Record<BrowserRunNeed, string>> = {
   email_code:
     "The site is waiting for a one-time code it sent by email. Before any message, call browser_task continue on this run id with codeFrom: \"mail\" and nothing else: when the user's Gmail is connected, the tool finds the site's own letter, reads the code and types it in itself — you never see it, and the user is not asked for it. When it answers that the code went to the run, send one message: a short line that you took the code from their mail, then what the run did and found so far. When it answers that nothing was sent, open your one message with a short line asking the user for that code, naming where it was sent exactly as Details masks it, and saying you will type it in yourself; what the run did and found so far follows in that same message. Then end this turn: only the user's own reply with the code continues the run, with browser_task continue on this run id — never make up a code or continue without theirs.",
   password:
-    "The site asks for a sign-in the run has no password for: open your one message with a short line naming the site and offering three ways: the user signs in themselves through a link (site-login-link, a window of Bro's own browser), or sends the login and password in the chat (you pass them in login), or you sign up on the site yourself with Bro's own mailbox (signUpWith: \"agent_mail\", when Bro has one and the site allows sign-up). Do not call request_vault_setup: logins have no vault page.",
+    "The site asks for a sign-in the run has no password for: open your one message with a short line naming the site and offering three ways, speaking to the user directly, never of them as «он» or «она»: they sign in themselves through a link (site-login-link, a window of Bro's own browser), or send the login and password in the chat (you pass them in login), or you sign up on the site yourself with Bro's own mailbox (signUpWith: \"agent_mail\", when Bro has one and the site allows sign-up). Do not call request_vault_setup: logins have no vault page.",
   // A run that searched first stops here with the option it picked: a free
   // one goes through on the person's word, a paid one on their yes.
   decision: `The run stopped at the final step without acting in the user's name. When ${purchaseRequest} and the report names an option that fits their conditions, and it is free, continue this run now with allowSubmit and a submission naming exactly that option (${concreteOptionTerms}). ${paymentQuestionLine} When no option fits, or the user only asked to find or compare, show the options and ask one short question. ${gosuslugiAccessLine} ${declinedCardLine}`,
@@ -71,6 +71,15 @@ const personStepInstructions: Partial<Record<BrowserRunNeed, string>> = {
   sms_code:
     "The site is waiting for a one-time code it sent by SMS: open your one message with a short line asking the user for that code, naming the phone it went to exactly as Details masks it — «***-**-76» stays «***-**-76», never with digits filled in — and saying you will type it in yourself; what the run did and found so far follows in that same message. Then end this turn: only the user's own reply with the code continues the run, with browser_task continue on this run id — never make up a code or continue without theirs.",
 };
+
+/**
+ * A sign-up with Bro's own mailbox that ended on a sign-in: the site
+ * refused the address or holds an account with it Bro has no password for.
+ * Stepik (24.10) refused agentmail.to, and Bro offered that same mailbox
+ * again, writing of the person as «он» besides.
+ */
+const signUpPasswordInstruction =
+  "The run was registering an account with your own mailbox, and the site would not let it in with it: open your one message with a short line naming the site and what it said, then offer, speaking to the user directly and never of them as «он» or «она», two ways: they register or sign in there themselves through a link (site-login-link, a window of Bro's own browser), or send the login and password of their own account there in the chat (you pass them in login). Never offer to sign up there with your own mailbox again. Do not call request_vault_setup: logins have no vault page.";
 
 /**
  * A run stopped on the payment step of an errand the person already said yes
@@ -98,8 +107,12 @@ export function directPaymentInstruction(request: string) {
  * its outcome reaches the conversation: in the run's own report turn, or
  * handed over by `browser_task` when the person asks «ну что там?» first.
  */
-export function browserRunNeedGuidance(needs: string | undefined) {
+export function browserRunNeedGuidance(
+  needs: string | undefined,
+  signUp = false
+) {
   const need = browserRunNeeds.find((candidate) => candidate === needs);
+  if (need === "password" && signUp) return signUpPasswordInstruction;
   return need === undefined ? undefined : personStepInstructions[need];
 }
 
