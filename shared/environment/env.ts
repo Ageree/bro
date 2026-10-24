@@ -377,6 +377,16 @@ export const env = createEnv({
         "YANDEX_GO_PASSENGER_WORKSPACES takes workspace ids or *, not emails"
       )
       .optional(),
+    // The person's own Go ride booked as their Go app books it (`dont_sms`
+    // of `go.book`), inside YANDEX_PURCHASE_WORKSPACES: Yandex does not text
+    // them «Вам оплатили такси» with a page where the pickup cannot be
+    // changed. Unset, nobody; otherwise workspace ids or `*`.
+    YANDEX_GO_OWN_RIDE_WORKSPACES: workspaceListSchema
+      .refine(
+        (entries) => entries.every((entry) => !entry.includes("@")),
+        "YANDEX_GO_OWN_RIDE_WORKSPACES takes workspace ids or *, not emails"
+      )
+      .optional(),
     // The person's own request pays without «Оплачиваю?» (owner 15.10,
     // `agent/lib/payments/direct.ts`): «купи корм», «оплати интернет». Up to
     // the budget they named, or DIRECT_PURCHASE_MAX_RUB without one; above

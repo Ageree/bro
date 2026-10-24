@@ -8,6 +8,7 @@ import {
   readYandexPurchase,
   settleYandexPurchase,
 } from "@db/services/yandex-purchases";
+import { readOwnContacts } from "@agent/lib/browser-use/facts";
 import {
   paymentAnswer,
   personMessages,
@@ -61,6 +62,7 @@ import {
 } from "@agent/lib/yandex/lavka/checkout";
 import {
   afishaPurchasePilot,
+  goOwnRidePilot,
   goPassengerPilot,
   yandexPurchasePilot,
 } from "@agent/lib/yandex/pilot";
@@ -69,8 +71,12 @@ import { runYandexOperation } from "@agent/lib/yandex/transport";
 import type { AccessScope } from "@shared/identity/access-scope";
 import { normalizeAuthPhoneNumber } from "@shared/identity/phone-number";
 
-/** A Go ride, for someone else too (YANDEX_GO_PASSENGER_WORKSPACES). */
+/**
+ * A Go ride, for someone else too (YANDEX_GO_PASSENGER_WORKSPACES). How the
+ * person's own ride goes is the pilot's to say, not the model's.
+ */
 const goBookInput = goBookOperation.args
+  .omit({ quietOwnRide: true })
   .extend({ action: z.literal("book"), service: z.literal("go") })
   .strict();
 
@@ -214,6 +220,8 @@ function blockedReply(service: string, reason: string) {
 const goReplies = {
   booked:
     "The ride is booked and Yandex is looking for a car. Tell the person the route, the price and the payment in one short message. Nothing watches the ride: do not promise to report the car; yandex go.ride shows it when the person asks.",
+  bookedOwnRide:
+    "The ride is booked in the person's own Yandex Go, as their app books it, and Yandex is looking for a car. Tell the person the route, the price and the payment in one short message, and that the car and the driver show in their Yandex Go app. Nothing watches the ride: do not promise to report the car; yandex go.ride shows it when the person asks.",
   bookedForPassenger:
     "The ride is booked for the passenger and Yandex is looking for a car. Tell the person the route, the price and the payment in one short message, and that Yandex texts the passenger the car, the driver and how to reach them; the ride is in the person's own Yandex Go and they pay for it. Nothing watches the ride: do not promise to report the car; yandex go.ride shows it when the person asks.",
   already_active:
@@ -510,11 +518,26 @@ function writesPhone(text: string, phone: string) {
   return text.replaceAll(/[\s().+-]/gu, "").includes(phone.slice(-10));
 }
 
+/** The person's own numbers, or none when they cannot be read. */
+async function ownPhones(scope: AccessScope) {
+  try {
+    return (await readOwnContacts(scope)).phones;
+  } catch (error) {
+    // Go still knows the account's own numbers (`go.book`).
+    console.warn("[yandex] the person's own phones could not be read", {
+      cause: error,
+    });
+    return [];
+  }
+}
+
 /**
  * Whom a ride goes to: the person themselves (no passenger), or a passenger
  * whose number they wrote in this conversation or keep in Bro's contacts;
  * null for any other number. A model fills every optional field, and a
- * number it made up would text a stranger the person's ride.
+ * number it made up would text a stranger the person's ride. The person's
+ * own number is their own ride: booked for «another person», Yandex told
+ * them someone had ordered them a taxi.
  */
 async function ridePassenger(
   scope: AccessScope,
@@ -522,9 +545,14 @@ async function ridePassenger(
   said: readonly string[]
 ) {
   const given = args.passengerPhone?.trim() ?? "";
-  if (given === "" || !goPassengerPilot(scope))
-    return { passengerName: undefined, passengerPhone: undefined };
+  const none = { passengerName: undefined, passengerPhone: undefined };
+  if (given === "" || !goPassengerPilot(scope)) return none;
   const phone = normalizeAuthPhoneNumber(given);
+  if (
+    phone !== undefined &&
+    (await ownPhones(scope)).some((own) => writesPhone(own, phone))
+  )
+    return none;
   const known =
     phone !== undefined &&
     (said.some((text) => writesPhone(text, phone)) ||
@@ -761,7 +789,11 @@ export default defineDynamic({
                     reply: unknownPassengerReply,
                   };
                 }
-                args = { ...args, ...passenger };
+                args = {
+                  ...args,
+                  ...passenger,
+                  quietOwnRide: goOwnRidePilot(scope),
+                };
               }
               if (args !== undefined && directPurchasePilot(scope)) {
                 const limit = await directRideLimit(
@@ -810,11 +842,10 @@ export default defineDynamic({
                   ...result,
                   reply: `Nothing was booked: the price is above ${String(args.maxPriceRub)} ₽. Ask the person one short question with the route and the price, ending with «Оплачиваю?», and book with maxPriceRub at that price only after their plain yes.`,
                 };
-              if (
-                result.kind === "booked" &&
-                args?.passengerPhone !== undefined
-              )
+              if (result.kind === "booked" && result.passenger !== undefined)
                 return { ...result, reply: goReplies.bookedForPassenger };
+              if (result.kind === "booked" && args?.quietOwnRide === true)
+                return { ...result, reply: goReplies.bookedOwnRide };
               if (result.reason !== "no_verified_card")
                 return { ...result, reply: goReplies[result.kind] };
               if (input.action !== "book" || unverifiedCardId === undefined)

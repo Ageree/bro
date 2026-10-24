@@ -5,12 +5,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import type { YandexPurchase } from "@db/schema/yandex-purchases";
 import type * as contacts from "@db/services/contacts";
+import type { readOwnContacts } from "@agent/lib/browser-use/facts";
 import type * as purchases from "@db/services/yandex-purchases";
 import type * as afisha from "@agent/lib/yandex/afisha/checkout";
 import type * as eda from "@agent/lib/yandex/eda/checkout";
 import type * as lavka from "@agent/lib/yandex/lavka/checkout";
 import type {
   afishaPurchasePilot,
+  goOwnRidePilot,
   goPassengerPilot,
   yandexPurchasePilot,
 } from "@agent/lib/yandex/pilot";
@@ -31,6 +33,8 @@ const services = vi.hoisted(() => ({
   edaPrepare: vi.fn<typeof eda.prepareEdaPurchase>(),
   edaSubmit: vi.fn<typeof eda.submitEdaPurchase>(),
   judge: vi.fn<() => Promise<{ output: { matches: boolean } }>>(),
+  ownContacts: vi.fn<typeof readOwnContacts>(),
+  ownRidePilot: vi.fn<typeof goOwnRidePilot>(),
   passengerPilot: vi.fn<typeof goPassengerPilot>(),
   pilot: vi.fn<typeof yandexPurchasePilot>(),
   prepare: vi.fn<typeof lavka.prepareLavkaPurchase>(),
@@ -50,6 +54,9 @@ vi.mock("@db/services/contacts", () => ({
   contactsPilot: services.contactsPilot,
   listContacts: services.contacts,
 }));
+vi.mock("@agent/lib/browser-use/facts", () => ({
+  readOwnContacts: services.ownContacts,
+}));
 vi.mock("ai", async (original) => ({
   ...(await original<typeof ai>()),
   generateText: services.judge,
@@ -68,6 +75,7 @@ vi.mock("@agent/lib/login-handoff/pilot", () => ({
 }));
 vi.mock("@agent/lib/yandex/pilot", () => ({
   afishaPurchasePilot: services.afishaPilot,
+  goOwnRidePilot: services.ownRidePilot,
   goPassengerPilot: services.passengerPilot,
   yandexPurchasePilot: services.pilot,
 }));
@@ -269,6 +277,8 @@ async function confirm(messages = answered(), context = callContext()) {
 beforeEach(() => {
   vi.resetAllMocks();
   services.pilot.mockReturnValue(true);
+  services.ownContacts.mockResolvedValue({ emails: [], phones: [] });
+  services.ownRidePilot.mockReturnValue(false);
   services.judge.mockResolvedValue({ output: { matches: false } });
   services.read.mockResolvedValue(row());
   services.claim.mockResolvedValue({
@@ -1121,6 +1131,98 @@ describe("Yandex Go for another person", () => {
       scope.workspaceId,
       expect.objectContaining({ id: "go.book" }),
       expect.objectContaining({ passengerPhone: undefined })
+    );
+  });
+
+  it("books the person's own number as their own ride, not one for someone else", async () => {
+    services.run.mockResolvedValue(
+      answer({
+        kind: "booked",
+        orderId: "new-order",
+        status: "search",
+        price: 780,
+        from: "Мичуринский проспект, 56",
+        to: "Гвидон",
+        payment: "наличные",
+      })
+    );
+    services.ownContacts.mockResolvedValue({
+      emails: [],
+      phones: ["8 (916) 123-45-67"],
+    });
+    const tool = await resolve([
+      {
+        role: "user",
+        content: "Вызови мне такси до Гвидона, мой номер +7 916 123-45-67",
+      },
+    ]);
+    const result = await tool?.execute(
+      { ...ride, passengerName: "Я", passengerPhone: "+79161234567" },
+      callContext()
+    );
+    expect(services.run).toHaveBeenCalledExactlyOnceWith(
+      scope.workspaceId,
+      expect.objectContaining({ id: "go.book" }),
+      expect.objectContaining({
+        passengerName: undefined,
+        passengerPhone: undefined,
+      })
+    );
+    expect(JSON.stringify(result)).not.toContain("passenger");
+  });
+});
+
+describe("the person's own Yandex Go ride", () => {
+  const ride = {
+    action: "book" as const,
+    from: "Мичуринский проспект, 56",
+    near: [37.6177, 55.7558] satisfies [number, number],
+    payment: "current" as const,
+    service: "go" as const,
+    to: "Гвидон",
+  };
+  const booked = {
+    kind: "booked",
+    orderId: "new-order",
+    status: "search",
+    price: 780,
+    from: "Мичуринский проспект, 56",
+    to: "Гвидон",
+    payment: "наличные",
+  } satisfies Record<string, JsonValue>;
+
+  it("goes as the person's Go app books it in the pilot", async () => {
+    services.ownRidePilot.mockReturnValue(true);
+    services.run.mockResolvedValue(answer(booked));
+    const tool = await resolve([
+      { role: "user", content: "Вызови мне такси до Гвидона" },
+    ]);
+    const schema = z
+      .custom<z.ZodType>((value) => value instanceof z.ZodType)
+      .parse(tool?.inputSchema);
+    // The model never says how the ride goes.
+    expect(schema.safeParse({ ...ride, quietOwnRide: false }).success).toBe(
+      false
+    );
+    const result = await tool?.execute(ride, callContext());
+    expect(services.run).toHaveBeenCalledExactlyOnceWith(
+      scope.workspaceId,
+      expect.objectContaining({ id: "go.book" }),
+      expect.objectContaining({ quietOwnRide: true })
+    );
+    expect(JSON.stringify(result)).toContain("their Yandex Go app");
+  });
+
+  it("goes as before outside the pilot", async () => {
+    services.run.mockResolvedValue(answer(booked));
+    const tool = await resolve([
+      { role: "user", content: "Вызови мне такси до Гвидона" },
+    ]);
+    await tool?.execute(ride, callContext());
+    expect(services.run).toHaveBeenCalledExactlyOnceWith(
+      scope.workspaceId,
+      expect.objectContaining({ id: "go.book" }),
+      expect.not.objectContaining({ quietOwnRide: true })
     );
   });
 });

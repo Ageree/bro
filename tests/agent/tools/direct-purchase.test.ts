@@ -110,6 +110,7 @@ vi.mock("@agent/lib/yandex/transport", () => ({
 }));
 vi.mock("@agent/lib/yandex/pilot", () => ({
   afishaPurchasePilot: () => false,
+  goOwnRidePilot: () => false,
   goPassengerPilot: () => false,
   yandexPurchasePilot: () => true,
 }));
