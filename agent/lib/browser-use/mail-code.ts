@@ -195,32 +195,48 @@ export function authenticatedFrom(
   );
 }
 
-/**
- * Whether a letter's sender can speak for the site: an address on its
- * registrable domain that is not a public mailbox anyone can have.
- */
-function siteSender(sender: string, domain: string) {
-  return under(sender, domain) && !mailboxDomains.has(bareHost(sender));
-}
-
-/** The name of a domain before its public suffix: `z-library` of z-library.sk. */
-function domainName(host: string) {
+/** The label of a domain before its public suffix: `z-library` of z-library.sk. */
+function domainLabel(host: string) {
   return registrableDomain(host)?.split(".")[0];
 }
 
+/** A site's name to match another domain by: no shorter than four letters. */
+function siteName(domain: string) {
+  const name = domainLabel(domain)?.replaceAll(/[^\p{L}\p{N}]/gu, "");
+  return name !== undefined && name.length >= 4 ? name : undefined;
+}
+
 /**
- * Whether a letter to Bro's own mailbox comes from another domain of the
- * site's own name: on 24.10 Z-Library wrote from z-library.im to the account
- * made on z-library.sk, and its code was never found. The name has to match
- * whole and be no short word, and no public mailbox counts. Only Bro's inbox:
- * the site wrote there because this errand registered Bro's address, and
- * AgentMail drops a letter that fails DMARC for its From domain. The code is
- * still typed on the errand's own domain alone, and a link taken only there.
+ * The domain a letter's sender speaks for the site from, or none: the site's
+ * own registrable domain, or another domain of the site's own name — on
+ * 24.10 Z-Library wrote from z-library.im to the account made on
+ * z-library.sk, and its code was never found. The name matches whole, its
+ * hyphens aside (zlibrary.to too), and is no short word; a public mailbox
+ * anyone can have never counts. Anyone can register such a name, so what
+ * it gives is a code, typed on the errand's own domain alone; a link the run
+ * would open is still taken on the errand's own domain only.
  */
-function siteMirrorSender(sender: string, domain: string) {
-  if (mailboxDomains.has(bareHost(sender))) return false;
-  const name = domainName(domain);
-  return name !== undefined && name.length >= 4 && domainName(sender) === name;
+function letterDomain(sender: string, domain: string) {
+  if (mailboxDomains.has(bareHost(sender))) return undefined;
+  if (under(sender, domain)) return domain;
+  const name = siteName(domain);
+  const own = registrableDomain(sender);
+  return name !== undefined &&
+    own !== undefined &&
+    domainLabel(own)?.replaceAll(/[^\p{L}\p{N}]/gu, "") === name
+    ? own
+    : undefined;
+}
+
+/**
+ * Gmail's search for the site's letters: from its domain, and from any
+ * address with the site's name in it, which `letterDomain` then sorts out.
+ */
+function gmailFrom(domain: string) {
+  const label = domainLabel(domain);
+  return siteName(domain) === undefined || label === undefined
+    ? `from:${domain}`
+    : `{from:${domain} from:${label}}`;
 }
 
 /** A word that names a number as the code: «Код для входа», "Your code". */
@@ -328,7 +344,7 @@ async function lookForCode(
   const letters = await readGmailLetters(
     google,
     // Gmail's `after:` takes seconds; the exact bound is checked below.
-    `from:${domain} in:anywhere after:${String(Math.floor(since.getTime() / 1000) - 60)}`,
+    `${gmailFrom(domain)} in:anywhere after:${String(Math.floor(since.getTime() / 1000) - 60)}`,
     lettersPerLook
   );
   const fresh = letters
@@ -340,14 +356,16 @@ async function lookForCode(
     .toSorted((a, b) => b.receivedAt - a.receivedAt);
   for (const letter of fresh) {
     const sender = headerAddress(letter.from)?.split("@")[1];
-    if (sender === undefined || !siteSender(sender, domain)) continue;
-    if (!authenticatedFrom(letter.authenticationResults, sender, domain)) {
+    const from =
+      sender === undefined ? undefined : letterDomain(sender, domain);
+    if (sender === undefined || from === undefined) continue;
+    if (!authenticatedFrom(letter.authenticationResults, sender, from)) {
       continue;
     }
     const receivedAt = new Date(letter.receivedAt);
     const code = codeInLetter(letter.subject, letter.text);
     if (code !== undefined) {
-      return { code, kind: "found" as const, receivedAt };
+      return { code, from, kind: "found" as const, receivedAt };
     }
     // No code: the letter may send the person to a link that confirms the
     // address or sets the password (WordPress and many other sites do), and
@@ -361,6 +379,7 @@ async function lookForCode(
     );
     if (link !== undefined) {
       return {
+        from,
         kind: "link" as const,
         receivedAt,
         recipient: headerAddress(letter.to) ?? undefined,
@@ -678,9 +697,25 @@ async function letterConfirmationLink(
   return url === undefined ? undefined : { purpose: found.purpose, url };
 }
 
+/** A letter of Bro's own inbox as read for a code: its subject, text and HTML. */
+async function readAgentLetter(inboxId: string, messageId: string) {
+  const letter = await readAgentMailMessage(inboxId, messageId);
+  if (!trustedLabels(letter.labels)) return undefined;
+  const html = (letter.html ?? letter.extracted_html ?? "").slice(0, htmlLimit);
+  const text = letter.text ?? letter.extracted_text ?? htmlText(html);
+  return { html, subject: letter.subject ?? null, text };
+}
+
 /**
- * The newest code, or else the confirmation link, in letters from `domain`
- * that reached Bro's own AgentMail inbox since `since`.
+ * The newest code, or else the confirmation link, in letters that reached
+ * Bro's own AgentMail inbox since `since`: first those from the site's own
+ * domain or a domain of its name (`letterDomain`). When none of them carries
+ * one, the code of the one letter from any other sender that does: a site
+ * may write from a domain of another name altogether (z-lib.fm, its mail
+ * service), the inbox is Bro's own, which only the sites it signed up on
+ * write to, and the code goes to the errand's own domain alone — a stranger's
+ * code there is only refused. Two such codes make it unclear, and no link
+ * comes from such a letter: the run would open it.
  */
 async function lookInAgentMail(
   inboxId: string,
@@ -690,40 +725,58 @@ async function lookInAgentMail(
 ) {
   const page = await listAgentMailMessages(inboxId, { limit: 20 });
   const fresh = page.messages
-    .map((item) => ({ item, receivedAt: Date.parse(item.timestamp) }))
-    .filter(({ item, receivedAt }) => {
+    .flatMap((item) => {
+      const receivedAt = Date.parse(item.timestamp);
       const sender = headerAddress(item.from)?.split("@")[1];
-      return (
-        Number.isFinite(receivedAt) &&
+      return Number.isFinite(receivedAt) &&
         receivedAt >= since.getTime() &&
         trustedLabels(item.labels) &&
         sender !== undefined &&
-        (siteSender(sender, domain) || siteMirrorSender(sender, domain))
-      );
+        !mailboxDomains.has(bareHost(sender))
+        ? [{ from: letterDomain(sender, domain), item, receivedAt, sender }]
+        : [];
     })
-    .toSorted((a, b) => b.receivedAt - a.receivedAt)
-    .slice(0, lettersPerLook);
-  for (const { item, receivedAt } of fresh) {
+    .toSorted((a, b) => b.receivedAt - a.receivedAt);
+  for (const { from, item, receivedAt } of fresh
+    .filter((letter) => letter.from !== undefined)
+    .slice(0, lettersPerLook)) {
     // oxlint-disable-next-line eslint/no-await-in-loop -- The newest letter that carries one wins; an older one is read only when it does not.
-    const letter = await readAgentMailMessage(inboxId, item.message_id);
-    if (!trustedLabels(letter.labels)) continue;
-    const html = (letter.html ?? letter.extracted_html ?? "").slice(
-      0,
-      htmlLimit
-    );
-    const text = letter.text ?? letter.extracted_text ?? htmlText(html);
+    const letter = await readAgentLetter(inboxId, item.message_id);
+    if (letter === undefined || from === undefined) continue;
     const at = new Date(receivedAt);
-    const code = codeInLetter(letter.subject ?? null, text);
+    const code = codeInLetter(letter.subject, letter.text);
     if (code !== undefined) {
-      return { code, kind: "found" as const, receivedAt: at };
+      return { code, from, kind: "found" as const, receivedAt: at };
     }
     // oxlint-disable-next-line eslint/no-await-in-loop -- A tracker's chain is read only for the letter at hand.
-    const link = await letterConfirmationLink({ html, text }, domain, options);
+    const link = await letterConfirmationLink(letter, domain, options);
     if (link !== undefined) {
-      return { kind: "link" as const, receivedAt: at, ...link };
+      return { from, kind: "link" as const, receivedAt: at, ...link };
     }
   }
-  return undefined;
+  const elsewhere: { code: string; from: string; receivedAt: Date }[] = [];
+  for (const { item, receivedAt, sender } of fresh
+    .filter((letter) => letter.from === undefined)
+    .slice(0, lettersPerLook)) {
+    // oxlint-disable-next-line eslint/no-await-in-loop -- A handful of letters, one after the other.
+    const letter = await readAgentLetter(inboxId, item.message_id);
+    const code =
+      letter === undefined
+        ? undefined
+        : codeInLetter(letter.subject, letter.text);
+    if (code !== undefined) {
+      elsewhere.push({
+        code,
+        from: registrableDomain(sender) ?? bareHost(sender),
+        receivedAt: new Date(receivedAt),
+      });
+    }
+  }
+  const [only] = elsewhere;
+  return only !== undefined &&
+    elsewhere.every((letter) => letter.code === only.code)
+    ? { ...only, kind: "found" as const }
+    : undefined;
 }
 
 /**
@@ -779,11 +832,14 @@ type MailCode =
   | {
       readonly code: string;
       readonly domain: string;
+      /** The registrable domain the letter came from. */
+      readonly from: string;
       readonly kind: "found";
       readonly receivedAt: Date;
     }
   | {
       readonly domain: string;
+      readonly from: string;
       readonly kind: "link";
       /** What the link does: confirms the address, or sets/resets the password. */
       readonly purpose: "confirm" | "password";

@@ -3353,6 +3353,8 @@ async function codeFromMail(
   console.info("[browser-use] code from mail", {
     // Never the code or the link itself.
     domain: found.kind === "no_site" ? undefined : found.domain,
+    from:
+      found.kind === "found" || found.kind === "link" ? found.from : undefined,
     mailbox: agentMailbox === undefined ? "person" : "agent",
     result: found.kind,
     runId: row.id,
