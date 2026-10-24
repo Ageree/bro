@@ -236,6 +236,27 @@ describe("yclients", () => {
     expect(requests.every((request) => !request.writes)).toBe(true);
   });
 
+  it("sends a site without a booking link to Maps before the browser", async () => {
+    services.links.mockResolvedValueOnce({ kind: "found", links: [] });
+    services.links.mockResolvedValueOnce({ kind: "unreachable" });
+    const finder = await tool(asked);
+
+    const noLink = JSON.stringify(
+      await finder.execute({ action: "find", link: "топган.рф" }, callContext())
+    );
+    const noPage = JSON.stringify(
+      await finder.execute(
+        { action: "find", link: "topgun-barbershop.ru" },
+        callContext()
+      )
+    );
+
+    for (const reply of [noLink, noPage]) {
+      expect(reply).toContain("maps.search");
+      expect(reply).toContain("Only when Maps names none");
+    }
+  });
+
   it("lists a company's services and names the place they are at", async () => {
     yclients({
       [`GET /api/v1/book_services/${String(company)}`]: () =>
