@@ -117,7 +117,10 @@ export interface BroReportPayload {
   readonly action?: BroEnvoyPackage["action"];
   /** agreed, confirmed */
   readonly proposalId?: string;
-  /** agreed, confirmed; held: the proposal the held package makes. */
+  /**
+   * agreed, confirmed; held: the proposal the held package makes; question:
+   * the peer's open proposal, if the latest one is theirs.
+   */
   readonly proposal?: BroProposal;
   /** confirmed: what became of the meeting in this owner's own calendar. */
   readonly calendar?: Exclude<BroCalendarState, "pending">;

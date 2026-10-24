@@ -432,7 +432,17 @@ export async function recordEnvoyStep(
       await report(
         step.side,
         "question",
-        { questionId: question.id, text: question.text },
+        {
+          questionId: question.id,
+          text: question.text,
+          // The peer's open proposal, which the question is most likely
+          // about: its time on the owner's own clock, whatever clock the
+          // envoy's words or the peer's give it on.
+          proposal:
+            latestProposal && latestProposal.side !== step.side
+              ? (latestProposal.proposal ?? undefined)
+              : undefined,
+        },
         `question:${question.id}`
       );
     if (draft)

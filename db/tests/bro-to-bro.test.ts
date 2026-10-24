@@ -999,6 +999,30 @@ describe("bro threads", () => {
     ).toEqual({ kind: "confirmed", both: false });
   });
 
+  it("puts the other side's open proposal on the question its owner is asked", async () => {
+    const bro = await network();
+    const { inviterLinkId } = await link(bro, savely, petya);
+    const threadId = await start(bro, savely, inviterLinkId);
+    const [lease] = await claim(bro);
+    if (!lease) throw new Error("The thread is due.");
+    await step(bro, threadId, savely, lease.leaseToken, {
+      kind: "sent",
+      message: {
+        action: "propose",
+        body: "Ужин в субботу?",
+        proposal: saturday,
+      },
+    });
+    await step(bro, threadId, petya, lease.leaseToken, {
+      kind: "asked_owner",
+      question: "Савелий зовёт на ужин в субботу в 19:00. Подходит?",
+      message: "Уточню и вернусь",
+    });
+    expect(await reportOf(bro, petya, "question")).toMatchObject({
+      proposal: saturday,
+    });
+  });
+
   it("stalls a thread after twelve envoy messages or three failed steps in a row", async () => {
     const bro = await network();
     const { inviterLinkId } = await link(bro, savely, petya);

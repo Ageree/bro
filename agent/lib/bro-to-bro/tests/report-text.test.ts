@@ -65,6 +65,28 @@ describe("the text of a Bro ↔ Bro report's turn", () => {
     );
   });
 
+  it("gives a question about the other side's proposal its time on the owner's own clock", () => {
+    const question = broReportMessage(
+      {
+        kind: "question",
+        payload: {
+          ...peer,
+          proposal: {
+            end: "2026-10-31T18:00:00Z",
+            start: "2026-10-31T16:00:00Z",
+            summary: "Ужин",
+          },
+          questionId: "q",
+          text: "Пётр предлагает субботу с 19:00 до 21:00. Подходит?",
+        },
+        threadId,
+      },
+      "Asia/Yekaterinburg"
+    );
+    expect(question).toContain("сб 31.10, 21:00–23:00");
+    expect(question).toContain("on the owner's clock");
+  });
+
   it("tells the owner what became of the confirmed meeting in their calendar, never asking to add it", () => {
     const confirmed = (
       calendar: "created" | "failed" | "skipped_no_time",
