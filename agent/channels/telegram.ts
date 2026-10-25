@@ -32,6 +32,7 @@ import {
   turnFailureNotice,
 } from "@agent/lib/delivery/fallback";
 import { withApprovalCard } from "@shared/chat/approval-card";
+import { capabilityTipContext } from "@agent/lib/capability-tips";
 import { crossChannelRecap } from "@agent/lib/conversation/recap";
 import { firstContactContext, ownerTelegram } from "@agent/lib/first-contact";
 import { telegramMediaTurn } from "@agent/lib/inbound-media/telegram";
@@ -602,15 +603,17 @@ export default telegramChannel({
     // An account linked from the web cabinet may never have written before,
     // so the introduction follows the workspace's first message here too. It
     // is claimed only now, once this message is sure to start a turn.
+    const words = inboundWords(media, message.text || message.caption);
     const turnContext = [
       ...(await firstContactContext(scope)),
       ...(await crossChannelRecap(scope, { channel: "channel:telegram" })),
-      ...(located
-        ? await locationContext(
-            scope,
-            inboundWords(media, message.text || message.caption)
-          )
-        : []),
+      ...(located ? await locationContext(scope, words) : []),
+      // What the person has not tried yet, for Bro to offer once this
+      // request is done (capability tips pilot). Forwarded words are not
+      // the person's own request.
+      ...(forwarded
+        ? []
+        : await capabilityTipContext(scope, { channel: "telegram", words })),
     ];
     noteInbound(context.telegram.chatId, message.raw, receivedAt);
     if (media === undefined) {

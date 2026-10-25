@@ -10,6 +10,7 @@ import { z } from "zod";
 import { claimSession, isSessionOwned } from "@db/services/sessions";
 import { ensureScope } from "@db/services/scope";
 import { crossChannelRecap } from "@agent/lib/conversation/recap";
+import { capabilityTipContext } from "@agent/lib/capability-tips";
 import { firstContactContext } from "@agent/lib/first-contact";
 import { documentByteCap } from "@agent/lib/inbound-media/media-type";
 import { webFileNotes } from "@agent/lib/inbound-media/web";
@@ -148,6 +149,12 @@ const channel = eveChannel({
       ...(await crossChannelRecap(scope, {
         channel: "channel:eve",
         sessionId: context.eve.sessionId,
+      })),
+      // What the person has not tried yet, for Bro to offer once this
+      // request is done (capability tips pilot).
+      ...(await capabilityTipContext(scope, {
+        channel: "web",
+        words: messageWords(message),
       })),
       // The point the chat's button just shared, or where the person last
       // shared they were, for a message about places near them

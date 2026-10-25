@@ -230,6 +230,15 @@ export const env = createEnv({
         "LOCATION_WATCH_WORKSPACES takes workspace ids or *, not emails"
       )
       .optional(),
+    // Bro offering, once a request is done, one thing the person has not
+    // tried yet (`agent/lib/capability-tips.ts`): workspace ids or *. Unset,
+    // nobody.
+    CAPABILITY_TIPS_WORKSPACES: workspaceListSchema
+      .refine(
+        (entries) => entries.every((entry) => !entry.includes("@")),
+        "CAPABILITY_TIPS_WORKSPACES takes workspace ids or *, not emails"
+      )
+      .optional(),
     PHONE_INIT_SECRET: trimmedValue.min(32).optional(),
     PHONE_WEBHOOK_SECRET: trimmedValue.min(32).optional(),
     MTS_EXOLVE_API_KEY: trimmedValue.optional(),
