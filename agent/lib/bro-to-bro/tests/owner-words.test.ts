@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   homeLike,
-  errandPayments,
   meetingLength,
   namedAmounts,
   namedItems,
@@ -310,26 +309,11 @@ describe("paymentsSaid", () => {
       expect(paymentCovered(text, [...paysFor], names)).toBe(false);
     // A promise of nothing named covers only a promise of nothing named.
     expect(paymentCovered("Савелий заплатит", ["я плачу"], names)).toBe(true);
-    // «Я плачу» of an errand is for what the owner's own words say it is
-    // about, never for what the goal adds.
-    expect(
-      errandPayments(
-        ownerText(["Договорись об ужине. Я плачу."]),
-        "Ужин и автомобиль"
-      )
-    ).toEqual(["я плачу", "ужин"]);
-    expect(errandPayments(ownerText(["я куплю торт"]), "торт и вино")).toEqual([
-      "я куплю торт",
-    ]);
-    for (const said of [
-      "Договорись об ужине. Я плачу. Автомобиль не покупаю.",
-      "Договорись об ужине. Я плачу. Петя написал:\n> куплю автомобиль",
-      "Договорись об ужине. Я плачу. Автомобиль стоит в гараже.",
-    ])
-      expect(errandPayments(ownerText([said]), "Ужин и автомобиль")).toEqual([
-        "я плачу",
-        "ужин",
-      ]);
+    // «Я плачу» without for what covers a promise of nothing named, and no
+    // word of the errand: not «ужин» of «договорись об ужине, я плачу».
+    expect(paymentCovered("Савелий оплатит ужин", ["я плачу"], names)).toBe(
+      false
+    );
     // «скинемся» pays with the other one: they may be the payer too.
     expect(paysTogether("скинемся с петей маме на подарок")).toBe(true);
     expect(paysTogether("я куплю торт")).toBe(false);
@@ -376,6 +360,16 @@ describe("paymentsSaid", () => {
     ])
       expect(promisesIn([text], names)).toHaveLength(1);
     expect(promisesIn(["купе"], names)).toEqual([]);
+    expect(
+      promisesIn(["Савелий согласен. Кому угодно он купит автомобиль"], names)
+    ).toEqual(["Кому угодно он купит автомобиль"]);
+    expect(
+      promisesIn(
+        ["Савелий оплатит торт, автомобиль для Николь"],
+        ["Савелий", "Николь"]
+      )
+    ).toEqual(["Савелий оплатит торт автомобиль для Николь"]);
+    expect(promisesIn(["Савелий расплатится за шубу"], names)).toHaveLength(1);
   });
 
   it("hears what the owner says the other person pays for", () => {

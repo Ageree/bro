@@ -643,9 +643,13 @@ const firstConjugation = [
  */
 const payVerb = new RegExp(
   `^(?:${[
-    verbForms("(?:за|о|до|про|вы|у|пере|рас)?плат", secondConjugation),
-    verbForms("(?:за|о|до|про|вы|у|пере)?плач", [
+    verbForms("(?:за|о|до|про|вы|у|пере|рас)?плат", [
+      ...secondConjugation,
+      ...reflexiveSecond,
+    ]),
+    verbForms("(?:за|о|до|про|вы|у|пере|рас)?плач", [
       "у",
+      "усь",
       "ивает",
       "ивают",
       "иваю",
@@ -823,34 +827,6 @@ export function paymentsSaid(text: string) {
     .filter((part) => paysPattern.test(part))
     .map((part) => part.slice(0, 200))
     .slice(0, 10);
-}
-
-/** The owner asking Bro to arrange something: «договорись», «узнай», «предложи». */
-const errandRequest =
-  /(?<!\p{L})(?:договорись|договоритесь|узнай|спроси|предложи|обсуди|реши|организуй|сверь|собери|позови|пригласи|устрой|запланируй|назначь)(?!\p{L})/u;
-
-/**
- * What the owner's words of an errand say they pay for (`paymentsSaid`), and,
- * when one says it without for what («Договорись об ужине. Я плачу.»),
- * what the errand is about as far as their own request to Bro says it: the
- * words of the goal in a clause of theirs that asks Bro to arrange it and
- * says yes («договорись об ужине» — «ужин») — never a word the goal adds,
- * which Bro wrote («ужин и автомобиль»), nor one they say otherwise
- * («автомобиль не покупаю», «автомобиль стоит в гараже»).
- */
-export function errandPayments(text: string, goal: string) {
-  const parts = paymentsSaid(text);
-  if (!parts.some((part) => namesNothing(part))) return parts;
-  // Only what the owner asks Bro to arrange says what the errand is about:
-  // not «автомобиль стоит в гараже», not what they say no to or quote.
-  const own = affirmed(text)
-    .filter((clause) => errandRequest.test(clause))
-    .flatMap((clause) => comparableWords(clause));
-  const about = comparableWords(goal)
-    .filter((word) => !promiseFiller.has(word) && holdsWord(own)(word))
-    .join(" ")
-    .slice(0, 200);
-  return about === "" ? parts : [...parts, about].slice(0, 10);
 }
 
 /**
@@ -1070,21 +1046,6 @@ function payerForm(
   );
 }
 
-/**
- * Whether a part of the owner's words promises to pay without saying for
- * what («скинусь по 3000», «я плачу»).
- */
-function namesNothing(part: string) {
-  return comparableWords(part).every(
-    (word) =>
-      promiseFiller.has(word) ||
-      payVerb.test(word) ||
-      promiseHow.test(word) ||
-      ownerPointer.test(word) ||
-      /^(?:да|\d+)$/u.test(word)
-  );
-}
-
 /** A day or a month, in any case: «субботу», «октября» — never «мартини». */
 const calendarWord =
   /^(?:понедельник\p{L}{0,2}|вторник\p{L}{0,2}|сред(?:а|у|ы|е|ой)|четверг\p{L}{0,2}|пятниц\p{L}{0,2}|суббот\p{L}{0,2}|воскресень\p{L}{0,2}|выходн\p{L}{0,3}|январ[ьяюе]|феврал[ьяюе]|марта?|марте|апрел[ьяюе]|ма[йяюе]|июн[ьяюе]|июл[ьяюе]|августа?|августе|сентябр[ьяюе]|октябр[ьяюе]|ноябр[ьяюе]|декабр[ьяюе])$/u;
@@ -1124,6 +1085,10 @@ export function paymentCovered(
 /** A word that makes a short sentence go on with the one before it: «И шубу.», «Шубу тоже.». */
 const goesOn = /^(?:и|а|ещ[её]|также|тоже|плюс)$/u;
 
+/** A preposition: what follows it is no subject («для Николь», «у Петра»). */
+const preposition =
+  /^(?:для|у|к|ко|от|с|со|о|об|про|за|на|без|при|по|через|кроме|вместо|из|до)$/u;
+
 /** A word asking who: «кто», «кому». */
 const whoWord = /^(?:кто|кого|кому|кем)$/u;
 
@@ -1144,9 +1109,16 @@ const whoWord = /^(?:кто|кого|кому|кем)$/u;
 function readPromises(text: string, names: readonly string[]) {
   const people = names.flatMap((name) => comparableWords(name));
   const isName = (word: string) => people.some((name) => nameForm(word, name));
-  const subject = (word: string) =>
-    people.includes(word) || word === "ты" || word === "вы";
+  // Who a part is of: a name as it is or «я», «ты», «он» — not after a
+  // preposition, whose name it is that a promise is for («для Николь»).
+  const subjectIn = (words: readonly string[]) =>
+    words.some(
+      (word, index) =>
+        !preposition.test(words[index - 1] ?? "") &&
+        (people.includes(word) || /^(?:ты|вы|я|мы|он|она|они)$/u.test(word))
+    );
   const promises: string[][] = [];
+  const questions: string[] = [];
   let unread = false;
   const pieces = normalized(text).split(/((?<!\d)[.!?]+|[.!?]+(?!\d)|[;\n]+)/u);
   for (let index = 0; index < pieces.length; index += 2) {
@@ -1172,16 +1144,17 @@ function readPromises(text: string, names: readonly string[]) {
       for (const part of promiseParts(segment)) {
         const own = comparableWords(part);
         if (
-          !own.some((word) => subject(word)) &&
+          !subjectIn(own) &&
           (whoWord.test(own[0] ?? "") ||
             (asks && own.some((word) => whoWord.test(word))))
         ) {
           asked = true;
           before = [];
+          if (promising(part, people)) questions.push(part);
         } else if (promising(part, people)) {
           promises.push([...before, part]);
           before = [];
-        } else if (own.some((word) => subject(word)))
+        } else if (subjectIn(own))
           before = own.every((word) => isName(word)) ? [part] : [];
         else if (promises.length > 0) promises.at(-1)?.push(part);
         else before.push(part);
@@ -1190,12 +1163,35 @@ function readPromises(text: string, names: readonly string[]) {
     if (promises.length === read && !asked && promising(sentence, people))
       unread = true;
   }
-  return { promises: promises.map((promise) => promise.join(" ")), unread };
+  return {
+    promises: promises.map((promise) => promise.join(" ")),
+    questions,
+    unread,
+  };
 }
 
 /** The promises to pay texts make, as code reads them (@BT@readPromises@BT@). */
 export function promisesIn(texts: readonly string[], names: readonly string[]) {
   return texts.flatMap((text) => readPromises(text, names).promises);
+}
+
+/**
+ * The questions of who pays texts ask (`readPromises`), without their «кто»
+ * and «из вас»: what they ask to be paid for, which a question tells the
+ * peer as much as a promise does («кто купит шубу?»).
+ */
+export function paymentQuestions(
+  texts: readonly string[],
+  names: readonly string[]
+) {
+  return texts.flatMap((text) =>
+    readPromises(text, names).questions.map((question) =>
+      comparableWords(question)
+        .filter((word) => !whoWord.test(word))
+        .join(" ")
+        .replaceAll(/(?<!\p{L})из\s+(?:вас|нас|них)(?!\p{L})/gu, " ")
+    )
+  );
 }
 
 /** Whether a text has a word of paying code reads no promise in (@BT@readPromises@BT@): then it is held. */

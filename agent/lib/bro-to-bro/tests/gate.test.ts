@@ -502,8 +502,8 @@ describe("screenOutgoing, the second version's", () => {
         ownerPays(["я плачу"])
       )
     ).resolves.toMatchObject({ verdict: "hold" });
-    // «скинусь» without for what covers a promise of nothing named and the
-    // words of the errand the owner said (errandPayments), never the goal.
+    // «скинусь» without for what covers a promise of nothing named, and
+    // words the owner named elsewhere — never the goal.
     const objectless = {
       ...owned,
       goal: "скинемся маме на подарок и автомобиль",
@@ -539,9 +539,16 @@ describe("screenOutgoing, the second version's", () => {
       "Савелий оплатит торт, автомобиль для Петра",
       "Вы с Савелием скинетесь на шубу",
       "Савелий оплатит шубу кому-нибудь из родных?",
+      "Савелий согласен. Кому угодно он купит автомобиль",
+      "Кто купит шубу?",
     ])
       expect((await verdict({ body }, [], ownerSaid)).verdict).toBe("hold");
     /* oxlint-enable eslint/no-await-in-loop */
+    // A question of who pays goes when it asks only of what the owner's
+    // words or the goal name.
+    await expect(
+      verdict({ body: "Кто из вас купит подарок?" }, [], ownerSaid)
+    ).resolves.toEqual({ verdict: "pass" });
     // A promise quoted without whose it is is read in the packet's words.
     await expect(
       verdict(

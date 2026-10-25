@@ -735,7 +735,7 @@ function ownWords(said: string, mandate: BroMandate): BroMandate {
           names.petya,
           "брат",
         ]),
-      paysFor: ownerWords.errandPayments(text, mandate.goal),
+      paysFor: ownerWords.paymentsSaid(text),
       peerPays: ownerWords.peerPaysSaid(text),
       place:
         place !== undefined &&

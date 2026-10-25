@@ -14,7 +14,6 @@ import {
   namedPlace,
   namedSums,
   namedTime,
-  errandPayments,
   ownerText,
   paymentsSaid,
   peerPaysSaid,
@@ -850,7 +849,7 @@ function ownerNamed(
       input.amountRub !== undefined &&
       namedSums(text).includes(input.amountRub),
     items: input.items !== undefined && namedItems(text, input.items, names),
-    paysFor: errandPayments(text, input.goal ?? ""),
+    paysFor: paymentsSaid(text),
     peerPays: peerPaysSaid(text),
     place: input.place !== undefined && namedPlace(text, input.place),
     time:
