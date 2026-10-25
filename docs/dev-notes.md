@@ -641,6 +641,9 @@ postgres:17-alpine`, Docker в облачной сессии есть; Google �
   затрётся. Версии `operator/state.bin` в бакете включены: прежняя — `GET ?versions`
   и `versionId` (`s3.signed` в `scripts/cloudru-sandbox-probe/s3.py`). Живой env
   сверяйте по sha256 текста из `GET /ops/v1/env` deployd с составленным `compose_env`.
+- Апостроф в `\echo` psql (ops-скрипты с SQL в heredoc) psql считает кавычкой и молча съедает: подписи
+  разделов пишите без `'`. SQL ops-скрипта проверяйте на схеме из `pnpm db:migrate` в `postgres:17-alpine`
+  (Docker в сессии поднимается `dockerd &`) с заглушкой `db-lib.sh` (`psql_on` → `psql "$URL"`).
 - deployd пропускает в аргументах `host.py ops` только `[A-Za-z0-9._:/=@%?&+-]`
   (`ARGUMENT` в `host/deployd.py`): список через запятую он отвергает («at most 16
   plain arguments»), ops-скрипты соединяют значения через `+`.

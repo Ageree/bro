@@ -59,6 +59,24 @@ export interface UsageCostUnits {
    * under the name the service gives it (RouterAI's `provider`, "DeepInfra").
    */
   readonly hosts?: Readonly<Record<string, number>>;
+  /** A browser run's engine and browser, as its worker reports them. */
+  readonly engine?: string;
+  readonly browser?: string;
+  /**
+   * Where a browser run's time went, in milliseconds (`runTiming` in
+   * agent/lib/costs/browser.ts); read by `ops/browser-runs.sh`.
+   */
+  readonly timing?: {
+    readonly waitMs?: number;
+    readonly agentMs?: number;
+    readonly firstStepMs?: number;
+    readonly stepMs?: {
+      readonly count: number;
+      readonly p50?: number;
+      readonly p95?: number;
+      readonly max?: number;
+    };
+  };
 }
 
 /**

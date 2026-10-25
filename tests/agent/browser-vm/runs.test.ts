@@ -1023,9 +1023,14 @@ describe("reading a VM run", () => {
     const client = await loadClient();
     worker.readBrowserVmWorkerRun.mockResolvedValue(
       workerRun({
+        browser: "helium",
         finishedAt: "2026-09-28T11:58:00Z",
         result: "RESULT: the parcel is in Moscow",
         status: "completed",
+        // Three steps, ending 4 s, 10 s and 12 s after the agent started.
+        steps: ["11:50:06", "11:50:12", "11:50:14"].map((time) => ({
+          at: `2026-09-28T${time}Z`,
+        })),
         traffic: { down: 9_000_000, up: 1_000_000 },
         usage: {
           total_completion_tokens: 2_000,
@@ -1057,6 +1062,14 @@ describe("reading a VM run", () => {
         outputTokens: 2_000,
         steps: 3,
         unpriced: false,
+        engine: "agent",
+        browser: "helium",
+        timing: {
+          agentMs: 478_000,
+          firstStepMs: 4_000,
+          stepMs: { count: 2, max: 6_000, p50: 6_000, p95: 6_000 },
+          waitMs: 1_000,
+        },
       },
       workspaceId,
     });

@@ -114,6 +114,11 @@ const stepSchema = z.object({
 });
 
 const runSummarySchema = z.object({
+  /**
+   * The browser the run went in (`chrome`, `helium`). Absent from a worker
+   * before 2026-10-25.2; read only to account for the run.
+   */
+  browser: z.string().max(32).nullish(),
   createdAt: z.string(),
   engine: z.string(),
   error: z.string().nullable(),
