@@ -75,8 +75,8 @@ export function errandBrowser(scope: { readonly workspaceId: string }) {
 
 /**
  * The engine of a run (BROWSER_CODE_ENGINE_WORKSPACES): `code` for an errand
- * that only searches (`search` in `startBrowserVmRun`: nothing to sign in to,
- * submit, stage or pay) in the pilot, where the model writes code against the
+ * that only finds things (`findsOnly` in `createBrowserVmRun`: nothing to
+ * submit, stage or pay, and no secret but a sign-in on its site) in the pilot, where the model writes code against the
  * page's accessibility tree and batches several steps in one call, the way
  * Aside's agent does (`run_code` in `browser-vm/worker/worker.py`). On the
  * worker's stand on 25.10 an hh.ru search took 97 s and 15 calls on it, as on
@@ -86,9 +86,9 @@ export function errandBrowser(scope: { readonly workspaceId: string }) {
  */
 export async function errandEngine(
   scope: { readonly userId?: string; readonly workspaceId: string },
-  search: boolean | undefined
+  findsOnly: boolean
 ) {
-  if (!search) return undefined;
+  if (!findsOnly) return undefined;
   return (await inPilot(
     "browser-code",
     env.BROWSER_CODE_ENGINE_WORKSPACES,

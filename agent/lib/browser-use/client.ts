@@ -225,6 +225,11 @@ const customProxySchema = z.object({
 const createRunInputSchema = z.object({
   customProxy: customProxySchema.optional(),
   /**
+   * A VM profile only: the errand only finds things, signing in at most
+   * (`errandFindsOnly`), and the code engine may take it. Cloud ignores it.
+   */
+  findsOnly: z.boolean().optional(),
+  /**
    * A VM profile only: ask for an exit address the workspace has not used
    * before, when one is available, rather than whatever the last check left
    * — an anti-bot wall has already judged the current one. Cloud ignores it.
