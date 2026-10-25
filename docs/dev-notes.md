@@ -1371,8 +1371,10 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
 - Бро для человека — один, от первого лица (правило в `message-style.md`, повтор в `completion.ts` и нотах `browser_task`): без «помощника», «запуска», «браузера» как отдельного исполнителя. Страховки в `send_message` нет: человек сам говорит «браузер».
 - Ссылку входа модель копирует с ошибками (10.10: хвост длинного id потерян).
   `send_message` подменяет любой `…/handoff/<id>` в тексте на последнюю ссылку,
-  которую выдал `site-login-link` (`agent/lib/login-handoff/exact-link.ts`).
-  Не полагайтесь на то, что модель перепишет ссылку верно.
+  которую выдал `site-login-link` (`agent/lib/login-handoff/exact-link.ts`), а ссылки
+  приглашения Бро ↔ Бро — на ссылки последнего `bro_network invite` (25.10 токен потерял
+  последний знак; `agent/lib/bro-to-bro/exact-invite.ts`). Не полагайтесь на то, что модель
+  перепишет ссылку верно.
 - В eve нет `toolChoice`: `send_message` форсирует резолвер модели на
   `step.started` (`agent/agent.ts`, `agent/lib/model/direct.ts`), пока
   сообщение человека без ответа (`agent/lib/delivery/pending.ts`). Не

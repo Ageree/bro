@@ -14,6 +14,7 @@ import { openedByPersonErrandReport } from "../lib/cards/caller";
 import { cardsOffered } from "../lib/cards/enabled";
 import { withGroupedRoubles } from "../lib/delivery/amounts";
 import { withHttpsLinks, withVisibleLinks } from "../lib/delivery/links";
+import { withExactBroInviteLinks } from "../lib/bro-to-bro/exact-invite";
 import { withExactLoginHandoffLink } from "../lib/login-handoff/exact-link";
 import { isSharedFileLink } from "../lib/sandbox/files";
 import {
@@ -213,7 +214,7 @@ function defineSendMessage(
           withHttpsLinksInText(
             withInlineImagesAttached(
               withExactSharedLinks(
-                withExactLoginHandoffLink(message),
+                withExactBroInviteLinks(withExactLoginHandoffLink(message)),
                 sharedLinks
               )
             )
