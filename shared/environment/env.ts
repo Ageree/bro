@@ -420,6 +420,15 @@ export const env = createEnv({
         "BROWSER_VM_FILES_WORKSPACES takes workspace ids or *, not emails"
       )
       .optional(),
+    // Pool sandboxes that get the published BROWSER_VM_WORKER before an
+    // errand, besides the files pilot's (`agent/lib/browser-vm/rollout.ts`):
+    // workspace ids or *; unset, the rest keep the worker of the image.
+    BROWSER_POOL_WORKER_WORKSPACES: workspaceListSchema
+      .refine(
+        (entries) => entries.every((entry) => !entry.includes("@")),
+        "BROWSER_POOL_WORKER_WORKSPACES takes workspace ids or *, not emails"
+      )
+      .optional(),
     // Hosts of the browser pool: Cloud.ru VMs from the stock Ubuntu image that
     // cloud-init sets up (`browser-vm/host/boot.py`). A host bills its flavor
     // by the hour while it lives, so one with no live sandbox for the idle
