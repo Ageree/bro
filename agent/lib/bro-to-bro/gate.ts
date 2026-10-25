@@ -7,7 +7,6 @@ import {
   homeLike,
   moneyWords,
   namedAmounts,
-  namesNothing,
   paymentCovered,
   paymentPattern,
   paysTogether,
@@ -264,18 +263,11 @@ function promiseCovered(
   v2: NonNullable<GateAllowance["v2Allowed"]>
 ) {
   return (
-    paymentCovered(
-      text,
-      // «скинусь» without for what is for what the errand is about.
-      v2.paysFor.some((part) => namesNothing(part))
-        ? [...v2.paysFor, allowed.goal]
-        : v2.paysFor,
-      {
-        other: allowed.peer.name,
-        payer: allowed.self.name,
-        together: v2.paysFor.some((part) => paysTogether(part)),
-      }
-    ) ||
+    paymentCovered(text, v2.paysFor, {
+      other: allowed.peer.name,
+      payer: allowed.self.name,
+      together: v2.paysFor.some((part) => paysTogether(part)),
+    }) ||
     peerPaymentCovered(
       text,
       v2.peerPays,
@@ -295,8 +287,19 @@ function promisesCovered(
   allowed: Pick<GateAllowance, "goal" | "peer" | "self">,
   v2: NonNullable<GateAllowance["v2Allowed"]>
 ) {
-  return promisesIn(texts, [allowed.self.name, allowed.peer.name]).every(
-    (promise) => noMoney(promise) && promiseCovered(promise, allowed, v2)
+  const names = [allowed.self.name, allowed.peer.name];
+  return (
+    promisesIn(texts, names).every(
+      (promise) => noMoney(promise) && promiseCovered(promise, allowed, v2)
+    ) &&
+    // A sentence with a word of paying code reads no promise in is held:
+    // the reading of promises must not miss one.
+    texts.every((text) =>
+      text
+        .split(/(?<!\d)[.!?]+|[.!?]+(?!\d)|[;\n]+/u)
+        .filter((sentence) => paymentPattern.test(sentence))
+        .every((sentence) => promisesIn([sentence], names).length > 0)
+    )
   );
 }
 

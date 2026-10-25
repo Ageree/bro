@@ -593,7 +593,7 @@ export const paymentPattern =
  * and never a noun that starts the same: «купе», «оплата», «подарок».
  */
 const payVerb =
-  /^(?:(?:за|о)?плат(?:ит|ят|им|ишь|ите|ил|ила|ило|или|ить|и|ив)|(?:за|о)?плач(?:у|ивает|ивают|иваю|иваем|иваешь|ивать|ен|ено|ена|ены)|куп(?:ит|ят|им|ишь|ите|ил|ила|ило|или|ить|лю|и|ив)|покупа(?:ет|ют|ем|ешь|ете|ю|л|ла|ли|ть|й|йте)|скин(?:ет|ется|ут|утся|ем|емся|ешь|ешься|у|усь|ул|улся|ула|улась|ули|улись|уть|уться|ь|ься|ьте|ьтесь)|скидыва(?:ет|ется|ют|ются|ем|емся|ешь|ешься|ю|юсь|л|лся|ла|лась|ли|лись|ть|ться|й|йся|йтесь)|сброс(?:ит|ится|ят|ятся|им|имся|ил|ился|ила|илась|или|ились|ить|иться|ь|ься)|сброш(?:у|усь)|угост(?:ит|ят|им|ишь|ил|ила|или|ить|и)|угощ(?:у|ает|ают|аем|аешь|аю|ал|ала|али|ать|ай)|перевед(?:ет|ут|ем|ешь|у|и)|перев(?:ел|ела|ели|ести)|перевод(?:ит|ят|им|ишь|ил|ила|или|ить)|подар(?:ит|ят|им|ишь|ил|ила|или|ить|и)|влож(?:ит|ится|ат|атся|им|имся|ишь|ишься|у|усь|ил|ился|ила|илась|или|ились|ить|иться)|участв(?:ует|уют|уем|уешь|ую|овал|овала|овали|овать))$/u;
+  /^(?:(?:за|о)?плат(?:ит|ят|им|ишь|ите|ил|ила|ило|или|ить|и|ив)|(?:за|о)?плач(?:у|ивает|ивают|иваю|иваем|иваешь|ивать|ен|ено|ена|ены)|куп(?:ит|ят|им|ишь|ите|ил|ила|ило|или|ить|лю|и|ив)|покупа(?:ет|ют|ем|ешь|ете|ю|л|ла|ли|ть|й|йте)|скин(?:ет|ется|ут|утся|ем|емся|ешь|ешься|у|усь|ул|улся|ула|улась|ули|улись|уть|уться|ь|ься|ьте|ьтесь)|скидыва(?:ет|ется|ют|ются|ем|емся|ешь|ешься|ю|юсь|л|лся|ла|лась|ли|лись|ть|ться|й|йся|йтесь)|сброс(?:ит|ится|ят|ятся|им|имся|ил|ился|ила|илась|или|ились|ить|иться|ь|ься)|сброш(?:у|усь)|угост(?:ит|ят|им|ишь|ил|ила|или|ить|и)|угощ(?:у|ает|ают|аем|аешь|аю|ал|ала|али|ать|ай)|перевед(?:ет|ут|ем|ешь|у|и)|перев(?:ел|ела|ели|ести)|перевод(?:ит|ят|им|ишь|ил|ила|или|ить)|подар(?:ит|ят|им|ишь|ил|ила|или|ить|и)|влож(?:ит|ится|ат|атся|им|имся|ишь|ишься|у|усь|ил|ился|ила|илась|или|ились|ить|иться)|(?:по)?участв(?:ует|уют|уем|уешь|ую|овал|овала|овали|овать))$/u;
 
 /** Words that only say how a promise is made: «берёт на себя», «возьмёт», «обещает». */
 const promiseHow =
@@ -611,12 +611,14 @@ function promiseParts(clause: string) {
 const onSomeone =
   /(?<!\p{L})(?:за\s+(?:ним|ней|ними|мной|нами|тобой|вами)|на\s+(?:нем|нём|ней|них|мне|нас|тебе|вас)|с\s+(?:него|нее|неё|них|меня|нас|тебя|вас))(?!\p{L})/iu;
 
+/** «берёт на себя», «возьмёт на себя»: a promise, whatever it takes on. */
+const takesOn =
+  /(?<!\p{L})(?:бер[её]\p{L}*|беру|взял\p{L}*|возьм\p{L}*)\s+на\s+себя(?!\p{L})/iu;
+
 /**
  * Whether a part of a text promises to pay: a word of paying as a verb
- * (`payVerb`), one of `paymentPattern`'s, or whose a cost is without a verb
- * («за ним», «на Савелии», «за Петром» of one of `people`) — but not a
- * question of who pays («кто из вас купит?»), which promises nothing of
- * anyone.
+ * (@BT@payVerb@BT@), one of @BT@paymentPattern@BT@'s, «берёт на себя», or whose a cost is
+ * without a verb («за ним», «на Савелии», «за Петром» of one of @BT@people@BT@).
  */
 function promising(part: string, people: readonly string[] = []) {
   const words = comparableWords(part);
@@ -631,11 +633,11 @@ function promising(part: string, people: readonly string[] = []) {
       )
   );
   return (
-    !words.some((word) => /^(?:кто|кого|кому|кем)$/u.test(word)) &&
-    (paymentPattern.test(part) ||
-      onSomeone.test(part) ||
-      onPerson ||
-      words.some((word) => payVerb.test(word)))
+    paymentPattern.test(part) ||
+    takesOn.test(part) ||
+    onSomeone.test(part) ||
+    onPerson ||
+    words.some((word) => payVerb.test(word))
   );
 }
 
@@ -663,6 +665,24 @@ export function paymentsSaid(text: string) {
     .filter((part) => paysPattern.test(part))
     .map((part) => part.slice(0, 200))
     .slice(0, 10);
+}
+
+/**
+ * What the owner's words of an errand say they pay for (`paymentsSaid`), and,
+ * when one says it without for what («Договорись об ужине. Я плачу.»),
+ * what the errand is about as far as their own words say it: the words of
+ * the goal that are in them («ужине») — never a word the goal adds, which
+ * Bro wrote («ужин и автомобиль»).
+ */
+export function errandPayments(text: string, goal: string) {
+  const parts = paymentsSaid(text);
+  if (!parts.some((part) => namesNothing(part))) return parts;
+  const own = comparableWords(text);
+  const about = comparableWords(goal)
+    .filter((word) => !promiseFiller.has(word) && holdsWord(own)(word))
+    .join(" ")
+    .slice(0, 200);
+  return about === "" ? parts : [...parts, about].slice(0, 10);
 }
 
 /**
@@ -720,6 +740,20 @@ function nameForm(word: string, name: string) {
  * whose it is, how it is said, when, and what joins them — a closed list.
  */
 const promiseFiller = new Set([
+  "покупка",
+  "покупкой",
+  "покупку",
+  "годится",
+  "идет",
+  "норм",
+  "нормально",
+  "подойдет",
+  "согласны",
+  "устроит",
+  "можешь",
+  "можете",
+  "сможешь",
+  "сможете",
   "вариант",
   "договорились",
   "значит",
@@ -854,7 +888,11 @@ function payerForm(
 ) {
   return (
     comparableWords(names.payer).includes(word) ||
-    (names.together === true && comparableWords(names.other).includes(word)) ||
+    // «ты», «вы»: the other one, whom the packet is written to.
+    (names.together === true &&
+      (comparableWords(names.other).includes(word) ||
+        word === "ты" ||
+        word === "вы")) ||
     [names.payer, names.other]
       .flatMap((name) => comparableWords(name))
       .some(
@@ -865,10 +903,9 @@ function payerForm(
 
 /**
  * Whether a part of the owner's words promises to pay without saying for
- * what («скинусь по 3000», «я плачу»): then it is for what the errand is
- * about, and the goal's words say what that is.
+ * what («скинусь по 3000», «я плачу»).
  */
-export function namesNothing(part: string) {
+function namesNothing(part: string) {
   return comparableWords(part).every(
     (word) =>
       promiseFiller.has(word) ||
@@ -915,40 +952,67 @@ export function paymentCovered(
   );
 }
 
+/** A word that makes a short sentence go on with the one before it: «И шубу.», «Шубу тоже.». */
+const goesOn = /^(?:и|а|ещ[её]|также|тоже|плюс)$/u;
+
 /**
  * The promises to pay texts make, as code reads them whoever retells them:
- * each part of a clause with a word of paying (`promising`), and with it
+ * each part of a sentence with a word of paying (@BT@promising@BT@), and with it
  * every part beside it that names neither person — «машину и билеты» of
- * «Савелий оплатит торт, машину и билеты» and «машину» of «Машину, торт
- * Савелий оплатит» are the same promise, and so is the name before a dash
- * («Савелий — покупает подарок»). A part that names one of them and says
- * more but pays nothing («Пётр за») is a statement of its own.
+ * «Савелий оплатит торт, машину и билеты», «а шубу — тоже он» of «Савелий
+ * оплатит подарок, а шубу — тоже он», «машину» of «Машину, торт Савелий
+ * оплатит» — and the next sentence when it only goes on with it («И
+ * шубу.», «Шубу тоже.»). A name before a dash is whose the next
+ * one is. A part that names one of them and says more but pays nothing
+ * («Пётр за») is a statement of its own, and so is a question of who pays:
+ * a sentence that asks, its part that asks who («кто из вас купит?»).
  */
 export function promisesIn(texts: readonly string[], names: readonly string[]) {
   const people = names.flatMap((name) => comparableWords(name));
   const isName = (word: string) => people.some((name) => nameForm(word, name));
-  return texts.flatMap((text) =>
-    // What comes before a colon introduces what follows: «предлагаю так:».
-    clauses(normalized(text))
-      .flatMap((clause) => clause.split(":"))
-      .flatMap((clause) => {
-        const promises: string[][] = [];
+  return texts.flatMap((text) => {
+    const promises: string[][] = [];
+    const pieces = normalized(text).split(
+      /((?<!\d)[.!?]+|[.!?]+(?!\d)|[;\n]+)/u
+    );
+    for (let index = 0; index < pieces.length; index += 2) {
+      const sentence = (pieces[index] ?? "").trim();
+      const asks = (pieces[index + 1] ?? "").includes("?");
+      const words = comparableWords(sentence);
+      if (
+        promises.length > 0 &&
+        words.length > 0 &&
+        words.length <= 4 &&
+        words.some((word) => goesOn.test(word)) &&
+        !words.some((word) => isName(word)) &&
+        !promising(sentence, people)
+      ) {
+        promises.at(-1)?.push(sentence);
+        continue;
+      }
+      // What comes before a colon introduces what follows: «предлагаю так:».
+      for (const segment of sentence.split(":")) {
         let before: string[] = [];
-        for (const part of promiseParts(clause)) {
-          const words = comparableWords(part);
-          if (promising(part, people)) {
+        for (const part of promiseParts(segment)) {
+          const own = comparableWords(part);
+          const question =
+            /^(?:кто|кого|кому|кем)$/u.test(own[0] ?? "") ||
+            (asks && own.some((word) => /^(?:кто|кого|кому|кем)$/u.test(word)));
+          if (!question && promising(part, people)) {
             promises.push([...before, part]);
             before = [];
-          } else if (words.some((word) => isName(word) || payVerb.test(word)))
-            // A statement of one of them, or a question of who pays: its
-            // own, but a bare name before a dash is whose the next one is.
-            before = words.every((word) => isName(word)) ? [part] : [];
+          } else if (
+            question ||
+            own.some((word) => isName(word) || payVerb.test(word))
+          )
+            before = own.every((word) => isName(word)) ? [part] : [];
           else if (promises.length > 0) promises.at(-1)?.push(part);
           else before.push(part);
         }
-        return promises.map((promise) => promise.join(" "));
-      })
-  );
+      }
+    }
+    return promises.map((promise) => promise.join(" "));
+  });
 }
 
 /** Whether words hold a word in any of its forms: «подарок» of «подарка». */
@@ -1014,19 +1078,24 @@ export function peerPaymentCovered(
   const self = comparableWords(names.self);
   const payer = (words: readonly string[]) =>
     words.some((word) => peer.includes(word));
+  // «ты», «вы» in the promise are the other one too, as the packet is written to them.
+  const payerHere = (words: readonly string[]) =>
+    payer(words) || words.some((word) => word === "ты" || word === "вы");
   const words = comparableWords(text);
   const given = peerPays.filter((part) => payer(comparableWords(part)));
   return (
     given.length > 0 &&
-    payer(words) &&
+    payerHere(words) &&
     !paysPattern.test(words.join(" ")) &&
     !words.some(
       (word) =>
         ownerPointer.test(word) || self.some((name) => nameForm(word, name))
     ) &&
+    // The owner is ruled out above: «ты» here is the other one.
     paymentCovered(text, [...given, goal], {
       other: names.self,
       payer: names.peer,
+      together: true,
     })
   );
 }

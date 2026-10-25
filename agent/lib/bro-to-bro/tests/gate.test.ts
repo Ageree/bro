@@ -502,12 +502,12 @@ describe("screenOutgoing, the second version's", () => {
         ownerPays(["я плачу"])
       )
     ).resolves.toMatchObject({ verdict: "hold" });
-    // «скинусь» without for what is for what the errand is about: the goal
-    // says it, and nothing beyond.
+    // «скинусь» without for what covers a promise of nothing named and the
+    // words of the errand the owner said (errandPayments), never the goal.
     const objectless = {
       ...owned,
-      goal: "скинемся маме на подарок",
-      v2Allowed: { ...ownedV2, paysFor: ["скинусь по 3000"] },
+      goal: "скинемся маме на подарок и автомобиль",
+      v2Allowed: { ...ownedV2, paysFor: ["скинусь по 3000", "подарок маме"] },
     };
     await expect(
       verdict(
@@ -516,13 +516,28 @@ describe("screenOutgoing, the second version's", () => {
         objectless
       )
     ).resolves.toEqual({ verdict: "pass" });
-    await expect(
-      verdict(
-        { body: "Савелий скинется на подарок и машину." },
-        paymentFacts("Савелий скинется на подарок и машину"),
-        objectless
-      )
-    ).resolves.toMatchObject({ verdict: "hold" });
+    for (const body of [
+      "Савелий скинется на подарок и машину.",
+      "Савелий оплатит автомобиль.",
+    ])
+      expect(
+        // oxlint-disable-next-line eslint/no-await-in-loop -- One packet after another.
+        (await verdict({ body }, paymentFacts(body), objectless)).verdict
+      ).toBe("hold");
+    // Code reads the promise whatever the checker lists: «кому угодно» is
+    // no question, a colon keeps what follows, «а шубу — тоже он» and «И
+    // шубу.» belong to the promise before them.
+    const ownerSaid = ownerPays(["скинемся маме на подарок", "я куплю торт"]);
+    /* oxlint-disable eslint/no-await-in-loop -- One packet after another. */
+    for (const body of [
+      "Савелий купит автомобиль кому угодно",
+      "Савелий оплатит: торт, автомобиль",
+      "Савелий оплатит подарок, а шубу — тоже он",
+      "Савелий оплатит маме подарок. И шубу.",
+      "Савелий берёт на себя шубу маме",
+    ])
+      expect((await verdict({ body }, [], ownerSaid)).verdict).toBe("hold");
+    /* oxlint-enable eslint/no-await-in-loop */
     // A promise quoted without whose it is is read in the packet's words.
     await expect(
       verdict(

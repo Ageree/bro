@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   homeLike,
+  errandPayments,
   meetingLength,
   namedAmounts,
-  namesNothing,
   namedItems,
   namedPlace,
   namedTime,
@@ -310,8 +310,17 @@ describe("paymentsSaid", () => {
       expect(paymentCovered(text, [...paysFor], names)).toBe(false);
     // A promise of nothing named covers only a promise of nothing named.
     expect(paymentCovered("Савелий заплатит", ["я плачу"], names)).toBe(true);
-    expect(namesNothing("скинусь по 3000")).toBe(true);
-    expect(namesNothing("я куплю торт")).toBe(false);
+    // «Я плачу» of an errand is for what the owner's own words say it is
+    // about, never for what the goal adds.
+    expect(
+      errandPayments(
+        ownerText(["Договорись об ужине. Я плачу."]),
+        "Ужин и автомобиль"
+      )
+    ).toEqual(["я плачу", "ужин"]);
+    expect(errandPayments(ownerText(["я куплю торт"]), "торт и вино")).toEqual([
+      "я куплю торт",
+    ]);
     // «скинемся» pays with the other one: they may be the payer too.
     expect(paysTogether("скинемся с петей маме на подарок")).toBe(true);
     expect(paysTogether("я куплю торт")).toBe(false);
@@ -377,11 +386,15 @@ describe("paymentsSaid", () => {
       "Борис купит подарок",
       "Савелию куплю подарок",
       "Савелию Пётр купит подарок",
+      "Пётр и ты купите подарок",
     ])
       expect(peerPaymentCovered(text, given, names, goal)).toBe(false);
     expect(
       peerPaymentCovered("Савелий покупает подарок маме", [], names, goal)
     ).toBe(false);
+    expect(
+      peerPaymentCovered("Ты купишь подарок маме?", given, names, goal)
+    ).toBe(true);
   });
 });
 
