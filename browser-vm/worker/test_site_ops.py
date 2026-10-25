@@ -353,7 +353,7 @@ class Page:
         return Context()
 
     async def goto(self, url, **_):
-        self.url = url
+        self.url = self.landed.get(url, url)
         self.visited.append(url)
         for response in self.requests:
             for listener in list(self.listeners):
@@ -489,13 +489,28 @@ class FitAndPickTest(unittest.TestCase):
         operation = {"source": {"kind": "document", "state": {"tag": "template", "id": "HH-Lux-InitialState"}}}
         url = "https://hh.ru/search/vacancy?text=x"
         self.assertEqual(worker.site_document_state(operation, url, 429, url, HH_DOCUMENT), STATE)
+        # A Russian exit lands on the city's own host of the site: the same place, the same results.
+        regional = "https://blagoveschensk.hh.ru/search/vacancy?text=x"
+        self.assertEqual(worker.site_document_state(operation, url, 200, regional, HH_DOCUMENT), STATE)
+        self.assertEqual(worker.site_document_state(operation, regional, 200, url, HH_DOCUMENT), STATE)
         cases = [(404, url, HH_DOCUMENT, "moved"), (200, "https://hh.ru/", HH_DOCUMENT, "moved"),
+                 (200, "https://evilhh.ru/search/vacancy?text=x", HH_DOCUMENT, "moved"),
+                 (200, "https://spb.hh.ru/", HH_DOCUMENT, "moved"),
                  (403, url, "<html>Доступ ограничен</html>", "blocked"), (200, url, "<html></html>", "no_data"),
                  (500, url, "<html></html>", "failed")]
         for status, landed, text, reason in cases:
             with self.assertRaises(worker.SiteOpFailure) as raised:
                 worker.site_document_state(operation, url, status, landed, text)
             self.assertEqual(raised.exception.reason, reason, (status, landed))
+
+    def test_a_city_host_of_the_site_is_the_same_place_and_a_neighbour_is_not(self):
+        same = worker.site_same_place
+        self.assertTrue(same("https://hh.ru/a", "https://blagoveschensk.hh.ru/a"))
+        self.assertTrue(same("https://www.hh.ru/a", "https://hh.ru/b"))
+        self.assertTrue(same("https://spb.hh.ru/a", "https://hh.ru/a"))
+        for landed in ("https://evilhh.ru/a", "https://other.msk.ru/a", "https://hh.ru.evil.com/a", "", None):
+            self.assertFalse(same("https://hh.ru/a", landed), landed)
+        self.assertFalse(same("https://shop.msk.ru/a", "https://other.msk.ru/a"))
 
     def test_cards_without_names_or_with_one_name_are_no_results(self):
         operation = {"fields": {"name": ["name"]}}
@@ -616,6 +631,16 @@ class DirectOpTest(DirectSetup):
         self.next_page = Page({url.replace("менеджер", "сварщик"): HH_DOCUMENT})
         status, answer = await self.read(operation, url.replace("менеджер", "сварщик"))
         self.assertEqual((answer["ok"], answer["reason"]), (False, "unanswered"))
+
+    async def test_a_site_that_sends_the_tab_to_its_city_host_is_asked_there(self):
+        [operation] = await OpTest._hh_operation(None)
+        url = "https://hh.ru/search/vacancy?text=менеджер&area=2"
+        regional = "https://spb.hh.ru/search/vacancy?text=менеджер&area=2"
+        self.next_page = Page({regional: HH_DOCUMENT},
+                              landed={"https://hh.ru/robots.txt": "https://spb.hh.ru/robots.txt"})
+        status, answer = await self.read(operation, url)
+        self.assertEqual((answer["ok"], answer["via"], answer["fit"]), (True, "fetch", "exact"))
+        self.assertEqual(self.pages[0].fetched, [regional])
 
     async def test_a_document_the_fetch_cannot_read_is_opened_and_a_site_that_moved_says_so(self):
         [operation] = await OpTest._hh_operation(None)
