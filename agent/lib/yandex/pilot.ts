@@ -43,6 +43,19 @@ export function goPassengerPilot(scope: { readonly workspaceId: string }) {
   );
 }
 
+/**
+ * Whether the person's own Go ride goes as their Go app books it, within the
+ * purchase pilot (YANDEX_GO_OWN_RIDE_WORKSPACES): named by its id, or
+ * everyone with `*`. Unset, nobody.
+ */
+export function goOwnRidePilot(scope: { readonly workspaceId: string }) {
+  const list = env.YANDEX_GO_OWN_RIDE_WORKSPACES ?? [];
+  return (
+    yandexPurchasePilot(scope) &&
+    (list.includes("*") || list.includes(scope.workspaceId))
+  );
+}
+
 /** Whether the workspace's public reads may skip the browser (YANDEX_DIRECT_WORKSPACES). */
 export function yandexDirectPilot(scope: { readonly workspaceId: string }) {
   const list = env.YANDEX_DIRECT_WORKSPACES ?? [];

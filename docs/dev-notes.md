@@ -1315,6 +1315,13 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   и ему (`docs/yandex-api/go-booking.md`). Номер — лишь из слов человека или его контактов (`ridePassenger`
   в `agent/tools/yandex_purchase.ts`). Поля веб-клиента Go ищутся в его JS: страница
   `taxi.yandex.ru` и бандлы `yastatic.net/s3/taxi-front/txf-turboapp-taxi/…` отдаются и curl из сессии.
+- Своя поездка (24.10, `YANDEX_GO_OWN_RIDE_WORKSPACES`, id или `*`): владелец на «вызови мне такси»
+  получал «вам кто-то заказал такси», где точку подачи не поменять, и перезаказывал из приложения. Полей
+  пассажира в тех заказах не было: черновик сайта шлёт `dont_sms: false`, и Яндекс пишет SMS на номер
+  аккаунта, а у заказов приложения `dont_sms: true` (видно в `taxiontheway` любого заказа номера). В пилоте
+  своя поездка идёт с `dont_sms: true`; номер самого человека в `passengerPhone` — своя поездка
+  (`ridePassenger` и `launch.phones` в `go.book`). Сравнить заказы Бро и приложения — `yandex-probe.py`
+  режимом `page` на `taxi.yandex.ru/robots.txt` с `goSession` в шаге: `orderhistory/v2/list` и `taxiontheway`.
 
 ## Composio: Google, Notion, Slack и другие приложения
 

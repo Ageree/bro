@@ -121,6 +121,20 @@ describe("go.book", () => {
     expect(sent("/external/3.0/orderdraft")[0]?.body).not.toHaveProperty(
       "extra_contact_phone"
     );
+    expect(sent("/external/3.0/orderdraft")[0]?.body).not.toHaveProperty(
+      "dont_sms"
+    );
+  });
+
+  it("books the person's own ride as their Go app does: Yandex texts nobody", async () => {
+    const { page, sent } = await goPage({});
+    const data = dataOf(
+      await runInPage(goBookOperation.run, book({ quietOwnRide: true }), page)
+    );
+    expect(data).toMatchObject({ kind: "booked", orderId: "new-order" });
+    expect(sent("/external/3.0/orderdraft")[0]?.body).toMatchObject({
+      dont_sms: true,
+    });
   });
 
   it("reads the ride that is on and both places together, and writes only after all of them", async () => {
@@ -233,6 +247,72 @@ describe("go.book", () => {
     expect(sent("/external/3.0/orderdraft")[0]?.body).toMatchObject({
       extra_contact_phone: "+79161234567",
       extra_passenger_name: "Маша",
+    });
+  });
+
+  it("keeps the passenger's texts when the person's own ride is quiet", async () => {
+    const { page, sent } = await goPage({});
+    await runInPage(
+      goBookOperation.run,
+      book({ passengerPhone: "+79161234567", quietOwnRide: true }),
+      page
+    );
+    expect(sent("/external/3.0/orderdraft")[0]?.body).toMatchObject({
+      extra_contact_phone: "+79161234567",
+    });
+    expect(sent("/external/3.0/orderdraft")[0]?.body).not.toHaveProperty(
+      "dont_sms"
+    );
+  });
+
+  it("books the account's own number as the person's own ride", async () => {
+    const { page, sent } = await goPage({
+      "/3.0/launch": {
+        body: {
+          orders: [],
+          phone: "+79161234567",
+          phones: { "+79161234567": true },
+        },
+      },
+    });
+    const data = dataOf(
+      await runInPage(
+        goBookOperation.run,
+        book({
+          passengerName: "Я",
+          passengerPhone: "8 916 123-45-67",
+          quietOwnRide: true,
+        }),
+        page
+      )
+    );
+    expect(data).toMatchObject({ kind: "booked" });
+    expect(data).not.toHaveProperty("passenger");
+    expect(sent("/external/3.0/orderdraft")[0]?.body).not.toHaveProperty(
+      "extra_contact_phone"
+    );
+    expect(sent("/external/3.0/orderdraft")[0]?.body).toMatchObject({
+      dont_sms: true,
+    });
+  });
+
+  it("keeps a passenger whose number is not the account's", async () => {
+    const { page, sent } = await goPage({
+      "/3.0/launch": {
+        body: {
+          orders: [],
+          phone: "+79990001122",
+          phones: { "+79990001122": true },
+        },
+      },
+    });
+    await runInPage(
+      goBookOperation.run,
+      book({ passengerPhone: "+79161234567", quietOwnRide: true }),
+      page
+    );
+    expect(sent("/external/3.0/orderdraft")[0]?.body).toMatchObject({
+      extra_contact_phone: "+79161234567",
     });
   });
 
