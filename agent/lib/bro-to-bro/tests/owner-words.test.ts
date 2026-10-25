@@ -253,6 +253,18 @@ describe("paymentsSaid", () => {
     ["я плачу", ["я плачу"]],
     ["готов дать 3000 на цветы", ["готов дать 3000 на цветы"]],
     ["я куплю торт, Борис купит машину", ["я куплю торт"]],
+    [
+      "и ещё: скинемся вчетвером, я, аня, вика и борис, на юбилей маме бориса по 3000, торт закажу я",
+      [
+        "и еще: скинемся вчетвером я аня вика и борис на юбилей маме бориса по 3000",
+        "торт закажу я",
+      ],
+    ],
+    // What the owner gives others, or says of something else, is no promise of theirs.
+    ["я куплю мясо, Борис — овощи, Аня — торт", ["я куплю мясо"]],
+    ["Борис — овощи, я куплю мясо", ["я куплю мясо"]],
+    ["я куплю торт, Борис — шампанское", ["я куплю торт"]],
+    ["я куплю торт, автомобиль стоит в гараже", ["я куплю торт"]],
   ])("hears what the owner pays for: %s", (text, paysFor) => {
     expect(paymentsSaid(ownerText([text]))).toEqual(paysFor);
   });
@@ -289,6 +301,10 @@ describe("paymentsSaid", () => {
     expect(
       paymentCovered("Савелий с Петром купят торт", ["я куплю торт"], names)
     ).toBe(true);
+    expect(paymentCovered("он купит торт", ["я куплю торт"], names)).toBe(true);
+    expect(paymentCovered("он купит машину", ["я куплю торт"], names)).toBe(
+      false
+    );
     expect(
       paymentCovered("Подарок маме купит Савелий", ["маме на подарок"], names)
     ).toBe(true);
@@ -340,6 +356,28 @@ describe("paymentsSaid", () => {
       "Савелий покупает подарок",
     ]);
     expect(promisesIn(["Пётр за, кто из вас купит?"], names)).toEqual([]);
+    expect(promisesIn(["Пётр — за, Савелий покупает."], names)).toEqual([
+      "Савелий покупает",
+    ]);
+    expect(
+      promisesIn(["Савелий берёт мясо — кто что возьмёт с тебя?"], names)
+    ).toEqual([]);
+    // Taking the purchase on is a promise; a part joins only its own sentence's.
+    expect(
+      promisesIn(["Пётр скинется, покупку возьмёт Савелий."], names)
+    ).toEqual(["Пётр скинется", "покупку возьмёт Савелий"]);
+    expect(
+      promisesIn(
+        ["Савелий оплатит торт. Пётр может взять покупку на себя?"],
+        names
+      )
+    ).toEqual(["Савелий оплатит торт", "Пётр может взять покупку на себя"]);
+    expect(
+      promisesIn(["Савелий оплатит торт. Пётр приедет к семи."], names)
+    ).toEqual(["Савелий оплатит торт"]);
+    expect(
+      promisesIn(["Пётр оплатит автомобиль. Савелий тоже."], names)
+    ).toEqual(["Пётр оплатит автомобиль Савелий тоже"]);
     expect(promisesIn(["Торт за ним", "Ужин на Савелии"], names)).toEqual([
       "Торт за ним",
       "Ужин на Савелии",
@@ -399,6 +437,9 @@ describe("paymentsSaid", () => {
     expect(peerPaysSaid(ownerText(["пусть Борис платит за мясо"]))).toEqual([
       "пусть борис платит за мясо",
     ]);
+    expect(
+      peerPaysSaid(ownerText(["Борис купит торт, автомобиль стоит в гараже"]))
+    ).toEqual(["борис купит торт"]);
     for (const text of [
       "Борис хочет, чтобы я купил",
       "Петя написал: «пусть Савелий купит»",

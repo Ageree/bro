@@ -568,6 +568,36 @@ describe("screenOutgoing, the second version's", () => {
     await expect(
       verdict({ body: "Кто из вас купит подарок?" }, [], ownerSaid)
     ).resolves.toEqual({ verdict: "pass" });
+    // The owner naming whom they chip in with sets what the promise may say
+    // (live 25.10: every proposal of a chip-in of four was held).
+    const four = {
+      ...owned,
+      v2Allowed: {
+        ...ownedV2,
+        paysFor: [
+          "скинемся вчетвером я пётр аня и вика на юбилей маме петра по 3000",
+          "торт закажу я",
+        ],
+      },
+    };
+    await expect(
+      verdict(
+        {
+          body: "Привет! Бро Савелия на связи. Савелий предлагает скинуться вчетвером на юбилей маме Петра: Савелий закажет торт, а Аня, Вика и Пётр тоже участвуют.",
+        },
+        [],
+        four
+      )
+    ).resolves.toEqual({ verdict: "pass" });
+    await expect(
+      verdict(
+        {
+          body: "Савелий предлагает скинуться вчетвером на юбилей и на машину маме Петра.",
+        },
+        [],
+        four
+      )
+    ).resolves.toMatchObject({ verdict: "hold" });
     // A promise quoted without whose it is is read in the packet's words.
     await expect(
       verdict(

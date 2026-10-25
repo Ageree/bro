@@ -281,6 +281,17 @@ function personBurst(
 
 const sentTextSchema = z.object({ text: z.string() });
 
+/**
+ * What `send_message` answers for a stale report's send or a reaction that
+ * cannot go (`agent/tools/messaging.ts`): it did not reach the person, though
+ * the turn's delivery counts it as handled (it ends that turn silently). Read
+ * as a send that did, it stood for the question a person's «да» answers
+ * (25.10: a stale «DELIVERY_COMPLETE» after Bro's question about a proposal).
+ */
+function notSent(output: ToolResultPart["output"]) {
+  return output.type === "text" && output.value.startsWith("Not sent:");
+}
+
 /** The last message of Bro's that reached the person among `messages`. */
 function lastDelivered(messages: readonly ModelMessage[]) {
   const delivered = new Set(
@@ -289,7 +300,8 @@ function lastDelivered(messages: readonly ModelMessage[]) {
         ? message.content.flatMap((part) =>
             part.type === "tool-result" &&
             part.toolName === "send_message" &&
-            sendReachedPerson(part.output)
+            sendReachedPerson(part.output) &&
+            !notSent(part.output)
               ? [part.toolCallId]
               : []
           )
