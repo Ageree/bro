@@ -8,34 +8,41 @@ import * as z from "zod";
  *
  * Nothing of a run's values is in it, and the schema is what makes sure of
  * that before anything is kept: the page's query is only its keys, each
- * with a typed placeholder; a part of an address that looks like an id, a
- * number or an email is a placeholder too; there is no request body, no
- * header and no cookie, and any key the schema does not name refuses the
- * whole record.
+ * with a typed placeholder; a part of an address's path is either a short
+ * word of lower-case latin letters and hyphens or a placeholder; a key of
+ * the data that looks like a value (an id, a hash, a uuid) is refused; there
+ * is no request body, no header and no cookie, and any key the schema does
+ * not name refuses the whole record. The worker writes its templates by the
+ * same rules (`site_path_part`, `site_key` in browser-vm/worker/worker.py);
+ * the schema refuses, it never cleans.
  */
 const placeholder = /^%(?:query|number|date|sort|flag|id|word)%$/u;
 const keyPattern = /^[A-Za-z0-9_.\-[\]]{1,40}$/u;
+// A key that is itself a value: a run of four digits, eight hex digits, a uuid.
+const valueKey = /\d{4}|[0-9a-f]{8}|[0-9a-f]{8}-[0-9a-f]{4}-/iu;
 const hostPattern = /^(?:[a-z0-9-]{1,63}\.)+[a-z]{2,63}$/u;
-// A literal part of an address: no run of four digits (an id, a phone, a
-// date) and no `@` (an email). Percent-encoded words (a city in Cyrillic)
-// are letters, not values, and pass.
-const literalPattern = /^[A-Za-z0-9\-_.~%]*$/u;
-const valueLike = /\d{4,}|@/u;
+// A part of an address's path kept as it is: a short word of lower-case
+// latin letters and hyphens (`search`, `vacancy`, `kazan`). A
+// percent-encoded word, a phone with dashes (916-123-45-67), a user name
+// (ivan_petrov), a number: none of them is, they are a person's or an
+// errand's values. A request's own path may also have its API version (v2).
+const literalSegment = /^[a-z-]{0,24}$/u;
+const apiVersion = /^v\d{1,2}$/u;
 
-function literalOrPlaceholder(segment: string) {
-  return (
-    placeholder.test(segment) ||
-    (literalPattern.test(segment) &&
-      !valueLike.test(decodeURIComponentSafe(segment)))
-  );
-}
+const plainKey = z
+  .string()
+  .regex(keyPattern)
+  .refine((key) => !valueKey.test(key), "a key, not a value");
 
-function decodeURIComponentSafe(text: string) {
-  try {
-    return decodeURIComponent(text);
-  } catch {
-    return text;
-  }
+function pathTemplate(path: string, request: boolean) {
+  return path
+    .split("/")
+    .every(
+      (segment) =>
+        placeholder.test(segment) ||
+        literalSegment.test(segment) ||
+        (request && apiVersion.test(segment))
+    );
 }
 
 /** `https://host/path` and the query after `?`, read without decoding a placeholder. */
@@ -46,35 +53,39 @@ function splitAddress(address: string) {
   return { host, path, query };
 }
 
+/**
+ * A host as one site: the exact host, a leading `www.` aside. Not its last
+ * two labels: under .msk.ru or .co.uk those are a registry's.
+ */
 function siteOf(host: string) {
-  return host.split(".").slice(-2).join(".");
+  return host.toLowerCase().replace(/^www\./u, "");
 }
 
-const templateSchema = z
-  .string()
-  .max(600)
-  .refine((address) => {
-    const parts = splitAddress(address);
-    if (parts === undefined || !hostPattern.test(parts.host)) return false;
-    if (!parts.path.split("/").every(literalOrPlaceholder)) return false;
-    if (parts.query === undefined) return true;
-    const keys = parts.query.split("&").map((pair) => pair.split("="));
-    return (
-      keys.length <= 20 &&
-      keys.every(
-        ([key = "", value, ...rest]) =>
-          rest.length === 0 &&
-          keyPattern.test(key) &&
-          value !== undefined &&
-          placeholder.test(value)
-      )
-    );
-  }, "a results page as a template: placeholders for every value");
+function templateSchema(request: boolean) {
+  return z
+    .string()
+    .max(600)
+    .refine((address) => {
+      const parts = splitAddress(address);
+      if (parts === undefined || !hostPattern.test(parts.host)) return false;
+      if (!pathTemplate(parts.path, request)) return false;
+      if (parts.query === undefined) return true;
+      const keys = parts.query.split("&").map((pair) => pair.split("="));
+      return (
+        keys.length <= 20 &&
+        keys.every(
+          ([key = "", value, ...rest]) =>
+            rest.length === 0 &&
+            plainKey.safeParse(key).success &&
+            value !== undefined &&
+            placeholder.test(value)
+        )
+      );
+    }, "a results page as a template: placeholders for every value");
+}
 
 const fieldPathSchema = z
-  .array(
-    z.union([z.string().regex(keyPattern), z.number().int().min(0).max(1000)])
-  )
+  .array(z.union([plainKey, z.number().int().min(0).max(1000)]))
   .max(12);
 
 const linkSchema = z.union([
@@ -83,15 +94,15 @@ const linkSchema = z.union([
   z
     .strictObject({
       parts: z.array(fieldPathSchema.min(1)).min(1).max(6),
-      query: z.array(z.string().regex(keyPattern)).max(10),
+      query: z.array(plainKey).max(10),
       template: z
         .string()
         .max(300)
-        .regex(/^\/[A-Za-z0-9\-_.~%/{}]*$/u),
+        .regex(/^\/[a-z\-/{}0-9]*$/u),
     })
     .refine(
       ({ parts, template }) =>
-        !valueLike.test(template.replaceAll(/\{\d\}/gu, "")) &&
+        pathTemplate(template.replaceAll(/\{\d\}/gu, ""), false) &&
         parts.every((_, index) => template.includes(`{${String(index)}}`)),
       "a link template: the element's fields, never a value"
     ),
@@ -102,7 +113,7 @@ const sourceSchema = z.discriminatedUnion("kind", [
     kind: z.literal("document"),
     state: z.union([
       z.strictObject({
-        id: z.string().regex(keyPattern),
+        id: plainKey,
         tag: z.enum(["script", "template"]),
       }),
       z.strictObject({
@@ -115,7 +126,7 @@ const sourceSchema = z.discriminatedUnion("kind", [
   z.strictObject({
     kind: z.literal("xhr"),
     method: z.enum(["GET", "POST"]),
-    url: templateSchema.refine(
+    url: templateSchema(true).refine(
       (address) => splitAddress(address)?.query === undefined,
       "the request's address, no query"
     ),
@@ -141,7 +152,7 @@ export const siteOperationSchema = z
     }),
     items: fieldPathSchema,
     name: z.string().min(1).max(160),
-    page: templateSchema,
+    page: templateSchema(false),
     seen: z.strictObject({
       items: z.number().int().nonnegative(),
       matched: z.number().int().nonnegative(),

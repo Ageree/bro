@@ -18,6 +18,10 @@ import {
 /** The operations one run is given: a site rarely has more than one results page that matters. */
 const operationsPerRun = 3;
 
+/** The runs whose finds this process has kept, the latest few hundred. */
+const rememberedRuns = new Set<string>();
+const rememberedRunsKept = 500;
+
 /**
  * Whether the workspace is in the pilot (BROWSER_SITE_OPS_WORKSPACES:
  * workspace ids or `*`). Ids only, as BROWSER_HELIUM_WORKSPACES: nothing is
@@ -34,30 +38,37 @@ export function errandSite(task: string) {
 }
 
 /**
- * The site's operations a run of the workspace gets: its own finds, the
- * most often found first, then the reviewed ones every workspace gets
- * (`knownSiteOperations`), by name once.
+ * The site's operations a run of the workspace gets: the reviewed ones
+ * every workspace gets (`knownSiteOperations`) first, then its own finds,
+ * the most often found first. On a host a reviewed operation covers, the
+ * workspace's own finds are left out: a run's find of the same page (hh.ru,
+ * found again while op() reads it) has no reviewer's words about its fields
+ * (`about`), and would read in their place.
  */
 export async function siteOperationsFor(
   workspaceId: string,
   site: string | undefined
 ): Promise<SiteOperation[]> {
   if (site === undefined) return [];
+  const known = knownSiteOperations.filter((operation) =>
+    siteOperationOnSite(operation, site)
+  );
+  const reviewed = new Set(known.map((operation) => operation.name));
+  const reviewedHosts = new Set(
+    known.map((operation) => siteOperationHost(operation.page))
+  );
   const rows = await listBrowserSiteOperations(workspaceId);
   const own = rows.flatMap((row) => {
     const parsed = siteOperationSchema.safeParse(row.operation);
-    return parsed.success ? [parsed.data] : [];
+    if (!parsed.success) return [];
+    const operation = parsed.data;
+    return siteOperationOnSite(operation, site) &&
+      !reviewed.has(operation.name) &&
+      !reviewedHosts.has(siteOperationHost(operation.page))
+      ? [operation]
+      : [];
   });
-  const chosen: SiteOperation[] = [];
-  for (const operation of [...own, ...knownSiteOperations]) {
-    if (
-      siteOperationOnSite(operation, site) &&
-      !chosen.some((kept) => kept.name === operation.name)
-    ) {
-      chosen.push(operation);
-    }
-  }
-  return chosen.slice(0, operationsPerRun);
+  return [...known, ...own].slice(0, operationsPerRun);
 }
 
 /**
@@ -87,10 +98,23 @@ export function siteOperationsLine(operations: readonly SiteOperation[]) {
  */
 export async function rememberSiteOperations(
   workspaceId: string,
-  found: z.infer<typeof foundSiteOperationsSchema> | undefined
+  found: z.infer<typeof foundSiteOperationsSchema> | undefined,
+  runId?: string
 ) {
   if (found === undefined || found.length === 0) return;
   if (!siteOpsPilot({ workspaceId })) return;
+  // Two reads that both saw the run settle (the tick and a status) count its
+  // finds once. In the process only: the settle itself is not a claim.
+  if (runId !== undefined) {
+    if (rememberedRuns.has(runId)) return;
+    rememberedRuns.add(runId);
+    if (rememberedRuns.size > rememberedRunsKept) {
+      rememberedRuns.delete(rememberedRuns.values().next().value ?? runId);
+    }
+  }
+  const reviewed = new Set(
+    knownSiteOperations.map((operation) => operation.name)
+  );
   const operations = found.flatMap((record) => {
     const parsed = siteOperationSchema.safeParse(record);
     if (!parsed.success) {
@@ -98,9 +122,12 @@ export async function rememberSiteOperations(
         issues: parsed.error.issues.map((issue) => issue.message).slice(0, 3),
       });
     }
+    // A reviewed operation's page found again is the reviewed one's: it is
+    // not kept beside it.
+    if (!parsed.success || reviewed.has(parsed.data.name)) return [];
     // Words about the fields are a reviewer's, never a run's: text a page
     // could have put there would go into the next errand's task.
-    return parsed.success ? [{ ...parsed.data, about: undefined }] : [];
+    return [{ ...parsed.data, about: undefined }];
   });
   if (operations.length === 0) return;
   const rows = await listBrowserSiteOperations(workspaceId);
@@ -119,6 +146,7 @@ export async function rememberSiteOperations(
         break;
       }
     }
+    if (reviewed.has(kept.name)) continue;
     // oxlint-disable-next-line eslint/no-await-in-loop -- A run finds one or two.
     await saveBrowserSiteOperation(workspaceId, {
       host: siteOperationHost(kept.page),

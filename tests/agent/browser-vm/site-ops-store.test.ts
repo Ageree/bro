@@ -54,20 +54,20 @@ async function store(pilot: string) {
 const trains = {
   fields: { link: "page", name: ["number"], price: ["price", "min"] },
   items: [0, "trains"],
-  name: "www.tutu.ru/poezda/Moskva/Sankt-Peterburg/",
-  page: "https://www.tutu.ru/poezda/Moskva/Sankt-Peterburg/?date=%date%",
+  name: "www.tutu.ru/poezda/moskva/sankt-peterburg/",
+  page: "https://www.tutu.ru/poezda/moskva/sankt-peterburg/?date=%date%",
   seen: { items: 42, matched: 3, of: 3 },
   source: {
     kind: "xhr",
     method: "POST",
-    url: "https://offers-api.tutu.ru/railway/offers",
+    url: "https://www.tutu.ru/railway/v1/offers",
   },
 };
 const leaky = {
   ...trains,
   cookies: "sessionid=4f1c2d; _ym_uid=123",
-  name: "www.tutu.ru/poezda/Moskva/Kazan/",
-  page: "https://www.tutu.ru/poezda/Moskva/Kazan/?date=08.11.2026&phone=79217818876",
+  name: "www.tutu.ru/poezda/moskva/kazan/",
+  page: "https://www.tutu.ru/poezda/moskva/kazan/?date=08.11.2026&phone=79217818876",
   source: { ...trains.source, headers: { authorization: "Bearer s3cr3t" } },
 };
 
@@ -83,12 +83,63 @@ describe("a workspace's site operations", { timeout: 30_000 }, () => {
     expect(
       await run.siteOperationsFor(bob.workspaceId, "https://www.tutu.ru")
     ).toEqual([]);
-    // The reviewed ones are everybody's, the workspace's own first.
+    // The reviewed ones are everybody's.
     expect(
       (await run.siteOperationsFor(bob.workspaceId, "https://hh.ru")).map(
         (operation) => operation.name
       )
     ).toEqual(["hh.ru/search/vacancy"]);
+  });
+
+  it("give a reviewed operation over the workspace's own find of its page or host", async () => {
+    const { client, run } = await store("*");
+    const vacancies = {
+      fields: { link: { path: ["links", "desktop"] }, name: ["name"] },
+      items: ["vacancySearchResult", "vacancies"],
+      name: "hh.ru/search/vacancy",
+      page: "https://hh.ru/search/vacancy?text=%query%",
+      seen: { items: 50, matched: 3, of: 3 },
+      source: {
+        kind: "document",
+        state: { id: "HH-Lux-InitialState", tag: "template" },
+      },
+    };
+    const resumes = {
+      ...vacancies,
+      name: "hh.ru/search/resume",
+      page: "https://hh.ru/search/resume?text=%query%",
+    };
+    // A run that read the reviewed page with op() finds it again: not kept.
+    await run.rememberSiteOperations(alice.workspaceId, [vacancies, resumes]);
+    const rows = await client.query<{ name: string }>(
+      "SELECT name FROM browser_site_operations"
+    );
+    expect(rows.rows).toEqual([{ name: "hh.ru/search/resume" }]);
+    // One kept before (or under another name on the reviewed one's host)
+    // never reads in its place: the reviewer's words about the fields stay.
+    await client.query(
+      "INSERT INTO browser_site_operations (workspace_id, name, host, operation, runs) VALUES ($1, $2, $3, $4, 99)",
+      [alice.workspaceId, vacancies.name, "hh.ru", JSON.stringify(vacancies)]
+    );
+    const given = await run.siteOperationsFor(
+      alice.workspaceId,
+      "https://hh.ru"
+    );
+    expect(given.map((operation) => operation.name)).toEqual([
+      "hh.ru/search/vacancy",
+    ]);
+    expect(given[0]?.about).toContain("compensation.currencyCode");
+  });
+
+  it("count a run's finds once when two reads both see it settle", async () => {
+    const { client, run } = await store("*");
+    await run.rememberSiteOperations(alice.workspaceId, [trains], "run-1");
+    await run.rememberSiteOperations(alice.workspaceId, [trains], "run-1");
+    await run.rememberSiteOperations(alice.workspaceId, [trains], "run-2");
+    const rows = await client.query<{ runs: number }>(
+      "SELECT runs FROM browser_site_operations"
+    );
+    expect(rows.rows).toEqual([{ runs: 2 }]);
   });
 
   it("never stores a cookie, a header, a secret or a value of the run", async () => {
@@ -113,7 +164,7 @@ describe("a workspace's site operations", { timeout: 30_000 }, () => {
       "s3cr3t",
       "79217818876",
       "08.11.2026",
-      "Kazan",
+      "kazan",
       "evil.example",
     ]) {
       expect(stored).not.toContain(secret);
@@ -136,15 +187,15 @@ describe("a workspace's site operations", { timeout: 30_000 }, () => {
     await run.rememberSiteOperations(alice.workspaceId, [
       {
         ...trains,
-        name: "www.tutu.ru/poezda/Moskva/Kazan/",
-        page: "https://www.tutu.ru/poezda/Moskva/Kazan/?date=%date%",
+        name: "www.tutu.ru/poezda/moskva/kazan/",
+        page: "https://www.tutu.ru/poezda/moskva/kazan/?date=%date%",
       },
     ]);
     const rows = await client.query<{ name: string; runs: number }>(
       "SELECT name, runs FROM browser_site_operations"
     );
     expect(rows.rows).toEqual([
-      { name: "www.tutu.ru/poezda/Moskva/%word%/", runs: 2 },
+      { name: "www.tutu.ru/poezda/moskva/%word%/", runs: 2 },
     ]);
   });
 });

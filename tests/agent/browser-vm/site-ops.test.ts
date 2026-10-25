@@ -3,6 +3,7 @@ import { knownSiteOperations } from "@agent/lib/browser-vm/site-ops/known";
 import {
   mergeSiteOperations,
   type SiteOperation,
+  siteOperationOnSite,
   siteOperationSchema,
 } from "@agent/lib/browser-vm/site-ops/operation";
 import {
@@ -87,10 +88,70 @@ describe("a site's operation as Bro keeps it", () => {
         },
       },
       { ...kazan, name: "ostrovok.ru/anything" },
+      // A key of the data, or of the query, that is a value itself.
+      { ...kazan, items: ["byId", "79217818"] },
+      { ...kazan, items: ["c0ffee12", 0] },
+      {
+        ...kazan,
+        fields: {
+          ...kazan.fields,
+          name: ["7082cb8b-d138-42b8-969c-26448d408401"],
+        },
+      },
+      { ...kazan, fields: { ...kazan.fields, price: ["p".repeat(41)] } },
+      {
+        ...kazan,
+        page: "https://ostrovok.ru/hotel/russia/kazan/?f12345=%flag%",
+      },
+      // Another host of the same last two labels is not the site.
+      {
+        ...kazan,
+        source: {
+          ...kazan.source,
+          url: "https://api.ostrovok.ru/hotel/search/v2/site/serp",
+        },
+      },
     ];
     for (const record of records) {
       expect(siteOperationSchema.safeParse(record).success).toBe(false);
     }
+    // A path part that is not a short latin word: a percent-encoded word, a
+    // phone with dashes, a user name, a dotted name, a capital, a long one.
+    for (const path of [
+      "/city/%D0%BA%D0%B0%D0%B7%D0%B0%D0%BD%D1%8C/",
+      "/call/916-123-45-67/",
+      "/u/ivan_petrov/",
+      "/u/ivan.petrov/",
+      "/u/Ivan/",
+      "/street/ulitsa-bolshaya-sadovaya-dom/",
+    ]) {
+      const record = {
+        ...kazan,
+        name: `ostrovok.ru${path}`,
+        page: `https://ostrovok.ru${path}`,
+      };
+      expect(siteOperationSchema.safeParse(record).success).toBe(false);
+    }
+    const plain = {
+      ...kazan,
+      name: "ostrovok.ru/u/ivan/",
+      page: "https://ostrovok.ru/u/ivan/",
+    };
+    expect(siteOperationSchema.safeParse(plain).success).toBe(true);
+  });
+
+  it("is the site's only on its own host, www. aside", () => {
+    expect(siteOperationOnSite(kazan, "https://www.ostrovok.ru")).toBe(true);
+    expect(siteOperationOnSite(kazan, "https://ostrovok.ru/hotel")).toBe(true);
+    expect(siteOperationOnSite(kazan, "https://m.ostrovok.ru")).toBe(false);
+    const shop = {
+      ...kazan,
+      name: "shop.msk.ru/catalog/",
+      page: "https://shop.msk.ru/catalog/",
+      source: { ...kazan.source, url: "https://shop.msk.ru/api/v2/catalog" },
+    };
+    expect(siteOperationSchema.safeParse(shop).success).toBe(true);
+    expect(siteOperationOnSite(shop, "https://other.msk.ru")).toBe(false);
   });
 
   it("makes two finds that differ in a part of the page's path one, with a placeholder there", () => {

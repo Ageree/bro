@@ -7,6 +7,7 @@ import asyncio
 import html
 import json
 import sys
+import time
 import types
 import unittest
 from pathlib import Path
@@ -186,6 +187,111 @@ class SiteTrafficTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(worker.site_template_matches(template, "https://ostrovok.ru/hotel/russia/"))
         self.assertFalse(worker.site_template_matches(template, "https://evil.ru/hotel/russia/moscow/"))
         self.assertFalse(worker.site_template_matches(template, "http://ostrovok.ru/hotel/russia/moscow/"))
+        # A trailing slash on one side only is the same page.
+        self.assertTrue(worker.site_template_matches("https://hh.ru/search/vacancy", "https://hh.ru/search/vacancy/"))
+        self.assertTrue(worker.site_template_matches(template, "https://ostrovok.ru/hotel/russia/moscow"))
+
+    def test_only_a_short_latin_word_of_a_path_stays_in_a_template(self):
+        cases = {
+            "https://site.ru/search/vacancy": "https://site.ru/search/vacancy",
+            "https://site.ru/city/%D0%BA%D0%B0%D0%B7%D0%B0%D0%BD%D1%8C/": "https://site.ru/city/%word%/",
+            "https://site.ru/call/916-123-45-67": "https://site.ru/call/%id%",
+            "https://site.ru/u/ivan_petrov/": "https://site.ru/u/%id%/",
+            "https://site.ru/u/ivan.petrov": "https://site.ru/u/%id%",
+            "https://site.ru/u/Lenina": "https://site.ru/u/%word%",
+            "https://site.ru/p/abc%25def": "https://site.ru/p/%id%",
+            "https://site.ru/p/a@b": "https://site.ru/p/%id%",
+            "https://site.ru/street/ulitsa-bolshaya-sadovaya-dom": "https://site.ru/street/%word%",
+            "https://site.ru/v2/list": "https://site.ru/%id%/list",
+        }
+        for url, template in cases.items():
+            self.assertEqual(worker.site_template(url), template, url)
+        # A query's key that is a value itself is left out, as one named like a secret is.
+        self.assertEqual(worker.site_template("https://site.ru/s?q=x&f12345=1&c0ffee12=2&k=1"),
+                         "https://site.ru/s?q=%query%&k=%number%")
+        # A request's own path keeps its API version.
+        self.assertEqual(worker.site_path_part("v2", request=True), "v2")
+
+    def test_a_key_that_is_a_value_is_no_field_of_an_operation(self):
+        element = {"name": "x", "12345678": {"price": 1}, "deadbeef00": 2, "rating": 8}
+        self.assertEqual([path for path, _ in worker.element_leaves(element)], [("name",), ("rating",)])
+        nested = {"byId": {"55512345": [{"a": 1}, {"a": 2}, {"a": 3}]}, "list": [{"a": 1}, {"a": 2}, {"a": 3}]}
+        self.assertEqual([path for path, _ in worker.object_arrays(nested)], [("list",)])
+
+    def test_the_site_is_its_exact_host_but_www(self):
+        self.assertTrue(worker.same_host("https://www.hh.ru/a", "https://hh.ru/b"))
+        self.assertFalse(worker.same_host("https://api.hh.ru/a", "https://hh.ru/b"))
+        self.assertFalse(worker.same_host("https://shop.msk.ru/a", "https://other.msk.ru/b"))
+        self.assertFalse(worker.same_host("https://a.co.uk/x", "https://b.co.uk/x"))
+        traffic = worker.SiteTraffic()
+        self.assertIsNone(traffic.request("GET", "https://other.msk.ru/api", "https://shop.msk.ru/", "xhr"))
+        self.assertIsNotNone(traffic.request("GET", "https://shop.msk.ru/api", "https://shop.msk.ru/", "xhr"))
+
+    async def test_bodies_are_counted_in_bytes_and_one_over_the_cap_is_not_asked_for(self):
+        traffic = worker.SiteTraffic()
+        entry = traffic.request("GET", "https://hh.ru/api", "https://hh.ru/", "xhr")
+        traffic.answered(entry, 200, "application/json")
+        text = json.dumps({"a": "ж" * 1000}, ensure_ascii=False)
+        traffic.hold(entry, text)
+        self.assertEqual(traffic.held, len(text.encode()))
+        # Chrome told a size over the cap: its body is never asked for.
+        errors = worker.SiteErrors()
+        errors.traffic = worker.SiteTraffic()
+        await errors.handle({"method": "Network.requestWillBeSent", "params": {
+            "requestId": "big", "type": "Fetch", "documentURL": "https://hh.ru/",
+            "request": {"method": "GET", "url": "https://hh.ru/api"}}}, self.socket)
+        await errors.handle({"method": "Network.responseReceived", "params": {
+            "requestId": "big", "response": {"status": 200, "mimeType": "application/json"}}}, self.socket)
+        await errors.handle({"method": "Network.loadingFinished", "params": {
+            "requestId": "big", "encodedDataLength": worker.SITE_TRAFFIC_BODY + 1}}, self.socket)
+        self.assertEqual(self.socket.ws.sent, [])
+        self.assertFalse(errors.traffic.awaited())
+
+    async def test_playwright_never_reads_a_body_of_unknown_or_too_large_a_size(self):
+        class Answer:
+            def __init__(self, headers, received=None):
+                self.url, self.status, self.headers, self.read = "https://hh.ru/api", 200, headers, False
+                frame = types.SimpleNamespace(url="https://hh.ru/", parent_frame=None)
+
+                async def sizes():
+                    if received is None:
+                        raise RuntimeError("no sizes")
+                    return {"responseBodySize": received}
+
+                self.request = types.SimpleNamespace(resource_type="xhr", frame=frame, method="GET", post_data=None,
+                                                     sizes=sizes)
+
+            async def body(self):
+                self.read = True
+                return b'{"a": 1}'
+
+        traffic = worker.SiteTraffic()
+        json_type = {"content-type": "application/json"}
+        for answer, read in [
+            (Answer(json_type), False),  # no size at all
+            (Answer(json_type, received=worker.SITE_TRAFFIC_BODY + 1), False),
+            (Answer(json_type | {"content-encoding": "br"}, received=worker.SITE_TRAFFIC_PACKED + 1), False),
+            (Answer(json_type | {"content-length": str(worker.SITE_TRAFFIC_BODY + 1)}), False),
+            (Answer({"content-type": "image/png", "content-length": "10"}), False),
+            (Answer(json_type | {"content-length": "8"}), True),
+            (Answer(json_type | {"content-encoding": "gzip"}, received=100), True),
+        ]:
+            await traffic.response(answer)
+            self.assertEqual(answer.read, read, answer.headers)
+
+    async def test_looking_for_operations_never_holds_the_runs_outcome_long(self):
+        class Slow:
+            def operations(self, report, secrets, seconds):
+                time.sleep(seconds + 0.8)
+                return [{"name": "x"}]
+
+        started = time.monotonic()
+        self.assertEqual(await worker.site_operations_found(Slow(), HH_REPORT, None, seconds=0.2), [])
+        self.assertLess(time.monotonic() - started, 0.9)
+        # The search itself stops at its deadline and finds nothing.
+        await feed(self.errors, self.socket, "d1", "Document", HH_PAGE, HH_PAGE, 200, "text/html", HH_DOCUMENT)
+        self.assertEqual(self.traffic.operations(HH_REPORT, None, seconds=-1), [])
+        self.assertEqual(len(await worker.site_operations_found(self.traffic, HH_REPORT)), 1)
 
     def test_a_run_record_has_the_traffic_only_when_it_was_asked_for(self):
         run = worker.Run("r1", "s1", "task")

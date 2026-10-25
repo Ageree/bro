@@ -445,7 +445,8 @@ export async function readBrowserVmRun(runId: string) {
       await logDetourRun(live.vm, live.run);
       await rememberSiteOperations(
         browserVmWorkspace(runId),
-        live.run.siteTraffic?.operations
+        live.run.siteTraffic?.operations,
+        runId
       ).catch((cause: unknown) => {
         console.warn("[site-ops] a run's operations were not kept", {
           cause,

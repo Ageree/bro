@@ -640,7 +640,7 @@ class SiteErrors:
             await asyncio.sleep(0.3)
             # A results page's data is megabytes (ostrovok.ru's serp, 1.7 MB): a little longer for those.
             started = time.monotonic()
-            while self.traffic is not None and self.traffic.commands and time.monotonic() - started < 3:
+            while self.traffic is not None and self.traffic.awaited() and time.monotonic() - started < 3:
                 await asyncio.sleep(0.2)
             for task in self.tasks.values():
                 task.cancel()
@@ -655,10 +655,9 @@ class SiteErrors:
                     # Each socket numbers its own commands. A page's main frame has its target's id (the last
                     # part of the socket's address): SiteTraffic keeps no iframe's document (an ad's, a widget's).
                     socket = types.SimpleNamespace(ws=ws, next_id=1, frame=websocket_url.rstrip("/").rsplit("/", 1)[-1])
-                    # The site's data (SiteTraffic) needs its answers kept until their bodies are read.
-                    buffers = ({"maxTotalBufferSize": 64 * 2**20, "maxResourceBufferSize": SITE_TRAFFIC_BODY}
-                               if self.traffic is not None else {"maxTotalBufferSize": 2_000_000})
-                    await self.send("Network.enable", buffers, socket)
+                    # Chrome's buffer is as small with SiteTraffic as without (a 3 GB sandbox ran out of memory on
+                    # 24–25.10): SiteTraffic asks for a body the moment it has come, before anything evicts it.
+                    await self.send("Network.enable", {"maxTotalBufferSize": 2_000_000}, socket)
                     async for message in ws:
                         with contextlib.suppress(Exception):
                             await self.handle(json.loads(message.data), socket)
@@ -777,7 +776,9 @@ class SiteErrors:
 
 SITE_TRAFFIC_ENTRIES = 60  # the site's requests a run's log keeps
 SITE_TRAFFIC_BODY = 8 * 2**20  # a body held (in memory, never on disk) to look for the report's options in
-SITE_TRAFFIC_BODIES = 32 * 2**20
+SITE_TRAFFIC_BODIES = 32 * 2**20  # all the bodies held, in bytes
+SITE_TRAFFIC_PACKED = 2 * 2**20  # a compressed body's size as it came, whose body is read (it unpacks to several)
+SITE_OPS_FIND_S = 5  # how long looking for the operations behind a report may hold the run's outcome
 SITE_OP_ARRAY = 3000  # the elements of a list looked at, and the cards one op() returns
 SITE_OP_CHARS = 1_500_000  # op() goes to the model's code, not its context
 SITE_OP_MORE = 60  # the item's own fields a card carries beside its name, price and link
@@ -790,8 +791,32 @@ SITE_KEY = re.compile(r"[A-Za-z0-9_.\-\[\]]{1,40}")
 SITE_DATE = re.compile(r"\d{1,4}[.\-/]\d{1,2}[.\-/]\d{1,4}")
 SITE_ID = re.compile(r"\d{4,}|[0-9a-f]{8,}|@|[0-9a-f]{8}-[0-9a-f]{4}", re.I)  # searched: an id, a hash, an email
 SITE_UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-", re.I)
+# A part of a template's path that stays as it is: a short word of lower-case latin letters and hyphens (`search`,
+# `vacancy`, `kazan`). Anything else (a percent-encoded word, a phone with dashes, a user name with `_`, a number)
+# is a placeholder: a path part is where a site writes a person's or an errand's own value. The same rule is
+# Bro's schema (`literalSegment` in agent/lib/browser-vm/site-ops/operation.ts), which refuses what breaks it.
+SITE_PATH_WORD = re.compile(r"[a-z\-]{1,24}")
+SITE_API_VERSION = re.compile(r"v\d{1,2}")  # in a request's own path only: /hotel/search/v2/site/serp
+SITE_LETTERS = re.compile(r"[^\W\d_]+(?:-[^\W\d_]+)*")
+# A key of the data (a field's path, a query's key) that is itself a value: an id, a hash, a uuid.
+SITE_VALUE_KEY = re.compile(r"\d{4,}|[0-9a-f]{8,}|[0-9a-f]{8}-[0-9a-f]{4}-", re.I)
 SITE_SORT_KEYS = {"sort", "order", "sorting", "orderby", "sort_by", "sortby", "s"}
 EMBEDDED_STATE = re.compile(r"<(script|template)\b([^>]*)>(.*?)</\1\s*>", re.S | re.I)
+
+
+def site_key(key):
+    """Whether a key of the data (or of a query, or a state's id) goes into a template: not one that is a value."""
+    return isinstance(key, str) and SITE_KEY.fullmatch(key) is not None and not SITE_VALUE_KEY.search(key)
+
+
+def site_path_part(segment, request=False):
+    """One part of a page's (or, with `request`, the site's request's) path as a template writes it: a short
+    latin word as it is, a date `%date%`, a word of other letters `%word%`, anything else `%id%`."""
+    decoded = urllib.parse.unquote(segment)
+    if segment == "" or SITE_PATH_WORD.fullmatch(segment) or (request and SITE_API_VERSION.fullmatch(segment)):
+        return segment
+    return ("%date%" if SITE_DATE.fullmatch(decoded) else
+            "%word%" if SITE_LETTERS.fullmatch(decoded) else "%id%")
 
 
 def site_attribute(attributes, name):
@@ -818,7 +843,7 @@ def embedded_states(text):
             continue
         if not isinstance(value, (dict, list)):
             continue
-        if ident and SITE_KEY.fullmatch(ident):
+        if ident and site_key(ident):
             found.append(({"tag": tag, "id": ident}, value))
         else:
             found.append(({"tag": tag, "type": kind, "index": place}, value))
@@ -843,7 +868,7 @@ def object_arrays(value, path=(), depth=0):
         return
     if isinstance(value, dict):
         for key, inner in list(value.items())[:400]:
-            if isinstance(key, str) and SITE_KEY.fullmatch(key):
+            if site_key(key):
                 yield from object_arrays(inner, (*path, key), depth + 1)
     elif isinstance(value, list):
         if sum(1 for element in value[:SITE_OP_ARRAY] if isinstance(element, dict)) >= 3:
@@ -860,7 +885,7 @@ def element_leaves(element, path=(), depth=0, out=None):
         return out
     if isinstance(element, dict):
         for key, inner in element.items():
-            if isinstance(key, str) and SITE_KEY.fullmatch(key):
+            if site_key(key):
                 element_leaves(inner, (*path, key), depth + 1, out)
     elif isinstance(element, list):
         for index, inner in enumerate(element[:3]):
@@ -968,6 +993,11 @@ def link_template(url, leaves):
         order.append(list(leaf))
         at = end
     template += path[at:].replace("{", "").replace("}", "")
+    # What is left of the link besides its fields is the page's own words only, as in a page's template
+    # (`site_path_part`): a part that is none of the element's fields and not a short latin word may be a value.
+    if not all(part == "" or SITE_PATH_WORD.fullmatch(part)
+               for part in re.sub(r"\{\d\}", "", template).split("/")):
+        return None
     return template, order
 
 
@@ -996,18 +1026,14 @@ def render_link(link, element, page_url, host):
 
 
 def site_template(url):
-    """A page's address as a template: the host and the path, each id-like part of it a placeholder, and the
-    query's keys each with a typed placeholder (%query%, %number%, %date%, %sort%), never a value. A key that may
-    carry a secret or a person's details is left out."""
+    """A page's address as a template: the host and the path, each part of it but a short latin word a placeholder
+    (`site_path_part`), and the query's keys each with a typed placeholder (%query%, %number%, %date%, %sort%),
+    never a value. A key that may carry a secret or a person's details, or is a value itself, is left out."""
     parts = urllib.parse.urlsplit(url)
-    segments = []
-    for segment in parts.path.split("/"):
-        decoded = urllib.parse.unquote(segment)
-        segments.append("%date%" if SITE_DATE.fullmatch(decoded) else
-                        "%id%" if SITE_ID.search(decoded) else urllib.parse.quote(decoded, safe="-_.~"))
+    segments = [site_path_part(segment) for segment in parts.path.split("/")]
     query = []
     for key, value in urllib.parse.parse_qsl(parts.query, keep_blank_values=True)[:20]:
-        if not SITE_KEY.fullmatch(key) or SENSITIVE_KEY.search(key) or key in (k for k, _ in query):
+        if not site_key(key) or SENSITIVE_KEY.search(key) or key in (k for k, _ in query):
             continue
         kind = ("sort" if key.lower() in SITE_SORT_KEYS else "date" if SITE_DATE.search(value) else
                 "number" if re.fullmatch(r"-?\d{1,9}", value) else
@@ -1019,23 +1045,26 @@ def site_template(url):
 
 def site_template_matches(template, url):
     """Whether an address is a page of the template's: the same host and path, a placeholder standing for any one
-    part of the path. The query is the caller's."""
+    part of the path; a trailing slash on one side only does not count (`/search/vacancy/`). The query is the
+    caller's."""
     want, have = urllib.parse.urlsplit(template), urllib.parse.urlsplit(url)
     if have.scheme != "https" or (have.hostname or "").lower() != want.hostname:
         return False
-    wanted, given = want.path.split("/"), have.path.split("/")
+    wanted, given = want.path.rstrip("/").split("/"), have.path.rstrip("/").split("/")
     if len(wanted) != len(given):
         return False
     return all(w.startswith("%") and w.endswith("%") or urllib.parse.unquote(w) == urllib.parse.unquote(g)
                for w, g in zip(wanted, given))
 
 
-def best_array(value, options, base):
+def best_array(value, options, base, deadline=None):
     """The list in a JSON value whose elements hold the reported options, with what it matched:
     (path, elements, {role: path or link}, matched), or None when fewer than three (or all) of them match."""
     best = None
     need = min(3, len(options))
     for path, elements in object_arrays(value):
+        if deadline is not None and time.monotonic() > deadline:
+            return None
         objects = [element for element in elements[:SITE_OP_ARRAY] if isinstance(element, dict)]
         leaves = [element_leaves(element) for element in objects]
         pairs, used = [], set()
@@ -1085,7 +1114,8 @@ def link_of(pairs, objects, leaves, page_url):
             continue
         template, parts = found
         link_keys = {key for key, _ in urllib.parse.parse_qsl(urllib.parse.urlsplit(option["url"]).query)}
-        link = {"template": template, "parts": parts, "query": sorted(page_keys & link_keys)}
+        link = {"template": template, "parts": parts,
+                "query": sorted(key for key in page_keys & link_keys if site_key(key))}
         # The template is kept only if it writes each pair's own link from that pair's own element.
         if all(site_link_key(render_link(link, objects[i], None, host) or "") == site_link_key(o["url"])
                for o, i, _ in pairs if o["url"] and site_link_key(o["url"]) is not None):
@@ -1121,7 +1151,7 @@ class SiteTraffic:
         if resource not in ("xhr", "fetch", "document") or not str(url).startswith("https://"):
             return None
         page_url = url if resource == "document" else (page_url or "")
-        if not same_site(url, page_url) or len(self.entries) >= SITE_TRAFFIC_ENTRIES:
+        if not same_host(url, page_url) or len(self.entries) >= SITE_TRAFFIC_ENTRIES:
             return None
         entry = {"method": str(method or "GET").upper(), "url": url, "page": page_url, "type": resource,
                  "status": None, "mime": "", "size": None}
@@ -1143,17 +1173,29 @@ class SiteTraffic:
         mime = entry["mime"].lower()
         return entry["status"] == 200 and ("json" in mime or (entry["type"] == "document" and "html" in mime))
 
+    def room(self, size=0):
+        """Whether a body of `size` bytes still fits: one up to SITE_TRAFFIC_BODY, all of them SITE_TRAFFIC_BODIES."""
+        return size <= SITE_TRAFFIC_BODY and self.held + size <= SITE_TRAFFIC_BODIES
+
+    def awaited(self):
+        """Whether a body asked for is still to come and would still be held: what `SiteErrors.stop` waits for."""
+        return bool(self.commands) and self.held < SITE_TRAFFIC_BODIES
+
     def hold(self, entry, text):
+        # In bytes, as the caps are: a character is not one (a Cyrillic letter is two). A text longer in
+        # characters than the cap is longer in bytes too, and is not encoded to find that out.
+        size = len(text) if len(text) > SITE_TRAFFIC_BODY else len(text.encode("utf-8", "replace"))
         if entry["size"] is None:
-            entry["size"] = len(text)
+            entry["size"] = size
+        if not self.room(size):
+            return
         if "json" in entry["mime"].lower():
             with contextlib.suppress(ValueError):
                 value = json.loads(text)
                 entry["keys"] = (list(value)[:12] if isinstance(value, dict) else
                                  [f"[{len(value)}]"] if isinstance(value, list) else [])
-        if len(text) <= SITE_TRAFFIC_BODY and self.held + len(text) <= SITE_TRAFFIC_BODIES:
-            self.bodies.append((entry, text))
-            self.held += len(text)
+        self.bodies.append((entry, text))
+        self.held += size
 
     async def cdp(self, data, socket, send):
         """One CDP event or command answer of a tab's socket (`SiteErrors.listen` shares it). True when it was
@@ -1178,7 +1220,8 @@ class SiteTraffic:
         elif method == "Network.loadingFinished" and request_id in self.pending:
             entry = self.pending.pop(request_id)
             entry["size"] = int(params.get("encodedDataLength") or 0) or entry["size"]
-            if self.wanted(entry):
+            # A body that came larger than the cap, or once the cap is full, is not even asked for.
+            if self.wanted(entry) and self.room(entry["size"] or 0):
                 command = await send("Network.getResponseBody", {"requestId": request_id}, socket)
                 self.commands[(id(socket), command)] = entry
         elif method == "Network.loadingFailed" and request_id in self.pending:
@@ -1223,8 +1266,22 @@ class SiteTraffic:
             size = headers.get("content-length")
             self.answered(entry, response.status, headers.get("content-type", "").split(";")[0],
                           int(size) if size and size.isdigit() else None)
-            if self.wanted(entry) and (entry["size"] or 0) <= SITE_TRAFFIC_BODY:
-                self.hold(entry, (await response.body()).decode("utf-8", "replace"))
+            if not self.wanted(entry) or not self.room():
+                return
+            # Playwright reads a body whole, into the driver and then into the worker: a body of unknown size, or
+            # one larger than the cap, is never read (a 3 GB sandbox, 24–25.10). The size is the one the site
+            # declared, or else the one received once the answer has come; a compressed body's is what came
+            # over the wire, so its bound is lower: it unpacks to several times that.
+            received = entry["size"]
+            if received is None:
+                with contextlib.suppress(Exception):
+                    received = int((await request.sizes()).get("responseBodySize") or 0) or None
+            packed = headers.get("content-encoding", "identity").strip().lower() not in ("", "identity")
+            if received is None or received > (SITE_TRAFFIC_PACKED if packed else SITE_TRAFFIC_BODY):
+                return
+            body = await response.body()
+            if self.room(len(body)):
+                self.hold(entry, body.decode("utf-8", "replace"))
 
     async def settle(self):
         if self.tasks:
@@ -1243,14 +1300,19 @@ class SiteTraffic:
             log_.append(line)
         return log_
 
-    def operations(self, report, secrets=None):
+    def operations(self, report, secrets=None, seconds=SITE_OPS_FIND_S):
         """The site's operations behind the options the report names: for each body that holds three of them
-        (all, when fewer), a template (`site_template`) of how to get it again and where in it they are."""
+        (all, when fewer), a template (`site_template`) of how to get it again and where in it they are. Past
+        `seconds` it stops looking and finds none: it runs in a thread the run's outcome waits for at most that
+        long (`site_operations_found`), and a thread is not cancelled."""
+        deadline = time.monotonic() + seconds
         options = reported_options(report)
         if len(options) < 2:
             return []
         found = {}
         for entry, text in self.bodies:
+            if time.monotonic() > deadline:
+                return []
             states = []
             if entry["type"] == "document":
                 states = embedded_states(text)
@@ -1258,15 +1320,14 @@ class SiteTraffic:
                 with contextlib.suppress(ValueError):
                     states = [(None, json.loads(text))]
             for selector, value in states:
-                best = best_array(value, options, entry["page"])
+                best = best_array(value, options, entry["page"], deadline)
                 if best is None:
                     continue
                 path, count, fields, matched = best
                 page = site_template(entry["page"])
                 if selector is None:
                     parts = urllib.parse.urlsplit(entry["url"])
-                    pattern = "/".join("%id%" if SITE_ID.search(s) or SITE_DATE.fullmatch(s) else s
-                                       for s in parts.path.split("/"))
+                    pattern = "/".join(site_path_part(s, request=True) for s in parts.path.split("/"))
                     source = {"kind": "xhr", "method": entry["method"],
                               "url": f"https://{(parts.hostname or '').lower()}{pattern}"}
                 else:
@@ -1296,6 +1357,17 @@ def traffic_url(url, clean):
                                            urllib.parse.urlencode(query, safe="%"), ""))
         return clean(address)[:300]
     return ""
+
+
+async def site_operations_found(recorder, report, secrets=None, seconds=SITE_OPS_FIND_S):
+    """`SiteTraffic.operations` off the event loop and for `seconds` at most: past them the run's outcome is set
+    with no operations, and the thread, which stops at the same deadline, is left to end on its own."""
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(recorder.operations, report, secrets, seconds),
+                                      seconds + 0.5)
+    except asyncio.TimeoutError:
+        log.warning("looking for the site's operations took longer than %ss: none kept", seconds)
+        return []
 
 
 def site_cards(operation, data, page_url):
@@ -1634,6 +1706,20 @@ def secret_cleaner(secrets):
         return " ".join(text.split())
 
     return clean
+
+
+def same_host(url, document_url):
+    """Whether a request goes to the page's own host, `www.` aside: what SiteTraffic writes down. Not the same
+    last two labels, as `same_site`: under .msk.ru or .co.uk those are a registry's, shared by strangers."""
+    def host(address):
+        try:
+            name = (urllib.parse.urlsplit(address).hostname or "").rstrip(".").lower()
+        except ValueError:
+            return None
+        return name.removeprefix("www.") or None
+
+    request_host = host(url)
+    return request_host is not None and request_host == host(document_url)
 
 
 def same_site(url, document_url):
@@ -4011,7 +4097,7 @@ class Worker:
             if recorder is not None:
                 with contextlib.suppress(Exception):
                     await recorder.settle()
-                    operations = (await asyncio.to_thread(recorder.operations, result, session.sensitive_data)
+                    operations = (await site_operations_found(recorder, result, session.sensitive_data)
                                   if status == "completed" else [])
                     run.site_traffic = {"requests": recorder.public(session.sensitive_data),
                                         "operations": operations}

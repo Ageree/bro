@@ -841,13 +841,13 @@ describe("starting a run on a workspace's browser VM", () => {
     const operation = {
       fields: { link: "page", name: ["number"], price: ["price"] },
       items: ["trains"],
-      name: "www.tutu.ru/poezda/Moskva/Kazan/",
-      page: "https://www.tutu.ru/poezda/Moskva/Kazan/?date=%date%",
+      name: "www.tutu.ru/poezda/moskva/kazan/",
+      page: "https://www.tutu.ru/poezda/moskva/kazan/?date=%date%",
       seen: { items: 40, matched: 3, of: 3 },
       source: {
         kind: "xhr",
         method: "POST",
-        url: "https://offers-api.tutu.ru/railway/offers",
+        url: "https://www.tutu.ru/railway/v1/offers",
       },
     };
     worker.readBrowserVmWorkerRun.mockResolvedValue(
