@@ -28,7 +28,7 @@ const siteNotes: readonly {
 }[] = [
   {
     hosts: ["tutu.ru"],
-    note: "trains for a date open straight at https://www.tutu.ru/poezda/<From>/<To>/?date=DD.MM.YYYY, the cities in Latin as the site writes them (Moskva, Sankt-Peterburg, Kazan): skip the search form and its calendar. Each train is a card there with its number, times and prices from; scroll to the bottom to load them all.",
+    note: "trains for a date open straight at https://www.tutu.ru/poezda/<From>/<To>/?date=DD.MM.YYYY, the cities in Latin as the site writes them (Moskva, Sankt-Peterburg, Kazan): skip the search form and its calendar. Each train is a card there with its number, times and prices from; scroll to the bottom to load them all. A train's card has no address of its own: report each train with this results page's address and its number, and its «от» price as the fare; do not open its seats, tariffs or order page for a link, a fee or a check.",
   },
   {
     hosts: ["ostrovok.ru"],
