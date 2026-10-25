@@ -50,6 +50,7 @@ import {
   cancelBrowserVmWorkerRun,
   closeBrowserVmWorkerTab,
   listBrowserVmWorkerFiles,
+  lookBrowserVmSite,
   openBrowserVmWorkerTab,
   readBrowserVmSite,
   readBrowserVmWorkerRun,
@@ -724,13 +725,32 @@ export async function readBrowserVmSiteDirectly(
   workspaceId: string,
   input: Parameters<typeof readBrowserVmSite>[1]
 ) {
+  return onSiteReadVm(workspaceId, async (vm) => readBrowserVmSite(vm, input));
+}
+
+/**
+ * Look at a site's results page in the workspace's own browser, no run, as
+ * `readBrowserVmSiteDirectly` reads one: its cards and the operations
+ * behind them (`lookBrowserVmSite`).
+ */
+export async function lookBrowserVmSiteDirectly(
+  workspaceId: string,
+  input: Parameters<typeof lookBrowserVmSite>[1]
+) {
+  return onSiteReadVm(workspaceId, async (vm) => lookBrowserVmSite(vm, input));
+}
+
+async function onSiteReadVm<T>(
+  workspaceId: string,
+  call: (vm: Awaited<ReturnType<typeof prepareBrowserVmSession>>) => Promise<T>
+) {
   const running = await wokenVm(workspaceId);
   if (running === undefined) return undefined;
   const vm = await prepareBrowserVmSession(running, new Date(), {
     page: true,
     rotate: false,
   });
-  return onWorker(async () => readBrowserVmSite(vm, input));
+  return onWorker(async () => call(vm));
 }
 
 /**

@@ -798,6 +798,57 @@ export async function readBrowserVmSite(
   );
 }
 
+/**
+ * A first look's answer (`site_look` in browser-vm/worker/worker.py): the
+ * page's cards and the operations found behind them, or why there are none.
+ * A worker before 2026-10-25.12 has no `/v1/look` and answers 404.
+ */
+const siteLookSchema = z.discriminatedUnion("ok", [
+  z.object({
+    cards: z
+      .array(
+        z.object({
+          link: z.string().nullable(),
+          text: z.string(),
+          title: z.string(),
+        })
+      )
+      .max(30),
+    count: z.number().int().nonnegative(),
+    ms: z.number().nonnegative(),
+    ok: z.literal(true),
+    operations: foundSiteOperationsSchema.catch([]),
+    /** Where the page landed: the address the cards are from. */
+    page: z.string(),
+  }),
+  z.object({
+    ms: z.number().nonnegative(),
+    ok: z.literal(false),
+    reason: z.enum(siteReadFailures),
+  }),
+]);
+
+/**
+ * Look at a site's results page a model named for an errand, no run: its
+ * cards, and the operations behind them for the next search there
+ * (`agent/lib/browser-vm/site-ops/direct.ts`). In a tab of its own, beside
+ * whatever errand holds the browser.
+ */
+export async function lookBrowserVmSite(
+  vm: BrowserVmTarget,
+  input: { readonly url: string; readonly words: string | null }
+) {
+  return siteLookSchema.parse(
+    await request(vm, "POST", "/v1/look", {
+      body: input,
+      timeoutMs: siteLookTimeoutMs,
+    })
+  );
+}
+
+/** The worker gives a look 20 s (`SITE_LOOK_S`); the rest is the call's way there and back. */
+const siteLookTimeoutMs = 26_000;
+
 /** A blank tab of its own for a keep-alive visit; its target id comes back. */
 export async function openBrowserVmWorkerTab(vm: BrowserVmTarget) {
   return tabSchema.parse(

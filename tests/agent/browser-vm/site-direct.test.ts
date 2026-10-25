@@ -16,14 +16,21 @@ interface Filled {
     url: string | null;
   };
 }
+/** What the first look's model answers (`guessSiteRead`). */
+interface Guessed {
+  output: { query: string | null; url: string | null };
+}
 const model = vi.hoisted(() => ({
-  generateText: vi.fn<(input: { prompt: string }) => Promise<Filled>>(),
+  generateText:
+    vi.fn<(input: { prompt: string }) => Promise<Filled | Guessed>>(),
 }));
 vi.mock("ai", async (importOriginal) => ({
   ...(await importOriginal<typeof ai>()),
   generateText: model.generateText,
 }));
 const browser = vi.hoisted(() => ({
+  lookBrowserVmSiteDirectly:
+    vi.fn<typeof browserVmRuns.lookBrowserVmSiteDirectly>(),
   readBrowserVmSiteDirectly:
     vi.fn<typeof browserVmRuns.readBrowserVmSiteDirectly>(),
 }));
@@ -68,10 +75,11 @@ const vacancies: Extract<BrowserVmSiteRead, { ok: true }> = {
   via: "fetch",
 };
 
-async function direct(pilot = "*") {
+async function direct(pilot = "*", cold = "") {
   vi.resetModules();
   vi.stubEnv("BROWSER_SITE_OPS_WORKSPACES", pilot);
   vi.stubEnv("BROWSER_SITE_API_WORKSPACES", pilot);
+  vi.stubEnv("BROWSER_SITE_COLD_WORKSPACES", cold);
   return import("@agent/lib/browser-vm/site-ops/direct");
 }
 
@@ -261,6 +269,89 @@ describe("Bro's own read of a site it has read before", () => {
     expect(records.deleteBrowserSiteOperation).toHaveBeenCalledWith(
       scope.workspaceId,
       camry.name
+    );
+  });
+
+  it("looks at the results page a model names on a site with no operation, and keeps the one behind its cards", async () => {
+    const site = {
+      errand: "Найди 5 самых дешёвых пылесосов на Ситилинке",
+      note: undefined,
+      site: "https://www.citilink.ru",
+    };
+    // Outside the first-look pilot a site with no operation is the browser's.
+    const outside = await direct("*", "");
+    expect(
+      await outside.readSiteDirectly(scope, { ...site, sessionId: "o" })
+    ).toBeUndefined();
+    expect(model.generateText).not.toHaveBeenCalled();
+    const { readSiteDirectly, siteColdPilot } = await direct("*", "*");
+    expect(siteColdPilot(scope)).toBe(true);
+    // A page off the site is not looked at.
+    model.generateText.mockResolvedValue({
+      output: { query: "пылесос", url: "https://evil.ru/search/?text=x" },
+    });
+    expect(
+      await readSiteDirectly(scope, { ...site, sessionId: "x" })
+    ).toBeUndefined();
+    expect(browser.lookBrowserVmSiteDirectly).not.toHaveBeenCalled();
+    // …and the site is not asked about again for a while.
+    model.generateText.mockClear();
+    expect(
+      await readSiteDirectly(scope, { ...site, sessionId: "y" })
+    ).toBeUndefined();
+    expect(model.generateText).not.toHaveBeenCalled();
+    const fresh = await direct("*", "*");
+    const page = "https://www.citilink.ru/search/?text=пылесос&sort=price";
+    model.generateText.mockResolvedValue({
+      output: { query: "пылесос", url: page },
+    });
+    const operation = {
+      fields: { link: { path: ["url"] }, name: ["name"], price: ["price"] },
+      items: ["products"],
+      name: "citilink.ru/search/",
+      page: "https://citilink.ru/search/?text=%query%",
+      seen: { items: 36, matched: 6, of: 6 },
+      source: {
+        kind: "document",
+        state: { index: 0, tag: "script", type: "application/json" },
+      },
+    };
+    browser.lookBrowserVmSiteDirectly.mockResolvedValue({
+      cards: [
+        {
+          link: "https://www.citilink.ru/product/1/",
+          text: "Пылесос Kitfort KT-5307 4 990 ₽",
+          title: "Пылесос Kitfort KT-5307",
+        },
+      ],
+      count: 36,
+      ms: 5200,
+      ok: true,
+      operations: [operation],
+      page,
+    });
+    const read = await fresh.readSiteDirectly(scope, {
+      ...site,
+      sessionId: "z",
+    });
+    expect(read).toEqual({
+      cards: [
+        {
+          link: "https://www.citilink.ru/product/1/",
+          more: { text: "Пылесос Kitfort KT-5307 4 990 ₽" },
+          name: "Пылесос Kitfort KT-5307",
+        },
+      ],
+      count: 36,
+      url: page,
+    });
+    expect(browser.lookBrowserVmSiteDirectly).toHaveBeenCalledWith(
+      scope.workspaceId,
+      { url: new URL(page).href, words: "пылесос" }
+    );
+    expect(records.saveBrowserSiteOperation).toHaveBeenCalledWith(
+      scope.workspaceId,
+      expect.objectContaining({ name: "citilink.ru/search/" })
     );
   });
 });

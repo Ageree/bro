@@ -1,7 +1,10 @@
 import { generateText, Output } from "ai";
 import * as z from "zod";
 import { directModelSelection } from "@agent/lib/model/direct";
-import { readBrowserVmSiteDirectly } from "@agent/lib/browser-vm/runs";
+import {
+  lookBrowserVmSiteDirectly,
+  readBrowserVmSiteDirectly,
+} from "@agent/lib/browser-vm/runs";
 import type { BrowserVmSiteRead } from "@agent/lib/browser-vm/worker";
 import {
   deleteBrowserSiteOperation,
@@ -22,7 +25,11 @@ import {
   widenedSiteOperation,
   withTemplateKeys,
 } from "./operation";
-import { noteSiteOperationRead, siteOperationsFor } from "./run";
+import {
+  noteSiteOperationRead,
+  rememberSiteOperations,
+  siteOperationsFor,
+} from "./run";
 
 /**
  * Bro's own read of a site it has read before (BROWSER_SITE_API_WORKSPACES):
@@ -42,6 +49,23 @@ import { noteSiteOperationRead, siteOperationsFor } from "./run";
 export function siteApiPilot(scope: { readonly workspaceId: string }) {
   const listed = env.BROWSER_SITE_API_WORKSPACES ?? [];
   return listed.includes("*") || listed.includes(scope.workspaceId);
+}
+
+/**
+ * The first search on a site with no operation yet (BROWSER_SITE_COLD_WORKSPACES,
+ * inside the pilot above): a model names the site's results page for the
+ * errand, the worker opens it in a tab of its own and reads its cards, and
+ * the operation behind them is kept on the way (`/v1/look`) — no errand
+ * first. On the stand (25.10, 20 sites) 8 answered right in 4–10 s and 6
+ * left an operation; the rest named no page (1.2–1.8 s) or a page that
+ * did not answer (up to 14 s), and their errand went on as it would have.
+ */
+export function siteColdPilot(scope: { readonly workspaceId: string }) {
+  const listed = env.BROWSER_SITE_COLD_WORKSPACES ?? [];
+  return (
+    (listed.includes("*") || listed.includes(scope.workspaceId)) &&
+    siteApiPilot(scope)
+  );
 }
 
 const fillSchema = z.object({
@@ -101,6 +125,84 @@ async function fillSiteRead(
 }
 
 const fillTimeoutMs = 8_000;
+
+const guessSchema = z.object({
+  query: z.string().nullable(),
+  url: z.string().nullable(),
+});
+
+const guessInstructions = `You name a website's own search-results page for an errand. You get the errand, today's date, the site, and its note when there is one.
+Write the address of the site's results page that shows what the errand looks for, with its query, filters and sort written the way this site writes them in its own addresses — the page a person lands on after searching the site. Use only what you know of this site's addresses; when you do not know how it writes them, answer url null rather than guess.
+Answer url null as well when the errand is not a search for options: it asks for something to be booked, bought, sent or signed in to, or for a detail only one item's own page has.
+Answer JSON only: {"url": the address or null, "query": the words searched for, as the page should show them, or null}.`;
+
+/**
+ * The site's results page for an errand on a site Bro has no operation for,
+ * by a small model call as `fillSiteRead`: what the model knows of the
+ * site's addresses. Undefined when it names none, or on any failure.
+ */
+async function guessSiteRead(
+  scope: AccessScope,
+  input: {
+    readonly errand: string;
+    readonly note: string | undefined;
+    readonly site: string;
+  }
+) {
+  const today = new Intl.DateTimeFormat("en-CA", {
+    timeZone: await readWorkspaceTimeZone(scope),
+  }).format(new Date());
+  const modelId = await getWorkspaceModelId(scope);
+  const selection = directModelActive()
+    ? directModelSelection(modelId, { reasoningOff: true, toolChoice: "none" })
+    : null;
+  const { output } = await generateText({
+    abortSignal: AbortSignal.timeout(fillTimeoutMs),
+    instructions: guessInstructions,
+    maxOutputTokens: 300,
+    model: selection?.model ?? modelId,
+    output: Output.object({ schema: guessSchema }),
+    prompt: JSON.stringify({
+      errand: input.errand,
+      site: input.site,
+      siteNote: input.note ?? null,
+      today,
+    }),
+    providerOptions: selection?.modelOptions.providerOptions,
+  });
+  return output;
+}
+
+/**
+ * The model's results page when it is one of the site's own: https, no
+ * port or credentials, on the site's host or under it (auto.drom.ru for
+ * drom.ru) — the browser would go there for the errand anyway.
+ */
+function onSite(site: string, address: string | null) {
+  const url = address === null ? null : URL.parse(address);
+  if (url?.protocol !== "https:") return undefined;
+  if (url.port !== "" || url.username !== "" || url.password !== "") {
+    return undefined;
+  }
+  const host = hostOf(url.href);
+  const home = hostOf(site);
+  if (home === "" || (host !== home && !host.endsWith(`.${home}`))) {
+    return undefined;
+  }
+  return url.href;
+}
+
+/** A site looked at for an errand is not looked at again for this long: a look that found nothing would find it again. */
+const lookedForMs = 6 * 60 * 60_000;
+/** Until when, by workspace and host. */
+const looked = new Map<string, number>();
+
+function lookedRecently(workspaceId: string, site: string, now: number) {
+  for (const [key, until] of looked) {
+    if (until <= now) looked.delete(key);
+  }
+  return looked.has(`${workspaceId}|${hostOf(site)}`);
+}
 
 /** A search answered from a site's data counts as one for this long: the next start on it opens the site. */
 const servedForMs = 10 * 60_000;
@@ -189,7 +291,7 @@ async function readSite(
   if (servedRecently(input.sessionId, input.site, began)) return undefined;
   if (rests(scope.workspaceId, input.site, began)) return undefined;
   const operations = await siteOperationsFor(scope.workspaceId, input.site);
-  if (operations.length === 0) return undefined;
+  if (operations.length === 0) return lookSite(scope, input, began);
   const fill = await fillSiteRead(scope, { ...input, operations }).catch(
     (cause: unknown) => {
       console.warn("[site-api] the errand was not filled", {
@@ -283,6 +385,89 @@ async function readSite(
     });
   return { cards: read.cards, count: read.count, url };
 }
+
+/**
+ * The first search on a site with no operation: the results page a model
+ * names, looked at in the worker's browser (`siteColdPilot`). Its cards
+ * answer the turn when they answer the errand's words, and the operation
+ * found behind them is kept for the next search there.
+ */
+async function lookSite(
+  scope: AccessScope,
+  input: Parameters<typeof readSite>[1],
+  began: number
+): Promise<SiteDirectRead | undefined> {
+  if (!siteColdPilot(scope)) return undefined;
+  if (lookedRecently(scope.workspaceId, input.site, began)) return undefined;
+  looked.set(`${scope.workspaceId}|${hostOf(input.site)}`, began + lookedForMs);
+  const guess = await guessSiteRead(scope, input).catch((cause: unknown) => {
+    console.warn("[site-api] no results page was named", {
+      name: cause instanceof Error ? cause.name : "unknown",
+    });
+    return undefined;
+  });
+  const url = onSite(input.site, guess?.url ?? null);
+  const guessMs = Date.now() - began;
+  if (url === undefined) {
+    console.info("[site-api] left to the browser", {
+      guessMs,
+      reason: guess?.url === null ? "no_page" : "address",
+      workspaceId: scope.workspaceId,
+    });
+    return undefined;
+  }
+  const look = await lookBrowserVmSiteDirectly(scope.workspaceId, {
+    url,
+    words: guess?.query ?? null,
+  }).catch((cause: unknown) => {
+    console.warn("[site-api] the look did not go through", {
+      name: cause instanceof Error ? cause.name : "unknown",
+    });
+    rest(scope.workspaceId, "*");
+    return undefined;
+  });
+  const timing = {
+    guessMs,
+    host: hostOf(url),
+    lookMs: Date.now() - began - guessMs,
+    workspaceId: scope.workspaceId,
+  };
+  if (look === undefined) return undefined;
+  if (!look.ok) {
+    console.info("[site-api] left to the browser", {
+      ...timing,
+      reason: look.reason,
+    });
+    return undefined;
+  }
+  console.info("[site-api] looked", {
+    ...timing,
+    cards: look.cards.length,
+    operations: look.operations.length,
+    workerMs: look.ms,
+  });
+  served.set(servedKey(input.sessionId, url), Date.now());
+  // The cards are the person's whatever keeping the operation does.
+  await rememberSiteOperations(scope.workspaceId, look.operations).catch(
+    (cause: unknown) => {
+      console.warn("[site-ops] a looked operation was not kept", {
+        name: cause instanceof Error ? cause.name : "unknown",
+      });
+    }
+  );
+  return {
+    cards: look.cards.slice(0, lookCards).map((card) => ({
+      link: card.link,
+      more: { text: card.text },
+      name: card.title,
+    })),
+    count: look.count,
+    url: look.page,
+  };
+}
+
+/** How many of a looked page's cards go to the turn: each carries its whole text. */
+const lookCards = 20;
 
 /**
  * A workspace's own operation that read a page its template held otherwise

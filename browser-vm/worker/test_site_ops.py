@@ -323,6 +323,7 @@ class Page:
         self.statuses, self.landed, self.walled = statuses or {}, landed or {}, walled
         self.listeners, self.visited, self.fetched = [], [], []
         self.target_seen = None
+        self.cards = []
 
     def is_closed(self):
         return self.closed
@@ -362,6 +363,8 @@ class Page:
                         status=self.statuses.get(url, 200))
 
     async def evaluate(self, expression, argument=None):
+        if expression == worker.CODE_CARDS_JS:
+            return self.cards
         if "fetch(u" in expression:
             self.fetched.append(argument)
             return {"status": self.statuses.get(argument, 200), "url": self.landed.get(argument, argument),
@@ -534,8 +537,8 @@ class FitAndPickTest(unittest.TestCase):
                          ["Отель 0", "Отель 1", "Отель 3", "Отель 4"])
 
 
-class DirectOpTest(unittest.IsolatedAsyncioTestCase):
-    """POST /v1/op, Bro's direct read: a tab of its own on the stand's fake browser."""
+class DirectSetup(unittest.IsolatedAsyncioTestCase):
+    """The worker's app on the stand's fake browser, for Bro's direct reads."""
 
     async def asyncSetUp(self):
         from unittest import mock
@@ -584,6 +587,11 @@ class DirectOpTest(unittest.IsolatedAsyncioTestCase):
         page = self.next_page
         self.pages.append(page)
         return page
+
+
+
+class DirectOpTest(DirectSetup):
+    """POST /v1/op, Bro's direct read: a tab of its own."""
 
     async def read(self, operation, url, **options):
         response = await self.client.post("/v1/op", json={"operation": operation, "url": url, **options},
@@ -649,6 +657,77 @@ class DirectOpTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(status, 400, bad)
         status, _ = await self.read({"name": "x"}, url)
         self.assertEqual(status, 400)
+
+
+class Document:
+    """The page's own document as Playwright's response listener sees it, for SiteTraffic."""
+
+    def __init__(self, url, text):
+        self.url, self.status, self._text = url, 200, text
+        self.headers = {"content-type": "text/html; charset=utf-8", "content-length": str(len(text.encode()))}
+        frame = types.SimpleNamespace(url=url, parent_frame=None)
+
+        async def sizes():
+            return {"responseBodySize": len(text.encode())}
+
+        self.request = types.SimpleNamespace(resource_type="document", frame=frame, method="GET", post_data=None,
+                                             sizes=sizes)
+
+    async def body(self):
+        return self._text.encode()
+
+
+class LookTest(DirectSetup):
+    """POST /v1/look, Bro's first search on a site it has no operation for."""
+
+    async def asyncSetUp(self):
+        from unittest import mock
+
+        await super().asyncSetUp()
+        self.enterContext(mock.patch.object(worker, "SITE_LOOK_CARDS_S", 0.05))
+
+    async def look(self, url, words):
+        response = await self.client.post("/v1/look", json={"url": url, "words": words},
+                                          headers={"Authorization": f"Bearer {self.token}"})
+        return response.status, await response.json() if response.status == 200 else await response.text()
+
+    def card(self, vacancy):
+        salary = f"{vacancy['compensation']['from']:,} ₽".replace(",", " ")
+        return {"title": vacancy["name"], "text": f"{vacancy['name']} {vacancy['company']['visibleName']} от {salary}",
+                "links": [vacancy["links"]["desktop"]], "image": None}
+
+    async def test_a_first_look_gives_the_pages_cards_and_learns_the_operation_behind_them(self):
+        url = "https://hh.ru/search/vacancy?text=менеджер&area=1"
+        page = Page({url: HH_DOCUMENT}, [Document(url, HH_DOCUMENT)])
+        page.cards = [self.card(vacancy) for vacancy in VACANCIES]
+        self.next_page = page
+        status, answer = await self.look(url, "менеджер продукта")
+        self.assertEqual((status, answer["ok"], answer["count"]), (200, True, 4))
+        self.assertEqual(answer["cards"][0]["title"], "Продакт-менеджер")
+        self.assertEqual(answer["cards"][0]["link"], "https://hh.ru/vacancy/138625702")
+        [operation] = answer["operations"]
+        self.assertEqual(operation["name"], "hh.ru/search/vacancy")
+        self.assertEqual(operation["source"], {"kind": "document",
+                                               "state": {"tag": "template", "id": "HH-Lux-InitialState"}})
+        self.assertNotIn("менеджер", json.dumps(operation, ensure_ascii=False))
+        self.assertEqual((page.closed, self.worker.visit_tabs), (True, set()))
+
+    async def test_a_page_that_is_not_the_sites_results_for_the_words_gives_nothing(self):
+        url = "https://hh.ru/search/vacancy?text=сварщик"
+        self.next_page = Page({url: HH_DOCUMENT}, [Document(url, HH_DOCUMENT)])
+        self.next_page.cards = [self.card(vacancy) for vacancy in VACANCIES]
+        status, answer = await self.look(url, "сварщик")
+        self.assertEqual((answer["ok"], answer["reason"]), (False, "unanswered"))
+        self.next_page = Page({url: HH_DOCUMENT}, statuses={url: 404})
+        self.next_page.cards = [self.card(vacancy) for vacancy in VACANCIES]
+        status, answer = await self.look(url, "сварщик")
+        self.assertEqual((answer["ok"], answer["reason"]), (False, "moved"))
+        self.next_page = Page({url: "<html></html>"})
+        status, answer = await self.look(url, None)
+        self.assertEqual((answer["ok"], answer["reason"]), (False, "empty"))
+        for bad in ("http://hh.ru/search", "https://hh.ru:8443/search", "https://web.archive.org/hh.ru", 5):
+            status, _ = await self.look(bad, None)
+            self.assertEqual(status, 400, bad)
 
 
 if __name__ == "__main__":
