@@ -300,6 +300,64 @@ describe("turn log", { timeout: 30_000 }, () => {
     );
   });
 
+  it("names a Telegram account by its nick, never by its made-up email", async () => {
+    const { database, log } = await logDatabase();
+    const email = "telegram-abc@telegram.local-vault.invalid";
+    await database.insert(schema.user).values([
+      { email, id: "tg", name: "Cosa Nostra" },
+      {
+        email: "telegram-def@telegram.local-vault.invalid",
+        id: "tg-bare",
+        name: "Telegram user",
+      },
+      {
+        email: "bro-test-vika@telegram.local-vault.invalid",
+        id: "vika",
+        name: "Тест Вика",
+      },
+    ]);
+    await database.insert(schema.channelIdentities).values([
+      {
+        channel: "telegram",
+        chatId: "1",
+        externalUserId: "1",
+        userId: "tg",
+        username: "cosa",
+        workspaceId: "personal:tg",
+      },
+      {
+        channel: "telegram",
+        chatId: "2",
+        externalUserId: "2",
+        userId: "tg-bare",
+        username: "bare",
+        workspaceId: "personal:tg-bare",
+      },
+    ]);
+    const scope = await import("@db/services/scope");
+    await Promise.all(
+      ["tg", "tg-bare", "vika"].map((id) =>
+        scope.ensureScope({
+          userId: `better-auth:${id}`,
+          workspaceId: `personal:${id}`,
+        })
+      )
+    );
+
+    const accounts = await log.workspaceAccounts([
+      "personal:tg",
+      "personal:tg-bare",
+      "personal:vika",
+    ]);
+    const labels = [...accounts].map(([id, account]) =>
+      log.workspaceLabel(id, account)
+    );
+    expect(labels).toEqual(
+      expect.arrayContaining(["Cosa Nostra (@cosa)", "@bare", "Тест Вика"])
+    );
+    expect(labels.join()).not.toContain("invalid");
+  });
+
   it("summarizes the day for the owner", async () => {
     const { database, log } = await logDatabase();
     await log.recordTurnStart(turn());

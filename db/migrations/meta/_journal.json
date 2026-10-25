@@ -617,6 +617,13 @@
       "when": 1792915561473,
       "tag": "0087_browser_downloads",
       "breakpoints": true
+    },
+    {
+      "idx": 88,
+      "version": "7",
+      "when": 1792919262294,
+      "tag": "0088_capability_tips",
+      "breakpoints": true
     }
   ]
 }

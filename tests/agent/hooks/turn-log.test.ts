@@ -155,6 +155,7 @@ beforeEach(() => {
           email: "alice@example.com",
           name: "Алиса",
           phoneNumber: "+79990001122",
+          telegramUsername: null,
         },
       ],
     ])
