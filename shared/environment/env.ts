@@ -358,6 +358,10 @@ export const env = createEnv({
     // (`run_code` in `browser-vm/worker/worker.py`). A root without the engine
     // runs them on browser-use. Unset, nobody.
     BROWSER_CODE_ENGINE_WORKSPACES: workspaceListSchema.optional(),
+    // Workspace ids or `*` whose errands on a site Bro has a note about get
+    // the note in their task: how the site writes the address of its results
+    // (`agent/lib/browser-use/site-notes.ts`). Unset, nobody.
+    BROWSER_SITE_NOTES_WORKSPACES: workspaceListSchema.optional(),
     // Who may get the sign-in link, where the person signs in to a site
     // themselves in a live view of their own cloud browser
     // (`agent/lib/login-handoff/`, docs/login-handoff.md). Unset or empty,

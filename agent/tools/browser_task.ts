@@ -212,6 +212,7 @@ import {
   signsInWithGosuslugi,
 } from "@agent/lib/browser-use/public-services";
 import { mentionsRecurringCharge } from "@agent/lib/browser-use/spend";
+import { siteNoteLine } from "@agent/lib/browser-use/site-notes";
 import { browserRunQuotaGate } from "@agent/lib/billing/quota";
 import {
   turnBrowserStarts,
@@ -1591,6 +1592,8 @@ export function composeBrowserTask(options: {
   readonly signUp?: { readonly fresh: boolean; readonly username: string };
   /** The person asked for the errand to be done, not only found. */
   readonly staging?: Staging;
+  /** How the site writes its results' addresses (`siteNoteLine`), in its pilot. */
+  readonly siteNote?: string;
 }) {
   const own = stagesForPerson(options.consent, options.staging);
   // With consent, or staged in the person's turn, the run has every detail
@@ -1608,6 +1611,7 @@ export function composeBrowserTask(options: {
     options.site
       ? `${options.errand}\n\nSite: ${options.site}`
       : options.errand,
+    options.siteNote,
     personStepLine(),
     options.signUp
       ? signUpLine(options.signUp.username, options.signUp.fresh)
@@ -4941,6 +4945,7 @@ async function runBrowserTask(
                 ? undefined
                 : { fresh: signUp.kind === "new", username: signUp.username },
             site,
+            siteNote: siteNoteLine(scope, site),
             staging,
           });
           // Another errand of the workspace in a browser on the same account
