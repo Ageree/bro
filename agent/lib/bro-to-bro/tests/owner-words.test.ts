@@ -321,6 +321,15 @@ describe("paymentsSaid", () => {
     expect(errandPayments(ownerText(["я куплю торт"]), "торт и вино")).toEqual([
       "я куплю торт",
     ]);
+    for (const said of [
+      "Договорись об ужине. Я плачу. Автомобиль не покупаю.",
+      "Договорись об ужине. Я плачу. Петя написал:\n> куплю автомобиль",
+      "Договорись об ужине. Я плачу. Автомобиль стоит в гараже.",
+    ])
+      expect(errandPayments(ownerText([said]), "Ужин и автомобиль")).toEqual([
+        "я плачу",
+        "ужин",
+      ]);
     // «скинемся» pays with the other one: they may be the payer too.
     expect(paysTogether("скинемся с петей маме на подарок")).toBe(true);
     expect(paysTogether("я куплю торт")).toBe(false);
@@ -352,6 +361,21 @@ describe("paymentsSaid", () => {
       "Ужин на Савелии",
     ]);
     expect(promisesIn(["Пётр придёт в платье на берег"], names)).toEqual([]);
+    expect(promisesIn(["Кому угодно Савелий купит автомобиль"], names)).toEqual(
+      ["Кому угодно Савелий купит автомобиль"]
+    );
+    expect(
+      promisesIn(["Савелий оплатит торт, автомобиль для Петра"], names)
+    ).toEqual(["Савелий оплатит торт автомобиль для Петра"]);
+    for (const text of [
+      "Вы с Савелием скинетесь на шубу",
+      "Савелий доплатит за шубу",
+      "Шуба маме — с Савелия",
+      "Савелий раскошелится на шубу",
+      "Савелий профинансирует поездку",
+    ])
+      expect(promisesIn([text], names)).toHaveLength(1);
+    expect(promisesIn(["купе"], names)).toEqual([]);
   });
 
   it("hears what the owner says the other person pays for", () => {

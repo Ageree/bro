@@ -9,6 +9,7 @@ import {
   namedAmounts,
   paymentCovered,
   paymentPattern,
+  paymentsUnread,
   paysTogether,
   peerPaymentCovered,
   promiseReadings,
@@ -294,12 +295,7 @@ function promisesCovered(
     ) &&
     // A sentence with a word of paying code reads no promise in is held:
     // the reading of promises must not miss one.
-    texts.every((text) =>
-      text
-        .split(/(?<!\d)[.!?]+|[.!?]+(?!\d)|[;\n]+/u)
-        .filter((sentence) => paymentPattern.test(sentence))
-        .every((sentence) => promisesIn([sentence], names).length > 0)
-    )
+    !paymentsUnread(texts, names)
   );
 }
 
