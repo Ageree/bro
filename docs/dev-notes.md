@@ -839,6 +839,9 @@ self-test WORKSPACE_ID`, письмо только самому агенту. П
   в `web/trpc/router.ts`: страницы зовут те же процедуры через `createCaller`
   (`admin/_lib/caller.ts`), чужому — 404. Текст хода грузится по клику отдельным
   запросом `admin.transcript`, списком его нет.
+- Имя человека в кабинете владельца (25.10): у аккаунтов из Telegram, по телефону и у тестовых почта выдуманная
+  (`…@telegram.local-vault.invalid`, `phone-…@local-vault.invalid`) и в подпись не идёт; вместо неё — ник Telegram из
+  `channel_identities` (`workspaceLabel` в `db/services/turn-log.ts`: имя, телефон или настоящая почта, `@ник`).
 - Служебное видит только владелец (тот же `isAdminScope`; 21.10 новый человек
   увидел «Инфраструктуру», токены и «Полную трассировку» и принял их за
   недоделку): раздел «Инфраструктура» кабинета (`InfrastructureSection`),

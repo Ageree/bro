@@ -11,6 +11,7 @@ import {
   sql,
 } from "drizzle-orm";
 import {
+  channelIdentities,
   db,
   turnLog,
   turnLogEntries,
@@ -209,9 +210,9 @@ export async function expireTurnLog(retentionDays: number, now = new Date()) {
 }
 
 /**
- * Who a workspace is to the owner: its owner account's name, phone and
- * email, and when the account signed up. A workspace without a Better Auth
- * owner (none today) has no entry.
+ * Who a workspace is to the owner: its owner account's name, phone, email and
+ * Telegram nick, and when the account signed up. A workspace without a Better
+ * Auth owner (none today) has no entry.
  */
 export async function workspaceAccounts(workspaceIds: readonly string[]) {
   if (workspaceIds.length === 0) return new Map<string, Account>();
@@ -221,6 +222,7 @@ export async function workspaceAccounts(workspaceIds: readonly string[]) {
       email: user.email,
       name: user.name,
       phoneNumber: user.phoneNumber,
+      telegramUsername: channelIdentities.username,
       workspaceId: workspaceMemberships.workspaceId,
     })
     .from(workspaceMemberships)
@@ -229,6 +231,13 @@ export async function workspaceAccounts(workspaceIds: readonly string[]) {
       eq(
         sql`${betterAuthPrincipalPrefix} || ${user.id}`,
         workspaceMemberships.userId
+      )
+    )
+    .leftJoin(
+      channelIdentities,
+      and(
+        eq(channelIdentities.userId, user.id),
+        eq(channelIdentities.channel, "telegram")
       )
     )
     .where(
@@ -243,17 +252,47 @@ export async function workspaceAccounts(workspaceIds: readonly string[]) {
 type Account = Pick<
   typeof user.$inferSelect,
   "createdAt" | "email" | "name" | "phoneNumber"
->;
+> & { readonly telegramUsername: string | null };
 
-/** The shortest way to name a workspace to the owner. */
+/**
+ * Accounts that began in Telegram, by phone or in the test set get a made-up
+ * address under this domain (`telegramUserEmailDomain`, `phoneUserEmail`):
+ * it names no one, so the owner is not shown it.
+ */
+const madeUpEmailDomain = "local-vault.invalid";
+
+/** The names Better Auth gets when Telegram or the phone gave none. */
+const placeholderNames = new Set(["Telegram user", "Phone user"]);
+
+/**
+ * The shortest way to name a workspace to the owner: the name, then how to
+ * reach them: phone, real email, Telegram nick. A made-up email is left out.
+ */
 export function workspaceLabel(
   workspaceId: string,
-  account: Pick<Account, "email" | "name" | "phoneNumber"> | undefined
+  account:
+    | (Pick<Account, "email" | "name" | "phoneNumber"> &
+        Partial<Pick<Account, "telegramUsername">>)
+    | undefined
 ) {
   if (!account) return workspaceId;
-  const name = account.name.trim();
-  const contact = account.phoneNumber ?? account.email;
-  return name.length > 0 && name !== contact ? `${name} (${contact})` : contact;
+  const nick = account.telegramUsername?.trim().replace(/^@/, "") ?? "";
+  const realEmail =
+    account.email.endsWith(`.${madeUpEmailDomain}`) ||
+    account.email.endsWith(`@${madeUpEmailDomain}`)
+      ? null
+      : account.email;
+  const contacts = [
+    account.phoneNumber ?? realEmail,
+    nick === "" ? null : `@${nick}`,
+  ].filter((contact) => contact !== null && contact !== "");
+  const given = account.name.trim();
+  const name =
+    given === "" || placeholderNames.has(given) || contacts.includes(given)
+      ? undefined
+      : given;
+  if (name === undefined) return contacts.join(", ") || workspaceId;
+  return contacts.length > 0 ? `${name} (${contacts.join(", ")})` : name;
 }
 
 /**
@@ -430,8 +469,16 @@ export async function summarizeOwnerDay(window: {
         email: user.email,
         name: user.name,
         phoneNumber: user.phoneNumber,
+        telegramUsername: channelIdentities.username,
       })
       .from(user)
+      .leftJoin(
+        channelIdentities,
+        and(
+          eq(channelIdentities.userId, user.id),
+          eq(channelIdentities.channel, "telegram")
+        )
+      )
       .where(
         and(gte(user.createdAt, window.from), lt(user.createdAt, window.to))
       )
