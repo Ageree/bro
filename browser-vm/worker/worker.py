@@ -90,7 +90,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-10-25.8"
+VERSION = "2026-10-25.9"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -1737,6 +1737,16 @@ CODE_PROGRESS_EVERY = 10
 CODE_PROGRESS = ("{number} calls so far. If you already have what the errand asks for, call `done` now. If one "
                  "control or page keeps failing, stop trying it and go on without it.")
 CODE_LAST_CALL_S = 60
+# Once cards() has handed the model a results list, a find has this many calls left at most. With the list in
+# hand on its 2nd–3rd call, the model went on for 24–50 more calls on the owner's account (25.10, worker .8):
+# seat maps and order pages of tutu.ru for a link of each train, every hotel's rooms on Ostrovok; the rule
+# against it in CODE_SYSTEM did not hold. On the stand the same finds ended within 7–9 calls in all.
+CODE_LISTED = 3
+CODE_AFTER_LIST = 8
+CODE_LISTED_NOTE = ("[The results list is in hand. You have {left} more calls for this errand: take what it asks "
+                    "for from these cards in your code and call `done`. A detail the errand itself names that the "
+                    "cards lack comes from the options' own pages read in one visit() call; an option without a "
+                    "link of its own is reported with this page's address.]")
 CODE_LAST_CALL = ("This is your last call: call `done` now with your report of what you found, in the format the "
                   "errand asks for, saying plainly what is partial and what you did not get to.")
 
@@ -1981,6 +1991,7 @@ class CodeApi:
     def __init__(self, context, secrets):
         self.context, self.secrets = context, secrets
         self.pages, self.ids, self.last = {}, {}, None
+        self.listed = False  # cards() has handed the model a results list (CODE_LISTED cards or more)
 
     def register(self, page):
         if page not in self.ids:
@@ -2130,6 +2141,7 @@ class CodeApi:
         while len(encoded) > CODE_CARDS_CHARS and len(found) > 1:
             found = found[:len(found) * 3 // 4]
             encoded = json.dumps(found, ensure_ascii=False)
+        self.listed = self.listed or len(found) >= CODE_LISTED
         return found
 
     async def visit(self, urls, expression=None):
@@ -3149,6 +3161,7 @@ class Worker:
                         {"role": "user", "content": f"{text}\n\nYour tab: {json.dumps(opened, ensure_ascii=False)}\n"
                                                     f"You have at most {max_steps} calls for this errand."}]
             walled = 0  # calls in a row that ended on an anti-bot check (`code_wall`)
+            budget = max_steps  # cut to CODE_AFTER_LIST calls past the one that got the results list
             for number in range(1, max_steps + 1):
                 if run.cancel_requested or time.monotonic() > deadline:
                     break
@@ -3156,7 +3169,7 @@ class Worker:
                     messages.append({"role": "user", "content": f"A new message about this errand: {run.messages.pop(0)}"})
                 # The last call, by count or by the clock, is the report: a run that stopped without one lost
                 # everything it found (tutu.ru on the stand, 25.10: all 42 trains in hand at call 31 of 60).
-                last = number == max_steps or deadline - time.monotonic() < CODE_LAST_CALL_S or walled >= CODE_WALL_CALLS
+                last = number >= budget or deadline - time.monotonic() < CODE_LAST_CALL_S or walled >= CODE_WALL_CALLS
                 if last:
                     messages.append({"role": "user", "content": CODE_WALL if walled >= CODE_WALL_CALLS else CODE_LAST_CALL})
                 asked = time.monotonic()
@@ -3191,10 +3204,16 @@ class Worker:
                         goals.append("done")
                         messages.append({"role": "tool", "tool_call_id": call.id, "content": "ok"})
                         continue
+                    listed = api.listed
                     output, seconds = await sandbox.run(str(arguments.get("code") or ""))
                     timing["codeMs"] += round(seconds * 1000)
                     goals.append(str(arguments.get("title") or ""))
-                    left = max_steps - number
+                    if api.listed and not listed and budget > number + CODE_AFTER_LIST:
+                        budget = number + CODE_AFTER_LIST
+                        output += "\n" + CODE_LISTED_NOTE.format(left=CODE_AFTER_LIST)
+                        log.info("code run %s has its results list at call %d: %d calls left", run.id, number,
+                                 CODE_AFTER_LIST)
+                    left = budget - number
                     if left <= CODE_CALLS_WARNED:
                         output += (f"\n[Calls left: {left}. Call `done` before they run out, with what you have, "
                                    "saying what is partial.]")

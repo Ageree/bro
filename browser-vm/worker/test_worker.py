@@ -2576,10 +2576,26 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Find kettles.",
                                      "engine": "code"})
         self.assertEqual((await self.settled("r1")).status, "completed")
-        count, link, text = model.requests[1][-1]["content"].split(" ", 2)
+        count, link, text = model.requests[1][-1]["content"].splitlines()[0].split(" ", 2)
         # 80 cards of ~950 characters are past CODE_CARDS_CHARS: the first ones that fit are kept.
         self.assertTrue(0 < int(count) < worker.CODE_CARDS, count)
         self.assertEqual((link, text), ("https://shop.test/0", "Чайник 0 — 1000 ₽ хх"))
+
+    @unittest.skipUnless(importlib.util.find_spec("quickjs"), "the code engine's sandbox needs quickjs")
+    async def test_a_find_with_its_results_list_in_hand_has_a_few_calls_left(self):
+        answers = [FakeAnswer([("repl", {"title": "results", "code": "console.log(cards('t1').length)"})])]
+        answers += [FakeAnswer([("repl", {"title": f"seats {n}", "code": "console.log('seat map')"})])
+                    for n in range(worker.CODE_AFTER_LIST - 1)]
+        answers += [FakeAnswer([("done", {"result": "Нашёл.\nRESULT: поезда\nNEEDS: none"})])]
+        model, playwright = self.code_engine(answers)
+        await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Find trains.",
+                                     "engine": "code", "maxSteps": 60})
+        run = await self.settled("r1")
+        self.assertEqual((run.status, len(model.requests)), ("completed", 1 + worker.CODE_AFTER_LIST))
+        self.assertIn("The results list is in hand. You have 8 more calls", model.requests[1][-1]["content"])
+        # The call the list came on plus CODE_AFTER_LIST more: the last of them may only be the report.
+        self.assertEqual(model.choices[-1], {"type": "function", "function": {"name": "done"}})
+        self.assertEqual(model.choices[-2], "required")
 
     @unittest.skipUnless(importlib.util.find_spec("quickjs"), "the code engine's sandbox needs quickjs")
     async def test_visit_reads_pages_side_by_side_in_tabs_it_closes_and_leaves_the_models_page_as_it_was(self):
