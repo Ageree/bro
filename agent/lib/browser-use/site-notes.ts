@@ -46,6 +46,17 @@ const siteNotes: readonly {
     hosts: ["ozon.ru"],
     note: "its search opens straight at https://www.ozon.ru/search/?text=<words>&from_global=true&sorting=price (cheapest first; sorting=rating is best rated first). Each product is a card with its price (marked when it is the Ozon Card price), the old price struck out, its name, seller, rating and number of reviews, and a delivery date: filter by price and rating in your own code.",
   },
+  // The next two were NOT seen open: the stand's address is turned away by both. Their parameter names
+  // (Avito's pmin, pmax and s) are in the sites' own robots.txt (read 25.10), the values are from what is
+  // generally known of the sites. Check them on a test account before relying on them.
+  {
+    hosts: ["wildberries.ru"],
+    note: "its search opens straight at https://www.wildberries.ru/catalog/0/search.aspx?search=<words>&sort=priceup (cheapest first). Each product is a card with its price, brand and name, rating and number of reviews: filter by rating in your own code.",
+  },
+  {
+    hosts: ["avito.ru"],
+    note: "a search opens straight at https://www.avito.ru/<city>?q=<words> (the city as the site writes it in its own addresses: moskva, sankt-peterburg), with &pmin=<roubles> and &pmax=<roubles> for the price and &s=1 for cheapest first. Each ad is a card with its title, price, place and date.",
+  },
   {
     hosts: ["dns-shop.ru"],
     note: "its search opens straight at https://www.dns-shop.ru/search/?q=<words>.",

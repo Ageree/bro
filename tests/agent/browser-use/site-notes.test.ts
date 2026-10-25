@@ -44,6 +44,15 @@ describe("a site's note in the errand's task", () => {
     );
   });
 
+  it("has the address of a search at the two marketplaces turned away on the stand", async () => {
+    expect(await lineFor("*", "https://www.wildberries.ru/")).toContain(
+      "search.aspx?search=<words>&sort=priceup"
+    );
+    expect(await lineFor("*", "https://www.avito.ru/moskva")).toContain(
+      "&pmax=<roubles>"
+    );
+  });
+
   it("has nothing for a site it has no note about, a look-alike host or no site", async () => {
     expect(await lineFor("*", "https://www.rzd.ru/")).toBeUndefined();
     expect(await lineFor("*", "https://nottutu.ru/")).toBeUndefined();
