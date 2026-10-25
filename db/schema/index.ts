@@ -33,6 +33,7 @@ export * from "./sign-in-codes";
 export * from "./signatures";
 export * from "./spending";
 export * from "./subscriptions";
+export * from "./taxi-watches";
 export * from "./turn-log";
 export * from "./usage";
 export * from "./usage-costs";

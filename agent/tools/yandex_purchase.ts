@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { defineDynamic, defineTool } from "eve/tools";
+import { defineDynamic, defineTool, type ToolContext } from "eve/tools";
 import { z } from "zod";
 import { contactsPilot, listContacts } from "@db/services/contacts";
 import {
@@ -63,11 +63,14 @@ import {
 import {
   afishaPurchasePilot,
   goOwnRidePilot,
+  goWatchPilot,
   goPassengerPilot,
   yandexPurchasePilot,
 } from "@agent/lib/yandex/pilot";
 import { yandexSignIn } from "@agent/lib/yandex/sign-in";
 import { runYandexOperation } from "@agent/lib/yandex/transport";
+import { conversationOf } from "@agent/lib/yoomoney/onboarding";
+import { startTaxiWatch } from "@db/services/taxi-watches";
 import type { AccessScope } from "@shared/identity/access-scope";
 import { normalizeAuthPhoneNumber } from "@shared/identity/phone-number";
 
@@ -217,13 +220,21 @@ function blockedReply(service: string, reason: string) {
   return afishaBlockedReplies.get(reason) ?? afishaRetryReply;
 }
 
+/** What Bro tells about a ride it booked, by whether a watch follows it. */
+const rideNotWatched =
+  "Nothing watches the ride: do not promise to report the car; yandex go.ride shows it when the person asks.";
+const rideWatched =
+  "Bro watches the ride: it writes in this chat by itself when a car is found, when it is time to step out (about two minutes before the car is there) and when the car is at the door. Say so in a few words and promise nothing else about the ride.";
+const rideWatchedForPassenger =
+  "Bro watches the ride: it writes in this chat by itself when a car is found. Say so in a few words and promise nothing else about the ride.";
+
 const goReplies = {
   booked:
-    "The ride is booked and Yandex is looking for a car. Tell the person the route, the price and the payment in one short message. Nothing watches the ride: do not promise to report the car; yandex go.ride shows it when the person asks.",
+    "The ride is booked and Yandex is looking for a car. Tell the person the route, the price and the payment in one short message.",
   bookedOwnRide:
-    "The ride is booked in the person's own Yandex Go, as their app books it, and Yandex is looking for a car; Yandex sends no SMS about it. Tell the person the route, the price and the payment in one short message, and that the car and the driver show in their Yandex Go app. Nothing watches the ride: do not promise to report the car; yandex go.ride shows it when the person asks.",
+    "The ride is booked in the person's own Yandex Go, as their app books it, and Yandex is looking for a car; Yandex sends no SMS about it. Tell the person the route, the price and the payment in one short message, and that the car and the driver show in their Yandex Go app.",
   bookedForPassenger:
-    "The ride is booked for the passenger and Yandex is looking for a car. Tell the person the route, the price and the payment in one short message, and that Yandex texts the passenger the car, the driver and how to reach them; the ride is in the person's own Yandex Go and they pay for it. Nothing watches the ride: do not promise to report the car; yandex go.ride shows it when the person asks.",
+    "The ride is booked for the passenger and Yandex is looking for a car. Tell the person the route, the price and the payment in one short message, and that Yandex texts the passenger the car, the driver and how to reach them; the ride is in the person's own Yandex Go and they pay for it.",
   already_active:
     "A ride is already on, so nothing new was booked. Tell the person about that ride; book another only after it is over or cancelled, if they still want one.",
   over_limit:
@@ -714,6 +725,46 @@ function purchaseResult(purchase: StoredPurchase) {
   };
 }
 
+/**
+ * Starts the watch that tells the person in this chat how their booked ride
+ * goes (`agent/lib/taxi/watch.ts`); false when there is no watch (not in the
+ * pilot, no chat to write to, an order id Yandex did not give), and then the
+ * ride is not promised to be followed.
+ */
+async function watchBookedRide(
+  context: ToolContext,
+  scope: AccessScope,
+  order: string | undefined,
+  forPassenger: boolean
+) {
+  const conversation = conversationOf(context);
+  if (
+    order === undefined ||
+    conversation.conversationChannel === null ||
+    !goWatchPilot(scope)
+  ) {
+    return false;
+  }
+  try {
+    await startTaxiWatch(
+      {
+        ...conversation,
+        forPassenger,
+        orderId: order,
+        userId: scope.userId,
+        workspaceId: scope.workspaceId,
+      },
+      new Date()
+    );
+    return true;
+  } catch (error) {
+    console.warn("[taxi] watch not started", {
+      name: error instanceof Error ? error.name : "unknown",
+    });
+    return false;
+  }
+}
+
 export default defineDynamic({
   events: {
     "step.started": (event, context) => {
@@ -845,12 +896,36 @@ export default defineDynamic({
                   ...result,
                   reply: `Nothing was booked: the price is above ${String(args.maxPriceRub)} ₽. Ask the person one short question with the route and the price, ending with «Оплачиваю?», and book with maxPriceRub at that price only after their plain yes.`,
                 };
+              const watching =
+                result.kind === "booked" &&
+                (await watchBookedRide(
+                  toolContext,
+                  scope,
+                  z.string().min(1).max(100).safeParse(result.orderId).data,
+                  result.passenger !== undefined
+                ));
+              const watchNote = (forPassenger: boolean) => {
+                if (!watching) return rideNotWatched;
+                return forPassenger ? rideWatchedForPassenger : rideWatched;
+              };
               if (result.kind === "booked" && result.passenger !== undefined)
-                return { ...result, reply: goReplies.bookedForPassenger };
+                return {
+                  ...result,
+                  reply: `${goReplies.bookedForPassenger} ${watchNote(true)}`,
+                };
               if (result.kind === "booked" && args?.quietOwnRide === true)
-                return { ...result, reply: goReplies.bookedOwnRide };
+                return {
+                  ...result,
+                  reply: `${goReplies.bookedOwnRide} ${watchNote(false)}`,
+                };
               if (result.reason !== "no_verified_card")
-                return { ...result, reply: goReplies[result.kind] };
+                return {
+                  ...result,
+                  reply:
+                    result.kind === "booked"
+                      ? `${goReplies.booked} ${watchNote(false)}`
+                      : goReplies[result.kind],
+                };
               if (input.action !== "book" || unverifiedCardId === undefined)
                 return { ...result, reply: goNoCardReply };
               return {

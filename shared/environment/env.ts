@@ -410,6 +410,16 @@ export const env = createEnv({
         "YANDEX_GO_OWN_RIDE_WORKSPACES takes workspace ids or *, not emails"
       )
       .optional(),
+    // Bro follows the Go rides it books (`agent/lib/taxi/watch.ts`) and tells
+    // the person in the chat when a car is found, when to step out (about two
+    // minutes before it is there) and when it is there, inside
+    // YANDEX_PURCHASE_WORKSPACES. Unset, nobody; otherwise workspace ids or `*`.
+    YANDEX_GO_WATCH_WORKSPACES: workspaceListSchema
+      .refine(
+        (entries) => entries.every((entry) => !entry.includes("@")),
+        "YANDEX_GO_WATCH_WORKSPACES takes workspace ids or *, not emails"
+      )
+      .optional(),
     // The person's own request pays without «Оплачиваю?» (owner 15.10,
     // `agent/lib/payments/direct.ts`): «купи корм», «оплати интернет». Up to
     // the budget they named, or DIRECT_PURCHASE_MAX_RUB without one; above
