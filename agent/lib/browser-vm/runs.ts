@@ -8,7 +8,7 @@ import {
   updateBrowserVm,
   updateBrowserVmRun,
 } from "@db/services/browser-vms";
-import { recordBrowserVmRunCosts } from "@agent/lib/costs/browser";
+import { recordBrowserVmRunCosts, runTiming } from "@agent/lib/costs/browser";
 import { providerRouting } from "@agent/lib/model/direct";
 import { alertOwner } from "@agent/lib/owner-alert";
 import { env } from "@shared/environment";
@@ -405,7 +405,10 @@ export async function readBrowserVmRun(runId: string) {
       settledStatuses.has(live.run.status) &&
       !(record !== undefined && settledStatuses.has(record.status));
     await mirror(record, live.run, now);
-    if (settling) await logDetourRun(live.vm, live.run);
+    if (settling) {
+      logRunTrace(live.run);
+      await logDetourRun(live.vm, live.run);
+    }
     await keepAwake(live.vm, now);
     return fromWorker(live.run, record);
   }
@@ -966,6 +969,48 @@ async function logDetourRun(vm: BrowserVm, run: WorkerRun) {
       runId: run.id,
     });
   }
+}
+
+/**
+ * A settled run's steps for the speed work (docs/browser-speed.md): when
+ * each ended after the one before, in seconds, its actions by name, the host
+ * of the page the model looked at and the model's tokens, with the run's
+ * engine, browser and timing (`runTiming`). Never a task, a goal, a title, a
+ * path or anything typed: only what tells where the time went. The worker
+ * lists the latest 50 steps; `steps` says how many there were.
+ */
+function logRunTrace(run: WorkerRun) {
+  let previous = Date.parse(run.startedAt ?? "");
+  const trace = run.steps.map((step) => {
+    const at = Date.parse(step.at ?? "");
+    const seconds =
+      Number.isFinite(at) && Number.isFinite(previous) && at >= previous
+        ? Math.round((at - previous) / 100) / 10
+        : null;
+    if (Number.isFinite(at)) previous = at;
+    return {
+      actions: (step.actions ?? []).map((action) => action.action),
+      host:
+        step.url === null || step.url === undefined
+          ? null
+          : (URL.parse(step.url)?.hostname ?? null),
+      seconds,
+      tokens: step.tokens ?? undefined,
+    };
+  });
+  // One JSON line: the console's own print would cut the nested steps.
+  console.info(
+    "[browser-vm] run trace",
+    JSON.stringify({
+      browser: run.browser ?? null,
+      engine: run.engine,
+      runId: run.id,
+      status: run.status,
+      steps: run.stepCount,
+      timing: runTiming(run),
+      trace,
+    })
+  );
 }
 
 /**

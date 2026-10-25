@@ -110,10 +110,28 @@ const stepSchema = z.object({
   goal: z.string().nullish(),
   number: z.number().nullish(),
   title: z.string().nullish(),
+  /**
+   * The model's tokens since the step before (`step_tokens` in the worker).
+   * Absent from a worker that does not count them; a malformed count is
+   * dropped, not the step.
+   */
+  tokens: z
+    .object({
+      cached: z.number().nonnegative(),
+      in: z.number().nonnegative(),
+      out: z.number().nonnegative(),
+    })
+    .nullish()
+    .catch(null),
   url: z.string().nullish(),
 });
 
 const runSummarySchema = z.object({
+  /**
+   * The browser the run went in (`chrome`, `helium`). Absent from a worker
+   * before 2026-10-25.2; read only to account for the run.
+   */
+  browser: z.string().max(32).nullish(),
   createdAt: z.string(),
   engine: z.string(),
   error: z.string().nullable(),

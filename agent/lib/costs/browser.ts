@@ -95,6 +95,9 @@ export async function recordBrowserVmRunCosts(
         steps: run.stepCount,
         unpriced,
         hosts: usage.hosts,
+        engine: run.engine,
+        browser: run.browser ?? undefined,
+        timing: runTiming(run),
       },
       workspaceId,
     });
@@ -114,6 +117,56 @@ export async function recordBrowserVmRunCosts(
       workspaceId,
     });
   }
+}
+
+/**
+ * Where a settled run's time went, in milliseconds by the worker's clock, for
+ * the speed report (`ops/browser-runs.sh`, docs/browser-speed.md): `waitMs`
+ * from the worker taking the run to its agent starting (the browser switched,
+ * the proxy set up), `agentMs` the agent's whole run, `firstStepMs` to its
+ * first step's end and `stepMs` the time between steps — the model's call
+ * and the step's actions. The worker lists only the run's latest steps, so
+ * `firstStepMs` is there only when it lists them all, and the steps are told
+ * by the gaps between those it lists. A gap the clock ran backwards over (a
+ * sandbox restored from its snapshot sets its clock again) is not counted.
+ * Read by nothing in Bro: a field the worker left out is only left out here.
+ */
+export function runTiming(run: WorkerRun) {
+  const stepEnds = run.steps
+    .map((step) => Date.parse(step.at ?? ""))
+    .filter(Number.isFinite);
+  const gaps = stepEnds
+    .slice(1)
+    .map((end, index) => end - (stepEnds[index] ?? end))
+    .filter((gap) => gap >= 0)
+    .toSorted((a, b) => a - b);
+  const listsAll = run.steps.length === run.stepCount;
+  const percentile = (share: number) =>
+    gaps[Math.min(gaps.length - 1, Math.floor(share * gaps.length))];
+  return {
+    agentMs: between(run.startedAt, Date.parse(run.finishedAt ?? "")),
+    firstStepMs: listsAll
+      ? between(run.startedAt, Date.parse(run.steps[0]?.at ?? ""))
+      : undefined,
+    stepMs:
+      gaps.length === 0
+        ? undefined
+        : {
+            count: gaps.length,
+            max: gaps.at(-1),
+            p50: percentile(0.5),
+            p95: percentile(0.95),
+          },
+    waitMs: between(run.createdAt, Date.parse(run.startedAt ?? "")),
+  };
+}
+
+/** Milliseconds from `from` to `to`, unless either is unknown or `to` is earlier. */
+function between(from: string | null, to: number) {
+  const at = Date.parse(from ?? "");
+  return Number.isFinite(at) && Number.isFinite(to) && to >= at
+    ? to - at
+    : undefined;
 }
 
 /** A settled Browser Use Cloud run's model, as it priced it in dollars. */

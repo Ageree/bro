@@ -1064,9 +1064,14 @@ describe("reading a VM run", () => {
     const client = await loadClient();
     worker.readBrowserVmWorkerRun.mockResolvedValue(
       workerRun({
+        browser: "helium",
         finishedAt: "2026-09-28T11:58:00Z",
         result: "RESULT: the parcel is in Moscow",
         status: "completed",
+        // Three steps, ending 4 s, 10 s and 12 s after the agent started.
+        steps: ["11:50:06", "11:50:12", "11:50:14"].map((time) => ({
+          at: `2026-09-28T${time}Z`,
+        })),
         traffic: { down: 9_000_000, up: 1_000_000 },
         usage: {
           total_completion_tokens: 2_000,
@@ -1098,6 +1103,14 @@ describe("reading a VM run", () => {
         outputTokens: 2_000,
         steps: 3,
         unpriced: false,
+        engine: "agent",
+        browser: "helium",
+        timing: {
+          agentMs: 478_000,
+          firstStepMs: 4_000,
+          stepMs: { count: 2, max: 6_000, p50: 6_000, p95: 6_000 },
+          waitMs: 1_000,
+        },
       },
       workspaceId,
     });
@@ -1113,6 +1126,51 @@ describe("reading a VM run", () => {
       units: { bytes: 10_000_000 },
       workspaceId,
     });
+  });
+
+  it("logs where a settled run's time went, with no page path or goal", async () => {
+    const client = await loadClient();
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    worker.readBrowserVmWorkerRun.mockResolvedValue(
+      workerRun({
+        finishedAt: "2026-09-28T11:51:00Z",
+        status: "completed",
+        stepCount: 2,
+        steps: [
+          {
+            actions: [{ action: "navigate" }],
+            at: "2026-09-28T11:50:05Z",
+            goal: "find Anna's parcel",
+            tokens: { cached: 0, in: 9000, out: 120 },
+            url: "https://www.pochta.ru/tracking/80080012345678",
+          },
+          {
+            actions: [{ action: "extract" }, { action: "done" }],
+            at: "2026-09-28T11:50:12.5Z",
+          },
+        ],
+      })
+    );
+
+    await client.readBrowserUseRun(runId);
+
+    const line = String(
+      info.mock.calls.find(([label]) => label === "[browser-vm] run trace")?.[1]
+    );
+    expect(JSON.parse(line)).toMatchObject({
+      runId,
+      steps: 2,
+      trace: [
+        {
+          actions: ["navigate"],
+          host: "www.pochta.ru",
+          seconds: 3,
+          tokens: { in: 9000, out: 120 },
+        },
+        { actions: ["extract", "done"], host: null, seconds: 7.5 },
+      ],
+    });
+    expect(line).not.toMatch(/tracking|Anna/u);
   });
 
   it("records nothing for a run still going, and never fails a read on the accounting", async () => {
