@@ -131,9 +131,13 @@ vi.mock("@db/services/browser-vms", () => records);
 const siteOperationRecords = vi.hoisted(() => ({
   deleteBrowserSiteOperation:
     vi.fn<typeof siteOperationsService.deleteBrowserSiteOperation>(),
+  dropBrokenBrowserSiteOperations:
+    vi.fn<typeof siteOperationsService.dropBrokenBrowserSiteOperations>(),
   listBrowserSiteOperations: vi.fn<
     typeof siteOperationsService.listBrowserSiteOperations
   >(() => Promise.resolve([])),
+  noteBrowserSiteOperationRead:
+    vi.fn<typeof siteOperationsService.noteBrowserSiteOperationRead>(),
   saveBrowserSiteOperation:
     vi.fn<typeof siteOperationsService.saveBrowserSiteOperation>(),
 }));
@@ -853,7 +857,17 @@ describe("starting a run on a workspace's browser VM", () => {
     worker.readBrowserVmWorkerRun.mockResolvedValue(
       workerRun({
         finishedAt: "2026-09-28T11:51:00Z",
-        siteTraffic: { operations: [operation] },
+        siteTraffic: {
+          opCalls: [
+            {
+              fit: "exact",
+              name: "hh.ru/search/vacancy",
+              ok: false,
+              reason: "no_data",
+            },
+          ],
+          operations: [operation],
+        },
         status: "completed",
       })
     );
@@ -873,6 +887,23 @@ describe("starting a run on a workspace's browser VM", () => {
         operation,
         runs: 1,
       }
+    );
+    // Its op() call that found hh.ru changed counts against that operation,
+    // and the host's broken operations give way to the find.
+    expect(
+      siteOperationRecords.noteBrowserSiteOperationRead
+    ).toHaveBeenCalledWith(
+      workspaceId,
+      expect.objectContaining({ name: "hh.ru/search/vacancy" }),
+      { ok: false, reason: "no_data" }
+    );
+    expect(
+      siteOperationRecords.dropBrokenBrowserSiteOperations
+    ).toHaveBeenCalledWith(
+      workspaceId,
+      "www.tutu.ru",
+      2,
+      expect.arrayContaining([operation.name, "hh.ru/search/vacancy"])
     );
   });
 

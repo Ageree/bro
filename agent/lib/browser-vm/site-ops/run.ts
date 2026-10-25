@@ -1,14 +1,18 @@
 import {
   deleteBrowserSiteOperation,
+  dropBrokenBrowserSiteOperations,
   listBrowserSiteOperations,
+  noteBrowserSiteOperationRead,
   saveBrowserSiteOperation,
 } from "@db/services/browser-site-operations";
 import { env } from "@shared/environment";
+import { brokenAfter, readCounts, siteOperationUsable } from "./health";
 import { knownSiteOperations } from "./known";
 import type * as z from "zod";
 import {
   type foundSiteOperationsSchema,
   mergeSiteOperations,
+  type siteOperationCallsSchema,
   siteOperationHost,
   siteOperationOnSite,
   siteOperationSchema,
@@ -40,35 +44,117 @@ export function errandSite(task: string) {
 /**
  * The site's operations a run of the workspace gets: the reviewed ones
  * every workspace gets (`knownSiteOperations`) first, then its own finds,
- * the most often found first. On a host a reviewed operation covers, the
+ * the most often found first, each only while it still reads its site
+ * (`siteOperationUsable`). On a host a reviewed operation covers, the
  * workspace's own finds are left out: a run's find of the same page (hh.ru,
  * found again while op() reads it) has no reviewer's words about its fields
- * (`about`), and would read in their place.
+ * (`about`), and would read in their place — unless the reviewed one
+ * stopped reading the site for this workspace, and its find is the repair.
  */
 export async function siteOperationsFor(
   workspaceId: string,
-  site: string | undefined
+  site: string | undefined,
+  now = new Date()
 ): Promise<SiteOperation[]> {
   if (site === undefined) return [];
-  const known = knownSiteOperations.filter((operation) =>
+  const rows = await listBrowserSiteOperations(workspaceId);
+  const health = new Map(rows.map((row) => [row.name, row]));
+  const usable = (operation: SiteOperation) =>
+    siteOperationUsable(health.get(operation.name), now);
+  const onSite = knownSiteOperations.filter((operation) =>
     siteOperationOnSite(operation, site)
   );
-  const reviewed = new Set(known.map((operation) => operation.name));
+  const reviewed = new Set(
+    knownSiteOperations.map((operation) => operation.name)
+  );
+  const known = onSite.filter(usable);
   const reviewedHosts = new Set(
     known.map((operation) => siteOperationHost(operation.page))
   );
-  const rows = await listBrowserSiteOperations(workspaceId);
   const own = rows.flatMap((row) => {
     const parsed = siteOperationSchema.safeParse(row.operation);
     if (!parsed.success) return [];
     const operation = parsed.data;
     return siteOperationOnSite(operation, site) &&
       !reviewed.has(operation.name) &&
-      !reviewedHosts.has(siteOperationHost(operation.page))
+      !reviewedHosts.has(siteOperationHost(operation.page)) &&
+      usable(operation)
       ? [operation]
       : [];
   });
   return [...known, ...own].slice(0, operationsPerRun);
+}
+
+/**
+ * An operation of the workspace's by its name, its own find or a reviewed
+ * one, for a read of it to be noted against (`noteSiteOperationRead`).
+ */
+async function operationNamed(workspaceId: string, name: string) {
+  const known = knownSiteOperations.find(
+    (operation) => operation.name === name
+  );
+  if (known !== undefined) return known;
+  const rows = await listBrowserSiteOperations(workspaceId);
+  const row = rows.find((candidate) => candidate.name === name);
+  return row === undefined
+    ? undefined
+    : siteOperationSchema.safeParse(row.operation).data;
+}
+
+/**
+ * How a read of an operation went, kept with it (`health.ts`): results end
+ * its failures; a failure that says the site changed adds one; any other
+ * failure leaves it as it was.
+ */
+export async function noteSiteOperationRead(
+  workspaceId: string,
+  name: string,
+  outcome:
+    | { readonly direct: boolean; readonly ok: true }
+    | {
+        readonly fit: "exact" | "loose";
+        readonly ok: false;
+        readonly reason: Parameters<typeof readCounts>[0];
+      }
+) {
+  if (!outcome.ok && !readCounts(outcome.reason, outcome.fit)) return;
+  const operation = await operationNamed(workspaceId, name);
+  if (operation === undefined) return;
+  await noteBrowserSiteOperationRead(
+    workspaceId,
+    {
+      host: siteOperationHost(operation.page),
+      name: operation.name,
+      operation,
+    },
+    outcome.ok
+      ? { direct: outcome.direct, ok: true }
+      : { ok: false, reason: outcome.reason }
+  );
+  if (!outcome.ok) {
+    console.info("[site-ops] a read failed", {
+      name: operation.name,
+      reason: outcome.reason,
+      workspaceId,
+    });
+  }
+}
+
+/** How a settled run's op() calls went (`siteTraffic.opCalls`), kept with their operations. */
+async function noteSiteOperationCalls(
+  workspaceId: string,
+  calls: z.infer<typeof siteOperationCallsSchema> | undefined
+) {
+  for (const call of calls ?? []) {
+    // oxlint-disable-next-line eslint/no-await-in-loop -- A run makes a call or two.
+    await noteSiteOperationRead(
+      workspaceId,
+      call.name,
+      call.ok
+        ? { direct: false, ok: true }
+        : { fit: call.fit, ok: false, reason: call.reason ?? "failed" }
+    );
+  }
 }
 
 /**
@@ -99,9 +185,10 @@ export function siteOperationsLine(operations: readonly SiteOperation[]) {
 export async function rememberSiteOperations(
   workspaceId: string,
   found: z.infer<typeof foundSiteOperationsSchema> | undefined,
-  runId?: string
+  runId?: string,
+  calls?: z.infer<typeof siteOperationCallsSchema>
 ) {
-  if (found === undefined || found.length === 0) return;
+  if ((found ?? []).length === 0 && (calls ?? []).length === 0) return;
   if (!siteOpsPilot({ workspaceId })) return;
   // Two reads that both saw the run settle (the tick and a status) count its
   // finds once. In the process only: the settle itself is not a claim.
@@ -112,6 +199,9 @@ export async function rememberSiteOperations(
       rememberedRuns.delete(rememberedRuns.values().next().value ?? runId);
     }
   }
+  // How its op() calls went first: a find of the same run is newer news.
+  await noteSiteOperationCalls(workspaceId, calls);
+  if (found === undefined || found.length === 0) return;
   const reviewed = new Set(
     knownSiteOperations.map((operation) => operation.name)
   );
@@ -136,7 +226,14 @@ export async function rememberSiteOperations(
     let runs = 1;
     for (const row of rows) {
       const parsed = siteOperationSchema.safeParse(row.operation);
-      if (!parsed.success || row.name === operation.name) continue;
+      // A reviewed operation's row is its health, not a find to merge.
+      if (
+        !parsed.success ||
+        row.name === operation.name ||
+        reviewed.has(row.name)
+      ) {
+        continue;
+      }
       const merged = mergeSiteOperations(parsed.data, operation);
       if (merged !== undefined) {
         kept = merged;
@@ -154,6 +251,15 @@ export async function rememberSiteOperations(
       operation: kept,
       runs,
     });
+    // The repair: the host's operations that stopped reading it give way to
+    // the one this run found.
+    // oxlint-disable-next-line eslint/no-await-in-loop -- A run finds one or two.
+    await dropBrokenBrowserSiteOperations(
+      workspaceId,
+      siteOperationHost(kept.page),
+      brokenAfter,
+      [kept.name, ...reviewed]
+    );
     console.info("[site-ops] kept", {
       name: kept.name,
       source: kept.source.kind,

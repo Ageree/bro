@@ -51,6 +51,7 @@ import {
   closeBrowserVmWorkerTab,
   listBrowserVmWorkerFiles,
   openBrowserVmWorkerTab,
+  readBrowserVmSite,
   readBrowserVmWorkerRun,
   readBrowserVmWorkerSession,
   releaseBrowserVmWorkerSession,
@@ -458,7 +459,8 @@ export async function readBrowserVmRun(runId: string) {
       await rememberSiteOperations(
         browserVmWorkspace(runId),
         live.run.siteTraffic?.operations,
-        runId
+        runId,
+        live.run.siteTraffic?.opCalls
       ).catch((cause: unknown) => {
         console.warn("[site-ops] a run's operations were not kept", {
           cause,
@@ -708,6 +710,27 @@ export async function createBrowserVmBrowser(input: {
     cdpUrl: browserVmCdpUrl(vm, { targetId }),
     id: browserVmBrowserId(workspaceId, targetId),
   };
+}
+
+/**
+ * Read a site's results page with one of its operations in the workspace's
+ * own browser, no run and no model (`agent/lib/browser-vm/site-ops/direct.ts`):
+ * its sandbox woken as for a Yandex call, its exit as for a keep-alive tab
+ * (a live Russian one, not its measured speed), then the worker's `/v1/op`.
+ * An errand that holds the browser meanwhile keeps it: the read keeps to a
+ * tab of its own.
+ */
+export async function readBrowserVmSiteDirectly(
+  workspaceId: string,
+  input: Parameters<typeof readBrowserVmSite>[1]
+) {
+  const running = await wokenVm(workspaceId);
+  if (running === undefined) return undefined;
+  const vm = await prepareBrowserVmSession(running, new Date(), {
+    page: true,
+    rotate: false,
+  });
+  return onWorker(async () => readBrowserVmSite(vm, input));
 }
 
 /**

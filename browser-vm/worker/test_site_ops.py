@@ -310,39 +310,59 @@ class Response:
 
 
 class Page:
-    """A Playwright page: goto answers with the document, and the page's own request with its data."""
+    """A Playwright page: goto answers with the document (its status and the address it landed on, when given),
+    and tells its listeners each of the page's own requests; the page's fetch answers with the documents too."""
 
-    def __init__(self, documents, requests=()):
+    def __init__(self, documents, requests=(), statuses=None, landed=None, walled=False):
         self.documents, self.requests, self.url, self.closed = documents, list(requests), "about:blank", False
+        self.statuses, self.landed, self.walled = statuses or {}, landed or {}, walled
+        self.listeners, self.visited, self.fetched = [], [], []
 
     def is_closed(self):
         return self.closed
 
-    def on(self, *_):
-        pass
+    def on(self, event, handler):
+        if event == "response":
+            self.listeners.append(handler)
+
+    def remove_listener(self, event, handler):
+        self.listeners.remove(handler)
+
+    @property
+    def context(self):
+        page = self
+
+        class Cdp:
+            async def send(self, method, params=None):
+                page.visited.append(method)
+
+        class Context:
+            async def new_cdp_session(self, _page):
+                return Cdp()
+
+        return Context()
 
     async def goto(self, url, **_):
         self.url = url
-        return Response(url, self.documents.get(url, "<html></html>"))
+        self.visited.append(url)
+        for response in self.requests:
+            for listener in list(self.listeners):
+                listener(response)
+        await asyncio.sleep(0)
+        return Response(self.landed.get(url, url), self.documents.get(url, "<html></html>"),
+                        status=self.statuses.get(url, 200))
 
-    def expect_response(self, predicate, timeout):
-        page = self
+    async def evaluate(self, expression, argument=None):
+        if "fetch(u" in expression:
+            self.fetched.append(argument)
+            return {"status": self.statuses.get(argument, 200), "url": self.landed.get(argument, argument),
+                    "text": self.documents.get(argument, "<html></html>")}
+        if "document.title" in expression:  # code_wall's one look
+            return ["Проверяем браузер", ""] if self.walled else ["Сайт", "x" * 2000]
+        raise AssertionError(expression)
 
-        class Waiting:
-            async def __aenter__(self):
-                future = asyncio.get_running_loop().create_future()
-                self.value = future
-                self.predicate, self.future = predicate, future
-                return self
-
-            async def __aexit__(self, *_):
-                for response in page.requests:
-                    if self.predicate(response) and not self.future.done():
-                        self.future.set_result(response)
-                if not self.future.done():
-                    self.future.set_exception(TimeoutError("no such request"))
-
-        return Waiting()
+    async def close(self):
+        self.closed = True
 
 
 class OpTest(unittest.IsolatedAsyncioTestCase):
@@ -366,7 +386,7 @@ class OpTest(unittest.IsolatedAsyncioTestCase):
         # Not a page of the operation's, or no such operation: the model is told, nothing opens.
         api = self.api(Page({}), [operation])
         with self.assertRaisesRegex(ValueError, "takes a results page like"):
-            await api.op("hh.ru/search/vacancy", "https://hh.ru/employer/1")
+            await api.op("hh.ru/search/vacancy", "https://hh.ru/employer")
         with self.assertRaisesRegex(ValueError, "no known operation"):
             await api.op("ozon.ru/search", url)
         with self.assertRaisesRegex(ValueError, "no longer carries"):
@@ -390,6 +410,44 @@ class OpTest(unittest.IsolatedAsyncioTestCase):
                          "https://ostrovok.ru/hotel/russia/kazan/mid7389083/bulgar/?dates=10.12.2026-12.12.2026&guests=2")
         self.assertEqual(cheapest["more"]["rating"], 8.0)
 
+    async def test_op_takes_the_answer_that_holds_the_list_from_an_address_that_answers_many(self):
+        # A GraphQL site asks one address for its menu first and its results after (citilink.ru, 25.10).
+        operation = {"name": "www.citilink.ru/search/", "page": "https://www.citilink.ru/search/?text=%query%",
+                     "source": {"kind": "xhr", "method": "POST", "url": "https://www.citilink.ru/graphql/"},
+                     "items": ["data", "products"], "fields": {"name": ["shortName"], "price": ["price"]},
+                     "seen": {"items": 3, "matched": 3, "of": 3}}
+        products = [{"shortName": f"Чайник {n}", "price": 900 + n} for n in range(3)]
+        page = Page({}, [Response("https://www.citilink.ru/graphql/", json.dumps({"data": {"menu": []}}), method="POST"),
+                         Response("https://www.citilink.ru/graphql/", json.dumps({"data": {"products": products}}),
+                                  method="POST")])
+        recorder = worker.SiteTraffic()
+        api = self.api(page, [operation])
+        api.recorder = recorder
+        answer = await api.op(operation["name"], "https://www.citilink.ru/search/?text=чайник")
+        self.assertEqual([card["name"] for card in answer["cards"]], ["Чайник 0", "Чайник 1", "Чайник 2"])
+        self.assertEqual(recorder.op_calls[0] | {"ms": 0},
+                         {"name": operation["name"], "fit": "exact", "ok": True, "count": 3, "ms": 0})
+
+    async def test_op_reads_a_page_whose_path_names_another_city_and_says_how_each_call_went(self):
+        operation = await self._hh_operation()
+        hotel = {"name": "drom.ru/toyota/camry/", "page": "https://auto.drom.ru/toyota/camry/",
+                 "source": operation[0]["source"], "items": operation[0]["items"], "fields": operation[0]["fields"],
+                 "seen": operation[0]["seen"]}
+        url = "https://auto.drom.ru/kia/rio/"
+        recorder = worker.SiteTraffic()
+        api = self.api(Page({url: HH_DOCUMENT}), [hotel])
+        api.recorder = recorder
+        answer = await api.op(hotel["name"], url)
+        self.assertEqual(answer["count"], 4)
+        self.assertEqual(recorder.op_calls[-1]["fit"], "loose")
+        # A site that no longer carries the state: a failure the model is told, written down with its reason.
+        api = self.api(Page({url: "<html>nothing</html>"}), [hotel])
+        api.recorder = recorder
+        with self.assertRaisesRegex(ValueError, "no longer carries"):
+            await api.op(hotel["name"], url)
+        self.assertEqual({k: recorder.op_calls[-1][k] for k in ("ok", "reason", "fit")},
+                         {"ok": False, "reason": "no_data", "fit": "loose"})
+
     async def _hh_operation(self):
         traffic = worker.SiteTraffic()
         errors = worker.SiteErrors()
@@ -397,6 +455,174 @@ class OpTest(unittest.IsolatedAsyncioTestCase):
         socket = types.SimpleNamespace(ws=Socket(), next_id=1)
         await feed(errors, socket, "d1", "Document", HH_PAGE, HH_PAGE, 200, "text/html", HH_DOCUMENT)
         return traffic.operations(HH_REPORT)
+
+
+class FitAndPickTest(unittest.TestCase):
+    def test_a_page_fits_exactly_loosely_where_a_find_kept_a_value_as_a_word_or_not_at_all(self):
+        fit = worker.site_template_fit
+        self.assertEqual(fit("https://auto.drom.ru/toyota/camry/", "https://auto.drom.ru/toyota/camry"), "exact")
+        self.assertEqual(fit("https://auto.drom.ru/toyota/camry/", "https://auto.drom.ru/kia/rio/"), "loose")
+        self.assertEqual(fit("https://ostrovok.ru/hotel/russia/kazan/", "https://ostrovok.ru/hotel/russia/sochi/"),
+                         "loose")
+        self.assertEqual(fit("https://site.ru/city/%word%/", "https://site.ru/city/%D0%BA%D0%B0%D0%B7%D0%B0%D0%BD%D1%8C/"),
+                         "exact")
+        for url in ("https://auto.drom.ru/kia/rio/2020/", "https://auto.drom.ru/kia", "https://evil.ru/kia/rio/",
+                    "http://auto.drom.ru/kia/rio/", "https://auto.drom.ru/kia/a%20b%3Cc/"):
+            self.assertIsNone(fit("https://auto.drom.ru/toyota/camry/", url), url)
+
+    def test_a_documents_state_is_read_whatever_its_status_but_never_from_another_address(self):
+        operation = {"source": {"kind": "document", "state": {"tag": "template", "id": "HH-Lux-InitialState"}}}
+        url = "https://hh.ru/search/vacancy?text=x"
+        self.assertEqual(worker.site_document_state(operation, url, 429, url, HH_DOCUMENT), STATE)
+        cases = [(404, url, HH_DOCUMENT, "moved"), (200, "https://hh.ru/", HH_DOCUMENT, "moved"),
+                 (403, url, "<html>Доступ ограничен</html>", "blocked"), (200, url, "<html></html>", "no_data"),
+                 (500, url, "<html></html>", "failed")]
+        for status, landed, text, reason in cases:
+            with self.assertRaises(worker.SiteOpFailure) as raised:
+                worker.site_document_state(operation, url, status, landed, text)
+            self.assertEqual(raised.exception.reason, reason, (status, landed))
+
+    def test_cards_without_names_or_with_one_name_are_no_results(self):
+        operation = {"fields": {"name": ["name"]}}
+        self.assertEqual(len(worker.site_op_checked(operation, [{"name": "a"}, {"name": "b"}])), 2)
+        for cards, reason in [([], "empty"), ([{"name": None}, {"name": ""}, {"name": "a"}], "no_data"),
+                              ([{"name": "Меню"}] * 5, "no_data")]:
+            with self.assertRaises(worker.SiteOpFailure) as raised:
+                worker.site_op_checked(operation, cards)
+            self.assertEqual(raised.exception.reason, reason)
+
+    def test_results_that_name_none_of_the_words_asked_for_answer_nothing(self):
+        operation = {"page": "https://www.letu.ru/search?q=%query%&page=%number%"}
+        url = "https://www.letu.ru/search?q=солнцезащитный+крем&page=1"
+        sponge = [{"name": None, "more": {"displayName": "Губка для душа", "brandName": "DOLCE MILK"}}] * 3
+        self.assertFalse(worker.site_op_answers(operation, url, sponge))
+        creams = sponge + [{"name": "Крем солнцезащитный SPF 50", "more": {}}]
+        self.assertTrue(worker.site_op_answers(operation, url, creams))
+        # «чайники» asked, «Чайник» named: the stem is enough. Nothing asked in words, nothing to check.
+        kettles = [{"name": "Чайник электрический Supra", "more": {}}]
+        self.assertTrue(worker.site_op_answers({"page": "https://c.ru/s/?text=%query%"},
+                                               "https://c.ru/s/?text=электрические+чайники", kettles))
+        self.assertTrue(worker.site_op_answers({"page": "https://auto.drom.ru/toyota/camry/"},
+                                               "https://auto.drom.ru/kia/rio/", sponge))
+
+    def test_a_direct_read_picks_by_price_and_keeps_the_telling_fields(self):
+        cards = [{"name": f"Отель {n}", "price": price, "link": f"https://ostrovok.ru/h/{n}/",
+                  "more": {"rating": 8.5, "ota_hotel_id": "x", "master_id": 7389083, "address.city": "Казань",
+                           "images.0.url": "https://cdn/x.jpg", "uuid": "7082cb8b-d138-42b8", "stars": 30,
+                           "description": "о" * 400}}
+                 for n, price in enumerate([4829, None, 2959, "от 3 237 ₽", 12000])]
+        picked = worker.site_op_pick(cards, "price_asc", None, 10000, 3)
+        self.assertEqual([card["name"] for card in picked], ["Отель 2", "Отель 3", "Отель 0"])
+        self.assertEqual(picked[0]["more"], {"rating": 8.5, "address.city": "Казань", "stars": 30})
+        self.assertEqual([card["name"] for card in worker.site_op_pick(cards, "site", 3000, None, 10)],
+                         ["Отель 0", "Отель 1", "Отель 3", "Отель 4"])
+
+
+class DirectOpTest(unittest.IsolatedAsyncioTestCase):
+    """POST /v1/op, Bro's direct read: a tab of its own on the stand's fake browser."""
+
+    async def asyncSetUp(self):
+        from unittest import mock
+        from aiohttp.test_utils import TestClient, TestServer
+
+        self.pages = []
+        test = self
+
+        class Browser:
+            contexts = [types.SimpleNamespace(new_page=self.new_page)]
+
+        class Chromium:
+            async def connect_over_cdp(self, _url):
+                return Browser()
+
+        class Playwright:
+            chromium = Chromium()
+
+            async def start(self):
+                return self
+
+            async def stop(self):
+                test.stopped = True
+
+        key = bytes(32)
+        self.enterContext(mock.patch.object(worker, "worker", types.SimpleNamespace(
+            config={"environment": "stand", "key": key}, generation=0, accept_generation=lambda _gen: None)))
+        self.enterContext(mock.patch.object(worker, "chrome_ready", self.ready))
+        self.enterContext(mock.patch.dict(sys.modules, {"playwright.async_api": types.SimpleNamespace(
+            async_playwright=Playwright)}))
+        payload = worker.b64url(json.dumps({"env": "stand", "exp": int(time.time()) + 300, "gen": 0}).encode())
+        signature = worker.b64url(__import__("hmac").new(key, f"v1.{payload}".encode(), "sha256").digest())
+        self.token = f"v1.{payload}.{signature}"
+        self.client = TestClient(TestServer(worker.application()))
+        await self.client.start_server()
+        self.addAsyncCleanup(self.client.close)
+        self.next_page, self.stopped = None, False
+
+    async def ready(self):
+        return True
+
+    async def new_page(self):
+        page = self.next_page
+        self.pages.append(page)
+        return page
+
+    async def read(self, operation, url, **options):
+        response = await self.client.post("/v1/op", json={"operation": operation, "url": url, **options},
+                                          headers={"Authorization": f"Bearer {self.token}"})
+        return response.status, await response.json() if response.status == 200 else await response.text()
+
+    async def test_a_document_is_fetched_by_the_page_from_the_sites_robots_and_its_cards_picked(self):
+        [operation] = await OpTest._hh_operation(None)
+        url = "https://hh.ru/search/vacancy?text=менеджер&area=2"
+        self.next_page = Page({url: HH_DOCUMENT})
+        status, answer = await self.read(operation, url, limit=2)
+        self.assertEqual(status, 200)
+        self.assertEqual((answer["ok"], answer["via"], answer["fit"], answer["count"]), (True, "fetch", "exact", 4))
+        self.assertEqual([card["name"] for card in answer["cards"]], ["Продакт-менеджер", "Ведущий продакт-менеджер"])
+        self.assertEqual(answer["cards"][0]["more"]["company.visibleName"], "Unagrande Company")
+        page = self.pages[0]
+        self.assertEqual((page.visited, page.fetched, page.closed), (["https://hh.ru/robots.txt"], [url], True))
+        self.assertTrue(self.stopped)
+
+    async def test_a_document_the_fetch_cannot_read_is_opened_and_a_site_that_moved_says_so(self):
+        [operation] = await OpTest._hh_operation(None)
+        url = "https://hh.ru/search/vacancy?text=менеджер&area=2"
+
+        class Drawn(Page):
+            async def evaluate(self, expression, argument=None):
+                if "fetch(u" in expression:
+                    return {"status": 403, "url": argument, "text": "<html>check</html>"}
+                return await super().evaluate(expression, argument)
+
+        self.next_page = Drawn({url: HH_DOCUMENT})
+        status, answer = await self.read(operation, url)
+        self.assertEqual((answer["ok"], answer["via"]), (True, "page"))
+        self.next_page = Page({url: HH_DOCUMENT}, landed={url: "https://hh.ru/"})
+        status, answer = await self.read(operation, url)
+        self.assertEqual((answer["ok"], answer["reason"]), (False, "moved"))
+        self.next_page = Page({url: "<html></html>"}, walled=True)
+        status, answer = await self.read(operation, url)
+        self.assertEqual((answer["ok"], answer["reason"]), (False, "blocked"))
+
+    async def test_an_xhr_page_is_opened_without_its_pictures_and_a_page_of_another_site_is_refused(self):
+        traffic = worker.SiteTraffic()
+        errors = worker.SiteErrors()
+        errors.traffic = traffic
+        socket = types.SimpleNamespace(ws=Socket(), next_id=1)
+        await feed(errors, socket, "q1", "Fetch", SERP, OSTROVOK_PAGE, 200, "application/json",
+                   json.dumps(SERP_ANSWER, ensure_ascii=False), method="POST")
+        [operation] = traffic.operations(OSTROVOK_REPORT)
+        url = "https://ostrovok.ru/hotel/russia/sochi/?dates=10.12.2026-12.12.2026&guests=2&sort=price.asc"
+        self.next_page = Page({}, [Response(SERP, json.dumps(SERP_ANSWER), method="POST")])
+        status, answer = await self.read(operation, url, sort="price_asc", priceMax=4900)
+        self.assertEqual((answer["ok"], answer["fit"]), (True, "loose"))
+        self.assertEqual([card["price"] for card in answer["cards"]], [3936, 4829, 4835])
+        self.assertIn("Network.setBlockedURLs", self.pages[0].visited)
+        for bad in ("https://evil.ru/hotel/russia/sochi/", "https://ostrovok.ru/hotel/russia/", 5):
+            status, _ = await self.read(operation, bad)
+            self.assertEqual(status, 400, bad)
+        status, _ = await self.read({"name": "x"}, url)
+        self.assertEqual(status, 400)
 
 
 if __name__ == "__main__":

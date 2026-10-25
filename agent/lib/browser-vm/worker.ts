@@ -4,7 +4,9 @@ import type { browserVms } from "@db/schema/browser-vms";
 import { resolvePrivateRoute, withPrivateRoute } from "./private-route";
 import {
   foundSiteOperationsSchema,
+  siteOperationCallsSchema,
   siteOperationSchema,
+  siteReadFailures,
 } from "./site-ops/operation";
 import { signBrowserVmToken } from "./token";
 
@@ -168,7 +170,11 @@ const runSummarySchema = z.object({
    * A malformed one is dropped, not the run.
    */
   siteTraffic: z
-    .object({ operations: foundSiteOperationsSchema.catch([]) })
+    .object({
+      /** How its code's op() calls went (a worker before 2026-10-25.11 has none). */
+      opCalls: siteOperationCallsSchema.catch([]),
+      operations: foundSiteOperationsSchema.catch([]),
+    })
     .nullish()
     .catch(null),
   startedAt: z.string().nullable(),
@@ -726,6 +732,64 @@ export async function updateBrowserVmWorkerCode(
       // The load check starts a Python and, with a candidate that checks its
       // lazy imports, loads browser-use: seconds on a VM.
       timeoutMs,
+    })
+  );
+}
+
+/** How long a direct read of a site may take on the worker: its fetch, or its page and the page's request. */
+const siteReadTimeoutMs = 40_000;
+
+const siteReadCardSchema = z.object({
+  link: z.string().nullish(),
+  more: z.record(z.string(), z.json()).catch({}),
+  name: z.json().nullish(),
+  price: z.json().nullish(),
+});
+
+/**
+ * A direct read's answer (`site_op` in browser-vm/worker/worker.py): the
+ * picked cards of the page, or why there are none. A worker before
+ * 2026-10-25.11 has no `/v1/op` and answers 404.
+ */
+const siteReadSchema = z.discriminatedUnion("ok", [
+  z.object({
+    cards: z.array(siteReadCardSchema).max(60),
+    count: z.number().int().nonnegative(),
+    fit: z.enum(["exact", "loose"]),
+    ms: z.number().nonnegative(),
+    ok: z.literal(true),
+    via: z.enum(["fetch", "page"]),
+  }),
+  z.object({
+    fit: z.enum(["exact", "loose"]),
+    ms: z.number().nonnegative(),
+    ok: z.literal(false),
+    reason: z.enum(siteReadFailures),
+  }),
+]);
+
+export type BrowserVmSiteRead = z.infer<typeof siteReadSchema>;
+
+/**
+ * Read a site's results page with one of its operations, no model and no
+ * run: in a tab of its own on the worker's browser, beside whatever errand
+ * holds it (`agent/lib/browser-vm/site-ops/direct.ts`).
+ */
+export async function readBrowserVmSite(
+  vm: BrowserVmTarget,
+  input: {
+    readonly limit: number;
+    readonly operation: z.infer<typeof siteOperationSchema>;
+    readonly priceMax: number | null;
+    readonly priceMin: number | null;
+    readonly sort: "price_asc" | "price_desc" | "site";
+    readonly url: string;
+  }
+) {
+  return siteReadSchema.parse(
+    await request(vm, "POST", "/v1/op", {
+      body: input,
+      timeoutMs: siteReadTimeoutMs,
     })
   );
 }

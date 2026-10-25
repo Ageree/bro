@@ -33,6 +33,21 @@ export const browserSiteOperations = pgTable(
     operation: jsonb("operation").notNull(),
     /** How many finished runs found it. */
     runs: integer("runs").notNull().default(1),
+    /**
+     * Reads of it in a row that found its site changed (`health.ts`): reset
+     * by a read that gave results or by a run that found it again. A row
+     * may hold only this for a reviewed operation (`knownSiteOperations`).
+     */
+    failures: integer("failures").notNull().default(0),
+    failedAt: timestamp("failed_at", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    }),
+    /** Why the latest of them failed (`siteReadFailures`). */
+    lastFailure: text("last_failure"),
+    /** How many of Bro's own reads it answered, with no run (`direct.ts`). */
+    served: integer("served").notNull().default(0),
     createdAt: timestamp("created_at", {
       mode: "date",
       precision: 3,
@@ -56,6 +71,10 @@ export const browserSiteOperations = pgTable(
     check(
       "browser_site_operations_name_check",
       sql`char_length(${table.name}) BETWEEN 1 AND 160`
+    ),
+    check(
+      "browser_site_operations_last_failure_check",
+      sql`${table.lastFailure} IS NULL OR ${table.lastFailure} IN ('blocked', 'moved', 'no_data', 'empty', 'failed')`
     ),
   ]
 );

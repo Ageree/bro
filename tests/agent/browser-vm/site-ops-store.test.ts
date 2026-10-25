@@ -198,4 +198,142 @@ describe("a workspace's site operations", { timeout: 30_000 }, () => {
       { name: "www.tutu.ru/poezda/moskva/%word%/", runs: 2 },
     ]);
   });
+
+  it("stop being offered once two reads found the site changed, and give way to a run's new find", async () => {
+    const { client, run } = await store("*");
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+    await run.rememberSiteOperations(alice.workspaceId, [trains]);
+    const offered = async (now?: Date) =>
+      (
+        await run.siteOperationsFor(
+          alice.workspaceId,
+          "https://www.tutu.ru",
+          now
+        )
+      ).map((operation) => operation.name);
+    // A blocked page, an empty search or a loose page says nothing of it.
+    for (const [reason, fit] of [
+      ["blocked", "exact"],
+      ["empty", "exact"],
+      ["no_data", "loose"],
+    ] as const) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Reads are noted in their order.
+      await run.noteSiteOperationRead(alice.workspaceId, trains.name, {
+        fit,
+        ok: false,
+        reason,
+      });
+    }
+    expect(await offered()).toEqual([trains.name]);
+    await run.noteSiteOperationRead(alice.workspaceId, trains.name, {
+      fit: "exact",
+      ok: false,
+      reason: "no_data",
+    });
+    expect(await offered()).toEqual([trains.name]);
+    await run.noteSiteOperationRead(alice.workspaceId, trains.name, {
+      fit: "exact",
+      ok: false,
+      reason: "moved",
+    });
+    expect(await offered()).toEqual([]);
+    // Six hours on, one read may try it again.
+    expect(await offered(new Date(Date.now() + 7 * 60 * 60_000))).toEqual([
+      trains.name,
+    ]);
+    // A run on the site through its pages finds the operation anew: the
+    // broken one goes, the find is offered.
+    const moved = {
+      ...trains,
+      name: "www.tutu.ru/poezda/search/",
+      page: "https://www.tutu.ru/poezda/search/?from=%query%&to=%query%",
+    };
+    await run.rememberSiteOperations(alice.workspaceId, [moved], "run-3");
+    expect(await offered()).toEqual([moved.name]);
+    const rows = await client.query<{ failures: number; name: string }>(
+      "SELECT name, failures FROM browser_site_operations"
+    );
+    expect(rows.rows).toEqual([{ failures: 0, name: moved.name }]);
+  });
+
+  it("stay broken when a run finds them again unchanged, and mend when it finds them changed", async () => {
+    const { client, run } = await store("*");
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+    await run.rememberSiteOperations(alice.workspaceId, [trains]);
+    const broken = { fit: "exact", ok: false, reason: "no_data" } as const;
+    await run.noteSiteOperationRead(alice.workspaceId, trains.name, broken);
+    await run.noteSiteOperationRead(alice.workspaceId, trains.name, broken);
+    const failures = async () =>
+      (
+        await client.query<{ failures: number }>(
+          "SELECT failures FROM browser_site_operations"
+        )
+      ).rows;
+    // A page that shows the same list whatever it is asked is found the same.
+    await run.rememberSiteOperations(alice.workspaceId, [trains], "run-5");
+    expect(await failures()).toEqual([{ failures: 2 }]);
+    await run.rememberSiteOperations(
+      alice.workspaceId,
+      [{ ...trains, items: [1, "trains"] }],
+      "run-6"
+    );
+    expect(await failures()).toEqual([{ failures: 0 }]);
+  });
+
+  it("let a workspace's own find stand in for a reviewed one that stopped reading its site", async () => {
+    const { client, run } = await store("*");
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const resumes = {
+      fields: { link: { path: ["links", "desktop"] }, name: ["name"] },
+      items: ["vacancySearchResult", "vacancies"],
+      name: "hh.ru/search/resume",
+      page: "https://hh.ru/search/resume?text=%query%",
+      seen: { items: 50, matched: 3, of: 3 },
+      source: {
+        kind: "document",
+        state: { id: "HH-Lux-InitialState", tag: "template" },
+      },
+    };
+    await run.rememberSiteOperations(alice.workspaceId, [resumes]);
+    const offered = async (workspaceId: string) =>
+      (await run.siteOperationsFor(workspaceId, "https://hh.ru")).map(
+        (operation) => operation.name
+      );
+    expect(await offered(alice.workspaceId)).toEqual(["hh.ru/search/vacancy"]);
+    for (const reason of ["no_data", "no_data"] as const) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Reads are noted in their order.
+      await run.noteSiteOperationRead(
+        alice.workspaceId,
+        "hh.ru/search/vacancy",
+        {
+          fit: "exact",
+          ok: false,
+          reason,
+        }
+      );
+    }
+    expect(await offered(alice.workspaceId)).toEqual([resumes.name]);
+    // Only for that workspace: the reviewed one still reads for another.
+    expect(await offered(bob.workspaceId)).toEqual(["hh.ru/search/vacancy"]);
+    // A read that gives results ends its failures; its row is its health
+    // alone, never merged with a find nor dropped by one.
+    await run.noteSiteOperationRead(alice.workspaceId, "hh.ru/search/vacancy", {
+      direct: true,
+      ok: true,
+    });
+    await run.rememberSiteOperations(alice.workspaceId, [resumes], "run-4");
+    const rows = await client.query<{
+      failures: number;
+      name: string;
+      runs: number;
+      served: number;
+    }>(
+      "SELECT name, failures, runs, served FROM browser_site_operations ORDER BY name"
+    );
+    expect(rows.rows).toEqual([
+      { failures: 0, name: resumes.name, runs: 2, served: 0 },
+      { failures: 0, name: "hh.ru/search/vacancy", runs: 0, served: 1 },
+    ]);
+    expect(await offered(alice.workspaceId)).toEqual(["hh.ru/search/vacancy"]);
+  });
 });

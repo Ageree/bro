@@ -16,7 +16,10 @@ import { signedInSession } from "./sign-in.ts";
  *   - `firstMessage` — Bro's first `send_message` (the heads-up);
  *   - `browserTask` — the `browser_task` result (`running`, `queued`…);
  *   - `report` — the «Browser run … finished» message reaching the session;
- *   - `result` — the report turn's `send_message`, what the person reads.
+ *   - `result` — the report turn's `send_message`, what the person reads,
+ *     or, when `browser_task` answered from the site's own data with no
+ *     run (`status: "found"`, `site-ops/direct.ts`), the turn's own message
+ *     after it.
  *
  * Each `--text` is one run, in its own conversation; `--runs` repeats the
  * list. Reads only the sessions it opens.
@@ -67,7 +70,7 @@ const sendSchema = z.object({
 });
 
 const browserResultSchema = z.object({
-  output: z.object({ runId: z.string(), status: z.string() }),
+  output: z.object({ runId: z.string().optional(), status: z.string() }),
   toolName: z.literal("browser_task"),
 });
 
@@ -80,6 +83,8 @@ async function errand(text: string) {
   const tools: { at: number; name: string; turn: number }[] = [];
   let turn = -1;
   let reportTurn: number | undefined;
+  // The turn whose `browser_task` answered from the site's data itself.
+  let foundTurn: number | undefined;
   let done = false;
   const since = (event: MessageStreamEvent) =>
     Date.parse(event.meta.at) - started;
@@ -130,7 +135,10 @@ async function errand(text: string) {
                   turn,
                 });
                 marks.firstMessage ??= at;
-                if (reportTurn !== undefined && turn >= reportTurn) {
+                if (
+                  (reportTurn !== undefined && turn >= reportTurn) ||
+                  foundTurn === turn
+                ) {
                   marks.result ??= at;
                 }
               }
@@ -141,6 +149,7 @@ async function errand(text: string) {
                 marks.browserTask = at;
                 marks.status = result.data.output.status;
                 marks.runId = result.data.output.runId;
+                if (result.data.output.status === "found") foundTurn = turn;
               }
               break;
             }

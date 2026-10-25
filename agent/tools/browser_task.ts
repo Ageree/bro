@@ -217,6 +217,12 @@ import {
 } from "@agent/lib/browser-use/public-services";
 import { mentionsRecurringCharge } from "@agent/lib/browser-use/spend";
 import { siteNoteLine } from "@agent/lib/browser-use/site-notes";
+import {
+  readSiteDirectly,
+  siteApiPilot,
+  siteReadNote,
+} from "@agent/lib/browser-vm/site-ops/direct";
+import { siteOpsPilot } from "@agent/lib/browser-vm/site-ops/run";
 import { browserRunQuotaGate } from "@agent/lib/billing/quota";
 import {
   turnBrowserStarts,
@@ -4874,6 +4880,39 @@ async function runBrowserTask(
         note: spendRefusalNote(spend.decision),
         status: "needs_approval",
       };
+    }
+    // In its pilot a search on a site Bro has read before is answered from
+    // the site's own data, with no errand (`site-ops/direct.ts`). Only the
+    // person's own search: nothing to submit, pay, stage or sign up for.
+    // Anything else, or a read that gives nothing, is the errand below.
+    if (
+      byPerson &&
+      walled === undefined &&
+      onVm &&
+      site !== undefined &&
+      consent === undefined &&
+      staging === undefined &&
+      signUp === undefined &&
+      !allowPayment &&
+      spend === undefined &&
+      !finesCheck &&
+      siteApiPilot(scope) &&
+      siteOpsPilot(scope)
+    ) {
+      const read = await readSiteDirectly(scope, {
+        errand: sent,
+        note: siteNoteLine(scope, site),
+        sessionId: context.session.id,
+        site,
+      });
+      if (read !== undefined) {
+        return {
+          note: siteReadNote(read),
+          outcome: `${String(read.cards.length)} of the site's ${String(read.count)} results for ${read.url}, read just now from its own data.`,
+          results: read.cards,
+          status: "found",
+        };
+      }
     }
     // What the card or the standing permission allowed to pay is held too,
     // so the charge the run reports is checked against it.
