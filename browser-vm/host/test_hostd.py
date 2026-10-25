@@ -1614,6 +1614,47 @@ class FirecrackerTest(HostTest):
         self.assertEqual(status, 201, record)
         self.assertEqual(host.sandboxes["ws-abc"]["rootfsVersion"], "v2")
 
+    async def test_another_root_is_hidden_until_its_image_is_built_and_gone_when_the_image_fails(self):
+        host, _runner, client = await self.host(update_schemes=("http", "https"))
+        raw = io.BytesIO()
+        with tarfile.open(fileobj=raw, mode="w") as tar:
+            info = tarfile.TarInfo("etc/passwd")
+            info.size = 5
+            tar.addfile(info, io.BytesIO(b"root\n"))
+        archive = b"ZSTD" + raw.getvalue()
+        app = web.Application()
+        app.router.add_get("/v2.tar.zst", lambda request: web.Response(body=archive))
+        server = TestServer(app)
+        await server.start_server()
+        self.addAsyncCleanup(server.close)
+        body = {"version": "v2", "url": str(server.make_url("/v2.tar.zst")), "sha256": hashlib.sha256(archive).hexdigest()}
+        imaging, failed = asyncio.Event(), asyncio.Event()
+
+        async def ensure_image(version):
+            imaging.set()
+            await failed.wait()
+            raise RuntimeError("mkfs.ext4 ran out of space")
+
+        async def install():
+            return (await client.post("/v1/admin/rootfs", json=body,
+                                      headers={"Authorization": f"Bearer {token(scope='update')}"})).status
+
+        root = Path(host.config.root) / "rootfs" / "v2"
+        with mock.patch.object(host, "ensure_image", ensure_image):
+            self.assertEqual(await install(), 202)
+            await asyncio.wait_for(imaging.wait(), 5)
+            # Unpacked under its name, but nothing starts on it, lists it or takes it as present yet.
+            self.assertTrue(root.is_dir())
+            self.assertNotIn("v2", (await self.call(client, "GET", "/v1/capacity"))[1]["rootfsVersions"])
+            status, answer = await self.call(client, "POST", "/v1/sandboxes", request(rootfsVersion="v2"))
+            self.assertEqual((status, answer["error"]), (409, "rootfs version is not on this host"))
+            self.assertEqual(await install(), 409)
+            failed.set()
+            await host.rootfs_task
+        self.assertEqual(host.rootfs_status()["state"], "failed")
+        self.assertFalse(root.exists())
+        self.assertNotIn("v2", (await self.call(client, "GET", "/v1/capacity"))[1]["rootfsVersions"])
+
     async def test_a_start_from_a_cold_set_puts_the_profile_in_the_image(self):
         await self.parked_vm()
         host, _runner, client = await self.host("b")
@@ -2321,13 +2362,25 @@ class UpdateTest(HostTest):
             status, _answer = await self.install(client, body)
             self.assertEqual(status, 400, body)
         self.assertIsNone(host.rootfs_task)
-        # One install at a time; an update waits for it (`busy`) rather than restarting hostd under it.
-        self.assertEqual((await self.install(client, good))[0], 202)
-        self.assertTrue(host.busy())
-        status, answer = await self.install(client, {**good, "version": "v3"})
-        self.assertEqual(status, 409, answer)
-        await host.rootfs_task
-        self.assertFalse(host.busy())
+        gate, download = asyncio.Event(), selfupdate.download
+
+        async def held(*args, **kwargs):
+            await gate.wait()
+            return await download(*args, **kwargs)
+
+        with mock.patch.object(hostd.selfupdate, "download", held):
+            # One install at a time, and no update under it: the update's wait for quiet would refuse every
+            # start and park on the host for as long as the install takes.
+            self.assertEqual((await self.install(client, good))[0], 202)
+            status, answer = await self.install(client, {**good, "version": "v3"})
+            self.assertEqual(status, 409, answer)
+            status, answer = await self.operator_call(client, "POST", "/v1/admin/update", token(scope="update"),
+                                                      self.offer(b"bundle"))
+            self.assertEqual((status, answer["error"]), (409, "a root is being installed"))
+            self.assertFalse(host.updating or host.draining or host.busy())
+            gate.set()
+            await host.rootfs_task
+        self.assertEqual(host.rootfs_status()["state"], "done")
 
     # The operator's key ---------------------------------------------------------------------------------
 

@@ -328,13 +328,20 @@ export const env = createEnv({
     // owners' emails, or `*` (`agent/lib/browser-use/images.ts`). Unset,
     // every report waits for its pictures as before.
     BROWSER_REPORT_FAST_WORKSPACES: workspaceListSchema.optional(),
-    // The pilot of Helium: workspace ids or owners' emails, or `*`, whose
-    // pool browser runs Helium rather than Google Chrome — the same Chromium
-    // with uBlock Origin built in and none of Google's background downloads
+    // The pilot of Helium: workspace ids, or `*`, whose pool browser runs
+    // Helium rather than Google Chrome — the same Chromium with uBlock Origin
+    // built in and none of Google's background downloads
     // (`agent/lib/browser-vm/pilot.ts`). Every other errand asks for Chrome,
     // so taking a workspace out switches it back; a root without Helium
-    // (one before BROWSER_SANDBOX_ROOTFS_CANARY's) keeps Chrome. Unset, nobody.
-    BROWSER_HELIUM_WORKSPACES: workspaceListSchema.optional(),
+    // (one before BROWSER_SANDBOX_ROOTFS_CANARY's) keeps Chrome. No emails:
+    // a lookup that failed would switch the browser and drop every page.
+    // Unset, nobody.
+    BROWSER_HELIUM_WORKSPACES: workspaceListSchema
+      .refine(
+        (entries) => entries.every((entry) => !entry.includes("@")),
+        "BROWSER_HELIUM_WORKSPACES takes workspace ids or *, not emails"
+      )
+      .optional(),
     // Who may get the sign-in link, where the person signs in to a site
     // themselves in a live view of their own cloud browser
     // (`agent/lib/login-handoff/`, docs/login-handoff.md). Unset or empty,
@@ -618,8 +625,10 @@ export const env = createEnv({
     // BROWSER_ROOTFS_CANARY_WORKSPACES (ids, or `*`) only: a new build goes
     // to the owner first while every other sandbox stays on
     // BROWSER_SANDBOX_ROOTFS. Hosts get it from `hostd`'s
-    // POST /v1/admin/rootfs; a host without it starts those workspaces on
-    // the usual root (`agent/lib/browser-pool/host.ts`).
+    // POST /v1/admin/rootfs, before the version is deployed: a host without
+    // it never starts those workspaces on the usual root, whose older Chrome
+    // must not open their profile; they wait as on a full host
+    // (`agent/lib/browser-pool/host.ts`).
     BROWSER_SANDBOX_ROOTFS_CANARY: versionedObjectSchema(
       "BROWSER_SANDBOX_ROOTFS_CANARY",
       "the tarball"

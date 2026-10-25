@@ -59,18 +59,16 @@ export async function reportFastPilot(scope: {
  * keeps Chrome. Chrome is asked for only on the canary root
  * (BROWSER_ROOTFS_CANARY_WORKSPACES), the one root with Helium, so that a
  * workspace taken out of the pilot goes back; everyone else's errands name
- * no browser and go to the worker byte for byte as before. The list reads
- * as BROWSER_FAST_WORKSPACES does, and a failed lookup asks for no Helium.
+ * no browser and go to the worker byte for byte as before. Both lists name
+ * workspace ids or `*`, never emails: a lookup that failed would switch the
+ * browser, and the restart drops every session's pages.
  */
-export async function errandBrowser(scope: {
-  readonly userId?: string;
-  readonly workspaceId: string;
-}) {
-  if (await inPilot("browser-helium", env.BROWSER_HELIUM_WORKSPACES, scope)) {
-    return "helium" as const;
-  }
-  const canary = env.BROWSER_ROOTFS_CANARY_WORKSPACES ?? [];
-  return canary.includes("*") || canary.includes(scope.workspaceId)
+export function errandBrowser(scope: { readonly workspaceId: string }) {
+  const listed = (entries: readonly string[] | undefined) =>
+    entries?.includes("*") === true ||
+    entries?.includes(scope.workspaceId) === true;
+  if (listed(env.BROWSER_HELIUM_WORKSPACES)) return "helium" as const;
+  return listed(env.BROWSER_ROOTFS_CANARY_WORKSPACES)
     ? ("chrome" as const)
     : undefined;
 }

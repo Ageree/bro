@@ -674,6 +674,7 @@ class Host:
         self.updating = False
         self.update_task = None
         self.rootfs_task = None  # POST /v1/admin/rootfs, while it fetches, unpacks or images a root
+        self.rootfs_imaging = set()  # a root installed on a microVM host that has no image yet: not listed
         # An update is about to restart hostd: new starts and parks are refused (503), those running finish.
         self.draining = False
         self.inflight = 0  # starts, parks and deletes in progress: what an update waits for
@@ -781,9 +782,9 @@ class Host:
             self.inflight -= 1
 
     def busy(self):
-        """Whether any sandbox is half way through a start, restore or park, or a root is being installed:
-        what an update waits for before it restarts hostd."""
-        return self.inflight > 0 or self.installing_rootfs() or any(
+        """Whether any sandbox is half way through a start, restore or park: what an update waits for before it
+        restarts hostd. A root being installed refuses the update instead (`update`)."""
+        return self.inflight > 0 or any(
             r["state"] in ("starting", "restoring", "parking") for r in self.sandboxes.values())
 
     def installing_rootfs(self):
@@ -1042,7 +1043,7 @@ class Host:
             if existing is not None and generation < existing["generation"]:
                 raise Refused(409, "stale generation", generation=existing["generation"])
             rootfs = self.config.rootfs / version
-            if not rootfs.is_dir():
+            if not rootfs.is_dir() or version in self.rootfs_imaging:
                 raise Refused(409, "rootfs version is not on this host", rootfsVersion=version)
             self.admit(sandbox_id, memory)
             with self.counted():
@@ -2045,6 +2046,10 @@ class Host:
             url, digest = selfupdate.valid_request(body, self.config.update_schemes)
             if self.updating:
                 raise selfupdate.UpdateRefused(409, "an update is already running")
+            # Refused, not waited for: an install takes up to an hour, and the update's wait for quiet refuses
+            # every start and park on the host meanwhile.
+            if self.installing_rootfs():
+                raise selfupdate.UpdateRefused(409, "a root is being installed")
             self.updating = True
             try:
                 version = await selfupdate.prepare(self.http, self.config, url, digest)
@@ -2127,7 +2132,7 @@ class Host:
             url, digest = selfupdate.valid_request(body, self.config.update_schemes)
         except selfupdate.UpdateRefused as refusal:
             raise Refused(refusal.status, refusal.error) from None
-        if (self.config.rootfs / version).is_dir():
+        if (self.config.rootfs / version).is_dir() and version not in self.rootfs_imaging:
             return 200, {"version": version, "state": "present"}
         if self.installing_rootfs():
             raise Refused(409, "a root is already being installed", rootfs=self.rootfs_status())
@@ -2156,14 +2161,25 @@ class Host:
             await asyncio.to_thread(remove, archive)
             # On disk before it takes its name, and the name on disk before it is reported (provision.sh).
             await asyncio.to_thread(os.sync)
+            if self.microvm:
+                # Its image is built from the path it has for good; until then no start, no capacity and no
+                # repeated install sees it (a hostd restarted meanwhile builds the image at its start).
+                self.rootfs_imaging.add(version)
             await asyncio.to_thread(partial.rename, config.rootfs / version)
             await asyncio.to_thread(os.sync)
             if self.microvm:
                 self.write_rootfs_status(state="imaging", version=version, sha256=digest)
-                await self.ensure_image(version)
+                try:
+                    await self.ensure_image(version)
+                except Exception:
+                    await asyncio.to_thread(remove, config.rootfs / version)
+                    raise
+                finally:
+                    self.rootfs_imaging.discard(version)
             self.write_rootfs_status(state="done", version=version, sha256=digest)
             log.info("rootfs %s installed", version)
-        except asyncio.CancelledError:  # hostd stops: the hidden leftovers are taken again by the next try
+        except asyncio.CancelledError:  # hostd stops: the next try takes the hidden tree again
+            archive.unlink(missing_ok=True)  # up to rootfs_max_bytes, of a version that may never be tried again
             self.write_rootfs_status(state="failed", version=version, sha256=digest, error="hostd stopped")
             raise
         except Exception as error:
@@ -2235,8 +2251,10 @@ class Host:
             root_disk = shutil.disk_usage(self.config.root)
             disk = {"totalMb": root_disk.total // 2**20, "freeMb": root_disk.free // 2**20}
         # A rootfs still unpacking is a hidden `.<version>.partial`: the pattern leaves it out.
+        # One still getting its image (`fetch_rootfs`) is left out too.
         versions = sorted(p.name for p in self.config.rootfs.glob("*")
-                          if p.is_dir() and ROOTFS_VERSION.fullmatch(p.name)) if self.config.rootfs.exists() else []
+                          if p.is_dir() and ROOTFS_VERSION.fullmatch(p.name) and p.name not in self.rootfs_imaging
+                          ) if self.config.rootfs.exists() else []
         memory = meminfo()
         if memory is not None:
             memory["committed"] = sum(self.footprint_mb(r["memoryMb"]) for r in live if r["state"] != "failed")
