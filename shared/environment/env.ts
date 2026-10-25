@@ -389,6 +389,12 @@ export const env = createEnv({
     // (`agent/lib/browser-vm/site-ops/direct.ts`). Needs the operations
     // (BROWSER_SITE_OPS_WORKSPACES). Unset, nobody.
     BROWSER_SITE_API_WORKSPACES: workspaceListSchema.optional(),
+    // Workspace ids or `*` whose first search on a site with no operation
+    // yet is a look at the results page a model names for it, in the
+    // worker's own browser with no run: its cards answer the turn and the
+    // operation behind them is kept (`agent/lib/browser-vm/site-ops/direct.ts`).
+    // Needs BROWSER_SITE_API_WORKSPACES. Unset, nobody.
+    BROWSER_SITE_COLD_WORKSPACES: workspaceListSchema.optional(),
     // Who may get the sign-in link, where the person signs in to a site
     // themselves in a live view of their own cloud browser
     // (`agent/lib/login-handoff/`, docs/login-handoff.md). Unset or empty,

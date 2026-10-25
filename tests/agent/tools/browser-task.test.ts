@@ -3983,6 +3983,7 @@ describe("browser_task on a workspace's own browser VM", () => {
     siteApi.readSiteDirectly.mockResolvedValue({
       cards: [vacancy],
       count: 50,
+      from: "data",
       url: "https://hh.ru/search/vacancy?text=продакт-менеджер&area=1",
     });
     try {
