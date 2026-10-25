@@ -504,6 +504,9 @@ describe("screenOutgoing, the second version's", () => {
     for (const body of [
       "Кто оплатит автомобиль? Савелий.",
       "Кто оплатит автомобиль, если не Савелий?",
+      "Кто оплатит автомобиль? Конечно, Савелий.",
+      "Пётр оплатит автомобиль. Савелий тоже.",
+      "Пётр оплатит автомобиль, Савелий в деле",
     ])
       expect(
         // oxlint-disable-next-line eslint/no-await-in-loop -- One packet after another.
