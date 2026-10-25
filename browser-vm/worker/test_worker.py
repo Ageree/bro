@@ -2114,6 +2114,31 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sorted(self.chrome.closed), ["T-old", "T1"])
         self.assertEqual(sorted(self.chrome.tabs), ["T-end", "T2"])  # the keep-alive tab is not the errand's
 
+    async def test_a_run_past_its_tab_cap_closes_its_oldest_tabs_but_the_agents_and_its_opener(self):
+        # hh.ru (25.10): vacancy after vacancy opened in a tab of its own, nine renderers of about 200 MB
+        # filled the 3 GB sandbox, and the kernel's OOM killer took the browser in the middle of the run.
+        open_during_run = []
+
+        async def opens_a_tab_a_step(agent, on_step_start):
+            browser = agent.options["browser_session"]
+            for tab in ["T-a", "T-b", "T-c", "T-d", "T-e"]:
+                await on_step_start(agent)
+                self.chrome.tabs.append(tab)  # a card's link with target=_blank
+                browser.agent_focus_target_id = tab
+                agent.state.n_steps += 1
+                await agent.on_step_end(agent)
+                open_during_run.append(len(self.worker.sessions["s1"].tabs))
+            return FakeHistory(True)
+
+        FakeAgent.script = opens_a_tab_a_step
+        self.chrome.openers["T-e"] = "T-d"  # the last page reports back to the one before it: that one stays
+        await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Find five vacancies."})
+        await self.settled("r1")
+        self.assertEqual(open_during_run, [2, 3, 3, 3, 3])
+        self.assertEqual(self.chrome.closed, ["T1", "T-a", "T-b", "T-c"])  # T-c by the run's end, as before
+        session = self.worker.sessions["s1"]
+        self.assertEqual((session.tab, session.tabs), ("T-e", {"T-d", "T-e"}))
+
     async def test_a_restarted_worker_keeps_the_session_tab_chrome_still_has(self):
         await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Sign in."})
         await self.settled("r1")

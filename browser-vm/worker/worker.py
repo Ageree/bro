@@ -90,7 +90,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-10-25.4"
+VERSION = "2026-10-25.5"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -1105,6 +1105,7 @@ def tell_agent(agent, text):
 TRAIL = "trail"
 TRAIL_SHOTS = 40  # the last shots of a run kept; steps.jsonl keeps every line
 TRAIL_RUNS = 20  # run trails kept on the VM, the newest
+RUN_TABS = 3  # the tabs one run keeps open at once (`cap_run_tabs`)
 TRAIL_QUALITY = 35
 TRAIL_SCALE = 0.5
 TRAIL_SHOT_S = 3  # a shot that takes longer is skipped, the line still written
@@ -2329,6 +2330,26 @@ class Worker:
             session.tabs.add(focus)
         self.save_tabs()
 
+    async def cap_run_tabs(self, session, browser, before, seen):
+        """During a run: past RUN_TABS tabs of the session, close the oldest ones but the tab the agent is on and
+        its openers. Each step can open another (a card or a vacancy link with target=_blank), and every tab
+        keeps its renderers until the run ends: on hh.ru (25.10) nine pages of about 200 MB each filled the
+        3 GB sandbox, the kernel's OOM killer took the browser twice and the errand hung."""
+        await self.follow_focus(session, browser, before)
+        for tab in sorted(session.tabs):
+            seen.setdefault(tab, len(seen))
+        if len(session.tabs) <= RUN_TABS:
+            return
+        keep = await tab_openers(session.tab) if session.tab in session.tabs else set()
+        spare = sorted(session.tabs - keep, key=lambda tab: seen[tab])
+        excess = set(spare[:len(session.tabs) - RUN_TABS])
+        for tab in excess:
+            await close_tab(tab)
+        if excess:
+            session.tabs -= excess
+            self.save_tabs()
+            log.info("closed %d tabs of a run past %d open", len(excess), RUN_TABS)
+
     async def close_spare_tabs(self, session):
         """After a run: close the session's tabs but the one the agent ended on and its openers. The next run
         continues from that tab, and each other one kept its page, its frames' renderers and their memory until
@@ -2803,6 +2824,9 @@ class Worker:
                 for message in pending_messages:
                     agent.add_new_task(message)
 
+        # The run's tabs in the order the steps first saw them, the oldest closed first: those it started with lead.
+        seen_tabs = {tab: number for number, tab in enumerate(sorted(session.tabs))}
+
         async def step_ended(_):
             summary = run.steps[-1] if len(run.steps) > steps_before else None
             errors = [result.error for result in (getattr(agent.state, "last_result", None) or [])
@@ -2812,6 +2836,8 @@ class Worker:
                 url = await asyncio.wait_for(browser.get_current_page_url(), 2)
             with contextlib.suppress(Exception):
                 await trail.record(lambda: page_jpeg(browser), summary, url, errors)
+            with contextlib.suppress(Exception):
+                await self.cap_run_tabs(session, browser, before, seen_tabs)
 
         agent = Agent(
             task=text, llm=llm, browser_session=browser, tools=self.tools(session, run),
