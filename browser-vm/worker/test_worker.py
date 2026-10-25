@@ -609,7 +609,9 @@ class FakePlaywright:
                 return types.SimpleNamespace(send=mock.AsyncMock(return_value={"targetInfo": {"targetId": page.target}}),
                                              detach=mock.AsyncMock())
 
-        return types.SimpleNamespace(contexts=[Context()], close=mock.AsyncMock())
+        self.browser_cdp = types.SimpleNamespace(send=mock.AsyncMock(), detach=mock.AsyncMock())
+        return types.SimpleNamespace(contexts=[Context()], close=mock.AsyncMock(),
+                                     new_browser_cdp_session=mock.AsyncMock(return_value=self.browser_cdp))
 
     async def stop(self):
         self.stopped = True
@@ -2519,6 +2521,10 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         # The page it touched last is the session's, and the tab it opened elsewhere is closed after it.
         self.assertEqual((self.worker.sessions["s1"].tab, self.chrome.closed), ("T1", ["T2"]))
         self.assertTrue(playwright.stopped)
+        # Files it downloads land where the run's downloads are looked for, not in Playwright's own folder.
+        playwright.browser_cdp.send.assert_awaited_once_with("Browser.setDownloadBehavior", {
+            "behavior": "allow", "downloadPath": str(self.worker.sessions["s1"].workspace / worker.DOWNLOADS),
+            "eventsEnabled": True})
 
     async def test_a_code_run_on_a_root_without_the_engine_runs_on_browser_use(self):
         self.enterContext(mock.patch.object(worker, "code_engine_available", lambda: False))

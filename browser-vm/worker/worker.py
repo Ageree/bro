@@ -2857,6 +2857,15 @@ class Worker:
         try:
             browser = await pw.chromium.connect_over_cdp(CDP_HTTP)
             context = browser.contexts[0]
+            # Playwright points the browser's downloads at a temporary folder of its own when it connects: back to
+            # the session's, where the run's files are looked for (`run_downloads`), as browser-use has them.
+            downloads = session.workspace / DOWNLOADS
+            downloads.mkdir(exist_ok=True)
+            with contextlib.suppress(Exception):
+                cdp = await browser.new_browser_cdp_session()
+                await cdp.send("Browser.setDownloadBehavior",
+                               {"behavior": "allow", "downloadPath": str(downloads), "eventsEnabled": True})
+                await cdp.detach()
             api = CodeApi(context, code_secrets(session.sensitive_data))
             for page in context.pages:  # the session's tab is t1
                 with contextlib.suppress(Exception):
