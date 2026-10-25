@@ -610,6 +610,13 @@
       "when": 1792853760990,
       "tag": "0086_card_events",
       "breakpoints": true
+    },
+    {
+      "idx": 87,
+      "version": "7",
+      "when": 1792915561473,
+      "tag": "0087_browser_downloads",
+      "breakpoints": true
     }
   ]
 }

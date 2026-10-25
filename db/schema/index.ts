@@ -4,6 +4,7 @@ export * from "./auth";
 export * from "./billing";
 export * from "./bro-to-bro";
 export * from "./browser";
+export * from "./browser-downloads";
 export * from "./browser-hosts";
 export * from "./browser-runs";
 export * from "./browser-vms";

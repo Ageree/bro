@@ -145,6 +145,19 @@ const runSummarySchema = z.object({
    */
   unreadMessages: z.array(z.string()).optional(),
   usage: z.record(z.string(), z.json()).nullable(),
+  /**
+   * The files the run itself downloaded into its session's `downloads/`,
+   * told by the folder before and after it, once it has ended. Absent from
+   * a worker older than the field, null while the run goes on.
+   */
+  downloads: z
+    .array(
+      z.object({
+        path: z.string().min(1),
+        size: z.number().int().nonnegative(),
+      })
+    )
+    .nullish(),
 });
 
 const runSchema = runSummarySchema.extend({ steps: z.array(stepSchema) });
@@ -201,7 +214,7 @@ const tuningSchema = z.object({
 const runInputSchema = z.object({
   /**
    * The browser of the run (`errandBrowser`): the worker restarts into it
-   * when the profile ran the other one. A worker before 2026-10-25.1 ignores it.
+   * when the profile ran the other one. A worker before 2026-10-25.2 ignores it.
    */
   browser: z.enum(["chrome", "helium"]).optional(),
   /** A slider puzzle the worker cannot place goes to 2Captcha with this key. */

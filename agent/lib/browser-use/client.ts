@@ -49,6 +49,19 @@ const runCreateResponseSchema = z.object({
 
 const runSummarySchema = z.object({
   createdAt: z.string().optional(),
+  /**
+   * The files a settled VM run downloaded itself (`downloads/…` of its
+   * session's folder). Absent for a Browser Use run, for a worker older than
+   * the field and for a run read from its record once the worker is gone.
+   */
+  downloads: z
+    .array(
+      z.object({
+        path: z.string().min(1),
+        size: z.number().int().nonnegative(),
+      })
+    )
+    .optional(),
   error: z.string().nullable().optional(),
   id: z.string().min(1),
   /**
