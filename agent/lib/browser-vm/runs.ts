@@ -1003,6 +1003,7 @@ async function recordRunCosts(
 function fromWorker(run: WorkerRun, record: BrowserVmRunRecord | undefined) {
   return {
     createdAt: run.createdAt,
+    downloads: run.downloads ?? undefined,
     error: explainedError(run.error),
     id: run.id,
     idle: idleRun(run),

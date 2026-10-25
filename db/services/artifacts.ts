@@ -1,4 +1,5 @@
 import type { AccessScope } from "@shared/identity/access-scope";
+import { readBrowserDownloadArtifact } from "./browser-downloads";
 import { readReadyBrowserImageArtifact } from "./browser-images";
 import { readDriveFileArtifact } from "./drive-files";
 import { readGeneratedImageArtifact } from "./generated-images";
@@ -6,8 +7,8 @@ import { readGmailAttachmentArtifact } from "./gmail-attachments";
 
 /**
  * Resolves `/artifacts/<id>` for one workspace user. An artifact is a browser
- * image, a Gmail attachment, a picture `generate_image` drew, or a Drive
- * file; all are private objects that travel by the same reference and
+ * image, a Gmail attachment, a picture `generate_image` drew, a Drive file,
+ * or a file a browser run downloaded; all are private objects that travel by the same reference and
  * are served and delivered the same way.
  */
 export async function readReadyArtifact(
@@ -35,7 +36,8 @@ export async function readReadyArtifact(
   const attachment =
     (await readGmailAttachmentArtifact(scope, artifactId, options)) ??
     (await readGeneratedImageArtifact(scope, artifactId, options)) ??
-    (await readDriveFileArtifact(scope, artifactId, options));
+    (await readDriveFileArtifact(scope, artifactId, options)) ??
+    (await readBrowserDownloadArtifact(scope, artifactId, options));
   if (!attachment) return undefined;
   return {
     byteSize: attachment.byteSize,
