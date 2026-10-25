@@ -16,7 +16,7 @@ export function broMoment(value: Date | string, timeZone: string) {
  * When a proposal is, in the person's time zone: its start, and its end as
  * a time alone when it ends the same day.
  */
-export function broProposalTime(proposal: BroProposal, timeZone: string) {
+function broProposalTime(proposal: BroProposal, timeZone: string) {
   if (proposal.start === undefined) return null;
   const start = broMoment(proposal.start, timeZone);
   if (proposal.end === undefined) return start;
@@ -34,4 +34,22 @@ export function broProposalTime(proposal: BroProposal, timeZone: string) {
       }).format(new Date(proposal.end))
     : broMoment(proposal.end, timeZone);
   return `${start} – ${end}`;
+}
+
+/**
+ * A proposal as one line of the journal: what it is, when, where, and —
+ * for an agreement of the second version — its sum and its points.
+ */
+export function broProposalLine(proposal: BroProposal, timeZone: string) {
+  return [
+    `Предложение: ${proposal.summary}`,
+    broProposalTime(proposal, timeZone),
+    proposal.place ?? null,
+    proposal.amountRub === undefined
+      ? null
+      : `${proposal.amountRub.toLocaleString("ru-RU")} ₽`,
+    proposal.items?.length ? proposal.items.join("; ") : null,
+  ]
+    .filter((part) => part !== null)
+    .join(" · ");
 }

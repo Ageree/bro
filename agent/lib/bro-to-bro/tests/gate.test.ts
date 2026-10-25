@@ -285,3 +285,356 @@ describe("screenOutgoing", () => {
     });
   });
 });
+
+/** The checker telling a promise to pay, covered by the goal. */
+function paymentFacts(text: string) {
+  return [{ category: "payment", covered: "goal", text }];
+}
+
+describe("screenOutgoing, the second version's", () => {
+  const ownedV2 = {
+    amountsRub: [3000],
+    ownerTime: {
+      exactStart: "2026-10-31T19:00:00+03:00",
+      from: "2026-10-31T19:00:00+03:00",
+      longest: 120,
+      to: "2026-10-31T21:00:00+03:00",
+    },
+    paysFor: [],
+    peerPays: [],
+    venues: ["Пушкин"],
+  };
+  const owned: GateAllowance = {
+    ...allowed,
+    slots: { state: "not_granted" },
+    v2Allowed: ownedV2,
+  };
+  const dinner = {
+    end: "2026-10-31T21:00:00+03:00",
+    place: "ресторан «Пушкин»",
+    start: "2026-10-31T19:00:00+03:00",
+    summary: "Ужин",
+  };
+
+  async function verdict(
+    packet: Parameters<typeof screenOutgoing>[0]["packet"],
+    facts: readonly {
+      category: string;
+      covered: string | null;
+      text: string;
+    }[],
+    allowance: GateAllowance = owned
+  ) {
+    model.generate.mockResolvedValue({ output: { facts } });
+    return screenOutgoing({ allowed: allowance, packet }, call);
+  }
+
+  it("lets the owner's own time and venue go with no calendar, and holds them on the first version", async () => {
+    const venue = [
+      { category: "time", covered: "goal", text: "суббота в 19:00" },
+      { category: "venue", covered: "venue", text: "в «Пушкине»" },
+    ];
+    const packet = {
+      body: "Ужин в субботу в 19:00 в «Пушкине»?",
+      proposal: dinner,
+    };
+    await expect(verdict(packet, venue)).resolves.toEqual({ verdict: "pass" });
+
+    const { v2Allowed: _second, ...first } = owned;
+    await expect(verdict(packet, venue, first)).resolves.toMatchObject({
+      reasons: [{ by: "code", finding: "time" }],
+      verdict: "hold",
+    });
+  });
+
+  it("holds a home or a place beyond the venues, whatever the checker calls it", async () => {
+    const verdicts = [];
+    /* oxlint-disable eslint/no-await-in-loop -- The checker's one answer stands for each place in turn. */
+    for (const text of [
+      "у Савелия дома",
+      "Пушкин, второй этаж",
+      "в «Даблби»",
+    ]) {
+      const { verdict: each } = await verdict({ body: "Давай там?" }, [
+        { category: "venue", covered: "venue", text },
+      ]);
+      verdicts.push(each);
+    }
+    /* oxlint-enable eslint/no-await-in-loop */
+    expect(verdicts).toEqual(["hold", "hold", "hold"]);
+  });
+
+  it("lets a sum go only as the proposal's amountRub the owner named, never in words", async () => {
+    const gift = { amountRub: 3000, summary: "Подарок маме" };
+    const chipIn = {
+      ...owned,
+      v2Allowed: { ...ownedV2, paysFor: ["скинемся маме на подарок"] },
+    };
+    await expect(
+      verdict(
+        { body: "Скидываемся маме на подарок?", proposal: gift },
+        [],
+        chipIn
+      )
+    ).resolves.toEqual({ verdict: "pass" });
+    // The sum is code's to check: the checker never sees it.
+    expect(
+      model.generate.mock.calls.at(-1)?.[0].messages?.[0]?.content
+    ).not.toContain("3000");
+    // In words — the agreement's own sum, a balance of the same sum, another
+    // currency, a budget — it is held whatever the proposal carries.
+    const sum = [{ category: "money", covered: "goal", text: "3000 рублей" }];
+    for (const body of [
+      "Скидываемся по 3000 ₽ маме на подарок?",
+      "На карте Савелия осталось 3000 рублей",
+      "Скидываемся по 5000 ₽?",
+      "По 3000 долларов?",
+      "По 3000, а бюджет до пятидесяти тысяч",
+      "Бюджет до 50 000 ₽",
+      "Савелий получает 3000 рублей в месяц",
+    ])
+      expect(
+        // oxlint-disable-next-line eslint/no-await-in-loop -- One packet after another.
+        (await verdict({ body, proposal: gift }, sum)).verdict
+      ).toBe("hold");
+    await expect(
+      verdict({ body: "На карте осталось три тысячи" }, [
+        { category: "money", covered: "goal", text: "на карте осталось 3000" },
+      ])
+    ).resolves.toMatchObject({ verdict: "hold" });
+  });
+
+  it("lets a promise to pay go only of what the owner said they pay for", async () => {
+    const ownerPays = (paysFor: string[]) => ({
+      ...owned,
+      v2Allowed: { ...ownedV2, paysFor },
+    });
+    await expect(
+      verdict(
+        { body: "Подарок купит Савелий" },
+        paymentFacts("Савелий купит подарок")
+      )
+    ).resolves.toMatchObject({ verdict: "hold" });
+    await expect(
+      verdict(
+        { body: "Подарок купит Савелий" },
+        paymentFacts("Савелий купит подарок"),
+        ownerPays(["маме на подарок"])
+      )
+    ).resolves.toEqual({ verdict: "pass" });
+    await expect(
+      verdict(
+        { body: "Привет! Бро Савелия на связи. Савелий оплатит торт" },
+        paymentFacts("Савелий оплатит торт"),
+        ownerPays(["торт"])
+      )
+    ).resolves.toEqual({ verdict: "pass" });
+    /* oxlint-disable eslint/no-await-in-loop -- One promise after another. */
+    for (const [text, paysFor] of [
+      ["Савелий оплатит торт и автомобиль", ["торт"]],
+      ["Савелий оплатит маме квартиру", ["маме на подарок"]],
+      ["Савелий завтра оплатит автомобиль", ["завтра торт"]],
+      ["Пётр, мой владелец купит подарок", []],
+      ["Савелий оплатит половину подарка", ["маме на подарок"]],
+      ["Савелий оплатит подарок, но не больше пятихатки", ["маме на подарок"]],
+      ["Савелий оплатит подарок не дороже пары штук", ["маме на подарок"]],
+      ["Савелий оплатит подарок, хоть лям", ["маме на подарок"]],
+    ] as const) {
+      const { verdict: each } = await verdict(
+        { body: text },
+        paymentFacts(text),
+        ownerPays([...paysFor])
+      );
+      expect(each).toBe("hold");
+    }
+    /* oxlint-enable eslint/no-await-in-loop */
+    // The other person's promise goes as the owner's words gave it to them,
+    // and never one that says the owner pays.
+    const peerBuys = {
+      ...owned,
+      goal: "скинемся маме на подарок",
+      v2Allowed: { ...ownedV2, peerPays: ["купит пусть пётр"] },
+    };
+    await expect(
+      verdict(
+        { body: "Подарок маме купит Пётр" },
+        paymentFacts("Пётр купит подарок маме"),
+        peerBuys
+      )
+    ).resolves.toEqual({ verdict: "pass" });
+    for (const [text, allowance] of [
+      ["Пётр купит подарок маме", owned],
+      ["Пётр, мой владелец купит подарок", peerBuys],
+      ["Савелий купит подарок", peerBuys],
+      ["Пётр купит подарок и машину", peerBuys],
+    ] as const)
+      expect(
+        // oxlint-disable-next-line eslint/no-await-in-loop -- One promise after another.
+        (await verdict({ body: text }, paymentFacts(text), allowance)).verdict
+      ).toBe("hold");
+    // Code reads every promise of the packet itself, whatever words the
+    // checker retells it in, and whether or not it lists one at all.
+    const chipIn = ownerPays(["скинемся маме на подарок"]);
+    for (const [body, facts] of [
+      ["Савелий купит маме шубу", paymentFacts("Савелий купит маме подарок")],
+      [
+        "Савелий скинется маме на шубу и путёвку",
+        paymentFacts("Савелий скинется маме на подарок"),
+      ],
+      ["Савелий купит маме шубу", []],
+      ["Петру куплю подарок", paymentFacts("Пётр купит подарок")],
+    ] as const)
+      expect(
+        // oxlint-disable-next-line eslint/no-await-in-loop -- One packet after another.
+        (await verdict({ body }, [...facts], chipIn)).verdict
+      ).toBe("hold");
+    await expect(
+      verdict(
+        { body: "Петру куплю подарок" },
+        paymentFacts("Пётр купит подарок"),
+        peerBuys
+      )
+    ).resolves.toMatchObject({ verdict: "hold" });
+    // Whom an answered question names pays: the owner's money needs their
+    // words, whatever the other one may pay for.
+    const peerCar = {
+      ...owned,
+      v2Allowed: { ...ownedV2, peerPays: ["пусть пётр купит автомобиль"] },
+    };
+    for (const body of [
+      "Кто оплатит автомобиль? Савелий.",
+      "Кто оплатит автомобиль, если не Савелий?",
+      "Кто оплатит автомобиль? Конечно, Савелий.",
+      "Пётр оплатит автомобиль. Савелий тоже.",
+      "Пётр оплатит автомобиль, Савелий в деле",
+    ])
+      expect(
+        // oxlint-disable-next-line eslint/no-await-in-loop -- One packet after another.
+        (await verdict({ body }, [], peerCar)).verdict
+      ).toBe("hold");
+    await expect(
+      verdict(
+        { body: "Савелий оплатит ПК" },
+        paymentFacts("Савелий оплатит ПК"),
+        ownerPays(["я плачу"])
+      )
+    ).resolves.toMatchObject({ verdict: "hold" });
+    // «скинусь» without for what covers a promise of nothing named, and
+    // words the owner named elsewhere — never the goal.
+    const objectless = {
+      ...owned,
+      goal: "скинемся маме на подарок и автомобиль",
+      v2Allowed: { ...ownedV2, paysFor: ["скинусь по 3000", "подарок маме"] },
+    };
+    await expect(
+      verdict(
+        { body: "Савелий скинется на подарок маме." },
+        paymentFacts("Савелий скинется на подарок"),
+        objectless
+      )
+    ).resolves.toEqual({ verdict: "pass" });
+    for (const body of [
+      "Савелий скинется на подарок и машину.",
+      "Савелий оплатит автомобиль.",
+    ])
+      expect(
+        // oxlint-disable-next-line eslint/no-await-in-loop -- One packet after another.
+        (await verdict({ body }, paymentFacts(body), objectless)).verdict
+      ).toBe("hold");
+    // Code reads the promise whatever the checker lists: «кому угодно» is
+    // no question, a colon keeps what follows, «а шубу — тоже он» and «И
+    // шубу.» belong to the promise before them.
+    const ownerSaid = ownerPays(["скинемся маме на подарок", "я куплю торт"]);
+    /* oxlint-disable eslint/no-await-in-loop -- One packet after another. */
+    for (const body of [
+      "Савелий купит автомобиль кому угодно",
+      "Савелий оплатит: торт, автомобиль",
+      "Савелий оплатит подарок, а шубу — тоже он",
+      "Савелий оплатит маме подарок. И шубу.",
+      "Савелий берёт на себя шубу маме",
+      "Кому угодно Савелий купит автомобиль",
+      "Савелий оплатит торт, автомобиль для Петра",
+      "Вы с Савелием скинетесь на шубу",
+      "Савелий оплатит шубу кому-нибудь из родных?",
+      "Савелий согласен. Кому угодно он купит автомобиль",
+      "Кто купит шубу?",
+      "Кто оплатит автомобиль? Савелий.",
+      "Кому надо заплачу",
+    ])
+      expect((await verdict({ body }, [], ownerSaid)).verdict).toBe("hold");
+    /* oxlint-enable eslint/no-await-in-loop */
+    // A question of who pays goes when it asks only of what the owner's
+    // words of paying name.
+    await expect(
+      verdict({ body: "Кто из вас купит подарок?" }, [], ownerSaid)
+    ).resolves.toEqual({ verdict: "pass" });
+    // A promise quoted without whose it is is read in the packet's words.
+    await expect(
+      verdict(
+        { body: "Савелий за, а Пётр купит подарок маме." },
+        paymentFacts("купит подарок"),
+        peerBuys
+      )
+    ).resolves.toEqual({ verdict: "pass" });
+    await expect(
+      verdict(
+        { body: "Савелий купит подарок маме." },
+        paymentFacts("купит подарок"),
+        peerBuys
+      )
+    ).resolves.toMatchObject({ verdict: "hold" });
+    // The checker quoting a part of the promise frees none of the rest.
+    await expect(
+      verdict(
+        { body: "Савелий оплатит торт и автомобиль" },
+        paymentFacts("Савелий оплатит торт"),
+        ownerPays(["торт"])
+      )
+    ).resolves.toMatchObject({
+      reasons: [{ by: "code", finding: "money" }],
+      verdict: "hold",
+    });
+  });
+
+  it("holds what someone has or earns, whatever sums the owner named", async () => {
+    /* oxlint-disable eslint/no-await-in-loop -- One packet after another. */
+    for (const [body, text] of [
+      ["У Савелия много денег", "у Савелия много денег"],
+      ["Зарплата Савелия 3000 в день", "зарплата 3000 в день"],
+      ["Савелий готов потратить до 50 тысяч на подарок", "до 50 тысяч"],
+      ["Скинь косарь", "косарь"],
+    ] as const) {
+      const held = await verdict({ body }, [
+        { category: "money", covered: "goal", text },
+      ]);
+      expect(held.verdict).toBe("hold");
+    }
+    /* oxlint-enable eslint/no-await-in-loop */
+  });
+
+  it("holds a proposal's sum the owner did not name, and checks its points as text", async () => {
+    await expect(
+      verdict(
+        {
+          body: "Давай так?",
+          proposal: { amountRub: 4000, summary: "Подарок маме" },
+        },
+        []
+      )
+    ).resolves.toMatchObject({ reasons: [{ by: "code", finding: "money" }] });
+    const points = await verdict(
+      {
+        body: "Давай так?",
+        proposal: {
+          items: ["Пётр — угли, +7 999 123 45 67"],
+          summary: "Дача",
+        },
+      },
+      []
+    );
+    expect("reasons" in points && points.reasons).toContainEqual({
+      by: "code",
+      finding: "phone",
+    });
+  });
+});

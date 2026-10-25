@@ -19,7 +19,9 @@ import { mailProviderNames, mailProviderSchema } from "@shared/mail/schema";
 import { paidPeriodDays, readBillingState } from "@db/services/billing";
 import { openBroInvite } from "@db/services/bro-to-bro/invites";
 import { listBroLinks } from "@db/services/bro-to-bro/links";
+import { broOwnerReachable } from "@db/services/bro-to-bro/route";
 import { listBroThreads } from "@db/services/bro-to-bro/threads";
+import { broToBroV2 } from "@db/services/bro-to-bro/version";
 import { readChannelIdentity } from "@db/services/channel-identities";
 import { photonLineFor } from "@db/services/photon-users";
 import { wakeProactiveWatch } from "@db/services/proactive";
@@ -170,11 +172,13 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
     workspaceIntroduced(scope),
     broToBroAccess(scope).then(async (access) => {
       if (access === "off") return undefined;
-      const [links, threads] = await Promise.all([
+      const [links, threads, reachable] = await Promise.all([
         listBroLinks(scope),
         listBroThreads(scope, { limit: broThreadsShown }),
+        // The second version's: say so when Bro has no chat to write in.
+        broToBroV2(scope.workspaceId) ? broOwnerReachable(scope) : true,
       ]);
-      return { access, links, threads };
+      return { access, links, reachable, threads };
     }),
     // Showing the card records who opened the invite; only «Принять» on it
     // accepts.
@@ -327,6 +331,7 @@ export default async function Page({ searchParams }: PageProps<"/workspace">) {
         <BroLinksSection
           access={broToBro.access}
           links={broToBro.links}
+          reachable={broToBro.reachable}
           threads={broToBro.threads}
           timeZone={timeZone}
         />

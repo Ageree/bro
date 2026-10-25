@@ -13,7 +13,7 @@ import {
   sql,
 } from "drizzle-orm";
 import type { AccessScope } from "@shared/identity/access-scope";
-import { broReports, db } from "@db";
+import { broReports, broThreads, db } from "@db";
 
 type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -199,4 +199,74 @@ export async function finishBroReport(
     )
     .returning({ status: broReports.status });
   return rows[0]?.status ?? null;
+}
+
+/** How long a report waits for its owner's first chat with Bro (v2). */
+const parkedMs = 7 * 24 * 60 * 60_000;
+/** How often a waiting report looks for that chat again. */
+const parkPauseMs = 15 * 60_000;
+
+/** What waits for an owner in a thread: closing the thread takes it away. */
+const awaitingKinds = new Set(["agreed", "held", "question"]);
+
+/**
+ * A report of the second version whose owner has no chat with Bro at all —
+ * no messenger, no web chat, no Telegram — waits for one instead of being
+ * dropped: back to pending in 15 minutes, the attempt not counted, for a
+ * week from when it was queued; then it is dropped. A question, a draft or
+ * an agreement of a thread that closed meanwhile is dropped at once: the
+ * thread is locked first, as closing it does, so the two never cross.
+ * Returns the report's status, or null when the token is not the report's.
+ */
+export async function parkBroReport(
+  id: string,
+  token: string,
+  now = new Date()
+) {
+  return db.transaction(async (transaction) => {
+    const [report] = await transaction
+      .select({ kind: broReports.kind, threadId: broReports.threadId })
+      .from(broReports)
+      .where(
+        and(
+          eq(broReports.id, id),
+          eq(broReports.leaseToken, token),
+          eq(broReports.status, "leased")
+        )
+      )
+      .limit(1);
+    if (!report) return null;
+    const [thread] =
+      report.threadId === null
+        ? []
+        : await transaction
+            .select({ closedAt: broThreads.closedAt })
+            .from(broThreads)
+            .where(eq(broThreads.id, report.threadId))
+            .limit(1)
+            .for("update");
+    const stale =
+      awaitingKinds.has(report.kind) &&
+      (thread === undefined || thread.closedAt !== null);
+    const keep = stale
+      ? sql`false`
+      : sql`${broReports.createdAt} > ${new Date(now.getTime() - parkedMs).toISOString()}::timestamptz`;
+    const rows = await transaction
+      .update(broReports)
+      .set({
+        status: sql`CASE WHEN ${keep} THEN 'pending' ELSE 'dropped' END`,
+        attempts: sql`greatest(${broReports.attempts} - 1, 0)`,
+        leaseExpiresAt: sql`CASE WHEN ${keep} THEN ${new Date(now.getTime() + parkPauseMs).toISOString()}::timestamptz END`,
+        lastError: stale ? "thread closed" : "no chat",
+      })
+      .where(
+        and(
+          eq(broReports.id, id),
+          eq(broReports.leaseToken, token),
+          eq(broReports.status, "leased")
+        )
+      )
+      .returning({ status: broReports.status });
+    return rows[0]?.status ?? null;
+  });
 }

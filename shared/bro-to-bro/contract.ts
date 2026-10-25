@@ -47,11 +47,24 @@ export const envoyActions = [
 ] as const;
 export type EnvoyAction = (typeof envoyActions)[number];
 
+/** A point of an agreement, one line: who does or brings what. */
+const broItemSchema = z.string().trim().min(1).max(200);
+
+/** A sum an agreement is about, in whole roubles. */
+const broAmountSchema = z.int().min(1).max(10_000_000);
+
+/**
+ * What an envoy proposes: a meeting (a time, a place), or any agreement —
+ * its points (`items`, «Савелий — мясо и угли») and a sum (`amountRub`) are
+ * the second version's (docs/bro-to-bro.md, «Не только встречи»).
+ */
 export const broProposalSchema = z.object({
   summary: z.string().trim().min(1).max(300),
   start: z.iso.datetime({ offset: true }).optional(),
   end: z.iso.datetime({ offset: true }).optional(),
   place: z.string().trim().min(1).max(200).optional(),
+  items: z.array(broItemSchema).max(20).optional(),
+  amountRub: broAmountSchema.optional(),
 });
 export type BroProposal = z.infer<typeof broProposalSchema>;
 
@@ -73,6 +86,36 @@ export const broMandateSchema = z.object({
     .min(15)
     .max(24 * 60)
     .nullable(),
+  /**
+   * The second version's: what the owner named for the errand — an exact
+   * start, a venue, the points, a sum — as `bro_talk start` passed it, and
+   * which of it code found in the owner's own words (`ownerSaid`). Only
+   * what code found may go without asking; the rest is context.
+   */
+  at: z.iso.datetime({ offset: true }).nullish(),
+  place: z.string().trim().min(1).max(200).nullish(),
+  items: z.array(broItemSchema).max(20).nullish(),
+  amountRub: broAmountSchema.nullish(),
+  ownerSaid: z
+    .object({
+      time: z.boolean(),
+      place: z.boolean(),
+      amount: z.boolean(),
+      /** What the owner said they pay for: each part of their words with their word of paying («скинемся маме на подарок»). */
+      paysFor: z.array(z.string().trim().max(200)).max(10),
+      /** What the owner said someone else pays for («а купит пусть Савелий»). */
+      peerPays: z.array(z.string().trim().max(200)).max(10).optional(),
+      /** Every point of `items` is in the owner's words. */
+      items: z.boolean().optional(),
+      /**
+       * The longest the meeting may run without the owner confirming it, in
+       * minutes: the shortest of what their words name, the errand's length
+       * and, for an exact start, two hours. Absent, the owner's window alone
+       * bounds it.
+       */
+      longest: z.number().int().min(1).max(1440).optional(),
+    })
+    .nullish(),
 });
 export type BroMandate = z.infer<typeof broMandateSchema>;
 
@@ -106,5 +149,6 @@ export const broReportKinds = [
   "stalled",
   "cancelled",
   "link_removed",
+  "peer_unreachable",
 ] as const;
 export type BroReportKind = (typeof broReportKinds)[number];

@@ -58,6 +58,17 @@ const session = z
 vi.stubEnv("MODEL_PROVIDER", "routerai");
 vi.stubEnv("ROUTERAI_API_KEY", session.ROUTERAI_API_KEY);
 vi.stubEnv("BRO_TO_BRO_WORKSPACES", "*");
+/** Cases whose two owners are on the second version (docs/bro-to-bro.md, «Вторая версия»). */
+const secondVersion = ["restaurant", "dacha", "gift", "gift-idea"] as const;
+const runId = Date.now().toString(36);
+vi.stubEnv(
+  "BRO_TO_BRO_V2_WORKSPACES",
+  secondVersion
+    .flatMap((tag) =>
+      ["savely", "petya"].map((key) => `e2e-bro-${runId}-${tag}-${key}`)
+    )
+    .join(",")
+);
 // Composio is faked below: the placeholder only turns Google on.
 vi.stubEnv("COMPOSIO_API_KEY", "e2e-placeholder");
 vi.stubEnv("COMPOSIO_GOOGLE_AUTH_CONFIG_ID", "ac_e2e");
@@ -160,6 +171,7 @@ const [
   steps,
   database,
   { and, asc, eq, inArray, sql, sum },
+  ownerWords,
 ] = await Promise.all([
   import("@agent/lib/bro-to-bro/engine"),
   import("@agent/lib/bro-to-bro/report-text"),
@@ -170,11 +182,11 @@ const [
   import("@db/services/bro-to-bro/steps"),
   import("@db"),
   import("drizzle-orm"),
+  import("@agent/lib/bro-to-bro/owner-words"),
 ]);
 const { db } = database;
 
 const moscow = "Europe/Moscow";
-const runId = Date.now().toString(36);
 const hourMs = 60 * 60_000;
 const dayMs = 24 * hourMs;
 const printed: string[] = [];
@@ -364,12 +376,29 @@ async function deliver(
     if (row.kind === "question" && threadId) {
       const answer = answers[owner.key].shift();
       if (answer !== undefined) {
+        // As the second version's bro_talk answer passes it: the owner's
+        // own sums and «плачу», and a plain «да» bound to the peer's
+        // proposal the question carries.
         const answered = await threads.appendOwnerAnswer(
           owner.scope,
           threadId,
-          answer
+          answer,
+          new Date(),
+          {
+            amountsRub: ownerWords.namedSums(ownerWords.ownerText([answer])),
+            paysFor: ownerWords.paymentsSaid(ownerWords.ownerText([answer])),
+            peerPays: ownerWords.peerPaysSaid(ownerWords.ownerText([answer])),
+            ...(payload.proposalId !== undefined &&
+              /^да[.!]?$/iu.test(answer.trim()) && {
+                yesTo: payload.proposalId,
+              }),
+          }
         );
-        done = `bro_talk answer «${answer}» → ${answered.kind}`;
+        const bound =
+          "yesTo" in answered && answered.yesTo
+            ? " (это и «да» на предложение)"
+            : "";
+        done = `bro_talk answer «${answer}»${bound} → ${answered.kind}`;
       }
     }
     if (row.kind === "held" && threadId && payload.draftId) {
@@ -381,7 +410,16 @@ async function deliver(
       );
       done = `bro_talk approve_held draft ${payload.draftId} → ${approved.kind}`;
     }
-    if (row.kind === "agreed" && threadId && payload.proposalId) {
+    if (row.kind === "agreed" && payload.autoConfirmed)
+      log(
+        `\n_${owner.name} не спрашивают: код подтвердил сам (${payload.autoConfirmed})_`
+      );
+    if (
+      row.kind === "agreed" &&
+      threadId &&
+      payload.proposalId &&
+      !payload.autoConfirmed
+    ) {
       const confirmed = await threads.confirmBroThread(
         owner.scope,
         threadId,
@@ -675,6 +713,59 @@ function free(testCase: Case, key: Key, proposal: BroProposal | null) {
 
 const weekend = { from: at(saturday, "00:00"), to: at(monday, "00:00") };
 
+/**
+ * A second version's errand as bro_talk start passes it: what the owner
+ * named, and which of it code finds in their own words.
+ */
+function ownWords(said: string, mandate: BroMandate): BroMandate {
+  const text = ownerWords.ownerText([said]);
+  const { amountRub, at: start, place, window } = mandate;
+  return {
+    ...mandate,
+    ownerSaid: {
+      amount:
+        amountRub !== undefined &&
+        amountRub !== null &&
+        ownerWords.namedSums(text).includes(amountRub),
+      items:
+        mandate.items !== undefined &&
+        mandate.items !== null &&
+        ownerWords.namedItems(text, mandate.items, [
+          names.savely,
+          names.petya,
+          "брат",
+        ]),
+      paysFor: ownerWords.paymentsSaid(text),
+      peerPays: ownerWords.peerPaysSaid(text),
+      place:
+        place !== undefined &&
+        place !== null &&
+        ownerWords.namedPlace(text, place),
+      time:
+        window !== null &&
+        ownerWords.namedTime(
+          text,
+          { at: start ?? null, window },
+          moscow,
+          Date.now()
+        ),
+    },
+  };
+}
+
+/** The sums one side said to the other, its proposals' included. */
+function sumsSaid(run: Run, side: Key) {
+  const own = run.messages.filter((message) => message.from === side);
+  return [
+    ...own.flatMap((message) => ownerWords.namedAmounts(message.text)),
+    ...own.flatMap((message) =>
+      message.proposal?.amountRub === undefined
+        ? []
+        : [message.proposal.amountRub]
+    ),
+  ];
+}
+
 const cases: readonly Case[] = [
   {
     name: "dinner",
@@ -967,6 +1058,141 @@ const cases: readonly Case[] = [
       expect.soft(approved, "одобренный черновик не ушёл").toHaveLength(1);
       expect.soft(approved[0]?.text).toBe(run.held.at(-1)?.text);
       expect.soft(run.status).toBe("answered");
+    },
+  },
+  {
+    name: "restaurant",
+    title: "время и ресторан из поручения, без Google: одно «да» на всё",
+    starter: "savely",
+    withoutGoogle: true,
+    mandate: ownWords(
+      "Договорись с братом об ужине в субботу в 19 в «Пушкине»",
+      {
+        at: at(saturday, "19:00"),
+        details: null,
+        durationMinutes: 120,
+        goal: "договорись с братом об ужине в субботу в 19 в «Пушкине»",
+        place: "Пушкин",
+        window: { from: at(saturday, "19:00"), to: at(saturday, "21:00") },
+      }
+    ),
+    answers: { petya: ["да"] },
+    check(run) {
+      expect.soft(run.status).toBe("confirmed");
+      const agreed = run.messages.findLast(
+        (message) => message.action === "propose"
+      )?.proposal;
+      expect.soft(agreed?.start).toBe(at(saturday, "19:00"));
+      expect.soft(agreed?.place ?? "").toMatch(/пушкин/iu);
+      expect.soft(run.held, "фильтр задержал ресторан").toEqual([]);
+      expect
+        .soft(reportsOf(run, "savely", "question"), "Савелия спросили")
+        .toEqual([]);
+      expect
+        .soft(
+          [
+            ...reportsOf(run, "savely", "agreed"),
+            ...reportsOf(run, "petya", "agreed"),
+          ],
+          "подтверждение спрашивали отдельно"
+        )
+        .toEqual([]);
+      expect.soft(reportsOf(run, "petya", "question")).toHaveLength(1);
+      for (const key of ["savely", "petya"] as const)
+        expect
+          .soft(reportsOf(run, key, "confirmed"), `итог ${names[key]}`)
+          .toHaveLength(1);
+    },
+  },
+  {
+    name: "dacha",
+    title: "кто что берёт на дачу: договорённость списком, без календаря",
+    starter: "savely",
+    withoutGoogle: true,
+    mandate: ownWords(
+      "Договорись с братом, кто что берёт на дачу: я беру мясо и угли",
+      {
+        details: null,
+        durationMinutes: null,
+        goal: "договорись с братом, кто что берёт на дачу",
+        items: ["Савелий — мясо и угли"],
+        window: null,
+      }
+    ),
+    answers: { petya: ["Я возьму овощи, хлеб и воду"] },
+    check(run) {
+      expect.soft(run.status).toBe("confirmed");
+      const agreed = run.messages.findLast(
+        (message) => message.action === "propose"
+      )?.proposal;
+      const points = (agreed?.items ?? []).join(" ").toLowerCase();
+      expect.soft(points).toMatch(/мяс/u);
+      expect.soft(points).toMatch(/овощ/u);
+      expect
+        .soft(agreed?.start, "к делу без встречи приписано время")
+        .toBeUndefined();
+      expect.soft(run.held, "фильтр задержал список").toEqual([]);
+      for (const key of ["savely", "petya"] as const)
+        expect
+          .soft(run.calendars[key]?.state, `календарь ${names[key]}`)
+          .toBe("skipped_no_time");
+    },
+  },
+  {
+    name: "gift",
+    title:
+      "скинемся маме на подарок: сумма из поручения и ответа, кто покупает",
+    starter: "savely",
+    withoutGoogle: true,
+    mandate: ownWords(
+      "Скинемся с братом маме на подарок по 3000 — договорись, кто покупает",
+      {
+        amountRub: 3000,
+        details: null,
+        durationMinutes: null,
+        goal: "скинемся с братом маме на подарок по 3000 — договорись, кто покупает",
+        window: null,
+      }
+    ),
+    // Asked whether he buys it himself: that is his to say.
+    answers: {
+      petya: ["Да, скинусь по 3000, а купит пусть Савелий"],
+      savely: ["да"],
+    },
+    check(run) {
+      expect.soft(run.status).toBe("confirmed");
+      // A promise to pay the checker could not tie to the owner's own words
+      // waits for their yes: at most once.
+      expect
+        .soft(run.held.length, "фильтр держал больше одного раза")
+        .toBeLessThanOrEqual(1);
+      for (const key of ["savely", "petya"] as const)
+        expect
+          .soft(
+            sumsSaid(run, key).filter(
+              (amount) => amount >= 100 && amount !== 3000 && amount !== 6000
+            ),
+            `сумма не из слов владельцев у ${names[key]}`
+          )
+          .toEqual([]);
+    },
+  },
+  {
+    name: "gift-idea",
+    title: "простая просьба: что подарить сыну брата",
+    starter: "savely",
+    withoutGoogle: true,
+    mandate: {
+      details: null,
+      durationMinutes: null,
+      goal: "узнай у брата, что подарить его сыну на день рождения",
+      window: null,
+    },
+    answers: { petya: ["Он сейчас фанат Lego Technic, любой набор с машиной"] },
+    check(run) {
+      expect.soft(run.status).toBe("answered");
+      expect.soft(reportsOf(run, "savely", "answered")).toHaveLength(1);
+      expect.soft(saidBy(run, "petya")).toMatch(/lego|лего/u);
     },
   },
 ];

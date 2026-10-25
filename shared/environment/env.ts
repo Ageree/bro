@@ -213,6 +213,15 @@ export const env = createEnv({
         "BRO_TO_BRO_WORKSPACES takes workspace ids or *, not emails"
       )
       .optional(),
+    // The second version of Bro ↔ Bro (docs/bro-to-bro.md, «Вторая версия
+    // (v2)»), for the side of the workspaces listed: workspace ids or *.
+    // Unset, every side keeps the first; nothing without BRO_TO_BRO_WORKSPACES.
+    BRO_TO_BRO_V2_WORKSPACES: workspaceListSchema
+      .refine(
+        (entries) => entries.every((entry) => !entry.includes("@")),
+        "BRO_TO_BRO_V2_WORKSPACES takes workspace ids or *, not emails"
+      )
+      .optional(),
     // The model of the envoys and of their outgoing gate; unset,
     // `openai/gpt-6-luna` (agent/lib/bro-to-bro/model.ts).
     BRO_TO_BRO_MODEL: trimmedValue.optional(),

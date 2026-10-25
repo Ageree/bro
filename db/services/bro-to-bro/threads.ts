@@ -286,12 +286,34 @@ export async function readBroThreadForSide(
   };
 }
 
-/** The owner's threads, the latest change first; open, closed, or both. */
+/**
+ * The owner's threads, the latest change first; open, closed, or both; with
+ * one person only, by the owner's link to them (`linkId`).
+ */
 export async function listBroThreads(
   scope: AccessScope,
-  input: { readonly open?: boolean; readonly limit: number }
+  input: {
+    readonly open?: boolean;
+    readonly limit: number;
+    readonly linkId?: string;
+  }
 ) {
   const open = [...openBroThreadStatuses];
+  const [link] =
+    input.linkId === undefined
+      ? []
+      : await db
+          .select({ peerWorkspaceId: broLinks.peerWorkspaceId })
+          .from(broLinks)
+          .where(
+            and(
+              eq(broLinks.id, input.linkId),
+              eq(broLinks.workspaceId, scope.workspaceId),
+              eq(broLinks.userId, scope.userId)
+            )
+          )
+          .limit(1);
+  if (input.linkId !== undefined && !link) return [];
   const rows = await db
     .select({ thread: broThreads, own: broThreadSides })
     .from(broThreadSides)
@@ -304,7 +326,8 @@ export async function listBroThreads(
           ? undefined
           : input.open
             ? inArray(broThreads.status, open)
-            : notInArray(broThreads.status, open)
+            : notInArray(broThreads.status, open),
+        link ? betweenPair(scope.workspaceId, link.peerWorkspaceId) : undefined
       )
     )
     .orderBy(desc(broThreads.updatedAt))
@@ -362,28 +385,66 @@ export async function listBroThreads(
  * correction instead of approving a held draft (which is dropped). The
  * envoy reads it on its next turn, at once if the turn is this side's. A
  * thread that is no longer negotiating takes no answers.
+ *
+ * `said` is the second version's, what code read of the owner's own words
+ * (`bro_talk answer`): the sums in them and what they say the owner
+ * pays for, which the gate lets go, and the proposal their plain yes was to —
+ * kept only while it is the peer's latest, and then, once the envoy accepts
+ * exactly it, their side is confirmed (`recordEnvoyStep`).
  */
 export async function appendOwnerAnswer(
   scope: AccessScope,
   threadId: string,
   text: string,
-  now = new Date()
+  now = new Date(),
+  said: {
+    readonly amountsRub?: readonly number[];
+    readonly paysFor?: readonly string[];
+    readonly peerPays?: readonly string[];
+    readonly yesTo?: string;
+  } = {}
 ) {
   const answer = {
     id: randomUUID(),
     at: now.toISOString(),
     text: ownerAnswerSchema.parse(text),
+    ...(said.amountsRub &&
+      said.amountsRub.length > 0 && { amountsRub: said.amountsRub }),
+    ...(said.paysFor && said.paysFor.length > 0 && { paysFor: said.paysFor }),
+    ...(said.peerPays &&
+      said.peerPays.length > 0 && { peerPays: said.peerPays }),
   };
   return db.transaction(async (transaction) => {
     const own = await lockOwnBroThread(transaction, scope, threadId);
     if (!own) return { kind: "none" } as const;
     if (own.thread.status !== "negotiating")
       return refused(own.thread.status === "agreed" ? "agreed" : "closed");
+    const [latest] =
+      said.yesTo === undefined
+        ? []
+        : await transaction
+            .select({ id: broMessages.id, side: broMessages.side })
+            .from(broMessages)
+            .where(
+              and(
+                eq(broMessages.threadId, own.thread.id),
+                eq(broMessages.action, "propose")
+              )
+            )
+            .orderBy(desc(broMessages.seq))
+            .limit(1);
+    const yesTo =
+      latest && latest.id === said.yesTo && latest.side !== own.side
+        ? latest.id
+        : undefined;
     const sides = await lockBroThreadSides(transaction, own.thread.id);
     await transaction
       .update(broThreadSides)
       .set({
-        ownerAnswers: [...sides[own.side].ownerAnswers, answer],
+        ownerAnswers: [
+          ...sides[own.side].ownerAnswers,
+          yesTo === undefined ? answer : { ...answer, yesTo },
+        ],
         waitingOwner: false,
         pendingQuestion: null,
         heldMessage: null,
@@ -402,7 +463,11 @@ export async function appendOwnerAnswer(
         nextAt: own.thread.nextSide === own.side ? now : own.thread.nextAt,
       })
       .where(eq(broThreads.id, own.thread.id));
-    return { kind: "answered", answerId: answer.id } as const;
+    return {
+      kind: "answered",
+      answerId: answer.id,
+      yesTo: yesTo ?? null,
+    } as const;
   });
 }
 

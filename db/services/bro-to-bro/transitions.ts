@@ -12,11 +12,12 @@ import {
   broReports,
   broThreadSides,
   broThreads,
+  db,
   type BroReportPayload,
-  type db,
 } from "@db";
 import { readBroPeople } from "./people";
 import { enqueueBroReport } from "./reports";
+import { broToBroV2 } from "./version";
 
 type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -179,4 +180,39 @@ export async function broThreadReporter(
       dedupeKey: `bro:thread:${thread.id}:${side}:${event}`,
     });
   };
+}
+
+/**
+ * The second version's: the owner of `workspaceId` has no chat with Bro, so
+ * what waits for them in a thread (a question, a held draft, an agreement
+ * to confirm) does not reach them yet. The other side, who waits for them,
+ * hears it once a thread — when that side is the second version's too —
+ * rather than silence: the peer is not reachable yet, the thing waits for
+ * them.
+ */
+export async function reportPeerUnreachable(
+  threadId: string,
+  workspaceId: string,
+  waiting: NonNullable<BroReportPayload["waiting"]>
+) {
+  await db.transaction(async (transaction) => {
+    const [thread] = await transaction
+      .select()
+      .from(broThreads)
+      .where(eq(broThreads.id, threadId))
+      .limit(1)
+      .for("update");
+    if (thread?.closedAt !== null) return;
+    const sides = await lockBroThreadSides(transaction, thread.id);
+    const side =
+      sides.initiator.workspaceId === workspaceId ? "initiator" : "responder";
+    const other = otherBroSide(side);
+    if (
+      sides[side].workspaceId !== workspaceId ||
+      !broToBroV2(sides[other].workspaceId)
+    )
+      return;
+    const report = await broThreadReporter(transaction, thread, sides);
+    await report(other, "peer_unreachable", { waiting });
+  });
 }

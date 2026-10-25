@@ -1,0 +1,2 @@
+ALTER TABLE "bro_reports" DROP CONSTRAINT "bro_reports_kind_check";--> statement-breakpoint
+ALTER TABLE "bro_reports" ADD CONSTRAINT "bro_reports_kind_check" CHECK ("bro_reports"."kind" IN ('invite_accepted', 'link_ready', 'question', 'held', 'agreed', 'confirmed', 'declined', 'answered', 'alert', 'expired', 'stalled', 'cancelled', 'link_removed', 'peer_unreachable'));

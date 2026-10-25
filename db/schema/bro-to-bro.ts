@@ -67,6 +67,17 @@ export interface BroOwnerAnswer {
   readonly id: string;
   readonly at: string;
   readonly text: string;
+  /**
+   * The second version's: the sums of the answer that are in the owner's
+   * own words of that turn, and what those words say they and the other
+   * person pay for — what the gate lets go of money; and the peer's proposal
+   * the owner said a plain yes to with it, which then confirms their side
+   * once agreed.
+   */
+  readonly amountsRub?: readonly number[];
+  readonly paysFor?: readonly string[];
+  readonly peerPays?: readonly string[];
+  readonly yesTo?: string;
 }
 
 /** One message an envoy says to the peer: the package the gate checks. */
@@ -115,8 +126,15 @@ export interface BroReportPayload {
   readonly draftId?: string;
   /** held: what the held package does besides its words. */
   readonly action?: BroEnvoyPackage["action"];
-  /** agreed, confirmed */
+  /** agreed, confirmed; question: the peer's open proposal (v2). */
   readonly proposalId?: string;
+  /**
+   * agreed (v2): code confirmed this owner's side — the agreement is what
+   * their errand set, or what they said a plain yes to.
+   */
+  readonly autoConfirmed?: "errand" | "yes";
+  /** peer_unreachable: what waits for the peer, who has no chat with Bro. */
+  readonly waiting?: "agreed" | "held" | "question";
   /**
    * agreed, confirmed; held: the proposal the held package makes; question:
    * the peer's open proposal, if the latest one is theirs.

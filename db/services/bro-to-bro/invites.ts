@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { and, count, desc, eq, gt, sql } from "drizzle-orm";
+import { and, count, desc, eq, gt, isNull, sql } from "drizzle-orm";
 import type { BroInviteChannel } from "@shared/bro-to-bro/contract";
 import type { AccessScope } from "@shared/identity/access-scope";
 import { broInvites, broLinks, db } from "@db";
@@ -98,6 +98,39 @@ export async function openBroInvite(
     inviterName: people.get(opened.invite.inviterWorkspaceId)?.name ?? null,
     expiresAt: opened.invite.expiresAt,
   } as const;
+}
+
+/**
+ * The invite this account opened in the last 24 hours and may still accept
+ * — the one `acceptOpenedBroInvite` takes — and who sends it, for the
+ * person's Bro to ask «Принять?» naming them; null when there is none.
+ */
+export async function readOpenedBroInvite(
+  scope: AccessScope,
+  now = new Date()
+) {
+  const [invite] = await db
+    .select({
+      expiresAt: broInvites.expiresAt,
+      inviterWorkspaceId: broInvites.inviterWorkspaceId,
+    })
+    .from(broInvites)
+    .where(
+      and(
+        eq(broInvites.openedByWorkspaceId, scope.workspaceId),
+        gt(broInvites.openedAt, new Date(now.getTime() - openedInviteMs)),
+        gt(broInvites.expiresAt, now),
+        isNull(broInvites.redeemedAt)
+      )
+    )
+    .orderBy(desc(broInvites.openedAt))
+    .limit(1);
+  if (!invite) return null;
+  const people = await readBroPeople(db, [invite.inviterWorkspaceId]);
+  return {
+    expiresAt: invite.expiresAt,
+    inviterName: people.get(invite.inviterWorkspaceId)?.name ?? null,
+  };
 }
 
 /**

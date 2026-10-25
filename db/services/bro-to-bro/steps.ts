@@ -6,6 +6,7 @@ import {
   desc,
   eq,
   gt,
+  inArray,
   isNotNull,
   isNull,
   lte,
@@ -19,6 +20,7 @@ import {
   type BroSide,
   type BroThreadStatus,
 } from "@shared/bro-to-bro/contract";
+import { ownerSetCovers } from "@shared/bro-to-bro/owner-set";
 import {
   broMessages,
   broReports,
@@ -27,6 +29,7 @@ import {
   db,
   type BroEnvoyPackage,
 } from "@db";
+import { broToBroV2 } from "./version";
 import { readLivePairLinks } from "./pairs";
 import {
   broThreadReporter,
@@ -348,6 +351,46 @@ export async function recordEnvoyStep(
             : envoyMessages >= envoyMessageLimit
               ? "stalled"
               : "negotiating";
+    // The second version's: a side whose owner already said what this
+    // agreement is — the initiator's errand set exactly it, or the owner of
+    // the side that accepted said, as their latest word, a plain yes to
+    // exactly this proposal — is confirmed by code, never by a flag of the
+    // model's.
+    const agreedProposal =
+      status === "agreed" ? (latestProposal?.proposal ?? undefined) : undefined;
+    const selfConfirmed = broSides.flatMap(
+      (side): { readonly side: BroSide; readonly by: "errand" | "yes" }[] => {
+        const row = sides[side];
+        if (!agreedProposal || !latestProposal || !broToBroV2(row.workspaceId))
+          return [];
+        const { start } = agreedProposal;
+        if (
+          (start !== undefined && Date.parse(start) <= now.getTime()) ||
+          thread.deadlineAt <= now
+        )
+          return [];
+        // The errand stands for the owner's yes only for the initiator's own
+        // proposal — its summary and place passed this side's gate — and
+        // only while they said nothing more in the thread: any answer of
+        // theirs may have changed it.
+        if (
+          side === "initiator" &&
+          latestProposal.side === "initiator" &&
+          row.ownerAnswers.length === 0 &&
+          ownerSetCovers(row.mandate, agreedProposal, now)
+        )
+          return [{ side, by: "errand" }];
+        // A yes stands only as the owner's latest word — a later answer
+        // takes it back — and confirms by itself no points and no sum.
+        return side === step.side &&
+          (agreedProposal.items?.length ?? 0) === 0 &&
+          agreedProposal.amountRub === undefined &&
+          row.ownerAnswers.at(-1)?.yesTo === latestProposal.id
+          ? [{ side, by: "yes" }]
+          : [];
+      }
+    );
+    const confirmedByBoth = selfConfirmed.length === broSides.length;
     const waits =
       status === "negotiating" &&
       (outcome.kind === "asked_owner" || outcome.kind === "held");
@@ -433,6 +476,27 @@ export async function recordEnvoyStep(
       .where(eq(broThreads.id, thread.id));
     if (status !== "negotiating" && status !== "agreed")
       await closeBroThread(transaction, thread.id, status, now);
+    if (latestProposal && selfConfirmed.length > 0) {
+      await transaction
+        .update(broThreadSides)
+        .set({ confirmedProposalId: latestProposal.id, confirmedAt: now })
+        .where(
+          and(
+            eq(broThreadSides.threadId, thread.id),
+            inArray(
+              broThreadSides.side,
+              selfConfirmed.map((each) => each.side)
+            )
+          )
+        );
+      if (confirmedByBoth) {
+        await closeBroThread(transaction, thread.id, "confirmed", now);
+        await transaction
+          .update(broThreadSides)
+          .set({ calendarState: "pending", calendarNextAt: now })
+          .where(eq(broThreadSides.threadId, thread.id));
+      }
+    }
 
     const alerts = alerted?.value ?? 0;
     if (fresh.length > 0 && alerts < alertLimit)
@@ -456,6 +520,13 @@ export async function recordEnvoyStep(
             latestProposal && latestProposal.side !== step.side
               ? (latestProposal.proposal ?? undefined)
               : undefined,
+          // The second version's: its id, for the owner's plain yes to it.
+          proposalId:
+            latestProposal &&
+            latestProposal.side !== step.side &&
+            broToBroV2(own.workspaceId)
+              ? latestProposal.id
+              : undefined,
         },
         `question:${question.id}`
       );
@@ -472,7 +543,7 @@ export async function recordEnvoyStep(
         },
         `held:${draft.id}`
       );
-    if (status === "agreed" && latestProposal)
+    if (status === "agreed" && latestProposal && !confirmedByBoth)
       await Promise.all(
         broSides.map((side) =>
           report(
@@ -484,6 +555,8 @@ export async function recordEnvoyStep(
               // The words the peer's yes came with: what the owner who
               // proposed has not seen yet (a place named with the yes).
               text: side === step.side ? undefined : sent?.message.body.trim(),
+              autoConfirmed: selfConfirmed.find((each) => each.side === side)
+                ?.by,
             },
             `agreed:${latestProposal.id}`
           )
@@ -516,7 +589,7 @@ export async function recordEnvoyStep(
     }
     return {
       kind: "recorded",
-      status,
+      status: confirmedByBoth ? ("confirmed" as const) : status,
       messageId: inserted?.id ?? null,
     } as const;
   });

@@ -2,7 +2,9 @@ import { type EnvoyBrief, meetingMinutes } from "@agent/lib/bro-to-bro/brief";
 import { writeBroCalendars } from "@agent/lib/bro-to-bro/calendar";
 import { envoyPackage, planEnvoyStep } from "@agent/lib/bro-to-bro/envoy";
 import { type GateVerdict, screenOutgoing } from "@agent/lib/bro-to-bro/gate";
+import { namedAmounts } from "@agent/lib/bro-to-bro/owner-words";
 import { readSlotCandidates } from "@agent/lib/bro-to-bro/slots";
+import { broToBroV2 } from "@db/services/bro-to-bro/version";
 import {
   expireBroThreads,
   purgeBroThreads,
@@ -18,6 +20,7 @@ import {
 } from "@db/services/bro-to-bro/steps";
 import { readBroThreadForSide } from "@db/services/bro-to-bro/threads";
 import { readWorkspaceTimeZone } from "@db/services/user-profile";
+import { ownerSetOf, ownerTime, samePlace } from "@shared/bro-to-bro/owner-set";
 import { db } from "@db";
 import { env } from "@shared/environment";
 
@@ -78,7 +81,19 @@ const heldWords = new Map([
  * it against; the owner must not hear the one for the other (a report of
  * 23.10 told Savely 19:30 «was not in Petya's free windows»).
  */
-function heldReason(reasons: HeldReasons, slots: EnvoyBrief["slots"]) {
+/** The second version's categories of the checker, in the owner's words. */
+const heldWordsV2 = new Map([
+  ...heldWords,
+  ["payment", "обещание заплатить"],
+  ["venue", "место встречи"],
+]);
+
+function heldReason(
+  reasons: HeldReasons,
+  slots: EnvoyBrief["slots"],
+  v2: boolean
+) {
+  const named = v2 ? heldWordsV2 : heldWords;
   const words = reasons.map((reason) => {
     if (reason.by === "unchecked") return "проверка не ответила";
     if (reason.by === "code" && reason.finding === "time")
@@ -91,7 +106,7 @@ function heldReason(reasons: HeldReasons, slots: EnvoyBrief["slots"]) {
       reason.by === "code"
         ? reason.finding
         : (reason.text.split(":", 1)[0] ?? "other");
-    return heldWords.get(category) ?? heldWords.get("other") ?? category;
+    return named.get(category) ?? named.get("other") ?? category;
   });
   return [...new Set(words)].join(", ");
 }
@@ -188,6 +203,70 @@ export async function buildEnvoyBrief(
     horizon: window.to,
     messagesLeft: Math.max(0, envoyMessageLimit - view.envoyMessages),
     now: now.toISOString(),
+    ...(broToBroV2(workspaceId) && {
+      v2: { ownerSet: mandate ? ownerSetOf(mandate) : null },
+    }),
+  };
+}
+
+/**
+ * What the second version's gate lets this side say of its owner without
+ * asking (`GateAllowance.v2`), all from code: the venue the owner named
+ * and code found in their words, and the places of the peer's own
+ * proposals; the owner's own time; the sums of the owner's own words, of
+ * their answers and of what they approved; whether their words said they
+ * pay. Undefined for a side of the first version.
+ */
+function gateAllowanceV2(
+  view: BroThreadView,
+  brief: EnvoyBrief,
+  packet: ReturnType<typeof envoyPackage>
+) {
+  if (!brief.v2) return undefined;
+  // The peer's own places only as the place of the meeting this packet
+  // settles: the one it accepts, or the peer's place it proposes again —
+  // never as a word anywhere in its text («до обеда в «Медси»»).
+  const peerPlaces = view.messages.flatMap((message) =>
+    message.from === "peer" && message.proposal?.place
+      ? [{ id: message.id, place: message.proposal.place }]
+      : []
+  );
+  const accepted =
+    packet?.action === "accept"
+      ? peerPlaces.find((each) => each.id === packet.acceptsMessageId)?.place
+      : undefined;
+  const proposed = packet?.proposal?.place;
+  const repeated =
+    proposed !== undefined &&
+    peerPlaces.some((each) => samePlace(each.place, proposed))
+      ? proposed
+      : undefined;
+  const ownerSet = brief.v2.ownerSet;
+  const mandate = view.side === "initiator" ? view.own.mandate : null;
+  const approved = view.messages.filter((message) => message.approvedByOwner);
+  return {
+    amountsRub: [
+      ...(ownerSet?.amountRub ? [ownerSet.amountRub] : []),
+      ...view.own.ownerAnswers.flatMap((answer) => answer.amountsRub ?? []),
+      ...approved.flatMap((message) => namedAmounts(message.body)),
+      ...approved.flatMap((message) =>
+        message.proposal?.amountRub ? [message.proposal.amountRub] : []
+      ),
+    ],
+    ownerTime: ownerTime(mandate),
+    paysFor: [
+      ...(mandate?.ownerSaid?.paysFor ?? []),
+      ...view.own.ownerAnswers.flatMap((answer) => answer.paysFor ?? []),
+    ],
+    peerPays: [
+      ...(mandate?.ownerSaid?.peerPays ?? []),
+      ...view.own.ownerAnswers.flatMap((answer) => answer.peerPays ?? []),
+    ],
+    venues: [
+      ...(ownerSet?.place ? [ownerSet.place] : []),
+      ...(accepted === undefined ? [] : [accepted]),
+      ...(repeated === undefined ? [] : [repeated]),
+    ],
   };
 }
 
@@ -209,6 +288,8 @@ async function decideStep(
   const call = { signal, workspaceId };
   const brief = await buildEnvoyBrief(view, workspaceId, signal);
   const { decision } = await planEnvoyStep(brief, call);
+  const packet = envoyPackage(decision);
+  const v2 = gateAllowanceV2(view, brief, packet);
   const allowed = {
     approvedTexts: view.messages
       .filter((message) => message.approvedByOwner)
@@ -217,6 +298,7 @@ async function decideStep(
           message.body,
           message.proposal?.summary,
           message.proposal?.place,
+          ...(message.proposal?.items ?? []),
         ].filter((text) => text !== undefined)
       ),
     goal: brief.goal,
@@ -225,8 +307,8 @@ async function decideStep(
     self: brief.self,
     shareNotes: brief.shareNotes,
     slots: brief.slots,
+    ...(v2 && { v2Allowed: v2 }),
   };
-  const packet = envoyPackage(decision);
   if (packet) {
     const verdict = await screenOutgoing({ allowed, packet }, call);
     return {
@@ -237,7 +319,11 @@ async function decideStep(
           : {
               draft: packet,
               kind: "held",
-              reason: heldReason(verdict.reasons, brief.slots),
+              reason: heldReason(
+                verdict.reasons,
+                brief.slots,
+                brief.v2 !== undefined
+              ),
             },
     };
   }

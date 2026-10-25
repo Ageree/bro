@@ -37,12 +37,14 @@ const sunday = {
 afterEach(async () => {
   vi.restoreAllMocks();
   vi.stubEnv("BRO_TO_BRO_WORKSPACES", "");
+  vi.stubEnv("BRO_TO_BRO_V2_WORKSPACES", undefined);
   await Promise.all(databases.splice(0).map((database) => database.close()));
 });
 
-async function network(pilot = "*") {
+async function network(pilot = "*", secondVersion?: string) {
   vi.resetModules();
   vi.stubEnv("BRO_TO_BRO_WORKSPACES", pilot);
+  vi.stubEnv("BRO_TO_BRO_V2_WORKSPACES", secondVersion);
   const client = new PGlite();
   databases.push(client);
   await applyMigrations(client);
@@ -62,8 +64,12 @@ async function network(pilot = "*") {
       VALUES ('telegram', '1001', '1001', 'petya', 'petya', 'workspace:petya');
   `);
   const { broToBroStanding } = await import("@db/services/bro-to-bro/enabled");
-  const { acceptOpenedBroInvite, createBroInvite, openBroInvite } =
-    await import("@db/services/bro-to-bro/invites");
+  const {
+    acceptOpenedBroInvite,
+    createBroInvite,
+    openBroInvite,
+    readOpenedBroInvite,
+  } = await import("@db/services/bro-to-bro/invites");
   const {
     confirmBroLink,
     findBroLink,
@@ -92,8 +98,10 @@ async function network(pilot = "*") {
   } = await import("@db/services/bro-to-bro/steps");
   const { expireBroThreads, purgeBroThreads } =
     await import("@db/services/bro-to-bro/expiry");
-  const { claimBroReports, finishBroReport } =
+  const { claimBroReports, finishBroReport, parkBroReport } =
     await import("@db/services/bro-to-bro/reports");
+  const { reportPeerUnreachable } =
+    await import("@db/services/bro-to-bro/transitions");
   return {
     client,
     ensureScope: scope.ensureScope,
@@ -101,6 +109,7 @@ async function network(pilot = "*") {
     acceptOpenedBroInvite,
     createBroInvite,
     openBroInvite,
+    readOpenedBroInvite,
     confirmBroLink,
     findBroLink,
     listBroLinks,
@@ -125,6 +134,8 @@ async function network(pilot = "*") {
     purgeBroThreads,
     claimBroReports,
     finishBroReport,
+    parkBroReport,
+    reportPeerUnreachable,
   };
 }
 
@@ -1412,6 +1423,270 @@ describe("bro reports", () => {
       "dropped",
     ]);
     expect(await bro.claimBroReports(lease, at)).toEqual([]);
+  });
+});
+
+/**
+ * The second version's errand: dinner on Saturday at 19:00 at Pushkin, the
+ * time and the venue found in the owner's own words.
+ */
+const errand = {
+  goal: "Договорись с Петей об ужине в субботу в 19 в Пушкине",
+  details: null,
+  durationMinutes: null,
+  at: "2037-10-24T19:00:00+03:00",
+  window: {
+    from: "2037-10-24T19:00:00+03:00",
+    to: "2037-10-24T21:00:00+03:00",
+  },
+  place: "Пушкин",
+  items: null,
+  amountRub: null,
+  ownerSaid: { time: true, place: true, amount: false, paysFor: [] },
+};
+const pushkin = {
+  summary: "Ужин",
+  start: "2037-10-24T19:00:00+03:00",
+  end: "2037-10-24T21:00:00+03:00",
+  place: "ресторан «Пушкин»",
+};
+
+/** Savely's errand to Petya, proposed as it was set: the thread, its lease and the proposal's id. */
+async function proposedAsSet(bro: Network) {
+  const { inviterLinkId } = await link(bro, savely, petya, "брат");
+  const started = await bro.startBroThread(savely, {
+    linkId: inviterLinkId,
+    mandate: errand,
+    reportTarget: null,
+  });
+  if (started.kind !== "started") throw new Error(started.reason);
+  const [lease] = await claim(bro);
+  if (!lease) throw new Error("The thread is due.");
+  const proposed = await step(bro, started.threadId, savely, lease.leaseToken, {
+    kind: "sent",
+    message: {
+      action: "propose",
+      body: "Ужин в субботу в 19:00 в «Пушкине»?",
+      proposal: pushkin,
+    },
+  });
+  if (proposed.kind !== "recorded" || proposed.messageId === null)
+    throw new Error("The proposal goes out.");
+  return {
+    leaseToken: lease.leaseToken,
+    proposalId: proposed.messageId,
+    threadId: started.threadId,
+  };
+}
+
+async function confirmedSides(bro: Network, threadId: string) {
+  const rows = await bro.client.query<{
+    side: string;
+    confirmed_proposal_id: string | null;
+    calendar_state: string | null;
+  }>(
+    "SELECT side, confirmed_proposal_id, calendar_state FROM bro_thread_sides WHERE thread_id = $1 ORDER BY side",
+    [threadId]
+  );
+  return rows.rows;
+}
+
+describe("the second version", () => {
+  it("confirms the initiator's side by itself when the agreement is what their errand set", async () => {
+    const bro = await network("*", "*");
+    const { leaseToken, proposalId, threadId } = await proposedAsSet(bro);
+    expect(
+      await step(bro, threadId, petya, leaseToken, accept(proposalId))
+    ).toMatchObject({ kind: "recorded", status: "agreed" });
+
+    expect(await confirmedSides(bro, threadId)).toEqual([
+      {
+        side: "initiator",
+        confirmed_proposal_id: proposalId,
+        calendar_state: null,
+      },
+      { side: "responder", confirmed_proposal_id: null, calendar_state: null },
+    ]);
+    expect(await reportOf(bro, savely, "agreed")).toMatchObject({
+      autoConfirmed: "errand",
+      proposalId,
+    });
+    expect(await reportOf(bro, petya, "agreed")).not.toHaveProperty(
+      "autoConfirmed"
+    );
+    expect(await bro.confirmBroThread(petya, threadId, proposalId)).toEqual({
+      kind: "confirmed",
+      both: true,
+    });
+  });
+
+  it("confirms nobody by itself while the side is the first version's", async () => {
+    const bro = await network("*");
+    const { leaseToken, proposalId, threadId } = await proposedAsSet(bro);
+    await step(bro, threadId, petya, leaseToken, accept(proposalId));
+
+    expect(
+      (await confirmedSides(bro, threadId)).map(
+        (side) => side.confirmed_proposal_id
+      )
+    ).toEqual([null, null]);
+    expect(await reportOf(bro, savely, "agreed")).not.toHaveProperty(
+      "autoConfirmed"
+    );
+  });
+
+  it("takes an owner's plain yes to the peer's latest proposal as their confirmation once their envoy accepts it", async () => {
+    const bro = await network("*", "*");
+    const { leaseToken, proposalId, threadId } = await proposedAsSet(bro);
+    await step(bro, threadId, petya, leaseToken, {
+      kind: "asked_owner",
+      message: "Уточню и вернусь",
+      question: "Савелий зовёт на ужин в субботу в 19:00 в «Пушкине». Идёт?",
+    });
+    expect(await reportOf(bro, petya, "question")).toMatchObject({
+      proposalId,
+    });
+    // A yes to a proposal that is not the peer's latest binds nothing.
+    expect(
+      await bro.appendOwnerAnswer(petya, threadId, "да", new Date(), {
+        yesTo: randomUUID(),
+      })
+    ).toMatchObject({ kind: "answered", yesTo: null });
+    expect(
+      await bro.appendOwnerAnswer(petya, threadId, "да", new Date(), {
+        yesTo: proposalId,
+      })
+    ).toMatchObject({ kind: "answered", yesTo: proposalId });
+    const [again] = await claim(bro);
+    if (!again) throw new Error("Petya's envoy moves again.");
+    expect(
+      await step(bro, threadId, petya, again.leaseToken, accept(proposalId))
+    ).toMatchObject({ kind: "recorded", status: "confirmed" });
+
+    expect(await confirmedSides(bro, threadId)).toEqual([
+      {
+        side: "initiator",
+        confirmed_proposal_id: proposalId,
+        calendar_state: "pending",
+      },
+      {
+        side: "responder",
+        confirmed_proposal_id: proposalId,
+        calendar_state: "pending",
+      },
+    ]);
+    expect(await statusOf(bro, threadId)).toBe("confirmed");
+    expect(
+      await Promise.all(
+        [savely, petya].map((owner) => reportOf(bro, owner, "agreed"))
+      )
+    ).toEqual([undefined, undefined]);
+  });
+
+  it("takes a yes back on the owner's later answer, and the errand's on any answer of its owner", async () => {
+    const bro = await network("*", "*");
+    const { leaseToken, proposalId, threadId } = await proposedAsSet(bro);
+    await step(bro, threadId, petya, leaseToken, {
+      kind: "asked_owner",
+      message: "Уточню и вернусь",
+      question: "Идёт?",
+    });
+    await bro.appendOwnerAnswer(petya, threadId, "да", new Date(), {
+      yesTo: proposalId,
+    });
+    await bro.appendOwnerAnswer(
+      petya,
+      threadId,
+      "Нет, передумал, давай в воскресенье"
+    );
+    await bro.appendOwnerAnswer(savely, threadId, "Можно и в воскресенье");
+    const [again] = await claim(bro);
+    if (!again) throw new Error("Petya's envoy moves again.");
+    expect(
+      await step(bro, threadId, petya, again.leaseToken, accept(proposalId))
+    ).toMatchObject({ kind: "recorded", status: "agreed" });
+    expect(
+      (await confirmedSides(bro, threadId)).map(
+        (side) => side.confirmed_proposal_id
+      )
+    ).toEqual([null, null]);
+  });
+
+  it("drops, rather than keeps, what waited for an owner of a thread that closed meanwhile", async () => {
+    const bro = await network("*", "*");
+    const { leaseToken, threadId } = await proposedAsSet(bro);
+    await step(bro, threadId, petya, leaseToken, {
+      kind: "asked_owner",
+      message: "Уточню и вернусь",
+      question: "Идёт?",
+    });
+    const lease = { limit: 20, leaseMs: 60_000 };
+    const question = (await bro.claimBroReports(lease)).find(
+      (report) => report.kind === "question"
+    );
+    if (!question) throw new Error("The question is due.");
+    await bro.cancelBroThread(savely, threadId);
+    expect(await bro.parkBroReport(question.id, question.leaseToken)).toBe(
+      "dropped"
+    );
+  });
+
+  it("keeps a report for an owner with no chat for a week, and tells the side that waits once", async () => {
+    const bro = await network("*", "*");
+    const { threadId } = await proposedAsSet(bro);
+    const now = new Date();
+    const lease = { limit: 10, leaseMs: 60_000 };
+    const [report] = await bro.claimBroReports(lease, now);
+    if (!report) throw new Error("A report is due.");
+    expect(await bro.parkBroReport(report.id, report.leaseToken, now)).toBe(
+      "pending"
+    );
+    expect(await bro.claimBroReports(lease, now)).toEqual(
+      expect.not.arrayContaining([expect.objectContaining({ id: report.id })])
+    );
+    const later = new Date(now.getTime() + 16 * 60_000);
+    const back = (await bro.claimBroReports(lease, later)).find(
+      (each) => each.id === report.id
+    );
+    expect(back).toMatchObject({ attempts: report.attempts });
+    if (!back) throw new Error("The report comes back.");
+    expect(
+      await bro.parkBroReport(
+        back.id,
+        back.leaseToken,
+        new Date(now.getTime() + 8 * day)
+      )
+    ).toBe("dropped");
+
+    await bro.reportPeerUnreachable(threadId, petya.workspaceId, "question");
+    await bro.reportPeerUnreachable(threadId, petya.workspaceId, "question");
+    expect(
+      (await reportsOf(bro, savely))
+        .filter((row) => row.kind === "peer_unreachable")
+        .map(({ payload }) => [payload.peerName, payload.waiting])
+    ).toEqual([["Пётр", "question"]]);
+  });
+
+  it("names who invites an account that opened an invite, and lists the errands with one person", async () => {
+    const bro = await network("*", "*");
+    await bro.openBroInvite(await invite(bro, savely, "брат"), petya);
+    expect(await bro.readOpenedBroInvite(petya)).toMatchObject({
+      inviterName: "Савелий",
+    });
+    await bro.acceptOpenedBroInvite(petya, "web");
+    expect(await bro.readOpenedBroInvite(petya)).toBeNull();
+
+    const [withPetya] = await bro.listBroLinks(savely);
+    if (!withPetya) throw new Error("Savely has a link with Petya.");
+    await bro.confirmBroLink(savely, withPetya.id, "cabinet");
+    const { inviterLinkId } = await link(bro, savely, masha);
+    const toPetya = await start(bro, savely, withPetya.id);
+    await start(bro, savely, inviterLinkId);
+    expect(
+      (
+        await bro.listBroThreads(savely, { limit: 10, linkId: withPetya.id })
+      ).map((thread) => thread.id)
+    ).toEqual([toPetya]);
   });
 });
 
