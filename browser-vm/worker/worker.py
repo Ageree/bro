@@ -92,7 +92,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-10-25.6"
+VERSION = "2026-10-25.7"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -2310,12 +2310,13 @@ CODE_TEXT_CHARS = 12_000
 CODE_OUTPUT_CHARS = 16_000
 CODE_CALL_S = 45  # one API call: a page load, a click and what it starts
 CODE_CARDS = 80  # the cards one cards() call returns, the page's first ones
-CODE_CARDS_WAIT_S = 5  # a list that is still drawing: how long cards() waits for its first three cards
+CODE_CARDS_WAIT_S = 8  # a list that is still drawing: how long cards() looks for it to settle
 CODE_CARDS_SCROLL_S = 10  # how long cards() scrolls down for cards a page loads as it is scrolled
 CODE_CARDS_CHARS = 60_000  # cards() goes to the model's code, not its context: printing is cut apart
 CODE_VISIT_PAGES = 8  # the pages one visit() reads, CODE_VISIT_AT_ONCE at a time, each in a tab of its own
 CODE_VISIT_AT_ONCE = 3  # a page of a heavy site holds ~200 MB of a 3 GB sandbox while it is open
-CODE_VISIT_PAGE_S = 25  # one page of a visit: its load and the expression
+CODE_VISIT_PAGE_S = 15  # one page of a visit: its load and the expression
+CODE_VISIT_LOAD_S = 8  # how long a visit waits for a page's document before it reads what has come
 CODE_BLOCK_S = 180  # one block of the model's code; past it the sandbox is killed
 CODE_LLM_S = 120
 CODE_SECRET = re.compile(r"\x00secret:([a-z0-9_]{1,40})\x00")
@@ -2335,6 +2336,7 @@ CODE_WALL_SIGNS = ("проверяем браузер", "почти готово
                    "checking your browser", "just a moment", "verify you are human", "ddos-guard",
                    "доступ ограничен", "access denied")
 CODE_WALL_TEXT = 1_500  # past this much text the page is the site, whatever it also says
+CODE_WALL_READ_S = 2  # one look at the page for the check; a page that does not answer in it is not judged
 CODE_WALL_CALLS = 2  # calls in a row that ended on the check before the next one must be the report
 CODE_WALL = ("The page is still an anti-bot check, not the site: that is the wall the errand speaks of. Call "
              "`done` now and finish as the errand says to for an anti-bot wall or a captcha; Bro retries it from "
@@ -2693,22 +2695,22 @@ class CodeApi:
         seconds later, the rest only on scrolling), then scrolls back to the top."""
         page = self.page(tab)
         limit = max(1, min(int(limit), CODE_CARDS))
-        # A list still drawing first shows other repeated things (a menu's three items on tutu.ru): the page's
-        # requests quieting down, then the same cards twice in a row, is a list that is there.
-        with contextlib.suppress(Exception):
-            await page.wait_for_load_state("networkidle", timeout=CODE_CARDS_WAIT_S * 1000)
-
-        def mark(cards):
-            return len(cards), cards[0]["text"] if cards else ""
-
-        found = await page.evaluate(CODE_CARDS_JS, limit)
-        settle = time.monotonic()
-        while time.monotonic() - settle < CODE_CARDS_WAIT_S:
-            await asyncio.sleep(1)
-            again = await page.evaluate(CODE_CARDS_JS, limit)
-            if len(again) >= 3 and mark(again) == mark(found):
+        # A list still drawing first shows other repeated things (a menu's three items on tutu.ru): look until the
+        # same list of five or more is there twice in a row, keeping the fullest one seen. Waiting for the network
+        # to go quiet instead cost its whole timeout on every call through the residential proxy (25.10).
+        began = time.monotonic()
+        found, last, steady = [], None, 0
+        while True:
+            now = await page.evaluate(CODE_CARDS_JS, limit)
+            mark = (len(now), now[0]["text"] if now else "")
+            steady = steady + 1 if mark == last else 0
+            last = mark
+            if len(now) >= len(found):
+                found = now
+            if (steady >= 1 and len(now) >= 5) or time.monotonic() - began >= CODE_CARDS_WAIT_S:
                 break
-            found = again
+            await asyncio.sleep(0.7)
+        waited = time.monotonic() - began
         started, idle = time.monotonic(), 0
         while len(found) < limit and idle < 2 and time.monotonic() - started < CODE_CARDS_SCROLL_S:
             await page.evaluate("window.scrollTo(0, document.documentElement.scrollHeight)")
@@ -2718,6 +2720,8 @@ class CodeApi:
             found = more if len(more) >= len(found) else found
         with contextlib.suppress(Exception):
             await page.evaluate("window.scrollTo(0, 0)")
+        log.info("cards: %d after %.1f s of waiting and %.1f s of scrolling", len(found), waited,
+                 time.monotonic() - started)
         encoded = json.dumps(found, ensure_ascii=False)
         while len(encoded) > CODE_CARDS_CHARS and len(found) > 1:
             found = found[:len(found) * 3 // 4]
@@ -2741,7 +2745,11 @@ class CodeApi:
                 page = await self.context.new_page()
                 try:
                     async def load():
-                        await page.goto(url, wait_until="domcontentloaded", timeout=CODE_VISIT_PAGE_S * 1000)
+                        # Some shops' pages never finish their document through the residential proxy (citilink.ru,
+                        # 25.10: 75 s a visit): read whatever has come once the page has started.
+                        await page.goto(url, wait_until="commit", timeout=CODE_VISIT_PAGE_S * 1000)
+                        with contextlib.suppress(Exception):
+                            await page.wait_for_load_state("domcontentloaded", timeout=CODE_VISIT_LOAD_S * 1000)
                         if code_prohibited(page.url):
                             raise ValueError(f"{page.url} is not allowed for errands (an archive or a cache)")
                         # A shop's page may draw its content after its document: read once more a moment later.
@@ -2749,7 +2757,7 @@ class CodeApi:
                             if expression:
                                 value = await page.evaluate(str(expression))
                             else:
-                                value = code_cut(await page.locator("body").inner_text(timeout=10_000),
+                                value = code_cut(await page.locator("body").inner_text(timeout=3_000),
                                                  CODE_TEXT_CHARS // len(urls))
                             if value not in (None, "", [], {}) or not pause:
                                 return value
@@ -2837,19 +2845,15 @@ class CodeApi:
 
 async def code_wall(page):
     """Whether the page the code touched last is an anti-bot check (CODE_WALL_SIGNS) rather than the site; None
-    when that cannot be told. A check reloads itself every few seconds, and a read in the middle of a reload
-    fails: it is tried again a moment later."""
+    when that cannot be told quickly. One read, at most CODE_WALL_READ_S: retries with Playwright's own 5 s waits
+    held a page still loading for 30–60 s after the first call on the owner's account (25.10)."""
     if page is None or page.is_closed():
         return False
-    for attempt in range(3):
-        try:
-            title = await asyncio.wait_for(page.title(), 5)
-            text = await page.locator("body").inner_text(timeout=5_000)
-            break
-        except Exception:
-            if attempt == 2:
-                return None
-            await asyncio.sleep(1)
+    try:
+        title, text = await asyncio.wait_for(page.evaluate(
+            "() => [document.title, document.body ? document.body.innerText.slice(0, 4000) : '']"), CODE_WALL_READ_S)
+    except Exception:
+        return None
     if len(text) > CODE_WALL_TEXT:
         return False
     seen = f"{title}\n{text}".lower()
@@ -3843,6 +3847,9 @@ class Worker:
                         output += f"\n[{CODE_PROGRESS.format(number=number)}]"
                     messages.append({"role": "tool", "tool_call_id": call.id, "content": output})
                 page = api.last
+                # What each call did, for the operator's guest log: the model's own title, never the code or output.
+                log.info("code call %d of %s: %s (model %.1f s, code %.1f s)", number, run.id,
+                         "; ".join(goals)[:80], timing["modelMs"] / 1000, timing["codeMs"] / 1000)
                 if any(call.function.name == "repl" for call in calls):
                     wall = await code_wall(page)
                     walled = walled + 1 if wall else walled if wall is None else 0
