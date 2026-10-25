@@ -1226,12 +1226,13 @@ class DownloadNotices:
         return lines
 
 
-async def finished_downloads(folder, before, wait_s):
-    """The folder once the downloads a run started are over, waiting up to `wait_s` for those still running."""
+async def finished_downloads(folder, before, wait_s, stopped=lambda: False):
+    """The folder once the downloads a run started are over, waiting up to `wait_s` for those still running, or
+    until `stopped()` (a cancel: Bro waits on the run to end)."""
     deadline = time.monotonic() + wait_s
     now = download_snapshot(folder)
-    while time.monotonic() < deadline and any(name.endswith(PARTIAL_DOWNLOAD)
-                                              for name in changed_downloads(before, now)):
+    while time.monotonic() < deadline and not stopped() and any(name.endswith(PARTIAL_DOWNLOAD)
+                                                                for name in changed_downloads(before, now)):
         await asyncio.sleep(1)
         now = download_snapshot(folder)
     return now
@@ -2493,8 +2494,8 @@ class Worker:
             # A file still downloading when the agent finished is waited for, and the run's own files are
             # recorded, before the run ends: its report is what takes them to the person.
             with contextlib.suppress(Exception):
-                after = await finished_downloads(folder, run.downloads_before,
-                                                 0 if run.cancel_requested else DOWNLOAD_WAIT_S)
+                after = await finished_downloads(folder, run.downloads_before, DOWNLOAD_WAIT_S,
+                                                 lambda: run.cancel_requested)
                 run.downloads = run_downloads(run.downloads_before, after)
             run.outcome = status, result, error  # what a worker stopped during the screenshot records
             with contextlib.suppress(Exception):

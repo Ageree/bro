@@ -142,16 +142,7 @@ export async function captureBrowserRunDownloads(
     return [];
   }
   const { rootSessionId, workspaceId } = row;
-  // The list carries each file's download URL; a file the run recorded that
-  // is no longer in the folder is a file that did not come.
-  const listed = new Map(
-    (
-      await listBrowserUseWorkspaceFiles(
-        run.workspaceId,
-        browserRunDownloadPrefix
-      )
-    ).files.map((file) => [file.path, file])
-  );
+  const folder = run.workspaceId;
   const scope = { userId: row.createdByUserId, workspaceId };
   const results: BrowserRunDownload[] = [];
   // One file at a time: five at the cap together would hold 100 MB.
@@ -167,8 +158,13 @@ export async function captureBrowserRunDownloads(
       results.push({ kind: "refused", label, reason: "large" });
       continue;
     }
-    const url = listed.get(file.path)?.url;
     try {
+      // Listed for each file: a URL's token lives two minutes, and the files
+      // before it may have taken that long. A file the run recorded that is no
+      // longer in the folder is a file that did not come.
+      const url = (
+        await listBrowserUseWorkspaceFiles(folder, browserRunDownloadPrefix)
+      ).files.find((listed) => listed.path === file.path)?.url;
       results.push(
         url
           ? await keepDownload(scope, {
