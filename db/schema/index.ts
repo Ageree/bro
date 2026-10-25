@@ -7,6 +7,7 @@ export * from "./browser";
 export * from "./browser-downloads";
 export * from "./browser-hosts";
 export * from "./browser-runs";
+export * from "./browser-site-operations";
 export * from "./browser-vms";
 export * from "./bug-reports";
 export * from "./capability-tips";

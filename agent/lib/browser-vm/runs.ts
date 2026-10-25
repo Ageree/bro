@@ -35,6 +35,13 @@ import {
   fastDeliveryPilot,
 } from "./pilot";
 import { browserVmProxyLines, browserVmProxyPlace } from "./proxy";
+import {
+  errandSite,
+  rememberSiteOperations,
+  siteOperationsFor,
+  siteOperationsLine,
+  siteOpsPilot,
+} from "./site-ops/run";
 import { staticBrowserPool } from "@agent/lib/browser-pool/hosts";
 import {
   BrowserVmWorkerError,
@@ -340,7 +347,6 @@ export async function createBrowserVmRun(input: {
   });
   const id = newBrowserVmRunId(workspaceId);
   const sessionId = input.sessionId ?? newBrowserVmSessionId(workspaceId);
-  const task = `${input.task}\n\n${addressWallLine}`;
   const [fast, engine, delivery] = await Promise.all([
     fastBrowserPilot({ workspaceId }),
     // A retry past an anti-bot wall goes on browser-use, which solves captchas;
@@ -352,6 +358,25 @@ export async function createBrowserVmRun(input: {
     fastDeliveryPilot({ workspaceId }),
   ]);
   const browser = errandBrowser({ workspaceId });
+  // In its pilot an errand that only finds things writes down the site's own
+  // requests, and on the code engine it reads the site's known operations
+  // with op() (`agent/lib/browser-vm/site-ops/`).
+  const recordsSite = input.findsOnly === true && siteOpsPilot({ workspaceId });
+  const siteOps =
+    recordsSite && engine === "code"
+      ? await siteOperationsFor(workspaceId, errandSite(input.task)).catch(
+          (cause: unknown) => {
+            console.warn("[site-ops] the site's operations were not read", {
+              cause,
+            });
+            return [];
+          }
+        )
+      : [];
+  const siteOpsLine = siteOperationsLine(siteOps);
+  const task = [input.task, siteOpsLine, addressWallLine]
+    .filter((line) => line !== undefined)
+    .join("\n\n");
   // In the fast delivery pilot (BROWSER_FAST_DELIVERY_WORKSPACES) the worker
   // says when the run ends. Without an address for the word the run ends as
   // before, at Bro's next look.
@@ -382,6 +407,8 @@ export async function createBrowserVmRun(input: {
       value: binding.source.value,
     })),
     sessionId,
+    siteOps: siteOps.length > 0 ? siteOps : undefined,
+    siteTraffic: recordsSite ? true : undefined,
     task,
     timeoutSeconds: runTimeoutSeconds,
     tuning: runTuning(llm.model, { fast, search: input.search }),
@@ -428,6 +455,16 @@ export async function readBrowserVmRun(runId: string) {
     if (settling) {
       logRunTrace(live.run);
       await logDetourRun(live.vm, live.run);
+      await rememberSiteOperations(
+        browserVmWorkspace(runId),
+        live.run.siteTraffic?.operations,
+        runId
+      ).catch((cause: unknown) => {
+        console.warn("[site-ops] a run's operations were not kept", {
+          cause,
+          runId,
+        });
+      });
     }
     await keepAwake(live.vm, now);
     return fromWorker(live.run, record);

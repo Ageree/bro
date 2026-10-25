@@ -65,10 +65,12 @@ Routes (all but a plain /v1/health need a token):
 
 import asyncio
 import base64
+import collections
 import contextlib
 import functools
 import hashlib
 import hmac
+import html as html_lib
 import importlib.metadata
 import importlib.util
 import ipaddress
@@ -90,7 +92,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-10-25.9"
+VERSION = "2026-10-25.10"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -624,6 +626,7 @@ class SiteErrors:
         self.bodies = {}  # (socket, command id) → requestId
         self.told = set()  # (method, address, status, answer) the agent was already told
         self.notices_sent = 0
+        self.traffic = None  # the run's SiteTraffic, when it records the site's requests: it shares the sockets
 
     def start(self, websocket_url, target=None):
         """Listen to one more tab of the run. The agent moves into a tab a link opens, or opens one itself
@@ -640,6 +643,10 @@ class SiteErrors:
         if self.tasks:
             # Bodies asked for just before the end still come in: give them a moment.
             await asyncio.sleep(0.3)
+            # A results page's data is megabytes (ostrovok.ru's serp, 1.7 MB): a little longer for those.
+            started = time.monotonic()
+            while self.traffic is not None and self.traffic.awaited() and time.monotonic() - started < 3:
+                await asyncio.sleep(0.2)
             for task in self.tasks.values():
                 task.cancel()
             for task in self.tasks.values():
@@ -650,8 +657,11 @@ class SiteErrors:
         with contextlib.suppress(Exception):
             async with aiohttp.ClientSession() as http:
                 async with http.ws_connect(websocket_url, max_msg_size=64 * 1024 * 1024, timeout=10) as ws:
-                    # Each socket numbers its own commands.
-                    socket = types.SimpleNamespace(ws=ws, next_id=1)
+                    # Each socket numbers its own commands. A page's main frame has its target's id (the last
+                    # part of the socket's address): SiteTraffic keeps no iframe's document (an ad's, a widget's).
+                    socket = types.SimpleNamespace(ws=ws, next_id=1, frame=websocket_url.rstrip("/").rsplit("/", 1)[-1])
+                    # Chrome's buffer is as small with SiteTraffic as without (a 3 GB sandbox ran out of memory on
+                    # 24–25.10): SiteTraffic asks for a body the moment it has come, before anything evicts it.
                     await self.send("Network.enable", {"maxTotalBufferSize": 2_000_000}, socket)
                     async for message in ws:
                         with contextlib.suppress(Exception):
@@ -666,6 +676,8 @@ class SiteErrors:
 
     async def handle(self, data, socket=None):
         socket = socket or self
+        if self.traffic is not None and await self.traffic.cdp(data, socket, self.send):
+            return
         method, params = data.get("method"), data.get("params") or {}
         request_id = params.get("requestId")
         if method == "Network.requestWillBeSent" and params.get("type") in ("XHR", "Fetch"):
@@ -755,6 +767,657 @@ class SiteErrors:
 
         return ("SITE ERRORS (recorded by the browser itself, not by the agent: the site's own requests its "
                 "server refused during this run):\n" + "\n".join(map(line, self.entries)) + "\n\n")
+
+
+# --- Site operations ----------------------------------------------------------------------------------------
+# A repeated search on a familiar site should not take a model a dozen calls of reading the page: the page itself
+# got its results as data, from one request of its own (ostrovok.ru's /hotel/search/v2/site/serp, 20 hotels and
+# all 2 676 of the city on its map, 25.10) or from the state its document carries (hh.ru's search page holds its
+# 50 vacancies in <template id="HH-Lux-InitialState">). With `siteTraffic` in a run's input (Bro's
+# BROWSER_SITE_OPS_WORKSPACES) the worker writes down the site's own requests of a run, HAR-like but without a
+# single body, cookie or header (`SiteTraffic`), and at its end finds the one whose data holds the options the
+# report names: a template of that operation (`site_operations`) Bro keeps for the workspace. With `siteOps`, the
+# code engine's `op(name, url)` reads such an operation's data straight back (`CodeApi.op`).
+
+SITE_TRAFFIC_ENTRIES = 60  # the site's requests a run's log keeps
+SITE_TRAFFIC_BODY = 8 * 2**20  # a body held (in memory, never on disk) to look for the report's options in
+SITE_TRAFFIC_BODIES = 32 * 2**20  # all the bodies held, in bytes
+SITE_TRAFFIC_PACKED = 2 * 2**20  # a compressed body's size as it came, whose body is read (it unpacks to several)
+SITE_OPS_FIND_S = 5  # how long looking for the operations behind a report may hold the run's outcome
+SITE_OP_ARRAY = 3000  # the elements of a list looked at, and the cards one op() returns
+SITE_OP_CHARS = 1_500_000  # op() goes to the model's code, not its context
+SITE_OP_MORE = 60  # the item's own fields a card carries beside its name, price and link
+SITE_OP_LEAVES = 300
+SITE_OP_S = 30
+# A query parameter whose value is never written down, not even in the run's own log.
+SENSITIVE_KEY = re.compile(r"token|key|sign|auth|sess|sid|pass|phone|mail|card|cvv|secret|uid|user|login|csrf|"
+                           r"nonce|otp|code|hash", re.I)
+SITE_KEY = re.compile(r"[A-Za-z0-9_.\-\[\]]{1,40}")
+SITE_DATE = re.compile(r"\d{1,4}[.\-/]\d{1,2}[.\-/]\d{1,4}")
+SITE_ID = re.compile(r"\d{4,}|[0-9a-f]{8,}|@|[0-9a-f]{8}-[0-9a-f]{4}", re.I)  # searched: an id, a hash, an email
+SITE_UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-", re.I)
+# A part of a template's path that stays as it is: a short word of lower-case latin letters and hyphens (`search`,
+# `vacancy`, `kazan`). Anything else (a percent-encoded word, a phone with dashes, a user name with `_`, a number)
+# is a placeholder: a path part is where a site writes a person's or an errand's own value. The same rule is
+# Bro's schema (`literalSegment` in agent/lib/browser-vm/site-ops/operation.ts), which refuses what breaks it.
+SITE_PATH_WORD = re.compile(r"[a-z\-]{1,24}")
+SITE_API_VERSION = re.compile(r"v\d{1,2}")  # in a request's own path only: /hotel/search/v2/site/serp
+SITE_LETTERS = re.compile(r"[^\W\d_]+(?:-[^\W\d_]+)*")
+# A key of the data (a field's path, a query's key) that is itself a value: an id, a hash, a uuid.
+SITE_VALUE_KEY = re.compile(r"\d{4,}|[0-9a-f]{8,}|[0-9a-f]{8}-[0-9a-f]{4}-", re.I)
+SITE_SORT_KEYS = {"sort", "order", "sorting", "orderby", "sort_by", "sortby", "s"}
+EMBEDDED_STATE = re.compile(r"<(script|template)\b([^>]*)>(.*?)</\1\s*>", re.S | re.I)
+
+
+def site_key(key):
+    """Whether a key of the data (or of a query, or a state's id) goes into a template: not one that is a value."""
+    return isinstance(key, str) and SITE_KEY.fullmatch(key) is not None and not SITE_VALUE_KEY.search(key)
+
+
+def site_path_part(segment, request=False):
+    """One part of a page's (or, with `request`, the site's request's) path as a template writes it: a short
+    latin word as it is, a date `%date%`, a word of other letters `%word%`, anything else `%id%`."""
+    decoded = urllib.parse.unquote(segment)
+    if segment == "" or SITE_PATH_WORD.fullmatch(segment) or (request and SITE_API_VERSION.fullmatch(segment)):
+        return segment
+    return ("%date%" if SITE_DATE.fullmatch(decoded) else
+            "%word%" if SITE_LETTERS.fullmatch(decoded) else "%id%")
+
+
+def site_attribute(attributes, name):
+    match = re.search(rf"""\b{name}\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))""", attributes, re.I)
+    return (match.group(1) or match.group(2) or match.group(3) or "") if match else ""
+
+
+def embedded_states(text):
+    """The JSON a page's document carries for its scripts: a <template> or <script type="application/json"> (or
+    one with an id) whose whole content is JSON, as [(selector, value)]. A selector names it by its id, or by
+    its type and place among those of that type."""
+    found, places = [], {}
+    for match in EMBEDDED_STATE.finditer(text):
+        tag, attributes, body = match.group(1).lower(), match.group(2), match.group(3).strip()
+        if len(body) < 200 or body[0] not in "{[&":
+            continue
+        ident, kind = site_attribute(attributes, "id"), site_attribute(attributes, "type").lower()
+        if tag == "script" and not ident and kind not in ("application/json", "application/ld+json"):
+            continue
+        place = places[(tag, kind)] = places.get((tag, kind), -1) + 1
+        try:
+            value = json.loads(html_lib.unescape(body) if tag == "template" or body[0] == "&" else body)
+        except ValueError:
+            continue
+        if not isinstance(value, (dict, list)):
+            continue
+        if ident and site_key(ident):
+            found.append(({"tag": tag, "id": ident}, value))
+        else:
+            found.append(({"tag": tag, "type": kind, "index": place}, value))
+    return found
+
+
+def site_walk(value, path):
+    for key in path:
+        if isinstance(value, dict) and isinstance(key, str):
+            value = value.get(key)
+        elif isinstance(value, list) and isinstance(key, int) and -len(value) <= key < len(value):
+            value = value[key]
+        else:
+            return None
+    return value
+
+
+def object_arrays(value, path=(), depth=0):
+    """Every list of three or more objects in a JSON value, with its path: the lists of results. A list inside
+    such a list's elements is theirs (a hotel's rates), not looked into; a wrapper list of one or two is."""
+    if depth > 8:
+        return
+    if isinstance(value, dict):
+        for key, inner in list(value.items())[:400]:
+            if site_key(key):
+                yield from object_arrays(inner, (*path, key), depth + 1)
+    elif isinstance(value, list):
+        if sum(1 for element in value[:SITE_OP_ARRAY] if isinstance(element, dict)) >= 3:
+            yield path, value
+        elif len(value) <= 2:
+            for index, inner in enumerate(value):
+                yield from object_arrays(inner, (*path, index), depth + 1)
+
+
+def element_leaves(element, path=(), depth=0, out=None):
+    """An object's scalar fields as [(path, value)], nested objects and the first three of a list included."""
+    out = [] if out is None else out
+    if len(out) >= SITE_OP_LEAVES or depth > 5:
+        return out
+    if isinstance(element, dict):
+        for key, inner in element.items():
+            if site_key(key):
+                element_leaves(inner, (*path, key), depth + 1, out)
+    elif isinstance(element, list):
+        for index, inner in enumerate(element[:3]):
+            element_leaves(inner, (*path, index), depth + 1, out)
+    elif isinstance(element, (str, int, float)) and not isinstance(element, bool) and path:
+        out.append((path, element))
+    return out
+
+
+def site_words(text):
+    text = str(text or "").lower().replace("ё", "е")
+    return " ".join(re.sub(r"[^\w]+", " ", text).split())
+
+
+def site_numbers(text):
+    """The amounts in a price as a report writes it («от 1 373 ₽», «4 829 ₽ за 2 ночи (2 414,50 ₽ за ночь)»)."""
+    numbers = set()
+    for match in re.finditer(r"\d[\d\s  ]*(?:[.,]\d{1,2})?", str(text or "")):
+        digits = re.sub(r"[\s  ]", "", match.group()).replace(",", ".")
+        with contextlib.suppress(ValueError):
+            if float(digits) >= 10:
+                numbers.add(float(digits))
+    return numbers
+
+
+def site_link_key(url, base=None):
+    """A link without its query and fragment, its host without www.: the reported link and the data's agree on it."""
+    with contextlib.suppress(ValueError):
+        parts = urllib.parse.urlsplit(urllib.parse.urljoin(base, url) if base else url)
+        if parts.scheme in ("http", "https") and parts.hostname:
+            return parts.hostname.removeprefix("www.") + (parts.path.rstrip("/") or "/")
+    return None
+
+
+def reported_options(text):
+    """The options a report names on its ITEMS line: the words of the name, the amounts of the price, the link."""
+    for line in (text or "").splitlines():
+        if not line.startswith("ITEMS:"):
+            continue
+        try:
+            items = json.loads(line[6:].strip() or "[]")
+        except ValueError:
+            return []
+        return [{"name": site_words(item.get("name")), "numbers": site_numbers(item.get("price")),
+                 "url": item.get("url") if isinstance(item.get("url"), str) else None}
+                for item in items if isinstance(item, dict) and not item.get("fee")][:20]
+    return []
+
+
+def match_option(option, leaves, base):
+    """Which fields of one element hold the option's name, price and link: {role: path}."""
+    roles, contained = {}, None
+    link = site_link_key(option["url"]) if option["url"] else None
+    for path, value in leaves:
+        if isinstance(value, str):
+            words = site_words(value)
+            if option["name"] and words:
+                if words == option["name"]:
+                    roles.setdefault("name", path)
+                elif contained is None and min(len(words), len(option["name"])) >= 5 and (
+                        words in option["name"] or option["name"] in words):
+                    contained = path
+            if link and len(value) < 2000 and ("/" in value) and site_link_key(value, base) == link:
+                roles.setdefault("link", path)
+            number = None
+            if re.fullmatch(r"\d{2,9}(?:\.\d{1,2})?", value.strip()):
+                number = float(value)
+        else:
+            number = float(value)
+        if number is not None and number >= 10 and any(abs(number - amount) < 0.51 for amount in option["numbers"]):
+            roles.setdefault("price", path)
+    if "name" not in roles and contained is not None:
+        roles["name"] = contained
+    return roles
+
+
+def link_template(url, leaves):
+    """The option's link as its element writes it: its path with each field's value in it as `{n}`, and the
+    fields, e.g. ("/hotel/{0}/mid{1}/{2}/", [region_catalog_slug, master_id, ota_hotel_id])."""
+    path = urllib.parse.urlsplit(url).path
+    # Longest first, and in the element's own order among equals: the same value under two names (a hotel's id
+    # as `ota_hotel_id` and `static_vm.otahotel_id`) gives every element the same template.
+    values, seen = [], set()
+    for leaf, value in leaves:
+        text = str(value)
+        if ((isinstance(value, str) and 3 <= len(value) <= 200) or (isinstance(value, int) and value >= 100)) \
+                and text not in seen:
+            seen.add(text)
+            values.append((text, leaf))
+    values.sort(key=lambda pair: -len(pair[0]))
+    spans, parts = [], []
+    for value, leaf in values:
+        start = path.find(value)
+        while start >= 0 and any(start < end and begin < start + len(value) for begin, end, _ in spans):
+            start = path.find(value, start + 1)
+        if start >= 0 and leaf not in parts:
+            spans.append((start, start + len(value), leaf))
+            parts.append(leaf)
+    if not spans:
+        return None
+    spans.sort()
+    template, at, order = "", 0, []
+    for begin, end, leaf in spans:
+        template += path[at:begin].replace("{", "").replace("}", "") + "{" + str(len(order)) + "}"
+        order.append(list(leaf))
+        at = end
+    template += path[at:].replace("{", "").replace("}", "")
+    # What is left of the link besides its fields is the page's own words only, as in a page's template
+    # (`site_path_part`): a part that is none of the element's fields and not a short latin word may be a value.
+    if not all(part == "" or SITE_PATH_WORD.fullmatch(part)
+               for part in re.sub(r"\{\d\}", "", template).split("/")):
+        return None
+    return template, order
+
+
+def render_link(link, element, page_url, host):
+    """An element's link as the operation writes it (`site_operations`): a field holding it, a template of its
+    fields, or the results page itself."""
+    if link == "page":
+        return page_url
+    if not isinstance(link, dict):
+        return None
+    base = f"https://{host}/"
+    if "path" in link:
+        value = site_walk(element, link["path"])
+        return urllib.parse.urljoin(base, value) if isinstance(value, str) and value else None
+    template = link.get("template")
+    if not isinstance(template, str):
+        return None
+    for index, part in enumerate(link.get("parts") or []):
+        value = site_walk(element, part)
+        if value is None or isinstance(value, (dict, list)):
+            return None
+        template = template.replace("{" + str(index) + "}", urllib.parse.quote(str(value), safe="/"))
+    query = urllib.parse.parse_qsl(urllib.parse.urlsplit(page_url).query) if page_url else []
+    keep = [(key, value) for key, value in query if key in (link.get("query") or [])]
+    return urllib.parse.urljoin(base, template) + (f"?{urllib.parse.urlencode(keep)}" if keep else "")
+
+
+def site_template(url):
+    """A page's address as a template: the host and the path, each part of it but a short latin word a placeholder
+    (`site_path_part`), and the query's keys each with a typed placeholder (%query%, %number%, %date%, %sort%),
+    never a value. A key that may carry a secret or a person's details, or is a value itself, is left out."""
+    parts = urllib.parse.urlsplit(url)
+    segments = [site_path_part(segment) for segment in parts.path.split("/")]
+    query = []
+    for key, value in urllib.parse.parse_qsl(parts.query, keep_blank_values=True)[:20]:
+        if not site_key(key) or SENSITIVE_KEY.search(key) or key in (k for k, _ in query):
+            continue
+        kind = ("sort" if key.lower() in SITE_SORT_KEYS else "date" if SITE_DATE.search(value) else
+                "number" if re.fullmatch(r"-?\d{1,9}", value) else
+                "flag" if value.lower() in ("true", "false", "on", "off", "yes", "no") else "query")
+        query.append((key, f"%{kind}%"))
+    return (f"https://{(parts.hostname or '').lower()}{'/'.join(segments)}"
+            + ("?" + "&".join(f"{key}={value}" for key, value in query) if query else ""))
+
+
+def site_template_matches(template, url):
+    """Whether an address is a page of the template's: the same host and path, a placeholder standing for any one
+    part of the path; a trailing slash on one side only does not count (`/search/vacancy/`). The query is the
+    caller's."""
+    want, have = urllib.parse.urlsplit(template), urllib.parse.urlsplit(url)
+    if have.scheme != "https" or (have.hostname or "").lower() != want.hostname:
+        return False
+    wanted, given = want.path.rstrip("/").split("/"), have.path.rstrip("/").split("/")
+    if len(wanted) != len(given):
+        return False
+    return all(w.startswith("%") and w.endswith("%") or urllib.parse.unquote(w) == urllib.parse.unquote(g)
+               for w, g in zip(wanted, given))
+
+
+def best_array(value, options, base, deadline=None):
+    """The list in a JSON value whose elements hold the reported options, with what it matched:
+    (path, elements, {role: path or link}, matched), or None when fewer than three (or all) of them match."""
+    best = None
+    need = min(3, len(options))
+    for path, elements in object_arrays(value):
+        if deadline is not None and time.monotonic() > deadline:
+            return None
+        objects = [element for element in elements[:SITE_OP_ARRAY] if isinstance(element, dict)]
+        leaves = [element_leaves(element) for element in objects]
+        pairs, used = [], set()
+        for option in options:
+            scored = []
+            for index, element_fields in enumerate(leaves):
+                if index in used:
+                    continue
+                roles = match_option(option, element_fields, base)
+                score = 2 * ("link" in roles) + ("name" in roles) + ("price" in roles)
+                if score >= 2:
+                    scored.append((score, -index, roles))
+            if scored:
+                score, index, roles = max(scored, key=lambda s: (s[0], s[1]))
+                used.add(-index)
+                pairs.append((option, -index, roles))
+        if len(pairs) < max(2, need):
+            continue
+        fields = {}
+        for role in ("name", "price", "link"):
+            counted = collections.Counter(tuple(roles[role]) for _, _, roles in pairs if role in roles)
+            if counted:
+                path_of, count = counted.most_common(1)[0]
+                if count >= 2:
+                    fields[role] = list(path_of) if role != "link" else {"path": list(path_of)}
+        if "link" not in fields:
+            fields.update(link_of(pairs, objects, leaves, base))
+        key = (len(pairs), len(fields), len(objects))
+        if best is None or key > best[0]:
+            best = (key, (list(path), len(elements), fields, len(pairs)))
+    return best[1] if best else None
+
+
+def link_of(pairs, objects, leaves, page_url):
+    """The link of the pairs' options as a template of their elements' fields, or the results page itself."""
+    page = site_link_key(page_url)
+    if sum(1 for option, _, _ in pairs if option["url"] and site_link_key(option["url"]) == page) >= 2:
+        return {"link": "page"}
+    host = urllib.parse.urlsplit(page_url).hostname or ""
+    page_keys = {key for key, _ in urllib.parse.parse_qsl(urllib.parse.urlsplit(page_url).query)}
+    counted = collections.Counter()
+    for option, index, _ in pairs:
+        if not option["url"] or site_link_key(option["url"]) is None:
+            continue
+        found = link_template(option["url"], leaves[index])
+        if found is None:
+            continue
+        template, parts = found
+        link_keys = {key for key, _ in urllib.parse.parse_qsl(urllib.parse.urlsplit(option["url"]).query)}
+        link = {"template": template, "parts": parts,
+                "query": sorted(key for key in page_keys & link_keys if site_key(key))}
+        # The template is kept only if it writes each pair's own link from that pair's own element.
+        if all(site_link_key(render_link(link, objects[i], None, host) or "") == site_link_key(o["url"])
+               for o, i, _ in pairs if o["url"] and site_link_key(o["url"]) is not None):
+            counted[json.dumps(link, sort_keys=True)] += 1
+    if counted:
+        link, count = counted.most_common(1)[0]
+        if count >= 2:
+            return {"link": json.loads(link)}
+    return {}
+
+
+class SiteTraffic:
+    """The site's own requests of a run, HAR-like: method, address, status, type and size, and the top keys of a
+    JSON answer, of XHR, fetch and documents of the page's own site; a tracker's or another site's are not
+    written down at all. No request or answer body, cookie or header goes into it: an address's query keeps its
+    values (the run's log, as its steps' addresses are), but a parameter named like a token, a session, a phone
+    or an email has its value masked, and every secret's value is cut out (`public`).
+
+    Bodies of JSON answers and of documents are held in memory for the run's end, never written: there
+    `operations` finds the request whose data holds the options the report names and makes a template of it,
+    with no value of the run's in it (`site_template`)."""
+
+    def __init__(self):
+        self.entries = []
+        self.bodies = []  # (entry, text): in memory only, for `operations`
+        self.held = 0
+        self.pending = {}  # CDP requestId → its entry
+        self.commands = {}  # (socket, command id) → entry waiting for its body
+        self.tasks = set()
+
+    def request(self, method, url, page_url, resource, body=None):
+        resource = str(resource or "").lower()
+        if resource not in ("xhr", "fetch", "document") or not str(url).startswith("https://"):
+            return None
+        page_url = url if resource == "document" else (page_url or "")
+        if not same_host(url, page_url) or len(self.entries) >= SITE_TRAFFIC_ENTRIES:
+            return None
+        entry = {"method": str(method or "GET").upper(), "url": url, "page": page_url, "type": resource,
+                 "status": None, "mime": "", "size": None}
+        with contextlib.suppress(ValueError, TypeError):
+            sent = json.loads(body) if body else None
+            if isinstance(sent, dict):
+                # What the page sent is never kept: its keys only, the way the run's log reads it.
+                entry["bodyKeys"] = [key for key in list(sent)[:20] if SITE_KEY.fullmatch(str(key))]
+        self.entries.append(entry)
+        return entry
+
+    def answered(self, entry, status, mime, size=None):
+        entry["status"], entry["mime"] = int(status or 0), str(mime or "")[:60]
+        if size is not None:
+            entry["size"] = int(size)
+
+    @staticmethod
+    def wanted(entry):
+        mime = entry["mime"].lower()
+        return entry["status"] == 200 and ("json" in mime or (entry["type"] == "document" and "html" in mime))
+
+    def room(self, size=0):
+        """Whether a body of `size` bytes still fits: one up to SITE_TRAFFIC_BODY, all of them SITE_TRAFFIC_BODIES."""
+        return size <= SITE_TRAFFIC_BODY and self.held + size <= SITE_TRAFFIC_BODIES
+
+    def awaited(self):
+        """Whether a body asked for is still to come and would still be held: what `SiteErrors.stop` waits for."""
+        return bool(self.commands) and self.held < SITE_TRAFFIC_BODIES
+
+    def hold(self, entry, text):
+        # In bytes, as the caps are: a character is not one (a Cyrillic letter is two). A text longer in
+        # characters than the cap is longer in bytes too, and is not encoded to find that out.
+        size = len(text) if len(text) > SITE_TRAFFIC_BODY else len(text.encode("utf-8", "replace"))
+        if entry["size"] is None:
+            entry["size"] = size
+        if not self.room(size):
+            return
+        if "json" in entry["mime"].lower():
+            with contextlib.suppress(ValueError):
+                value = json.loads(text)
+                entry["keys"] = (list(value)[:12] if isinstance(value, dict) else
+                                 [f"[{len(value)}]"] if isinstance(value, list) else [])
+        self.bodies.append((entry, text))
+        self.held += size
+
+    async def cdp(self, data, socket, send):
+        """One CDP event or command answer of a tab's socket (`SiteErrors.listen` shares it). True when it was
+        the answer to this recorder's own command."""
+        method, params = data.get("method"), data.get("params") or {}
+        request_id = params.get("requestId")
+        if method == "Network.requestWillBeSent":
+            request = params.get("request") or {}
+            frame = getattr(socket, "frame", None)
+            if params.get("type") == "Document" and frame and params.get("frameId") not in (None, frame):
+                return False  # an iframe's document: an ad's, a widget's, not the page's
+            redirect = params.get("redirectResponse")
+            if redirect and request_id in self.pending:  # the same request id goes on to the next address
+                self.answered(self.pending.pop(request_id), redirect.get("status"), redirect.get("mimeType"))
+            entry = self.request(request.get("method"), request.get("url", ""), params.get("documentURL"),
+                                 params.get("type"), request.get("postData"))
+            if entry is not None:
+                self.pending[request_id] = entry
+        elif method == "Network.responseReceived" and request_id in self.pending:
+            response = params.get("response") or {}
+            self.answered(self.pending[request_id], response.get("status"), response.get("mimeType"))
+        elif method == "Network.loadingFinished" and request_id in self.pending:
+            entry = self.pending.pop(request_id)
+            entry["size"] = int(params.get("encodedDataLength") or 0) or entry["size"]
+            # A body that came larger than the cap, or once the cap is full, is not even asked for.
+            if self.wanted(entry) and self.room(entry["size"] or 0):
+                command = await send("Network.getResponseBody", {"requestId": request_id}, socket)
+                self.commands[(id(socket), command)] = entry
+        elif method == "Network.loadingFailed" and request_id in self.pending:
+            self.pending.pop(request_id)["status"] = 0
+        elif "id" in data and (id(socket), data["id"]) in self.commands:
+            entry = self.commands.pop((id(socket), data["id"]))
+            result = data.get("result") or {}
+            body = result.get("body") or ""
+            with contextlib.suppress(Exception):
+                if result.get("base64Encoded"):
+                    body = base64.b64decode(body).decode("utf-8", "replace")
+                self.hold(entry, body)
+            return True
+        return False
+
+    def watch(self, page):
+        """Listen to a Playwright page of the code engine's."""
+        if not getattr(page, "_bro_traffic", False):
+            page._bro_traffic = True
+            page.on("response", lambda response: self.spawn(self.response(response)))
+
+    def spawn(self, work):
+        task = asyncio.ensure_future(work)
+        self.tasks.add(task)
+        task.add_done_callback(self.tasks.discard)
+
+    async def response(self, response):
+        with contextlib.suppress(Exception):
+            request = response.request
+            if request.resource_type == "document" and request.frame.parent_frame is not None:
+                return  # an iframe's document: an ad's, a widget's, not the page's
+            page_url = ""
+            with contextlib.suppress(Exception):
+                page_url = request.frame.url
+            body = None
+            with contextlib.suppress(Exception):
+                body = request.post_data
+            entry = self.request(request.method, response.url, page_url, request.resource_type, body)
+            if entry is None:
+                return
+            headers = response.headers
+            size = headers.get("content-length")
+            self.answered(entry, response.status, headers.get("content-type", "").split(";")[0],
+                          int(size) if size and size.isdigit() else None)
+            if not self.wanted(entry) or not self.room():
+                return
+            # Playwright reads a body whole, into the driver and then into the worker: a body of unknown size, or
+            # one larger than the cap, is never read (a 3 GB sandbox, 24–25.10). The size is the one the site
+            # declared, or else the one received once the answer has come; a compressed body's is what came
+            # over the wire, so its bound is lower: it unpacks to several times that.
+            received = entry["size"]
+            if received is None:
+                with contextlib.suppress(Exception):
+                    received = int((await request.sizes()).get("responseBodySize") or 0) or None
+            packed = headers.get("content-encoding", "identity").strip().lower() not in ("", "identity")
+            if received is None or received > (SITE_TRAFFIC_PACKED if packed else SITE_TRAFFIC_BODY):
+                return
+            body = await response.body()
+            if self.room(len(body)):
+                self.hold(entry, body.decode("utf-8", "replace"))
+
+    async def settle(self):
+        if self.tasks:
+            with contextlib.suppress(Exception):
+                await asyncio.wait(set(self.tasks), timeout=3)
+
+    def public(self, secrets=None):
+        clean = secret_cleaner(secrets)
+        log_ = []
+        for entry in self.entries:
+            line = {key: entry[key] for key in ("method", "type", "status", "mime", "size") if entry.get(key) is not None}
+            line["url"] = traffic_url(entry["url"], clean)
+            for key in ("keys", "bodyKeys"):
+                if entry.get(key):
+                    line[key] = [clean(str(k))[:40] for k in entry[key]]
+            log_.append(line)
+        return log_
+
+    def operations(self, report, secrets=None, seconds=SITE_OPS_FIND_S):
+        """The site's operations behind the options the report names: for each body that holds three of them
+        (all, when fewer), a template (`site_template`) of how to get it again and where in it they are. Past
+        `seconds` it stops looking and finds none: it runs in a thread the run's outcome waits for at most that
+        long (`site_operations_found`), and a thread is not cancelled."""
+        deadline = time.monotonic() + seconds
+        options = reported_options(report)
+        if len(options) < 2:
+            return []
+        found = {}
+        for entry, text in self.bodies:
+            if time.monotonic() > deadline:
+                return []
+            states = []
+            if entry["type"] == "document":
+                states = embedded_states(text)
+            else:
+                with contextlib.suppress(ValueError):
+                    states = [(None, json.loads(text))]
+            for selector, value in states:
+                best = best_array(value, options, entry["page"], deadline)
+                if best is None:
+                    continue
+                path, count, fields, matched = best
+                page = site_template(entry["page"])
+                if selector is None:
+                    parts = urllib.parse.urlsplit(entry["url"])
+                    pattern = "/".join(site_path_part(s, request=True) for s in parts.path.split("/"))
+                    source = {"kind": "xhr", "method": entry["method"],
+                              "url": f"https://{(parts.hostname or '').lower()}{pattern}"}
+                else:
+                    source = {"kind": "document", "state": selector}
+                operation = {"name": page.split("?")[0].removeprefix("https://")[:120], "page": page,
+                             "source": source, "items": path, "fields": fields,
+                             "seen": {"items": count, "matched": matched, "of": len(options)}}
+                key = operation["name"]
+                if key not in found or (matched, len(fields)) > (found[key]["seen"]["matched"], len(found[key]["fields"])):
+                    found[key] = operation
+        values = [str(v) for v in flat_secret_values(secrets) if len(str(v)) >= 3]
+        # A secret's value in a template (a path part the person typed) drops the operation rather than hiding it.
+        return [operation for operation in found.values()
+                if not any(value in json.dumps(operation, ensure_ascii=False) for value in values)][:3]
+
+
+def traffic_url(url, clean):
+    """A request's address for the run's log: no fragment, no user or port, a sensitive parameter's value
+    masked, every secret's value cut out."""
+    with contextlib.suppress(ValueError):
+        parts = urllib.parse.urlsplit(url)
+        # A long opaque value (an anti-fraud fingerprint, a uuid) is an id of the browser, not the errand's.
+        query = [(key[:40], "%masked%" if SENSITIVE_KEY.search(key) or len(value) > 64 or SITE_UUID.search(value)
+                  else value[:80])
+                 for key, value in urllib.parse.parse_qsl(parts.query, keep_blank_values=True)[:20]]
+        address = urllib.parse.urlunsplit((parts.scheme, (parts.hostname or "").lower(), parts.path[:200],
+                                           urllib.parse.urlencode(query, safe="%"), ""))
+        return clean(address)[:300]
+    return ""
+
+
+async def site_operations_found(recorder, report, secrets=None, seconds=SITE_OPS_FIND_S):
+    """`SiteTraffic.operations` off the event loop and for `seconds` at most: past them the run's outcome is set
+    with no operations, and the thread, which stops at the same deadline, is left to end on its own."""
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(recorder.operations, report, secrets, seconds),
+                                      seconds + 0.5)
+    except asyncio.TimeoutError:
+        log.warning("looking for the site's operations took longer than %ss: none kept", seconds)
+        return []
+
+
+def site_cards(operation, data, page_url):
+    """An operation's data as cards: name, price and link where the operation knows them, and `more`, the
+    element's own fields by their paths, for what the errand asks beyond them."""
+    elements = site_walk(data, operation["items"])
+    if not isinstance(elements, list):
+        raise ValueError("the site's data no longer has its list of results: use the page instead")
+    host = urllib.parse.urlsplit(operation["page"]).hostname or ""
+    fields = operation.get("fields") or {}
+    cards = []
+    for element in elements[:SITE_OP_ARRAY]:
+        if not isinstance(element, dict):
+            continue
+        card = {}
+        for role in ("name", "price"):
+            if isinstance(fields.get(role), list):
+                card[role] = site_walk(element, fields[role])
+        if "link" in fields:
+            card["link"] = render_link(fields["link"], element, page_url, host)
+        card["more"] = {".".join(map(str, path)): (value[:200] if isinstance(value, str) else value)
+                        for path, value in element_leaves(element)[:SITE_OP_MORE]}
+        cards.append(card)
+    encoded = len(json.dumps(cards, ensure_ascii=False))
+    if encoded > SITE_OP_CHARS:
+        for card in cards[50:]:
+            card.pop("more", None)
+        while len(json.dumps(cards, ensure_ascii=False)) > SITE_OP_CHARS and len(cards) > 1:
+            cards = cards[: len(cards) * 3 // 4]
+    return cards
+
+
+def site_operations(options):
+    """`siteOps` of a run's input as the worker uses them: by name, the malformed ones left out."""
+    known = {}
+    for operation in options or []:
+        with contextlib.suppress(Exception):
+            source = operation["source"]
+            if not (isinstance(operation["name"], str) and operation["page"].startswith("https://")
+                    and isinstance(operation["items"], list) and source["kind"] in ("xhr", "document")):
+                continue
+            if source["kind"] == "xhr" and not str(source.get("url", "")).startswith("https://"):
+                continue
+            known[operation["name"]] = operation
+    return known
 
 
 class FilePickers:
@@ -1048,6 +1711,20 @@ def secret_cleaner(secrets):
         return " ".join(text.split())
 
     return clean
+
+
+def same_host(url, document_url):
+    """Whether a request goes to the page's own host, `www.` aside: what SiteTraffic writes down. Not the same
+    last two labels, as `same_site`: under .msk.ru or .co.uk those are a registry's, shared by strangers."""
+    def host(address):
+        try:
+            name = (urllib.parse.urlsplit(address).hostname or "").rstrip(".").lower()
+        except ValueError:
+            return None
+        return name.removeprefix("www.") or None
+
+    request_host = host(url)
+    return request_host is not None and request_host == host(document_url)
 
 
 def same_site(url, document_url):
@@ -1480,6 +2157,8 @@ class Run:
         self.unread_messages = []  # messages queued into this run the agent never read (set once terminal)
         self.downloads = None  # the files it downloaded, [{"path": "downloads/…", "size"}], once it ended
         self.downloads_before = None  # its session's downloads folder when it started (`download_snapshot`)
+        self.recorder = None  # its SiteTraffic while it runs, with `siteTraffic` in its input
+        self.site_traffic = None  # {"requests": the site's requests, "operations": what they gave}, once it ended
         self.outcome = None  # (status, result, error) the run came to, while it still lets go of the browser
         self.stored = None  # the status its record on disk has
         self.notify = None  # where the end of the run is told to Bro (`notify_ended`); not kept past a restart
@@ -1491,7 +2170,7 @@ class Run:
         self.seq = 0
 
     def public(self):
-        return {
+        record = {
             "id": self.id, "sessionId": self.session_id, "status": self.status, "task": self.task,
             "result": self.result, "error": self.error, "success": self.success,
             "createdAt": self.created_at, "startedAt": self.started_at, "finishedAt": self.finished_at,
@@ -1500,6 +2179,9 @@ class Run:
             "browser": self.browser, "jev": self.jev,
             "unreadMessages": self.unread_messages, "downloads": self.downloads,
         }
+        if self.site_traffic is not None:  # a run without `siteTraffic` reads as it always did
+            record["siteTraffic"] = self.site_traffic
+        return record
 
     def save(self, agent_state=None):
         RUNS.mkdir(parents=True, exist_ok=True)
@@ -1523,7 +2205,7 @@ class Run:
                                ("steps", "steps"), ("finalUrl", "final_url"), ("finalTitle", "final_title"),
                                ("usage", "usage"), ("traffic", "traffic"), ("engine", "engine"), ("browser", "browser"),
                                ("jev", "jev"), ("unreadMessages", "unread_messages"), ("downloads", "downloads"),
-                               ("seq", "seq")]:
+                               ("siteTraffic", "site_traffic"), ("seq", "seq")]:
             if key in record:
                 setattr(run, attribute, record[key])
         run.stored = run.status
@@ -1859,6 +2541,7 @@ globalThis.url = (tab) => __call('url', [tab]);
 globalThis.title = (tab) => __call('title', [tab]);
 globalThis.wait = (ms) => __call('wait', [ms]);
 globalThis.closeTab = (tab) => __call('close_tab', [tab]);
+globalThis.op = (name, url) => __call('op', [name, url]);
 globalThis.__run = (code) => {
   __out.length = 0;
   globalThis.__state = {done: false};
@@ -1896,7 +2579,8 @@ for line in sys.stdin:
 """
 
 CODE_METHODS = frozenset({"tabs", "open_tab", "goto", "snapshot", "click", "fill", "select", "press", "check", "hover",
-                          "scroll", "back", "text", "evaluate", "cards", "visit", "url", "title", "wait", "close_tab"})
+                          "scroll", "back", "text", "evaluate", "cards", "visit", "url", "title", "wait", "close_tab",
+                          "op"})
 
 
 def code_engine_available():
@@ -1988,15 +2672,19 @@ class CodeApi:
     """The functions the model's code calls, against Playwright over CDP. Tabs are named t1, t2… for the model;
     `last` is the page it touched last, which the session keeps."""
 
-    def __init__(self, context, secrets):
+    def __init__(self, context, secrets, operations=None, recorder=None):
         self.context, self.secrets = context, secrets
         self.pages, self.ids, self.last = {}, {}, None
+        self.operations = operations or {}  # the site's known operations by name (`site_operations`), for op()
+        self.recorder = recorder  # the run's SiteTraffic, listening to every tab of the model's
         self.listed = False  # cards() has handed the model a results list (CODE_LISTED cards or more)
 
     def register(self, page):
         if page not in self.ids:
             tab = f"t{len(self.ids) + 1}"
             self.ids[page], self.pages[tab] = tab, page
+            if self.recorder is not None:
+                self.recorder.watch(page)
         return self.ids[page]
 
     def page(self, tab, leaving=False):
@@ -2189,6 +2877,51 @@ class CodeApi:
         encoded = json.dumps(found, ensure_ascii=False, default=str)
         return found if len(encoded) <= CODE_TEXT_CHARS else code_cut(encoded, CODE_TEXT_CHARS)
 
+    async def op(self, name, url):
+        """A known operation of the site (`siteOps`, the task names them): the results page `url` opened in the
+        tab touched last, and its results read from the site's own data rather than from the page — the data
+        of the page's own request (`xhr`), or the state its document carries (`document`), read as soon as the
+        document has come, before the page has drawn anything. The cards come in the data's order, all of them
+        (up to SITE_OP_ARRAY), each with its name, price and link where the operation knows them and `more`,
+        the item's own fields. Nothing is sent that the page would not send itself."""
+        operation = self.operations.get(str(name))
+        if operation is None:
+            known = ", ".join(sorted(self.operations)) or "none"
+            raise ValueError(f"no known operation {name!r} (known: {known})")
+        url = self.allowed(url)
+        if not site_template_matches(operation["page"], url):
+            raise ValueError(f"{name} takes a results page like {operation['page']}, its %placeholders% filled in")
+        page = self.last if self.last is not None and not self.last.is_closed() else None
+        if page is None:
+            page = await self.context.new_page()
+            self.register(page)
+        self.last = page
+        source = operation["source"]
+        if source["kind"] == "document":
+            response = await page.goto(url, wait_until="commit", timeout=CODE_CALL_S * 1000)
+            if response is None or response.status != 200:
+                raise ValueError(f"the page answered {response.status if response else 'nothing'}: open it instead")
+            text = await response.text()
+            states = [value for selector, value in await asyncio.to_thread(embedded_states, text)
+                      if selector == source.get("state")]
+            if not states:
+                raise ValueError("the page no longer carries its results as data: read the page instead")
+            data = states[0]
+        else:
+            def theirs(response):
+                return (response.request.method == source.get("method")
+                        and site_template_matches(source["url"], response.url.split("?")[0]))
+
+            async with page.expect_response(theirs, timeout=SITE_OP_S * 1000) as answer:
+                await page.goto(url, wait_until="commit", timeout=CODE_CALL_S * 1000)
+            response = await answer.value
+            if response.status != 200:
+                raise ValueError(f"the site's request answered {response.status}: read the page instead")
+            data = json.loads(await response.text())
+        cards = await asyncio.to_thread(site_cards, operation, data, url)
+        self.listed = self.listed or len(cards) >= CODE_LISTED
+        return {"cards": cards, "count": len(cards), "page": page.url}
+
     async def url(self, tab):
         return self.page(tab).url
 
@@ -2259,7 +2992,8 @@ class CodeSandbox:
             try:
                 if name not in CODE_METHODS or not isinstance(args, list):
                     raise ValueError(f"no function {name}")
-                limit = CODE_VISIT_PAGE_S * -(-CODE_VISIT_PAGES // CODE_VISIT_AT_ONCE) if name == "visit" else CODE_CALL_S
+                limit = (CODE_VISIT_PAGE_S * -(-CODE_VISIT_PAGES // CODE_VISIT_AT_ONCE) if name == "visit" else
+                         CODE_CALL_S + SITE_OP_S if name == "op" else CODE_CALL_S)
                 answer = {"value": await asyncio.wait_for(getattr(self.api, name)(*args), limit)}
             except Exception as error:  # the model sees the reason as a JavaScript error
                 answer = {"error": f"{name}: {type(error).__name__}: {str(error)[:300]}"}
@@ -2974,6 +3708,8 @@ class Worker:
 
         pending_messages = []  # this step's batch: folded back if the step is cut off before it finishes
         site_errors = SiteErrors()
+        if run.recorder is not None:
+            site_errors.traffic = run.recorder
         run.pickers = pickers = FilePickers()
         trail = StepTrail(session.workspace / TRAIL / run.id, session.sensitive_data)
         downloads = DownloadNotices(session.workspace / DOWNLOADS, run.downloads_before or {})
@@ -3141,7 +3877,8 @@ class Worker:
                 await cdp.send("Browser.setDownloadBehavior",
                                {"behavior": "allow", "downloadPath": str(downloads), "eventsEnabled": True})
                 await cdp.detach()
-            api = CodeApi(context, code_secrets(session.sensitive_data))
+            api = CodeApi(context, code_secrets(session.sensitive_data),
+                          operations=site_operations(session.options.get("siteOps")), recorder=run.recorder)
             for page in context.pages:  # the session's tab is t1
                 with contextlib.suppress(Exception):
                     cdp = await context.new_cdp_session(page)
@@ -3245,6 +3982,10 @@ class Worker:
             if sandbox is not None:
                 with contextlib.suppress(Exception):
                     await sandbox.close()
+            # The site's answers still being read come in while Playwright is still connected.
+            if run.recorder is not None:
+                with contextlib.suppress(Exception):
+                    await run.recorder.settle()
             with contextlib.suppress(Exception):
                 await self.code_tabs(session, context, api, before)
             with contextlib.suppress(Exception):
@@ -3338,6 +4079,7 @@ class Worker:
         # The outcome is set only once the run has let go of the browser: until then a message still
         # joins it (and, if the agent never reads it, is recorded below as unread).
         status, result, error = "failed", None, "The run was interrupted."
+        run.recorder = SiteTraffic() if session.options.get("siteTraffic") is True else None
         try:
             run.save()  # a disk that refuses the record fails the run with the reason, never holds the browser
             run.browser = await self.switch_browser(session.options.get("browser"))
@@ -3376,6 +4118,18 @@ class Worker:
                 after = await finished_downloads(folder, run.downloads_before, DOWNLOAD_WAIT_S,
                                                  lambda: run.cancel_requested)
                 run.downloads = run_downloads(run.downloads_before, after)
+            # The site's requests, and the operations behind a finished report's options. The bodies they were
+            # found in go with the recorder: only templates and the log are kept.
+            recorder, run.recorder = run.recorder, None
+            if recorder is not None:
+                with contextlib.suppress(Exception):
+                    await recorder.settle()
+                    operations = (await site_operations_found(recorder, result, session.sensitive_data)
+                                  if status == "completed" else [])
+                    run.site_traffic = {"requests": recorder.public(session.sensitive_data),
+                                        "operations": operations}
+                    log.info("run %s: %d of the site's requests, %d operations behind its report", run.id,
+                             len(run.site_traffic["requests"]), len(operations))
             run.outcome = status, result, error  # what a worker stopped during the screenshot records
             with contextlib.suppress(Exception):
                 report = session.workspace / "report"
@@ -3534,7 +4288,8 @@ class Worker:
                 key = captcha.get("twoCaptchaKey") if isinstance(captcha, dict) else None
                 session.captcha = {"twoCaptchaKey": key} if isinstance(key, str) and key else None
             session.options = {k: body.get(k) for k in ("maxSteps", "timeoutSeconds", "allowedDomains", "vision",
-                                                         "jev", "jevCanFinish", "continueMemory", "browser")}
+                                                         "jev", "jevCanFinish", "continueMemory", "browser",
+                                                         "siteTraffic", "siteOps")}
             session.options["tuning"] = tuning or None
             run = Run(run_id, session_id, task)
             run.seq, self.run_seq = self.run_seq, self.run_seq + 1

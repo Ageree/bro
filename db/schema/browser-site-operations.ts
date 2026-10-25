@@ -1,0 +1,61 @@
+import { sql } from "drizzle-orm";
+import {
+  check,
+  integer,
+  jsonb,
+  pgTable,
+  text,
+  timestamp,
+  uniqueIndex,
+  uuid,
+} from "drizzle-orm/pg-core";
+import { workspaces } from "./workspaces";
+
+/**
+ * A site's read operation a browser run of the workspace found behind the
+ * options it reported (`site_operations` in browser-vm/worker/worker.py):
+ * the results page as a template, where its data comes from, and where the
+ * options are in it — `SiteOperation` (`agent/lib/browser-use/site-ops/`),
+ * never a value, a cookie, a header or a body. Only the workspace's own
+ * errands get it back: a page a run saw signed in stays with the person.
+ * One row per workspace and operation; a run that finds it again counts.
+ */
+export const browserSiteOperations = pgTable(
+  "browser_site_operations",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    /** The results page's host and path, as the template writes them. */
+    name: text("name").notNull(),
+    host: text("host").notNull(),
+    operation: jsonb("operation").notNull(),
+    /** How many finished runs found it. */
+    runs: integer("runs").notNull().default(1),
+    createdAt: timestamp("created_at", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex("browser_site_operations_workspace_name_uidx").on(
+      table.workspaceId,
+      table.name
+    ),
+    check(
+      "browser_site_operations_name_check",
+      sql`char_length(${table.name}) BETWEEN 1 AND 160`
+    ),
+  ]
+);
