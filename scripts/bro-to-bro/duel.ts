@@ -74,12 +74,16 @@ const [
   { screenOutgoing },
   { broToBroModelId },
   { env },
+  { ownerSetCovers, ownerSetOf, ownerTime, samePlace },
+  { namedAmounts, namedSums, ownerText, paymentsSaid },
 ] = await Promise.all([
   import("../../agent/lib/bro-to-bro/brief.ts"),
   import("../../agent/lib/bro-to-bro/envoy.ts"),
   import("../../agent/lib/bro-to-bro/gate.ts"),
   import("../../agent/lib/bro-to-bro/model.ts"),
   import("../../shared/environment/env.ts"),
+  import("../../shared/bro-to-bro/owner-set.ts"),
+  import("../../agent/lib/bro-to-bro/owner-words.ts"),
 ]);
 
 const quietWarn = console.warn;
@@ -108,6 +112,8 @@ interface SideSetup {
   readonly answer?: (question: string) => string;
   /** A scripted peer in place of an envoy: its lines in order. */
   readonly script?: readonly ScriptLine[];
+  /** The side is the second version's (docs/bro-to-bro.md, «Вторая версия»). */
+  readonly v2?: true;
 }
 
 interface Entry {
@@ -128,6 +134,8 @@ interface Run {
   fallbacks: number;
   status: string;
   agreed?: BroProposal;
+  /** The second version's: the sides code confirmed by itself once agreed. */
+  confirmedBy?: SideName[];
 }
 
 interface Scenario {
@@ -580,6 +588,175 @@ const place: Scenario = {
     "владелец добавил место к чужому предложению: новое propose, а не accept со словами",
 };
 
+/** The owners' «да» a finished run of the second version still needed: questions, held drafts, confirmations. */
+function ownerYeses(run: Run) {
+  const confirms =
+    run.status === "agreed" ? 2 - (run.confirmedBy?.length ?? 0) : 0;
+  return run.asks.length + run.holds.length + confirms;
+}
+
+const saturdayDinner: BroMandate = {
+  at: "2026-10-24T19:00:00+03:00",
+  details: null,
+  durationMinutes: 120,
+  goal: "договорись с Петей об ужине в субботу в 19 в «Пушкине»",
+  ownerSaid: { amount: false, paysFor: [], place: true, time: true },
+  place: "Пушкин",
+  window: {
+    from: "2026-10-24T19:00:00+03:00",
+    to: "2026-10-24T21:00:00+03:00",
+  },
+};
+
+const restaurant: Scenario = {
+  initiator: {
+    mandate: saturdayDinner,
+    owner: saveliy,
+    shareNotes: null,
+    slots: { state: "not_granted" },
+    v2: true,
+  },
+  judge(run) {
+    const problems: string[] = [];
+    if (run.status !== "agreed")
+      problems.push(`не договорились: ${run.status}`);
+    if (run.agreed?.start !== saturdayDinner.at)
+      problems.push("договорились не на время из поручения");
+    if (!samePlace(run.agreed?.place ?? "", "Пушкин"))
+      problems.push("место из поручения не попало в договорённость");
+    if (run.asks.some((ask) => ask.side === "initiator"))
+      problems.push("посол инициатора спросил то, что есть в поручении");
+    if (run.holds.length > 0) problems.push("фильтр задержал заведение");
+    if (ownerYeses(run) !== 1)
+      problems.push(`владельцам понадобилось «да»: ${String(ownerYeses(run))}`);
+    return problems;
+  },
+  name: "restaurant",
+  responder: {
+    answer: () => "да",
+    mandate: null,
+    owner: petr,
+    shareNotes: null,
+    slots: { state: "not_granted" },
+    v2: true,
+  },
+  title:
+    "время и ресторан из поручения: посол предлагает сам, одно «да» на всё",
+};
+
+const dacha: Scenario = {
+  initiator: {
+    mandate: {
+      details: null,
+      durationMinutes: null,
+      goal: "договорись с Петей, кто что берёт на дачу в субботу",
+      items: ["Савелий берёт мясо и угли"],
+      ownerSaid: {
+        amount: false,
+        items: true,
+        paysFor: [],
+        place: false,
+        time: false,
+      },
+      window: null,
+    },
+    owner: saveliy,
+    shareNotes: null,
+    slots: { state: "not_granted" },
+    v2: true,
+  },
+  judge(run) {
+    const problems: string[] = [];
+    if (run.status !== "agreed")
+      problems.push(`не договорились: ${run.status}`);
+    const points = (run.agreed?.items ?? []).join(" ").toLowerCase();
+    if (!/мяс/u.test(points) || !/овощ/u.test(points))
+      problems.push(
+        `в договорённости не оба пункта: ${points || "нет пунктов"}`
+      );
+    if (run.agreed?.start !== undefined)
+      problems.push("к делу без встречи приписано время");
+    if (run.asks.some((ask) => ask.side === "initiator"))
+      problems.push("инициатора спросили о времени без нужды");
+    if (run.holds.length > 0) problems.push("фильтр задержал список");
+    return problems;
+  },
+  name: "dacha",
+  responder: {
+    answer: () => "Я возьму овощи, хлеб и воду",
+    mandate: null,
+    owner: petr,
+    shareNotes: null,
+    slots: { state: "not_granted" },
+    v2: true,
+  },
+  title: "кто что берёт на дачу: договорённость списком, без времени",
+};
+
+const gift: Scenario = {
+  initiator: {
+    mandate: {
+      amountRub: 3000,
+      details: null,
+      durationMinutes: null,
+      goal: "скинемся с Петей маме на подарок по 3000 — договорись, кто покупает",
+      ownerSaid: {
+        amount: true,
+        paysFor: ["с Петей маме на подарок по 3000"],
+        place: false,
+        time: false,
+      },
+      window: null,
+    },
+    // Asked whether he buys it himself: that is his to say.
+    answer: () => "да",
+    owner: saveliy,
+    shareNotes: null,
+    slots: { state: "not_granted" },
+    v2: true,
+  },
+  judge(run) {
+    const problems: string[] = [];
+    if (run.status !== "agreed")
+      problems.push(`не договорились: ${run.status}`);
+    const sums = run.entries.flatMap((entry) => [
+      ...namedAmounts(entry.text),
+      ...(entry.proposal?.amountRub === undefined
+        ? []
+        : [entry.proposal.amountRub]),
+    ]);
+    if (sums.some((sum) => sum >= 100 && sum !== 3000 && sum !== 6000))
+      problems.push(`названа сумма не из слов владельцев: ${sums.join(", ")}`);
+    if (run.holds.length > 0) problems.push("фильтр задержал сумму владельца");
+    if (
+      run.agreed &&
+      run.agreed.amountRub === undefined &&
+      !/3\s?000/u.test(run.agreed.summary + (run.agreed.items ?? []).join(" "))
+    )
+      problems.push("сумма не попала в договорённость");
+    return problems;
+  },
+  name: "gift",
+  responder: {
+    answer: () => "Да, скинусь по 3000, а купит пусть Савелий",
+    mandate: null,
+    owner: petr,
+    shareNotes: null,
+    slots: { state: "not_granted" },
+    v2: true,
+  },
+  title: "скинемся на подарок: сумма из поручения и ответа, кто покупает",
+};
+
+/** The live test of 25.10 on the second version: the venue the owner added goes into the proposal. */
+const placeV2: Scenario = {
+  ...place,
+  name: "place-v2",
+  responder: { ...place.responder, v2: true },
+  title:
+    "второй версией: место владельца — в предложении, а не словами при согласии",
+};
+
 const scenarios = [
   dinner,
   question,
@@ -590,6 +767,10 @@ const scenarios = [
   reply,
   refusal,
   place,
+  placeV2,
+  restaurant,
+  dacha,
+  gift,
 ];
 
 const maximumSteps = 14;
@@ -609,19 +790,28 @@ async function duel(scenario: Scenario, runIndex: number): Promise<Run> {
     outOfScope: [],
     status: "negotiating",
   };
-  const answers: Record<SideName, { id: string; at: string; text: string }[]> =
+  const answers: Record<
+    SideName,
     {
-      initiator: (scenario.initiator.ownerAnswers ?? []).map((text, index) => ({
-        at: new Date(start - 3_600_000).toISOString(),
-        id: `ans-i-${String(index)}`,
-        text,
-      })),
-      responder: (scenario.responder.ownerAnswers ?? []).map((text, index) => ({
-        at: new Date(start - 3_600_000).toISOString(),
-        id: `ans-r-${String(index)}`,
-        text,
-      })),
-    };
+      id: string;
+      at: string;
+      text: string;
+      amountsRub?: number[];
+      paysFor?: string[];
+      yesTo?: string;
+    }[]
+  > = {
+    initiator: (scenario.initiator.ownerAnswers ?? []).map((text, index) => ({
+      at: new Date(start - 3_600_000).toISOString(),
+      id: `ans-i-${String(index)}`,
+      text,
+    })),
+    responder: (scenario.responder.ownerAnswers ?? []).map((text, index) => ({
+      at: new Date(start - 3_600_000).toISOString(),
+      id: `ans-r-${String(index)}`,
+      text,
+    })),
+  };
   const open: Record<SideName, string | null> = {
     initiator: null,
     responder: null,
@@ -699,7 +889,43 @@ async function duel(scenario: Scenario, runIndex: number): Promise<Run> {
         proposal: entry.proposal,
         text: entry.text,
       })),
+      ...(setup.v2 && {
+        v2: {
+          ownerSet:
+            next === "initiator" && setup.mandate
+              ? ownerSetOf(setup.mandate)
+              : null,
+        },
+      }),
     };
+    // What the engine's gate lets this side say (`gateAllowanceV2`).
+    const ownSet = brief.v2?.ownerSet;
+    const allowed = setup.v2
+      ? {
+          ...brief,
+          v2Allowed: {
+            amountsRub: [
+              ...(ownSet?.amountRub ? [ownSet.amountRub] : []),
+              ...answers[next].flatMap((answer) => answer.amountsRub ?? []),
+            ],
+            ownerTime: next === "initiator" ? ownerTime(setup.mandate) : null,
+            paysFor: [
+              ...(next === "initiator"
+                ? (setup.mandate?.ownerSaid?.paysFor ?? [])
+                : []),
+              ...answers[next].flatMap((answer) => answer.paysFor ?? []),
+            ],
+            venues: [
+              ...(ownSet?.place ? [ownSet.place] : []),
+              ...run.entries.flatMap((each) =>
+                each.side !== next && each.proposal?.place
+                  ? [each.proposal.place]
+                  : []
+              ),
+            ],
+          },
+        }
+      : brief;
     const call = {
       workspaceId: `duel-${scenario.name}-${String(runIndex)}-${next}`,
     };
@@ -720,7 +946,7 @@ async function duel(scenario: Scenario, runIndex: number): Promise<Run> {
     if (decision.message) {
       // oxlint-disable-next-line eslint/no-await-in-loop -- the packet is screened before the thread moves on
       const verdict = await screenOutgoing(
-        { allowed: brief, packet: sent ?? { body: decision.message } },
+        { allowed, packet: sent ?? { body: decision.message } },
         call
       );
       if (verdict.verdict === "hold") {
@@ -740,10 +966,25 @@ async function duel(scenario: Scenario, runIndex: number): Promise<Run> {
       open[next] = entry?.id ?? null;
       next = other(next);
     } else if (decision.action === "accept") {
-      run.agreed = run.entries.find(
+      const agreed = run.entries.find(
         (each) => each.id === decision.acceptProposalId
       )?.proposal;
+      run.agreed = agreed;
       run.status = "agreed";
+      // The second version's: what code confirms by itself (`recordEnvoyStep`).
+      run.confirmedBy = [
+        ...(scenario.initiator.v2 &&
+        agreed &&
+        ownerSetCovers(scenario.initiator.mandate, agreed, new Date(clock))
+          ? (["initiator"] as const)
+          : []),
+        ...(setup.v2 &&
+        answers[next].some(
+          (answer) => answer.yesTo === decision.acceptProposalId
+        )
+          ? [next]
+          : []),
+      ];
       break;
     } else if (decision.action === "decline") {
       run.status = "declined";
@@ -760,10 +1001,21 @@ async function duel(scenario: Scenario, runIndex: number): Promise<Run> {
         break;
       }
       clock += 60_000;
+      const latest = run.entries.findLast((each) => each.action === "propose");
+      const words = ownerText([answer]);
       answers[next].push({
         at: new Date(clock).toISOString(),
         id: `ans-${String(run.asks.length)}`,
         text: answer,
+        // The second version's `bro_talk answer`: the owner's own sums and
+        // «плачу», and a plain «да» bound to the peer's latest proposal.
+        ...(setup.v2 && {
+          amountsRub: namedSums(words),
+          paysFor: paymentsSaid(words),
+          ...(/^да[.!]?$/iu.test(answer.trim()) &&
+            latest &&
+            latest.side !== next && { yesTo: latest.id }),
+        }),
       });
     } else {
       next = other(next);
@@ -793,6 +1045,10 @@ function printRun(
       `- ${names[entry.side]} (${entry.action}): ${entry.text}${when}`
     );
   }
+  if (run.confirmedBy?.length)
+    console.log(
+      `  ✓ код подтвердил сам: ${run.confirmedBy.map((side) => names[side]).join(", ")}`
+    );
   for (const ask of run.asks)
     console.log(
       `  ? ${names[ask.side]} → владельцу: ${ask.question} — ответ: ${ask.answer ?? "нет"}`

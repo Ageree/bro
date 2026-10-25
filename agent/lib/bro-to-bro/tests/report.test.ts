@@ -1,6 +1,6 @@
 import type { AttachSessionFn } from "eve/channels";
 import type { ScheduleToFn } from "eve/schedules";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type * as Reports from "@db/services/bro-to-bro/reports";
 
 type ClaimedReport = Awaited<
@@ -10,6 +10,12 @@ type ClaimedReport = Awaited<
 const outbox = vi.hoisted(() => ({
   claimBroReports: vi.fn<() => Promise<ClaimedReport[]>>(),
   finishBroReport: vi.fn<typeof Reports.finishBroReport>(),
+  parkBroReport: vi.fn<typeof Reports.parkBroReport>(),
+  peerUnreachable:
+    vi.fn<
+      (threadId: string, workspaceId: string, waiting: string) => Promise<void>
+    >(),
+  telegram: vi.fn<() => Promise<{ chatId: string } | undefined>>(),
   remembered: vi.fn<
     () => Promise<
       | {
@@ -25,6 +31,13 @@ const outbox = vi.hoisted(() => ({
 vi.mock("@db/services/bro-to-bro/reports", () => ({
   claimBroReports: outbox.claimBroReports,
   finishBroReport: outbox.finishBroReport,
+  parkBroReport: outbox.parkBroReport,
+}));
+vi.mock("@db/services/bro-to-bro/transitions", () => ({
+  reportPeerUnreachable: outbox.peerUnreachable,
+}));
+vi.mock("@db/services/channel-identities", () => ({
+  readChannelIdentity: outbox.telegram,
 }));
 vi.mock("@db/services/proactive", () => ({
   readRememberedConversations: outbox.remembered,
@@ -79,7 +92,10 @@ type Send = (
   }
 ) => Promise<void>;
 
-function deliver(send = vi.fn<Send>(async () => undefined)) {
+function deliver(
+  send = vi.fn<Send>(async () => undefined),
+  deliverReports = deliverBroReports
+) {
   // SAFETY: the delivery only calls `send` on the handle.
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- A bare handle stands in for the channel's.
   const to = vi.fn<ScheduleToFn>(() => ({ send }) as never);
@@ -88,14 +104,26 @@ function deliver(send = vi.fn<Send>(async () => undefined)) {
     attachSession,
     send,
     to,
-    run: () => deliverBroReports({ attachSession, to }),
+    run: () => deliverReports({ attachSession, to }),
   };
 }
 
+/** The delivery with these workspaces' sides on the second version: the environment is read once a module loads. */
+async function secondVersion(workspaces: string) {
+  vi.resetModules();
+  vi.stubEnv("BRO_TO_BRO_V2_WORKSPACES", workspaces);
+  return (await import("@agent/lib/bro-to-bro/report")).deliverBroReports;
+}
+
 describe("delivering Bro ↔ Bro reports", () => {
+  afterEach(() => {
+    vi.stubEnv("BRO_TO_BRO_V2_WORKSPACES", undefined);
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     outbox.remembered.mockResolvedValue(undefined);
+    outbox.telegram.mockResolvedValue(undefined);
   });
 
   it("opens a queued turn of its own in the chat the errand was started from", async () => {
@@ -188,6 +216,46 @@ describe("delivering Bro ↔ Bro reports", () => {
       turnPolicy: "queue",
     });
     expect(outbox.finishBroReport).not.toHaveBeenCalled();
+  });
+
+  it("goes, in the second version, to the Telegram chat an owner who never wrote linked", async () => {
+    outbox.claimBroReports.mockResolvedValue([report(null)]);
+    outbox.telegram.mockResolvedValue({ chatId: "777" });
+    const delivery = deliver(undefined, await secondVersion("personal:savely"));
+    await delivery.run();
+
+    expect(delivery.to).toHaveBeenCalledExactlyOnceWith(
+      { name: "telegram" },
+      { chatId: "777" }
+    );
+    const [, options] = delivery.send.mock.calls[0] ?? [];
+    expect(options).toMatchObject({
+      auth: {
+        attributes: {
+          conversationChannel: "telegram",
+          conversationId: "777::",
+        },
+      },
+    });
+    expect(outbox.parkBroReport).not.toHaveBeenCalled();
+  });
+
+  it("waits, in the second version, for an owner with no chat at all, and tells the side that waits for them", async () => {
+    outbox.claimBroReports.mockResolvedValue([report(null)]);
+    const delivery = deliver(undefined, await secondVersion("*"));
+    await delivery.run();
+
+    expect(delivery.send).not.toHaveBeenCalled();
+    expect(outbox.finishBroReport).not.toHaveBeenCalled();
+    expect(outbox.parkBroReport).toHaveBeenCalledExactlyOnceWith(
+      reportId,
+      token
+    );
+    expect(outbox.peerUnreachable).toHaveBeenCalledExactlyOnceWith(
+      threadId,
+      "personal:savely",
+      "question"
+    );
   });
 
   it("puts a report whose dispatch failed back in line", async () => {

@@ -285,3 +285,180 @@ describe("screenOutgoing", () => {
     });
   });
 });
+
+/** The checker telling a promise to pay, covered by the goal. */
+function paymentFacts(text: string) {
+  return [{ category: "payment", covered: "goal", text }];
+}
+
+describe("screenOutgoing, the second version's", () => {
+  const ownedV2 = {
+    amountsRub: [3000],
+    ownerTime: {
+      exactStart: "2026-10-31T19:00:00+03:00",
+      from: "2026-10-31T19:00:00+03:00",
+      to: "2026-10-31T21:00:00+03:00",
+    },
+    paysFor: [],
+    venues: ["Пушкин"],
+  };
+  const owned: GateAllowance = {
+    ...allowed,
+    slots: { state: "not_granted" },
+    v2Allowed: ownedV2,
+  };
+  const dinner = {
+    end: "2026-10-31T21:00:00+03:00",
+    place: "ресторан «Пушкин»",
+    start: "2026-10-31T19:00:00+03:00",
+    summary: "Ужин",
+  };
+
+  async function verdict(
+    packet: Parameters<typeof screenOutgoing>[0]["packet"],
+    facts: readonly {
+      category: string;
+      covered: string | null;
+      text: string;
+    }[],
+    allowance: GateAllowance = owned
+  ) {
+    model.generate.mockResolvedValue({ output: { facts } });
+    return screenOutgoing({ allowed: allowance, packet }, call);
+  }
+
+  it("lets the owner's own time and venue go with no calendar, and holds them on the first version", async () => {
+    const venue = [
+      { category: "time", covered: "goal", text: "суббота в 19:00" },
+      { category: "venue", covered: "venue", text: "в «Пушкине»" },
+    ];
+    const packet = {
+      body: "Ужин в субботу в 19:00 в «Пушкине»?",
+      proposal: dinner,
+    };
+    await expect(verdict(packet, venue)).resolves.toEqual({ verdict: "pass" });
+
+    const { v2Allowed: _second, ...first } = owned;
+    await expect(verdict(packet, venue, first)).resolves.toMatchObject({
+      reasons: [{ by: "code", finding: "time" }],
+      verdict: "hold",
+    });
+  });
+
+  it("holds a home or a place beyond the venues, whatever the checker calls it", async () => {
+    const verdicts = [];
+    /* oxlint-disable eslint/no-await-in-loop -- The checker's one answer stands for each place in turn. */
+    for (const text of [
+      "у Савелия дома",
+      "Пушкин, второй этаж",
+      "в «Даблби»",
+    ]) {
+      const { verdict: each } = await verdict({ body: "Давай там?" }, [
+        { category: "venue", covered: "venue", text },
+      ]);
+      verdicts.push(each);
+    }
+    /* oxlint-enable eslint/no-await-in-loop */
+    expect(verdicts).toEqual(["hold", "hold", "hold"]);
+  });
+
+  it("lets a sum go only as the agreement's own, named by the owner", async () => {
+    const sum = [{ category: "money", covered: "goal", text: "по 3000 ₽" }];
+    const gift = { amountRub: 3000, summary: "Подарок маме" };
+    await expect(
+      verdict(
+        { body: "Скидываемся по 3000 ₽ маме на подарок?", proposal: gift },
+        sum
+      )
+    ).resolves.toEqual({ verdict: "pass" });
+    // Outside the agreement, of another sum, or in another currency: held.
+    for (const packet of [
+      { body: "Скидываемся по 3000 ₽ маме на подарок?" },
+      { body: "Скидываемся по 5000 ₽?", proposal: gift },
+      { body: "По 3000 долларов?", proposal: gift },
+      { body: "По 3000, а бюджет до пятидесяти тысяч", proposal: gift },
+      { body: "Бюджет до 50 000 ₽", proposal: gift },
+      { body: "Савелий получает 3000 рублей в месяц", proposal: gift },
+    ])
+      expect(
+        // oxlint-disable-next-line eslint/no-await-in-loop -- One packet after another.
+        (await verdict(packet, sum)).verdict
+      ).toBe("hold");
+  });
+
+  it("lets a promise to pay go only of what the owner said they pay for", async () => {
+    const ownerPays = (paysFor: string[]) => ({
+      ...owned,
+      v2Allowed: { ...ownedV2, paysFor },
+    });
+    await expect(
+      verdict(
+        { body: "Подарок купит Савелий" },
+        paymentFacts("Савелий купит подарок")
+      )
+    ).resolves.toMatchObject({ verdict: "hold" });
+    await expect(
+      verdict(
+        { body: "Подарок купит Савелий" },
+        paymentFacts("Савелий купит подарок"),
+        ownerPays(["маме на подарок"])
+      )
+    ).resolves.toEqual({ verdict: "pass" });
+    /* oxlint-disable eslint/no-await-in-loop -- One promise after another. */
+    for (const [text, paysFor] of [
+      ["Савелий оплатит маме квартиру", ["маме на подарок"]],
+      ["Савелий завтра оплатит автомобиль", ["завтра торт"]],
+      ["Пётр, мой владелец купит подарок", []],
+    ] as const) {
+      const { verdict: each } = await verdict(
+        { body: text },
+        paymentFacts(text),
+        ownerPays([...paysFor])
+      );
+      expect(each).toBe("hold");
+    }
+    /* oxlint-enable eslint/no-await-in-loop */
+  });
+
+  it("holds what someone has or earns, whatever sums the owner named", async () => {
+    /* oxlint-disable eslint/no-await-in-loop -- One packet after another. */
+    for (const [body, text] of [
+      ["У Савелия много денег", "у Савелия много денег"],
+      ["Зарплата Савелия 3000 в день", "зарплата 3000 в день"],
+      ["Савелий готов потратить до 50 тысяч на подарок", "до 50 тысяч"],
+      ["Скинь косарь", "косарь"],
+    ] as const) {
+      const held = await verdict({ body }, [
+        { category: "money", covered: "goal", text },
+      ]);
+      expect(held.verdict).toBe("hold");
+    }
+    /* oxlint-enable eslint/no-await-in-loop */
+  });
+
+  it("holds a proposal's sum the owner did not name, and checks its points as text", async () => {
+    await expect(
+      verdict(
+        {
+          body: "Давай так?",
+          proposal: { amountRub: 4000, summary: "Подарок маме" },
+        },
+        []
+      )
+    ).resolves.toMatchObject({ reasons: [{ by: "code", finding: "money" }] });
+    const points = await verdict(
+      {
+        body: "Давай так?",
+        proposal: {
+          items: ["Пётр — угли, +7 999 123 45 67"],
+          summary: "Дача",
+        },
+      },
+      []
+    );
+    expect("reasons" in points && points.reasons).toContainEqual({
+      by: "code",
+      finding: "phone",
+    });
+  });
+});

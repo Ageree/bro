@@ -663,3 +663,69 @@ describe("a meeting both owners confirmed", () => {
     ]);
   });
 });
+
+describe("the second version's step", () => {
+  beforeEach(() => {
+    vi.stubEnv("BRO_TO_BRO_V2_WORKSPACES", "*");
+  });
+
+  afterEach(() => {
+    vi.stubEnv("BRO_TO_BRO_V2_WORKSPACES", undefined);
+  });
+
+  it("lets the peer's place be named only as the place of the meeting a packet settles", async () => {
+    const bro = await thread();
+    const start = Date.now() + 3 * 24 * 60 * 60_000;
+    const leaseToken = await bro.claim();
+    await bro.says(
+      savely,
+      {
+        kind: "sent",
+        message: {
+          action: "propose",
+          body: "Поужинаем в «Медси»?",
+          proposal: {
+            end: new Date(start + 2 * 60 * 60_000).toISOString(),
+            place: "Медси",
+            start: new Date(start).toISOString(),
+            summary: "Ужин",
+          },
+        },
+      },
+      leaseToken
+    );
+    outside.ask.mockImplementation(async ({ purpose }) =>
+      purpose === "gate"
+        ? { facts: [] }
+        : {
+            action: "message",
+            message: "Пётр в субботу до обеда в «Медси», после — свободен",
+            outOfScope: [],
+          }
+    );
+
+    await bro.runEnvoyStep({
+      leaseToken,
+      threadId: bro.threadId,
+      workspaceId: petya.workspaceId,
+    });
+
+    const checked = outside.ask.mock.calls
+      .map(([request]) => request)
+      .filter((request) => request.purpose === "gate")
+      .map(
+        (request) =>
+          z
+            .object({
+              messages: z.tuple([z.object({ content: z.string() })]),
+            })
+            .parse(request).messages[0].content
+      );
+    expect(checked).toHaveLength(1);
+    expect(
+      z
+        .object({ allowed: z.object({ venues: z.array(z.string()) }) })
+        .parse(JSON.parse(checked[0] ?? "{}")).allowed.venues
+    ).toEqual([]);
+  });
+});

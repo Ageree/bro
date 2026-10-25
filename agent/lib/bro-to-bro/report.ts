@@ -6,13 +6,12 @@ import { telegramChatIdFromConversationId } from "@agent/lib/telegram-conversati
 import {
   claimBroReports,
   finishBroReport,
+  parkBroReport,
 } from "@db/services/bro-to-bro/reports";
-import {
-  readRememberedConversations,
-  rememberedMessenger,
-} from "@db/services/proactive";
+import { broReportRoute } from "@db/services/bro-to-bro/route";
+import { reportPeerUnreachable } from "@db/services/bro-to-bro/transitions";
+import { broToBroV2 } from "@db/services/bro-to-bro/version";
 import { readWorkspaceTimeZone } from "@db/services/user-profile";
-import type { BroReportTarget } from "@db";
 import { broReportAuthenticator } from "./report-caller";
 import { broReportMessage } from "./report-text";
 
@@ -25,30 +24,8 @@ import { broReportMessage } from "./report-text";
 const handedOverLeaseMs = 10 * 60_000;
 const dispatchTimeoutMs = 20_000;
 
-/**
- * Where a report goes: the conversation its side started the thread from,
- * else the messenger the owner last wrote from, which has pushes, else the
- * web chat they last wrote in, as a schedule's report finds a person with
- * no messenger (`reportConversations`). Someone who never wrote to Bro at
- * all has the report in the cabinet and `bro_talk status` alone.
- */
-async function reportRoute(report: {
-  readonly target: BroReportTarget | null;
-  readonly workspaceId: string;
-}) {
-  if (report.target) return report.target;
-  const remembered = await readRememberedConversations(report.workspaceId);
-  if (!remembered) return undefined;
-  return (
-    rememberedMessenger(remembered) ??
-    (remembered.webConversationId
-      ? {
-          conversationChannel: "eve" as const,
-          conversationId: remembered.webConversationId,
-        }
-      : undefined)
-  );
-}
+/** What waits for an owner in a thread report: what their peer would wait on. */
+const awaitedKinds = new Set(["agreed", "held", "question"] as const);
 
 /**
  * Hands every due Bro ↔ Bro report to its owner as a turn of its own, as
@@ -69,7 +46,17 @@ export async function deliverBroReports(delivery: {
   });
   await Promise.all(
     rows.map(async (row) => {
-      const route = await reportRoute(row);
+      const route = await broReportRoute(row);
+      if (!route && broToBroV2(row.workspaceId)) {
+        // The second version's: the report waits for the owner's first
+        // chat with Bro, and whoever waits for them hears they are not
+        // reachable yet, rather than nothing.
+        await parkBroReport(row.id, row.leaseToken);
+        const waiting = [...awaitedKinds].find((kind) => kind === row.kind);
+        if (row.threadId && waiting)
+          await reportPeerUnreachable(row.threadId, row.workspaceId, waiting);
+        return;
+      }
       if (!route) {
         await finishBroReport(row.id, row.leaseToken, {
           delivered: false,
@@ -79,7 +66,13 @@ export async function deliverBroReports(delivery: {
         return;
       }
       const scope = { userId: row.userId, workspaceId: row.workspaceId };
-      const message = broReportMessage(row, await readWorkspaceTimeZone(scope));
+      const message = broReportMessage(
+        row,
+        await readWorkspaceTimeZone(scope),
+        {
+          v2: broToBroV2(row.workspaceId),
+        }
+      );
       const attributes = {
         workspaceId: row.workspaceId,
         broReportId: row.id,

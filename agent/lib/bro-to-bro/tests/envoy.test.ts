@@ -480,3 +480,230 @@ describe("planEnvoyStep", () => {
     await expect(planEnvoyStep(brief(), call)).rejects.toThrow("RouterAI 502");
   });
 });
+
+describe("the second version's envoy", () => {
+  const ownerSet = {
+    amountRub: null,
+    items: null,
+    place: "Пушкин",
+    time: {
+      end: "2026-10-31T21:00:00+03:00",
+      exact: true,
+      start: "2026-10-31T19:00:00+03:00",
+    },
+    unconfirmed: { amountRub: null, items: null, place: null },
+  };
+  const own = brief({
+    durationMinutes: null,
+    slots: { state: "not_granted" },
+    v2: { ownerSet },
+  });
+  const dinner = {
+    end: "2026-10-31T21:00:00+03:00",
+    place: "Пушкин",
+    start: "2026-10-31T19:00:00+03:00",
+    summary: "Ужин",
+  };
+
+  it("offers the owner's own time and venue itself, with no calendar", async () => {
+    answers(
+      {
+        action: "ask_owner",
+        message: "Уточню и вернусь",
+        ownerQuestion: "Во сколько тебе удобно?",
+        outOfScope: [],
+      },
+      {
+        action: "propose",
+        message:
+          "Привет! Бро Савелия на связи. Ужин в сб 31.10 в 19:00 в «Пушкине»?",
+        outOfScope: [],
+        proposal: dinner,
+      }
+    );
+    await expect(planEnvoyStep(own, call)).resolves.toMatchObject({
+      decision: { action: "propose", proposal: dinner },
+      kind: "decided",
+    });
+    const retry = model.generate.mock.calls[1]?.[0].messages?.at(-1)?.content;
+    expect(retry).toContain("время владелец уже назвал");
+  });
+
+  it("puts the venue the owner named into the proposal, not only into words", async () => {
+    answers(
+      {
+        action: "propose",
+        message: "Ужин в сб 31.10 в 19:00 в «Пушкине»?",
+        outOfScope: [],
+        proposal: { ...dinner, place: undefined },
+      },
+      {
+        action: "propose",
+        message: "Ужин в сб 31.10 в 19:00 в «Пушкине»?",
+        outOfScope: [],
+        proposal: dinner,
+      }
+    );
+    await expect(planEnvoyStep(own, call)).resolves.toMatchObject({
+      kind: "decided",
+    });
+    expect(
+      model.generate.mock.calls[1]?.[0].messages?.at(-1)?.content
+    ).toContain("владелец назвал место");
+  });
+
+  it("names no place in words while accepting a proposal that has none", async () => {
+    const responder = brief({
+      mandate: null,
+      ownerAnswers: [
+        { at: "2026-10-23T12:10:00+03:00", id: "answer-1", text: "Да" },
+      ],
+      role: "responder",
+      slots: { state: "not_granted" },
+      transcript: [peerProposal],
+      v2: { ownerSet: null },
+    });
+    answers(
+      {
+        acceptProposalId: peerProposal.id,
+        action: "accept",
+        message: "Отлично, давай в кафе «Пушкин»!",
+        outOfScope: [],
+      },
+      {
+        acceptProposalId: peerProposal.id,
+        action: "accept",
+        message: "Отлично, договорились!",
+        outOfScope: [],
+      }
+    );
+    await expect(planEnvoyStep(responder, call)).resolves.toMatchObject({
+      decision: { action: "accept" },
+      kind: "decided",
+    });
+    expect(
+      model.generate.mock.calls[1]?.[0].messages?.at(-1)?.content
+    ).toContain("называешь место");
+  });
+
+  it("does not agree to a sum its owner never named", async () => {
+    const gift = {
+      ...peerProposal,
+      proposal: { amountRub: 3000, summary: "Подарок маме" },
+    };
+    const responder = brief({
+      mandate: null,
+      role: "responder",
+      slots: { state: "not_granted" },
+      transcript: [gift],
+      v2: { ownerSet: null },
+    });
+    const yes = {
+      acceptProposalId: gift.id,
+      action: "accept",
+      message: "Договорились!",
+      outOfScope: [],
+    };
+    answers(yes, yes);
+    await expect(planEnvoyStep(responder, call)).resolves.toMatchObject({
+      decision: { action: "ask_owner" },
+      kind: "fallback",
+    });
+
+    answers(yes);
+    await expect(
+      planEnvoyStep(
+        {
+          ...responder,
+          ownerAnswers: [
+            {
+              at: "2026-10-23T12:10:00+03:00",
+              id: "answer-1",
+              text: "да",
+              yesTo: gift.id,
+            },
+          ],
+        },
+        call
+      )
+    ).resolves.toMatchObject({
+      decision: { action: "accept" },
+      kind: "decided",
+    });
+  });
+
+  it("reads the second version's rules only on its own side", () => {
+    expect(buildEnvoyPrompt(own).instructions).toContain(
+      "Род людей ты не знаешь"
+    );
+    expect(buildEnvoyPrompt(brief()).instructions).not.toContain(
+      "Род людей ты не знаешь"
+    );
+    expect(buildEnvoyPrompt(own).prompt).toContain('"ownerSet"');
+  });
+});
+
+describe("the second version's envoy, after its owner's plain yes", () => {
+  it("accepts the very proposal the owner said yes to, by code, asking the model nothing", async () => {
+    const responder = brief({
+      mandate: null,
+      ownerAnswers: [
+        {
+          at: "2026-10-23T12:10:00+03:00",
+          id: "answer-1",
+          text: "да",
+          yesTo: peerProposal.id,
+        },
+      ],
+      role: "responder",
+      slots: { state: "not_granted" },
+      transcript: [peerProposal],
+      v2: { ownerSet: null },
+    });
+    await expect(planEnvoyStep(responder, call)).resolves.toMatchObject({
+      decision: { acceptProposalId: peerProposal.id, action: "accept" },
+      kind: "decided",
+    });
+    expect(model.generate).not.toHaveBeenCalled();
+
+    // A later answer takes the yes back: the model decides again.
+    answers({
+      action: "propose",
+      message: "Давай лучше в воскресенье?",
+      outOfScope: [],
+      proposal: { summary: "Ужин" },
+    });
+    await planEnvoyStep(
+      {
+        ...responder,
+        ownerAnswers: [
+          ...responder.ownerAnswers,
+          {
+            at: "2026-10-23T12:11:00+03:00",
+            id: "answer-2",
+            text: "Нет, передумал, предложи воскресенье",
+          },
+        ],
+      },
+      call
+    );
+    expect(model.generate).toHaveBeenCalledOnce();
+    model.generate.mockReset();
+
+    // A yes to an older proposal of the peer's is left to the model.
+    answers({
+      action: "ask_owner",
+      message: "Уточню и вернусь",
+      ownerQuestion: "Пётр предлагает другое время. Подходит?",
+      outOfScope: [],
+    });
+    await planEnvoyStep(
+      {
+        ...responder,
+        transcript: [peerProposal, { ...peerProposal, id: "msg-peer-2" }],
+      },
+      call
+    );
+    expect(model.generate).toHaveBeenCalledOnce();
+  });
+});

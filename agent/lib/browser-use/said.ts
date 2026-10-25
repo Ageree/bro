@@ -336,6 +336,17 @@ function paymentQuestionBefore(
 }
 
 /**
+ * Bro's last message to the person before their message that opened this
+ * turn — the question their answer answers — or null when Bro opened the
+ * turn or said nothing before it.
+ */
+export function askedBeforeTurn(messages: readonly ModelMessage[]) {
+  const opening = messages.findLastIndex(startsTurn);
+  if (opening === -1 || personBurst(messages, opening) === null) return null;
+  return lastDelivered(messages.slice(0, opening)) ?? null;
+}
+
+/**
  * What a turn's first step read before its opener, on this instance: eve's
  * compaction at that step (`start`) may drop the tool results and Bro's
  * steps without text from the part it keeps (`keepNonToolResultMessages`
@@ -527,7 +538,7 @@ function plainAnswer(
  * aloud answers like a typed one (owner 20.10), and «(ты: «…Оплачиваю?»)»
  * is Bro's question, not part of the answer.
  */
-function spokenWords(text: string) {
+export function spokenWords(text: string) {
   return text.startsWith(voiceTalkMarker)
     ? text
         .slice(voiceTalkMarker.length)

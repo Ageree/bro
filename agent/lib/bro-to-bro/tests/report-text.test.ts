@@ -215,3 +215,93 @@ describe("the text of a Bro ↔ Bro report's turn", () => {
     expect(accepted(null)).toContain("in person or by phone");
   });
 });
+
+describe("the text of a second version's report", () => {
+  const v2 = { v2: true };
+
+  it("asks «это он?» in one short message, by the name and not by a gender", () => {
+    const text = broReportMessage(
+      {
+        kind: "invite_accepted",
+        payload: {
+          accountDays: 0,
+          channel: "web",
+          linkId: "44444444-4444-4444-8444-444444444444",
+          peerLabel: null,
+          peerName: "Борис",
+          telegramUsername: null,
+        },
+        threadId: null,
+      },
+      "Europe/Moscow",
+      v2
+    );
+    expect(text).toContain("one short message");
+    expect(text).toContain("do not say it is connected or ready");
+    expect(text).toContain("never guess it from their name");
+  });
+
+  it("lets a plain yes to the peer's proposal carry its id with the answer", () => {
+    const text = broReportMessage(
+      {
+        kind: "question",
+        payload: {
+          ...peer,
+          proposal: {
+            end: "2026-10-31T18:00:00Z",
+            start: "2026-10-31T16:00:00Z",
+            summary: "Ужин",
+            place: "Пушкин",
+          },
+          proposalId,
+          text: "Подходит ли?",
+        },
+        threadId,
+      },
+      "Europe/Moscow",
+      v2
+    );
+    expect(text).toContain(`add proposal ${proposalId} to that answer`);
+    expect(text).toContain("a plain yes");
+  });
+
+  it("tells an owner whose side code confirmed that they need not say yes, and lists the points", () => {
+    const text = broReportMessage(
+      {
+        kind: "agreed",
+        payload: {
+          ...peer,
+          autoConfirmed: "errand",
+          proposal: {
+            amountRub: 6000,
+            items: ["Савелий покупает", "Пётр — открытка"],
+            summary: "Подарок маме",
+          },
+          proposalId,
+        },
+        threadId,
+      },
+      "Europe/Moscow",
+      v2
+    );
+    expect(text).toContain("I confirmed it for them myself");
+    expect(text).not.toContain("bro_talk confirm");
+    expect(text).toMatch(/6\s000 ₽/u);
+    expect(text).toContain("«Пётр — открытка»");
+    expect(text).not.toContain("time in the owner's zone");
+  });
+
+  it("tells the side that waits that the peer cannot be reached yet", () => {
+    const text = broReportMessage(
+      {
+        kind: "peer_unreachable",
+        payload: { ...peer, waiting: "agreed" },
+        threadId,
+      },
+      "Europe/Moscow",
+      v2
+    );
+    expect(text).toContain("the agreement waits for their yes");
+    expect(text).toContain("Nothing to answer");
+  });
+});

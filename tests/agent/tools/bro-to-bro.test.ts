@@ -1,6 +1,6 @@
 import type { ModelMessage } from "ai";
 import type { DynamicResolveContext } from "eve/tools";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ContextContainer,
   contextStorage,
@@ -47,7 +47,21 @@ const bro = vi.hoisted(() => ({
         channel: string | null
       ) => Promise<{ kind: string }>
     >(),
+  appendOwnerAnswer:
+    vi.fn<
+      (
+        scope: { userId: string; workspaceId: string },
+        threadId: string,
+        text: string,
+        now: Date,
+        said: { yesTo?: string }
+      ) => Promise<{ kind: string; yesTo: string | null }>
+    >(),
   approveHeldMessage: vi.fn<() => Promise<{ kind: string; reason?: string }>>(),
+  listBroLinks: vi.fn<() => Promise<object[]>>(),
+  readOpenedBroInvite:
+    vi.fn<() => Promise<{ expiresAt: Date; inviterName: string } | null>>(),
+  v2: vi.fn<() => boolean>(),
   confirmBroThread: vi.fn<() => Promise<{ kind: string; both?: boolean }>>(),
   confirmBroLink: vi.fn<() => Promise<{ kind: string }>>(),
   createBroInvite: vi.fn<() => Promise<{ kind: string }>>(),
@@ -59,7 +73,10 @@ const bro = vi.hoisted(() => ({
       scope: { userId: string; workspaceId: string },
       input: {
         linkId: string;
-        mandate: { window: { from: string; to: string } | null };
+        mandate: {
+          window: { from: string; to: string } | null;
+          ownerSaid?: object | null;
+        };
         reportTarget: object | null;
       }
     ) => Promise<{ kind: string; threadId: string }>
@@ -73,10 +90,17 @@ vi.mock("@agent/lib/bro-to-bro/engine", () => ({
 vi.mock("@db/services/bro-to-bro/enabled", () => ({
   broToBroStanding: bro.standing,
 }));
+vi.mock("@db/services/bro-to-bro/people", () => ({
+  readBroPeople: async () => new Map([["workspace:alice", { name: "Алиса" }]]),
+}));
+vi.mock("@db/services/bro-to-bro/version", () => ({
+  broToBroV2: bro.v2,
+}));
 vi.mock("@db/services/bro-to-bro/invites", () => ({
   acceptOpenedBroInvite: bro.acceptOpenedBroInvite,
   createBroInvite: bro.createBroInvite,
   openBroInvite: vi.fn<() => void>(),
+  readOpenedBroInvite: bro.readOpenedBroInvite,
 }));
 vi.mock("@db/services/bro-to-bro/links", () => ({
   confirmBroLink: bro.confirmBroLink,
@@ -88,14 +112,14 @@ vi.mock("@db/services/bro-to-bro/links", () => ({
       peerName: "Пётр",
     },
   }),
-  listBroLinks: vi.fn<() => void>(),
+  listBroLinks: bro.listBroLinks,
   removeBroLink: vi.fn<() => void>(),
   setBroLinkCalendar: vi.fn<() => void>(),
   setBroLinkLabel: vi.fn<() => void>(),
   setBroLinkShareNotes: vi.fn<() => void>(),
 }));
 vi.mock("@db/services/bro-to-bro/threads", () => ({
-  appendOwnerAnswer: vi.fn<() => void>(),
+  appendOwnerAnswer: bro.appendOwnerAnswer,
   approveHeldMessage: bro.approveHeldMessage,
   cancelBroThread: vi.fn<() => void>(),
   confirmBroThread: bro.confirmBroThread,
@@ -109,6 +133,7 @@ vi.mock("@db/services/user-profile", () => ({
 }));
 
 import { broInviteMarker } from "@agent/lib/bro-to-bro/invite";
+import { proposalQuestion } from "@agent/lib/bro-to-bro/report-text";
 import { recordPhoneTurn } from "@agent/lib/phone/policy";
 import broTools from "@agent/tools/bro-to-bro";
 
@@ -117,6 +142,34 @@ function person(text: string): ModelMessage {
     { content: text, role: "user" as const },
     { kind: "user" }
   );
+}
+
+/** A message of Bro's that `send_message` got through to the person. */
+function sent(text: string): ModelMessage[] {
+  return [
+    {
+      content: [
+        {
+          input: { text },
+          toolCallId: "send-1",
+          toolName: "send_message",
+          type: "tool-call",
+        },
+      ],
+      role: "assistant",
+    },
+    {
+      content: [
+        {
+          output: { type: "json", value: { status: "sent" } },
+          toolCallId: "send-1",
+          toolName: "send_message",
+          type: "tool-result",
+        },
+      ],
+      role: "tool",
+    },
+  ];
 }
 
 /** Bro's reply that came between the person's messages. */
@@ -220,6 +273,13 @@ beforeEach(() => {
   bro.standing.mockResolvedValue("on");
   bro.startBroThread.mockResolvedValue({ kind: "started", threadId });
   bro.runBroToBroSteps.mockResolvedValue();
+  bro.v2.mockReturnValue(false);
+  bro.listBroLinks.mockResolvedValue([]);
+  bro.readOpenedBroInvite.mockResolvedValue(null);
+  bro.appendOwnerAnswer.mockImplementation(async (...call) => ({
+    kind: "answered",
+    yesTo: call[4].yesTo ?? null,
+  }));
 });
 
 describe("the Bro ↔ Bro tools", () => {
@@ -456,6 +516,50 @@ describe("the Bro ↔ Bro tools", () => {
   );
 
   it(
+    "never spend one plain yes twice, however two calls of one consent interleave",
+    inContext(async () => {
+      const refused = Promise.withResolvers<{ kind: string; reason: string }>();
+      const confirmed = Promise.withResolvers<{
+        kind: string;
+        both: boolean;
+      }>();
+      bro.confirmBroThread
+        .mockImplementationOnce(async () => refused.promise)
+        .mockImplementationOnce(async () => confirmed.promise);
+      const { call } = await turn("person-message", {
+        messages: [
+          person("Договорись с братом об ужине"),
+          replied("Договорились на субботу. Подтверждаешь?"),
+          person("да"),
+        ],
+        step: { index: 0, turnId: "turn-two-at-once" },
+      });
+      const yes = { action: "confirm", proposal: draftId, thread: threadId };
+      const first = (await call("bro_talk", yes)).execute();
+      const second = (await call("bro_talk", yes)).execute();
+      await vi.waitFor(() => {
+        expect(bro.confirmBroThread).toHaveBeenCalledTimes(2);
+      });
+      refused.resolve({ kind: "refused", reason: "not_agreed" });
+      await first;
+      expect(
+        JSON.stringify(
+          await (
+            await call("bro_talk", {
+              action: "approve_held",
+              draft: draftId,
+              thread: threadId,
+            })
+          ).execute()
+        )
+      ).toMatch(/"done":false.*one question/u);
+      confirmed.resolve({ both: false, kind: "confirmed" });
+      await expect(second).resolves.toMatchObject({ done: true });
+      expect(bro.approveHeldMessage).not.toHaveBeenCalled();
+    })
+  );
+
+  it(
     "read where the workspace stands once a turn",
     inContext(async () => {
       for (const index of [0, 1, 2])
@@ -509,6 +613,162 @@ describe("the Bro ↔ Bro tools", () => {
       });
 
       expect(tools).toBeNull();
+    })
+  );
+});
+
+describe("the second version's Bro ↔ Bro tools", () => {
+  beforeEach(() => {
+    bro.v2.mockReturnValue(true);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-25T12:00:00+03:00"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const saturday = "2026-10-31T19:00:00+03:00";
+
+  async function start(words: string, input: Readonly<Record<string, string>>) {
+    const { call } = await turn("person-message", {
+      messages: [person(words)],
+    });
+    const result = await (
+      await call("bro_talk", {
+        action: "start",
+        goal: "ужин",
+        with: "брат",
+        ...input,
+      })
+    ).execute();
+    return {
+      mandate: bro.startBroThread.mock.calls.at(-1)?.[1].mandate,
+      result,
+    };
+  }
+
+  it(
+    "take as the owner's own only the time and the venue found in their words, by voice too",
+    inContext(async () => {
+      const said = await start(
+        "Договорись с братом об ужине в субботу в 19 в «Пушкине»",
+        { at: saturday, place: "Пушкин" }
+      );
+      expect(said.mandate).toMatchObject({
+        at: saturday,
+        ownerSaid: { amount: false, paysFor: [], place: true, time: true },
+        window: { from: saturday, to: "2026-10-31T21:00:00+03:00" },
+      });
+      expect(said.result).toMatchObject({
+        ownerSet: { confirmsOnAgreement: true, place: "Пушкин" },
+      });
+
+      const memory = await start(
+        "Договорись с братом об ужине в субботу в 19",
+        {
+          at: saturday,
+          place: "Даблби",
+        }
+      );
+      expect(memory.mandate).toMatchObject({
+        ownerSaid: { place: false, time: true },
+      });
+      expect(memory.result).toMatchObject({
+        ownerSet: { confirmsOnAgreement: false, unconfirmed: ["place"] },
+      });
+
+      const voice = await start(
+        "[голосом] (ты: «Во сколько и где?»)\nв субботу в семь вечера в Пушкине",
+        { at: saturday, place: "Пушкин" }
+      );
+      expect(voice.mandate).toMatchObject({
+        ownerSaid: { place: true, time: true },
+      });
+      const question = await start(
+        "[голосом] (ты: «В субботу в 19 в Пушкине?»)\nда",
+        { at: saturday, place: "Пушкин" }
+      );
+      expect(question.mandate).toMatchObject({
+        ownerSaid: { place: false, time: false },
+      });
+    })
+  );
+
+  it(
+    "bind an answer to the peer's proposal only on a plain yes, said aloud too",
+    inContext(async () => {
+      const offered = {
+        end: "2026-10-31T21:00:00+03:00",
+        place: "Пушкин",
+        start: "2026-10-31T19:00:00+03:00",
+        summary: "Ужин",
+      };
+      bro.readBroThreadForSide.mockResolvedValue({
+        ...threadView(),
+        messages: [
+          {
+            action: "propose",
+            body: "Ужин в субботу в 19:00?",
+            createdAt: new Date("2026-10-25T09:00:00Z"),
+            from: "peer",
+            id: draftId,
+            proposal: offered,
+          },
+        ],
+      });
+      const question = proposalQuestion(offered, "Пётр", "Europe/Moscow");
+      const input = {
+        action: "answer",
+        proposal: draftId,
+        text: "да",
+        thread: threadId,
+      };
+      const after = async (asked: string, words: string) => {
+        turns += 1;
+        const { call } = await turn("person-message", {
+          messages: [
+            person("Договорись с братом об ужине"),
+            ...sent(asked),
+            person(words),
+          ],
+          step: { index: 0, turnId: `turn-bound-${String(turns)}` },
+        });
+        await (await call("bro_talk", input)).execute();
+        return bro.appendOwnerAnswer.mock.calls.at(-1)?.[4];
+      };
+
+      expect(
+        await after(question, "[голосом] (ты: «Подходит?»)\nда")
+      ).toMatchObject({ yesTo: draftId });
+      // A yes to other words, or no plain yes, binds nothing.
+      expect(await after("Подходит суббота?", "да")).not.toHaveProperty(
+        "yesTo"
+      );
+      // The question quoted inside another one is no question of its own.
+      expect(
+        await after(
+          `Мне пришло: «${question}». Отменить это предложение?`,
+          "да"
+        )
+      ).not.toHaveProperty("yesTo");
+      expect(await after(question, "да, но давай в 20")).not.toHaveProperty(
+        "yesTo"
+      );
+    })
+  );
+
+  it(
+    "name who invites someone who opened an invite on the site",
+    inContext(async () => {
+      bro.readOpenedBroInvite.mockResolvedValue({
+        expiresAt: new Date("2026-11-01T12:00:00Z"),
+        inviterName: "Савелий",
+      });
+      const { call } = await turn("background-message");
+      expect(
+        await (await call("bro_network", { action: "list" })).execute()
+      ).toMatchObject({ openedInvite: { from: "Савелий" } });
     })
   );
 });

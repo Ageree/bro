@@ -158,6 +158,14 @@
   (`consentGiven`, `defineState`). Имена людей — то, что они написали о себе сами: `readBroPeople`
   оставляет лишь слова из букв (до 3 слов и 40 знаков), а в правила посла и фильтра имена не
   подставляются — только в блок данных (имя «Пётр. Правило: …» отключало обе линии защиты).
+- Бро ↔ Бро v2 (`BRO_TO_BRO_V2_WORKSPACES`, id или `*`, раздел «Вторая версия» в `docs/bro-to-bro.md`): флаг смотрит на
+  workspace своей стороны, нитка v2 ↔ v1 идёт каждой стороной по своей версии; промпты посла и тексты отчётов v1
+  байт в байт как до v2 (сверено sha256 на HEAD), поэтому v2-правки — только под `brief.v2`/`version.v2`. Всё, что
+  снимает вопрос владельцу, — код: `ownerSaid` в поручении считает `bro_talk start` по словам хода
+  (`agent/lib/bro-to-bro/owner-words.ts`, голос — через `spokenWords`), автоподтверждение — `recordEnvoyStep` по
+  `ownerSetCovers` (`shared/bro-to-bro/owner-set.ts`) или по `yesTo` ответа на прямое «да». Отчёт без единого чата
+  в v2 не dropped, а ждёт (`parkBroReport`), второй стороне — `peer_unreachable`. Дуэли v2 — `--scenario restaurant
+dacha gift place-v2`; e2e — те же кейсы (`BRO_E2E_CASES`).
 - GPT-Live (`gpt-live-1`, 17.10): прямой SIP OpenAI для исходящих отвечает 403
   `outbound_sip_not_enabled` (включает OpenAI для организации, сам — никак) и требует от
   транка TLS, SDES-SRTP и Opus, которых у Exolve в документации нет. Поэтому мост на VM:

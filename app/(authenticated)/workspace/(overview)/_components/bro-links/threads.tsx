@@ -17,7 +17,7 @@ import {
 import { api } from "@web/trpc/client";
 import type { RouterOutputs } from "@web/trpc/types";
 import { broFailure } from "./failure";
-import { broMoment, broProposalTime } from "./format";
+import { broMoment, broProposalLine } from "./format";
 
 type BroThread = Awaited<ReturnType<typeof listBroThreads>>[number];
 type BroThreadView = RouterOutputs["broToBro"]["thread"];
@@ -149,15 +149,8 @@ function actionLine(
   message: BroThreadView["messages"][number],
   timeZone: string
 ) {
-  if (message.action === "propose" && message.proposal) {
-    return [
-      `Предложение: ${message.proposal.summary}`,
-      broProposalTime(message.proposal, timeZone),
-      message.proposal.place ?? null,
-    ]
-      .filter((part) => part !== null)
-      .join(" · ");
-  }
+  if (message.action === "propose" && message.proposal)
+    return broProposalLine(message.proposal, timeZone);
   if (message.action === "accept") return "Принимает предложение";
   if (message.action === "decline") return "Отказ";
   if (message.action === "close") return "Закрывает переговоры";
@@ -236,13 +229,7 @@ function ThreadView({
           <p className="type-row wrap-break-word">«{own.held.body}»</p>
           {own.held.proposal ? (
             <p className="type-fine text-muted-foreground">
-              {[
-                `Предложение: ${own.held.proposal.summary}`,
-                broProposalTime(own.held.proposal, timeZone),
-                own.held.proposal.place ?? null,
-              ]
-                .filter((part) => part !== null)
-                .join(" · ")}
+              {broProposalLine(own.held.proposal, timeZone)}
             </p>
           ) : null}
           <p className="type-fine text-muted-foreground">

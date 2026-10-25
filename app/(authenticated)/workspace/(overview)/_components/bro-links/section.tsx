@@ -1,4 +1,6 @@
+import Link from "next/link";
 import { Actions, Rows, Section } from "@web/components/paper/document";
+import { Button } from "@web/components/ui/button";
 import type { listBroLinks } from "@db/services/bro-to-bro/links";
 import type { listBroThreads } from "@db/services/bro-to-bro/threads";
 import { BroInvite } from "./invite";
@@ -14,11 +16,14 @@ import { BroThreadRow } from "./threads";
 export function BroLinksSection({
   access,
   links,
+  reachable,
   threads,
   timeZone,
 }: {
   readonly access: "on" | "linked";
   readonly links: Awaited<ReturnType<typeof listBroLinks>>;
+  /** Whether Bro has a chat to write to the person in first. */
+  readonly reachable: boolean;
   readonly threads: Awaited<ReturnType<typeof listBroThreads>>;
   readonly timeZone: string;
 }) {
@@ -41,6 +46,24 @@ export function BroLinksSection({
         простом вопросе — и приносит тебе итог или вопрос. Встреча и запись в
         календарь — только после твоего «да».
       </p>
+      {reachable ? null : (
+        <div className="mt-[0.6rem]">
+          <p className="type-fine">
+            Бро пока не может написать тебе сам: ты ещё ни разу ему не писал.
+            Напиши ему в чат — он расскажет, что ждёт твоего ответа, и дальше
+            будет писать туда.
+          </p>
+          <Actions className="items-center">
+            <Button
+              nativeButton={false}
+              render={<Link href="/chat" />}
+              variant="paper"
+            >
+              Открыть чат с Бро
+            </Button>
+          </Actions>
+        </div>
+      )}
       {links.length === 0 ? (
         <div className="mt-[0.6rem]">
           <p className="type-fine">

@@ -29,6 +29,9 @@ export interface EnvoyBrief {
     readonly id: string;
     readonly at: string;
     readonly text: string;
+    /** The second version's, for code alone: the answer's own sums, and the proposal its plain yes was to. */
+    readonly amountsRub?: readonly number[];
+    readonly yesTo?: string;
   }[];
   readonly slots:
     | { readonly state: "not_granted" | "unavailable" }
@@ -57,6 +60,31 @@ export interface EnvoyBrief {
   readonly horizon: string;
   readonly messagesLeft: number;
   readonly now: string;
+  /**
+   * The second version's (docs/bro-to-bro.md, «Вторая версия»): its rules,
+   * and, for the initiator, what its owner set for the errand — the time,
+   * venue and sum code found in the owner's own words, which the envoy
+   * offers as they are, and the points of the errand; what code did not
+   * find there stays context. Absent, the envoy is the first version's.
+   */
+  readonly v2?: {
+    readonly ownerSet: {
+      readonly time: {
+        readonly start: string;
+        readonly end: string;
+        readonly exact: boolean;
+      } | null;
+      readonly place: string | null;
+      readonly items: readonly string[] | null;
+      readonly amountRub: number | null;
+      /** Named for the errand, but not found in the owner's words: context. */
+      readonly unconfirmed: {
+        readonly place: string | null;
+        readonly items: readonly string[] | null;
+        readonly amountRub: number | null;
+      };
+    } | null;
+  };
 }
 
 /**
