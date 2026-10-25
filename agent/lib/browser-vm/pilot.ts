@@ -98,6 +98,23 @@ export async function errandEngine(
     : undefined;
 }
 
+/**
+ * Whether the workspace's browser errands are reported the moment they end
+ * (BROWSER_FAST_DELIVERY_WORKSPACES): the worker tells Bro when a run ends,
+ * so that its report does not wait for Bro's next look. The list reads as BROWSER_FAST_WORKSPACES does; a failed lookup runs the errand as
+ * before.
+ */
+export async function fastDeliveryPilot(scope: {
+  readonly userId?: string;
+  readonly workspaceId: string;
+}) {
+  return inPilot(
+    "browser-delivery",
+    env.BROWSER_FAST_DELIVERY_WORKSPACES,
+    scope
+  );
+}
+
 async function inPilot(
   pilot: string,
   entries: readonly string[] | undefined,

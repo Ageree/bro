@@ -204,6 +204,35 @@ describe("browser VM worker client", () => {
     });
   });
 
+  it("sends the address of the word that the run ended, https only", async () => {
+    const { worker } = await loadWorker();
+    const calls = stubWorker(
+      Response.json({ id: runId, sessionId, status: "queued" }, { status: 202 })
+    );
+    const notify = {
+      url: "https://assistant.example/eve/v1/browser-run-ended",
+    };
+
+    await worker.startBrowserVmWorkerRun(vm, {
+      id: runId,
+      llm,
+      notify,
+      task: "Найди чайник",
+    });
+
+    expect(JSON.parse(calls[0]?.body ?? "")).toMatchObject({ notify });
+    // The word would carry the run's name to whatever address it is given.
+    await expect(
+      worker.startBrowserVmWorkerRun(vm, {
+        id: runId,
+        llm,
+        notify: { url: "http://assistant.example/eve/v1/browser-run-ended" },
+        task: "Найди чайник",
+      })
+    ).rejects.toBeInstanceOf(z.ZodError);
+    expect(calls).toHaveLength(1);
+  });
+
   it("sends the run's tuning with its routing, and refuses a host the worker would", async () => {
     const { worker } = await loadWorker();
     const calls = stubWorker(

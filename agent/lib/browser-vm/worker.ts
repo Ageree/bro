@@ -264,6 +264,12 @@ const runInputSchema = z.object({
   id: z.string().min(1),
   llm: llmSchema,
   maxSteps: z.number().int().positive().optional(),
+  /**
+   * Where the worker tells Bro the run has ended, signed with the VM's key
+   * (`agent/channels/browser-run-ended.ts`): Bro settles it at once rather
+   * than at its next look. A worker without the fast delivery ignores it.
+   */
+  notify: z.object({ url: z.url({ protocol: /^https$/u }) }).optional(),
   /** Typed only on the sites named, as a Browser Use secret binding was. */
   secrets: z
     .array(
