@@ -169,7 +169,7 @@ const stories: Record<
     "Tell the owner, and suggest a first errand in one line, such as arranging a dinner at the weekend; bro_talk start runs it when they ask. Nothing to answer.",
   ],
   question: ({ payload, thread, timeZone, who }) => [
-    `While talking with ${who}'s Bro${topic(payload)}, I need the owner's answer to my question: ${quote(payload.text ?? "", 500)}.${payload.proposal ? ` Their Bro's latest proposal is ${proposalWords(payload.proposal, timeZone)}.` : ""}`,
+    `While talking with ${who}'s Bro${topic(payload)}, I need the owner's answer to my own question — mine, not their Bro's, which asked nothing of it: ${quote(payload.text ?? "", 500)}.${payload.proposal ? ` Their Bro's latest proposal is ${proposalWords(payload.proposal, timeZone)}.` : ""}`,
     `Ask the owner this question in your own words${payload.proposal ? ", naming the time as in their Bro's latest proposal, on the owner's clock: my question and their Bro's words may give it on another clock" : ""}. Their answer, in their next message, goes to bro_talk with action answer, thread ${thread} and their words as text.`,
   ],
   held: ({ payload, thread, timeZone, who }) => [
