@@ -540,11 +540,12 @@ class FakeModel:
     """openai.AsyncOpenAI for the code engine: plays its answers and keeps a copy of every request's messages."""
 
     def __init__(self, answers):
-        self.answers, self.requests = list(answers), []
+        self.answers, self.requests, self.choices = list(answers), [], []
 
     def client(self, **options):
         async def create(**request):
             self.requests.append(json.loads(json.dumps(request["messages"], default=str)))
+            self.choices.append(request.get("tool_choice"))
             return self.answers.pop(0)
 
         return types.SimpleNamespace(chat=types.SimpleNamespace(completions=types.SimpleNamespace(create=create)))
@@ -2246,6 +2247,19 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual("mbps" in exit_address, case == "both")
                 self.assertEqual("latencyMs" in exit_address, case != "no ipinfo")
 
+    async def test_a_slow_exits_speed_is_told_by_what_came_in_its_window_and_the_check_does_not_wait_for_more(self):
+        ipinfo = {"ip": "95.24.1.1", "city": "Moscow", "region": "Moscow", "country": "RU", "org": "AS8402"}
+        # 16 chunks of 64 KiB, one every 50 ms: 0.8 s for the whole megabyte against a window of 0.1 s.
+        trickle = (b"x" * 1_000_000, 0.05)
+        with mock.patch.object(worker, "aiohttp", ExitProbe(ipinfo, trickle)), \
+                mock.patch.object(worker, "SPEED_WINDOW_S", 0.1):
+            started = time.monotonic()
+            status, answer = await self.call("POST", "/v1/session", {"proxy": {"host": "proxy.test", "port": 1}})
+        self.assertEqual(status, 200)
+        self.assertLess(time.monotonic() - started, 0.6)
+        self.assertTrue(answer["exit"]["speedPartial"])
+        self.assertGreater(answer["exit"]["mbps"], 0)
+
     async def test_a_run_the_disk_cannot_record_fails_and_lets_go_of_the_browser(self):
         worker.RUNS.mkdir(parents=True)
         stale = worker.Run("r0", "s0", "Sign in.").public() | {"status": "running"}
@@ -2530,6 +2544,21 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
             "behavior": "allow", "downloadPath": str(self.worker.sessions["s1"].workspace / worker.DOWNLOADS),
             "eventsEnabled": True})
 
+    @unittest.skipUnless(importlib.util.find_spec("quickjs"), "the code engine's sandbox needs quickjs")
+    async def test_a_code_run_hears_its_calls_run_out_and_its_last_call_is_the_report(self):
+        model, _playwright = self.code_engine([
+            FakeAnswer([("repl", {"title": "look", "code": "console.log(url('t1'))"})]),
+            FakeAnswer([("done", {"result": "Два поезда из трёх.\nRESULT: частично\nNEEDS: none"})]),
+        ])
+        await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Find trains.",
+                                     "engine": "code", "maxSteps": 2})
+        run = await self.settled("r1")
+        self.assertEqual((run.status, run.result), ("completed", "Два поезда из трёх.\nRESULT: частично\nNEEDS: none"))
+        self.assertIn("You have at most 2 calls", model.requests[0][1]["content"])
+        self.assertIn("[Calls left: 1.", model.requests[1][-2]["content"])
+        self.assertEqual(model.requests[1][-1], {"role": "user", "content": worker.CODE_LAST_CALL})
+        self.assertEqual(model.choices, ["required", {"type": "function", "function": {"name": "done"}}])
+
     def test_the_code_engine_needs_playwright_with_ai_snapshots(self):
         found = types.SimpleNamespace()
         with mock.patch.object(worker.importlib.util, "find_spec", lambda name: found):
@@ -2724,7 +2753,26 @@ class ExitProbe:
         answer = next(value for prefix, value in self.answers.items() if url.startswith(prefix))
         if isinstance(answer, Exception):
             raise answer
-        yield types.SimpleNamespace(json=mock.AsyncMock(return_value=answer), read=mock.AsyncMock(return_value=answer))
+        yield types.SimpleNamespace(json=mock.AsyncMock(return_value=answer), read=mock.AsyncMock(return_value=answer),
+                                    content=types.SimpleNamespace(iter_chunked=lambda size: Trickle(answer, size)))
+
+
+class Trickle:
+    """A body read in chunks: bytes come at once, a `(bytes, pause)` pair one chunk per pause."""
+
+    def __init__(self, body, size):
+        self.body, self.pause = body if isinstance(body, tuple) else (body, 0)
+        self.size = size
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self.body:
+            raise StopAsyncIteration
+        await asyncio.sleep(self.pause)
+        chunk, self.body = self.body[:self.size], self.body[self.size:]
+        return chunk
 
 
 class FakeHttp:

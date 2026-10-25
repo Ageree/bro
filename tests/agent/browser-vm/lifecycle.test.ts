@@ -1914,6 +1914,7 @@ describe("routing the VM's browser through a Russian exit", () => {
         rotated: false,
         rotation: 0,
         speedError: null,
+        speedPartial: null,
         workspaceId,
       }
     );
@@ -1928,6 +1929,7 @@ describe("routing the VM's browser through a Russian exit", () => {
       rotated: true,
       rotation: 1,
       speedError: "TimeoutError: ",
+      speedPartial: null,
       workspaceId,
     });
     const logged = JSON.stringify([...warn.mock.calls, ...info.mock.calls]);

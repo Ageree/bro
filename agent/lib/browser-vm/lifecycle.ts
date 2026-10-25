@@ -1938,6 +1938,7 @@ async function tryExit(
     rotated,
     rotation,
     speedError: exit.speedError ?? null,
+    speedPartial: exit.speedPartial ?? null,
     workspaceId: vm.workspaceId,
   };
   if (taken !== undefined) {
