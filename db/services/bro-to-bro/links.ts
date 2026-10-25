@@ -164,6 +164,7 @@ export async function confirmBroLink(
             peerName: people.get(row.peerWorkspaceId)?.name ?? null,
             peerLabel: row.peerLabel,
             linkId: row.id,
+            by: row.workspaceId === scope.workspaceId ? "self" : "peer",
           },
           target: null,
           dedupeKey: `bro:link:${row.id}:ready`,
