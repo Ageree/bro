@@ -27,6 +27,8 @@ export default {
     "scripts/browser-pool/static-host-cloud-init.ts",
     // Copies Vercel Blob to Object Storage by hand (docs/cloudru-migration.md).
     "scripts/cloudru-app-host/blob-to-s3.ts",
+    // Lists the site operations browser runs found, for review by hand.
+    "scripts/site-ops/review.ts",
     // Measures the main agent's step context by hand (`docs/agent-costs.md`).
     "scripts/costs/step-context.ts",
     // Time the web chat's turns and voice transcription against the live

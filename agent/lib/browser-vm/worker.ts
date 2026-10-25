@@ -2,6 +2,10 @@ import { z } from "zod";
 import { browserSandboxWorkerOrigin } from "@agent/lib/browser-pool/host";
 import type { browserVms } from "@db/schema/browser-vms";
 import { resolvePrivateRoute, withPrivateRoute } from "./private-route";
+import {
+  foundSiteOperationsSchema,
+  siteOperationSchema,
+} from "./site-ops/operation";
 import { signBrowserVmToken } from "./token";
 
 /**
@@ -158,6 +162,15 @@ const runSummarySchema = z.object({
   jev: z.record(z.string(), z.json()).nullable(),
   result: z.string().nullable(),
   sessionId: z.string().min(1),
+  /**
+   * With `siteTraffic` in its input, once it has ended: the operations behind
+   * its report's options (the log of requests stays on the worker's record).
+   * A malformed one is dropped, not the run.
+   */
+  siteTraffic: z
+    .object({ operations: foundSiteOperationsSchema.catch([]) })
+    .nullish()
+    .catch(null),
   startedAt: z.string().nullable(),
   status: runStatusSchema,
   stepCount: z.number().int().nonnegative(),
@@ -276,6 +289,16 @@ const runInputSchema = z.object({
     .max(10)
     .optional(),
   sessionId: z.string().min(1).optional(),
+  /**
+   * The site's read operations the code engine's `op()` replays
+   * (`agent/lib/browser-vm/site-ops/`). A worker before the field ignores it.
+   */
+  siteOps: z.array(siteOperationSchema).max(3).optional(),
+  /**
+   * Write down the site's own requests (templates, no bodies) and the
+   * operations behind the report's options: the run's `siteTraffic`.
+   */
+  siteTraffic: z.boolean().optional(),
   task: z.string().min(1),
   timeoutSeconds: z.number().int().positive().optional(),
   tuning: tuningSchema.optional(),

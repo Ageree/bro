@@ -638,6 +638,13 @@
       "when": 1792929224381,
       "tag": "0090_bro_to_bro_v2",
       "breakpoints": true
+    },
+    {
+      "idx": 91,
+      "version": "7",
+      "when": 1792945670271,
+      "tag": "0091_browser_site_operations",
+      "breakpoints": true
     }
   ]
 }

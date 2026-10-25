@@ -12,6 +12,7 @@ import { z } from "zod";
 import type * as lifecycleModule from "@agent/lib/browser-vm/lifecycle";
 import type * as workerModule from "@agent/lib/browser-vm/worker";
 import type { browserVmRuns, browserVms } from "@db/schema/browser-vms";
+import type * as siteOperationsService from "@db/services/browser-site-operations";
 import type * as browserVmRecords from "@db/services/browser-vms";
 import type * as usageCostRecords from "@db/services/usage-costs";
 import {
@@ -127,6 +128,16 @@ const realWorker = vi.hoisted(() => ({
 }));
 
 vi.mock("@db/services/browser-vms", () => records);
+const siteOperationRecords = vi.hoisted(() => ({
+  deleteBrowserSiteOperation:
+    vi.fn<typeof siteOperationsService.deleteBrowserSiteOperation>(),
+  listBrowserSiteOperations: vi.fn<
+    typeof siteOperationsService.listBrowserSiteOperations
+  >(() => Promise.resolve([])),
+  saveBrowserSiteOperation:
+    vi.fn<typeof siteOperationsService.saveBrowserSiteOperation>(),
+}));
+vi.mock("@db/services/browser-site-operations", () => siteOperationRecords);
 vi.mock("@agent/lib/browser-vm/lifecycle", () => lifecycle);
 vi.mock("@agent/lib/browser-vm/worker", async (importOriginal) => {
   const original = await importOriginal<typeof workerModule>();
@@ -764,6 +775,105 @@ describe("starting a run on a workspace's browser VM", () => {
     expect(await listed(true, true)).toEqual([undefined]);
     expect(await (await pilot("*"))(true)).toEqual(["code"]);
     expect(await (await pilot("personal:another"))(true)).toEqual([undefined]);
+  });
+
+  it("records the site's requests of an errand that finds things in its pilot, and gives the code engine the site's operations", async () => {
+    worker.startBrowserVmWorkerRun.mockImplementation((_vm, input) =>
+      Promise.resolve({
+        id: input.id,
+        sessionId: input.sessionId ?? "",
+        status: "queued",
+      })
+    );
+    const task = `Найди вакансии.\n\nSite: https://hh.ru\n\n${composedTask}`;
+    const start = async (
+      settings: Record<string, string>,
+      findsOnly = true
+    ) => {
+      clearBrowserVmSettings();
+      vi.resetModules();
+      worker.startBrowserVmWorkerRun.mockClear();
+      const client = await importWithSettings(
+        { ...browserVmTestEnvironment, ...settings },
+        async () => import("@agent/lib/browser-use/client")
+      );
+      await client.createBrowserUseRun({
+        findsOnly,
+        profileId,
+        search: false,
+        task,
+      });
+      const [, input] = worker.startBrowserVmWorkerRun.mock.calls[0] ?? [];
+      return input;
+    };
+
+    const code = await start({
+      BROWSER_CODE_ENGINE_WORKSPACES: workspaceId,
+      BROWSER_SITE_OPS_WORKSPACES: workspaceId,
+    });
+    expect(code?.siteTraffic).toBe(true);
+    expect(code?.siteOps?.map((operation) => operation.name)).toEqual([
+      "hh.ru/search/vacancy",
+    ]);
+    expect(code?.task).toContain(
+      'Known operations of this site, read in one call from the site\'s own data: op("hh.ru/search/vacancy", url)'
+    );
+    // On browser-use the run is recorded, with nothing in its task about op().
+    const agent = await start({ BROWSER_SITE_OPS_WORKSPACES: "*" });
+    expect(agent?.siteTraffic).toBe(true);
+    expect(agent?.siteOps).toBeUndefined();
+    expect(agent?.task).toBe(`${task}${vmTask.slice(composedTask.length)}`);
+    // An errand that may submit, and a workspace out of the pilot: as before.
+    for (const input of [
+      await start({ BROWSER_SITE_OPS_WORKSPACES: "*" }, false),
+      await start({
+        BROWSER_CODE_ENGINE_WORKSPACES: workspaceId,
+        BROWSER_SITE_OPS_WORKSPACES: "personal:another",
+      }),
+    ]) {
+      expect(input?.siteTraffic).toBeUndefined();
+      expect(input?.siteOps).toBeUndefined();
+      expect(input?.task).not.toContain("Known operations");
+    }
+  });
+
+  it("keeps what a settled run found behind its report for the workspace", async () => {
+    const operation = {
+      fields: { link: "page", name: ["number"], price: ["price"] },
+      items: ["trains"],
+      name: "www.tutu.ru/poezda/Moskva/Kazan/",
+      page: "https://www.tutu.ru/poezda/Moskva/Kazan/?date=%date%",
+      seen: { items: 40, matched: 3, of: 3 },
+      source: {
+        kind: "xhr",
+        method: "POST",
+        url: "https://offers-api.tutu.ru/railway/offers",
+      },
+    };
+    worker.readBrowserVmWorkerRun.mockResolvedValue(
+      workerRun({
+        finishedAt: "2026-09-28T11:51:00Z",
+        siteTraffic: { operations: [operation] },
+        status: "completed",
+      })
+    );
+    const client = await importWithSettings(
+      { ...browserVmTestEnvironment, BROWSER_SITE_OPS_WORKSPACES: "*" },
+      async () => import("@agent/lib/browser-use/client")
+    );
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+
+    await client.readBrowserUseRun(runId);
+
+    expect(siteOperationRecords.saveBrowserSiteOperation).toHaveBeenCalledWith(
+      workspaceId,
+      {
+        host: "www.tutu.ru",
+        name: operation.name,
+        operation,
+        runs: 1,
+      }
+    );
   });
 
   it("gives the worker the 2Captcha key only when the deployment has one", async () => {

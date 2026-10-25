@@ -371,6 +371,11 @@ export const env = createEnv({
     // the note in their task: how the site writes the address of its results
     // (`agent/lib/browser-use/site-notes.ts`). Unset, nobody.
     BROWSER_SITE_NOTES_WORKSPACES: workspaceListSchema.optional(),
+    // Workspace ids or `*` whose browser runs write down the site's own
+    // requests and keep, for the workspace, the read operations behind the
+    // options a run reported; a code-engine errand on such a site gets them
+    // as `op()` (`agent/lib/browser-use/site-ops/`). Unset, nobody.
+    BROWSER_SITE_OPS_WORKSPACES: workspaceListSchema.optional(),
     // Who may get the sign-in link, where the person signs in to a site
     // themselves in a live view of their own cloud browser
     // (`agent/lib/login-handoff/`, docs/login-handoff.md). Unset or empty,
