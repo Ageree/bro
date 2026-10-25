@@ -86,6 +86,11 @@ const proxyExitSchema = z.object({
   region: z.string().nullish(),
   /** Why the megabyte did not come through: the speed is unknown then. */
   speedError: z.string().nullish(),
+  /**
+   * The speed is told by what came through in the worker's few seconds,
+   * not by the whole megabyte (worker 2026-10-25.4 and later).
+   */
+  speedPartial: z.boolean().nullish(),
 });
 
 const proxySetupSchema = z.object({
