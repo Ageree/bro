@@ -5,6 +5,7 @@ import { defineDynamic, defineTool, type ToolContext } from "eve/tools";
 import * as z from "zod";
 import { spanLabel } from "@agent/lib/bro-to-bro/brief";
 import { runBroToBroSteps } from "@agent/lib/bro-to-bro/engine";
+import { recordBroInviteLinks } from "@agent/lib/bro-to-bro/exact-invite";
 import { broInviteMarker } from "@agent/lib/bro-to-bro/invite";
 import { broReportCaller } from "@agent/lib/bro-to-bro/report-caller";
 import { proposalWords } from "@agent/lib/bro-to-bro/report-text";
@@ -354,10 +355,14 @@ function networkTool(turn: BroTurn) {
             done: false,
             note: "Ten invites a day at most: try again tomorrow.",
           };
+        const links = inviteLinks(created.token);
+        // The model's copy of the token may lose a character: `send_message`
+        // sends these exact links (`withExactBroInviteLinks`).
+        recordBroInviteLinks(links);
         return {
           done: true,
           expiresAt: created.expiresAt.toISOString(),
-          links: inviteLinks(created.token),
+          links,
           note: "Send the owner both links with one line: forward one to the person — the Telegram one if they use Telegram, the website one if not (it opens their cabinet, where they accept with a button); it works once, for 7 days. When they accept, I ask the owner to confirm it was them.",
         };
       }
