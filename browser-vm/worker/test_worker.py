@@ -2689,6 +2689,69 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         run = await self.settled("r1")
         self.assertEqual((run.status, run.engine, len(FakeAgent.built)), ("completed", "agent", 1))
 
+    async def test_the_end_of_a_run_is_told_to_bro_signed_with_the_workers_key(self):
+        heard = []
+
+        async def ended(request):
+            heard.append((request.headers.get("x-bro-signature"), await request.json()))
+            return worker.web.Response(status=204)
+
+        app = worker.web.Application()
+        app.router.add_post("/eve/v1/browser-run-ended", ended)
+        server = TestServer(app)
+        await server.start_server()
+        self.addAsyncCleanup(server.close)
+        url = str(server.make_url("/eve/v1/browser-run-ended"))
+        with mock.patch.object(worker, "NOTIFY_URL", re.compile(r"http://127\.0\.0\.1:\d+/eve/v1/\S+")):
+            for run_id, notify in (("r1", {"url": url}),
+                                   # A start that names no https address, and one that asks for no word, send none.
+                                   ("r2", {"url": "http://127.0.0.1:1/x"}), ("r3", None)):
+                body = {"id": run_id, "sessionId": "s1", "llm": LLM, "task": "Find a kettle."}
+                await self.worker.start_run(body if notify is None else {**body, "notify": notify})
+                await self.settled(run_id)
+            for _ in range(200):
+                if heard:
+                    break
+                await asyncio.sleep(0.01)
+            await asyncio.sleep(0.05)
+        expected = hmac.new(KEY, b"run-ended.r1", hashlib.sha256).hexdigest()
+        self.assertEqual(heard, [(expected, {"runId": "r1", "status": "completed"})])
+        self.assertIsNone(self.worker.runs["r3"].notify)
+
+    async def test_a_word_to_bro_that_is_refused_is_not_asked_again_and_one_that_fails_is(self):
+        run = worker.Run("r1", "s1", "Find a kettle.")
+        run.status, run.notify = "completed", "https://bro.test/eve/v1/browser-run-ended"
+        posts = []
+
+        class Bro:
+            ClientTimeout = aiohttp.ClientTimeout
+            answers = [ConnectionError("reset"), 503, 204]
+
+            def ClientSession(self):  # noqa: N802
+                return self
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *error):
+                return False
+
+            @contextlib.asynccontextmanager
+            async def post(self, url, **options):
+                posts.append(url)
+                answer = self.answers.pop(0)
+                if isinstance(answer, Exception):
+                    raise answer
+                yield types.SimpleNamespace(status=answer)
+
+        with mock.patch.object(worker, "aiohttp", Bro()), mock.patch.object(worker.asyncio, "sleep", mock.AsyncMock()), \
+                self.assertLogs("bro-worker", "WARNING"):
+            await self.worker.notify_ended(run)
+            self.assertEqual(len(posts), 3)  # a failure and a 503 are tried again, until it is heard
+            Bro.answers, posts[:] = [401], []
+            await self.worker.notify_ended(run)
+        self.assertEqual(len(posts), 1)  # a refusal is not
+
 
 @unittest.skipUnless(importlib.util.find_spec("quickjs"), "the code engine's sandbox needs quickjs")
 class CodeSandboxTest(unittest.IsolatedAsyncioTestCase):

@@ -367,6 +367,13 @@ export const env = createEnv({
     // (`run_code` in `browser-vm/worker/worker.py`). A root without the engine
     // runs them on browser-use. Unset, nobody.
     BROWSER_CODE_ENGINE_WORKSPACES: workspaceListSchema.optional(),
+    // Workspace ids or `*` whose browser errands start and end faster: the
+    // worker readies the code engine while the person's message warms the
+    // browser up and starts the first model call while Playwright connects,
+    // and tells Bro the moment a run ends (`/eve/v1/browser-run-ended`) so
+    // the report does not wait for the next look. Bro's own look at the
+    // runs goes on as the fallback. Unset, nobody.
+    BROWSER_FAST_DELIVERY_WORKSPACES: workspaceListSchema.optional(),
     // Workspace ids or `*` whose errands on a site Bro has a note about get
     // the note in their task: how the site writes the address of its results
     // (`agent/lib/browser-use/site-notes.ts`). Unset, nobody.

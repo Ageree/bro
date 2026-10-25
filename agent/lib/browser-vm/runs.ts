@@ -1,4 +1,5 @@
 import { BrowserUseError } from "@agent/lib/browser-use/errors";
+import { browserRunEndedUrl } from "@agent/lib/browser-use/run-ended";
 import type { browserVmRuns, browserVms } from "@db/schema/browser-vms";
 import {
   findBrowserVmRunByTaskLine as findBrowserVmRunRecordByTaskLine,
@@ -27,7 +28,12 @@ import {
   prepareBrowserVmSession,
   touchBrowserVm,
 } from "./lifecycle";
-import { errandBrowser, errandEngine, fastBrowserPilot } from "./pilot";
+import {
+  errandBrowser,
+  errandEngine,
+  fastBrowserPilot,
+  fastDeliveryPilot,
+} from "./pilot";
 import { browserVmProxyLines, browserVmProxyPlace } from "./proxy";
 import {
   errandSite,
@@ -341,7 +347,7 @@ export async function createBrowserVmRun(input: {
   });
   const id = newBrowserVmRunId(workspaceId);
   const sessionId = input.sessionId ?? newBrowserVmSessionId(workspaceId);
-  const [fast, engine] = await Promise.all([
+  const [fast, engine, delivery] = await Promise.all([
     fastBrowserPilot({ workspaceId }),
     // A retry past an anti-bot wall goes on browser-use, which solves captchas;
     // the code engine has no solve_captcha and would stop at the same wall.
@@ -349,6 +355,7 @@ export async function createBrowserVmRun(input: {
       { workspaceId },
       input.findsOnly === true && input.freshExit !== true
     ),
+    fastDeliveryPilot({ workspaceId }),
   ]);
   const browser = errandBrowser({ workspaceId });
   // In its pilot an errand that only finds things writes down the site's own
@@ -370,6 +377,10 @@ export async function createBrowserVmRun(input: {
   const task = [input.task, siteOpsLine, addressWallLine]
     .filter((line) => line !== undefined)
     .join("\n\n");
+  // In the fast delivery pilot (BROWSER_FAST_DELIVERY_WORKSPACES) the worker
+  // says when the run ends. Without an address for the word the run ends as
+  // before, at Bro's next look.
+  const endedUrl = delivery ? browserRunEndedUrl() : undefined;
   // Recorded before the worker is asked: a start whose answer is lost still
   // has a row to be found by, and the task outlives the VM. Until the
   // worker takes it the run is only being sent (`dispatching`), and a
@@ -389,6 +400,7 @@ export async function createBrowserVmRun(input: {
     id,
     llm,
     maxSteps: runMaxSteps,
+    notify: endedUrl === undefined ? undefined : { url: endedUrl },
     secrets: input.secretBindings?.map((binding) => ({
       alias: binding.alias,
       allowedDomains: [...binding.allowedDomains],
