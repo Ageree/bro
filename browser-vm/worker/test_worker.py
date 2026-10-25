@@ -554,6 +554,7 @@ class FakeModel:
 class FakePage:
     def __init__(self, chrome, target):
         self.chrome, self.target, self.url, self.typed = chrome, target, "about:blank", []
+        self.text = "Shop"  # the body's visible text
 
     def is_closed(self):
         return self.target not in self.chrome.tabs
@@ -563,6 +564,14 @@ class FakePage:
 
     async def goto(self, url, **options):
         self.url = url
+
+    async def wait_for_load_state(self, state, timeout):
+        pass
+
+    async def evaluate(self, expression):
+        self.chrome.open_while_read = [*getattr(self.chrome, "open_while_read", []), len(self.chrome.tabs)]
+        await asyncio.sleep(0.01)  # the other pages of a visit() load meanwhile
+        return {"url": self.url, "expression": expression}
 
     def locator(self, selector):
         return FakeLocator(self, None)
@@ -583,6 +592,9 @@ class FakeLocator:
 
     async def fill(self, text, timeout):
         self.page.typed.append((self.ref, text))
+
+    async def inner_text(self, timeout):
+        return self.page.text
 
 
 class FakePlaywright:
@@ -2527,6 +2539,50 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
                 start=mock.AsyncMock(return_value=playwright))),
         }))
         return model, playwright
+
+    @unittest.skipUnless(importlib.util.find_spec("quickjs"), "the code engine's sandbox needs quickjs")
+    async def test_a_code_run_stuck_on_an_anti_bot_check_is_made_to_report_after_two_calls(self):
+        # Wildberries on the stand (25.10): told to stop at a wall, the model waited «Проверяем браузер» out
+        # for 37 calls and eight minutes.
+        model, playwright = self.code_engine([
+            FakeAnswer([("repl", {"title": "search", "code": "goto('t1', 'https://shop.test/search?q=kettle')"})]),
+            FakeAnswer([("repl", {"title": "wait", "code": "wait(10000)"})]),
+            FakeAnswer([("done", {"result": "Стена.\nRESULT: не дошёл до выдачи\nNEEDS: captcha"})]),
+        ])
+        playwright.page("T1").text = "Проверяем браузер"
+        self.enterContext(mock.patch.object(worker.CodeApi, "wait", mock.AsyncMock(return_value=True)))
+        await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Find kettles.",
+                                     "engine": "code"})
+        run = await self.settled("r1")
+        self.assertEqual((run.status, len(model.requests)), ("completed", 3))
+        self.assertEqual(model.choices[-1], {"type": "function", "function": {"name": "done"}})
+        self.assertEqual(model.requests[-1][-1]["content"], worker.CODE_WALL)
+        self.assertIn("NEEDS: captcha", run.result)
+
+    @unittest.skipUnless(importlib.util.find_spec("quickjs"), "the code engine's sandbox needs quickjs")
+    async def test_visit_reads_pages_side_by_side_in_tabs_it_closes_and_leaves_the_models_page_as_it_was(self):
+        model, playwright = self.code_engine([
+            FakeAnswer([("repl", {"title": "results", "code": "goto('t1', 'https://shop.test/search?q=kettle')"})]),
+            FakeAnswer([("repl", {"title": "details", "code": """
+                const pages = visit(['https://shop.test/1', 'https://shop.test/2', 'https://shop.test/3',
+                                     'https://shop.test/4'], 'document.title');
+                console.log(JSON.stringify(pages.map(p => [p.url, p.value.expression])));
+                try { visit(['https://shop.test/5', 'https://web.archive.org/web/2024/https://shop.test/']); }
+                catch (e) { console.log('blocked', e.message); }"""})]),
+            FakeAnswer([("done", {"result": "Нашёл.\nRESULT: чайники\nNEEDS: none"})]),
+        ])
+        await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Find kettles.",
+                                     "engine": "code"})
+        run = await self.settled("r1")
+        self.assertEqual(run.status, "completed")
+        printed = model.requests[2][-1]["content"]
+        self.assertIn(json.dumps([[f"https://shop.test/{n}", "document.title"] for n in range(1, 5)], separators=(",", ":")),
+                      printed)
+        self.assertIn("blocked visit: ValueError: https://web.archive.org/", printed)
+        self.assertEqual(max(self.chrome.open_while_read), 1 + worker.CODE_VISIT_AT_ONCE)  # the run's tab and three
+        self.assertEqual(self.chrome.tabs, ["T1"])  # every page it read is closed
+        self.assertEqual((self.worker.sessions["s1"].tab, playwright.page("T1").url),
+                         ("T1", "https://shop.test/search?q=kettle"))
 
     @unittest.skipUnless(importlib.util.find_spec("quickjs"), "the code engine's sandbox needs quickjs")
     async def test_a_code_run_acts_through_its_api_and_never_shows_the_model_a_secret(self):
