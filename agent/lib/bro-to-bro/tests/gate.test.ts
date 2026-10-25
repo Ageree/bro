@@ -366,8 +366,16 @@ describe("screenOutgoing, the second version's", () => {
 
   it("lets a sum go only as the proposal's amountRub the owner named, never in words", async () => {
     const gift = { amountRub: 3000, summary: "Подарок маме" };
+    const chipIn = {
+      ...owned,
+      v2Allowed: { ...ownedV2, paysFor: ["скинемся маме на подарок"] },
+    };
     await expect(
-      verdict({ body: "Скидываемся маме на подарок?", proposal: gift }, [])
+      verdict(
+        { body: "Скидываемся маме на подарок?", proposal: gift },
+        [],
+        chipIn
+      )
     ).resolves.toEqual({ verdict: "pass" });
     // The sum is code's to check: the checker never sees it.
     expect(
@@ -464,6 +472,57 @@ describe("screenOutgoing, the second version's", () => {
         // oxlint-disable-next-line eslint/no-await-in-loop -- One promise after another.
         (await verdict({ body: text }, paymentFacts(text), allowance)).verdict
       ).toBe("hold");
+    // Code reads every promise of the packet itself, whatever words the
+    // checker retells it in, and whether or not it lists one at all.
+    const chipIn = ownerPays(["скинемся маме на подарок"]);
+    for (const [body, facts] of [
+      ["Савелий купит маме шубу", paymentFacts("Савелий купит маме подарок")],
+      [
+        "Савелий скинется маме на шубу и путёвку",
+        paymentFacts("Савелий скинется маме на подарок"),
+      ],
+      ["Савелий купит маме шубу", []],
+      ["Петру куплю подарок", paymentFacts("Пётр купит подарок")],
+    ] as const)
+      expect(
+        // oxlint-disable-next-line eslint/no-await-in-loop -- One packet after another.
+        (await verdict({ body }, [...facts], chipIn)).verdict
+      ).toBe("hold");
+    await expect(
+      verdict(
+        { body: "Петру куплю подарок" },
+        paymentFacts("Пётр купит подарок"),
+        peerBuys
+      )
+    ).resolves.toMatchObject({ verdict: "hold" });
+    await expect(
+      verdict(
+        { body: "Савелий оплатит ПК" },
+        paymentFacts("Савелий оплатит ПК"),
+        ownerPays(["я плачу"])
+      )
+    ).resolves.toMatchObject({ verdict: "hold" });
+    // «скинусь» without for what is for what the errand is about: the goal
+    // says it, and nothing beyond.
+    const objectless = {
+      ...owned,
+      goal: "скинемся маме на подарок",
+      v2Allowed: { ...ownedV2, paysFor: ["скинусь по 3000"] },
+    };
+    await expect(
+      verdict(
+        { body: "Савелий скинется на подарок маме." },
+        paymentFacts("Савелий скинется на подарок"),
+        objectless
+      )
+    ).resolves.toEqual({ verdict: "pass" });
+    await expect(
+      verdict(
+        { body: "Савелий скинется на подарок и машину." },
+        paymentFacts("Савелий скинется на подарок и машину"),
+        objectless
+      )
+    ).resolves.toMatchObject({ verdict: "hold" });
     // A promise quoted without whose it is is read in the packet's words.
     await expect(
       verdict(

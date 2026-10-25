@@ -702,7 +702,7 @@ const gift: Scenario = {
       goal: "скинемся с Петей маме на подарок по 3000 — договорись, кто покупает",
       ownerSaid: {
         amount: true,
-        paysFor: ["с Петей маме на подарок по 3000"],
+        paysFor: ["скинемся с петей маме на подарок по 3000"],
         place: false,
         time: false,
       },

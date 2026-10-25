@@ -3,6 +3,7 @@ import {
   homeLike,
   meetingLength,
   namedAmounts,
+  namesNothing,
   namedItems,
   namedPlace,
   namedTime,
@@ -10,8 +11,10 @@ import {
   ownerText,
   paymentCovered,
   paymentsSaid,
+  paysTogether,
   peerPaymentCovered,
   peerPaysSaid,
+  promisesIn,
 } from "@agent/lib/bro-to-bro/owner-words";
 
 const moscow = "Europe/Moscow";
@@ -93,6 +96,11 @@ describe("namedTime", () => {
     expect(exact("Боря: «в субботу в 19»", "10-31T19:00")).toBe(false);
     expect(exact("«в субботу в 19", "10-31T19:00")).toBe(false);
     expect(exact("давай вместо субботы в 19", "10-31T19:00")).toBe(false);
+    expect(exact("Петя написал:\n> суббота 19:00", "10-31T19:00")).toBe(false);
+    expect(exact("Петя написал:\nв субботу в 19", "10-31T19:00")).toBe(false);
+    expect(exact("Петя написал. Давай в субботу в 19", "10-31T19:00")).toBe(
+      true
+    );
     expect(
       window("в субботу вечером у меня футбол", "10-31T17:00", "11-01T00:00")
     ).toBe(false);
@@ -197,6 +205,7 @@ describe("namedAmounts", () => {
       3000,
     ]);
     expect(namedSums(ownerText(["Его ответ: «скинусь 3000 ₽»"]))).toEqual([]);
+    expect(namedSums(ownerText(["Оплатим ужин за 30 человек"]))).toEqual([]);
   });
 
   it("takes no clock time or date for a sum", () => {
@@ -227,6 +236,13 @@ describe("namedItems, of a third person", () => {
     expect(namedItems(said, ["Марина — торт"], ["Савелий", "Мария"])).toBe(
       false
     );
+    expect(
+      namedItems(
+        ownerText(["договорись с Марией: я беру мясо и торт"]),
+        ["Марина — торт"],
+        ["Савелий", "Мария"]
+      )
+    ).toBe(false);
   });
 });
 
@@ -256,13 +272,24 @@ describe("paymentsSaid", () => {
     "может, скинемся?",
     "Борис думает, что я заплачу за всех",
     "Его ответ: «оплачу торт»",
+    "Петя написал:\n> оплачу торт",
   ])("hears no promise of the owner's in: %s", (text) => {
     expect(paymentsSaid(ownerText([text]))).toEqual([]);
   });
 
   it("covers a promise only when all of it is what the owner said they pay for", () => {
-    const names = ["Савелий", "Пётр"];
+    const names = { other: "Пётр", payer: "Савелий" };
     expect(paymentCovered("Савелий купит торт", ["торт"], names)).toBe(true);
+    // The other one is no payer of the owner's promise, nor whom it is for.
+    expect(paymentCovered("Пётр купит торт", ["я куплю торт"], names)).toBe(
+      false
+    );
+    expect(paymentCovered("Петру куплю торт", ["я куплю торт"], names)).toBe(
+      false
+    );
+    expect(
+      paymentCovered("Савелий с Петром купят торт", ["я куплю торт"], names)
+    ).toBe(true);
     expect(
       paymentCovered("Подарок маме купит Савелий", ["маме на подарок"], names)
     ).toBe(true);
@@ -276,10 +303,46 @@ describe("paymentsSaid", () => {
       ["Савелий оплатит половину подарка", ["маме на подарок"]],
       ["Савелий купит торт", []],
       ["Савелий заплатит за всё", ["я плачу"]],
+      ["Савелий оплатит ПК", ["я плачу"]],
+      ["Савелий оплатит купе", ["я плачу"]],
+      ["Савелий оплатит мартини", ["я плачу"]],
     ] as const)
       expect(paymentCovered(text, [...paysFor], names)).toBe(false);
     // A promise of nothing named covers only a promise of nothing named.
     expect(paymentCovered("Савелий заплатит", ["я плачу"], names)).toBe(true);
+    expect(namesNothing("скинусь по 3000")).toBe(true);
+    expect(namesNothing("я куплю торт")).toBe(false);
+    // «скинемся» pays with the other one: they may be the payer too.
+    expect(paysTogether("скинемся с петей маме на подарок")).toBe(true);
+    expect(paysTogether("я куплю торт")).toBe(false);
+    expect(
+      paymentCovered("Пётр скидывается на подарок", ["скинемся на подарок"], {
+        ...names,
+        together: true,
+      })
+    ).toBe(true);
+  });
+
+  it("reads every promise of a text, whatever its verb, with what belongs to it", () => {
+    const names = ["Савелий", "Пётр"];
+    expect(
+      promisesIn(["Савелий оплатит торт, машину и билеты"], names)
+    ).toEqual(["Савелий оплатит торт машину и билеты"]);
+    expect(promisesIn(["Машину, торт Савелий оплатит"], names)).toEqual([
+      "Машину торт Савелий оплатит",
+    ]);
+    expect(
+      promisesIn(["Предлагаю так: Пётр скидывается, Савелий покупает."], names)
+    ).toEqual(["Пётр скидывается", "Савелий покупает"]);
+    expect(promisesIn(["Савелий — покупает подарок"], names)).toEqual([
+      "Савелий покупает подарок",
+    ]);
+    expect(promisesIn(["Пётр за, кто из вас купит?"], names)).toEqual([]);
+    expect(promisesIn(["Торт за ним", "Ужин на Савелии"], names)).toEqual([
+      "Торт за ним",
+      "Ужин на Савелии",
+    ]);
+    expect(promisesIn(["Пётр придёт в платье на берег"], names)).toEqual([]);
   });
 
   it("hears what the owner says the other person pays for", () => {
@@ -312,6 +375,8 @@ describe("paymentsSaid", () => {
       "Савелий, мой владелец купит подарок",
       "Савелий купит подарок и машину",
       "Борис купит подарок",
+      "Савелию куплю подарок",
+      "Савелию Пётр купит подарок",
     ])
       expect(peerPaymentCovered(text, given, names, goal)).toBe(false);
     expect(
@@ -330,6 +395,8 @@ describe("meetingLength", () => {
     ["в 7 вечера до 9", 120],
     ["на полчаса забегу", 30],
     ["посидим часа на 3", 180],
+    ["на 0,33 часа", 20],
+    ["на 30 часов", 1440],
   ])("reads the length the owner named: %s", (text, minutes) => {
     expect(meetingLength(ownerText([text]), start, moscow)).toBe(minutes);
   });

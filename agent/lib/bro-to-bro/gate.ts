@@ -7,9 +7,13 @@ import {
   homeLike,
   moneyWords,
   namedAmounts,
+  namesNothing,
   paymentCovered,
+  paymentPattern,
+  paysTogether,
   peerPaymentCovered,
   promiseReadings,
+  promisesIn,
 } from "@agent/lib/bro-to-bro/owner-words";
 import { documentNumberRanges } from "@shared/privacy/document-numbers";
 import { withoutSecrets } from "@agent/lib/privacy/secrets";
@@ -130,13 +134,6 @@ function numberFindings(text: string) {
     return localPhone.test(run) ? ["phone"] : ["number"];
   });
 }
-
-/**
- * Words of paying, buying for someone or chipping in, and «за мой счёт»: a
- * promise of the owner's money, held unless their own words said they pay.
- */
-const paymentPattern =
-  /(?<!\p{L})(?:заплат\p{L}*|заплач\p{L}*|куплю|купим|оплат\p{L}*|оплач\p{L}*|плачу|угощ\p{L}*|скинемся|скинусь|переведу|в долг)(?!\p{L})|за\s+(?:мой|свой|наш|его|её|ее)\s+сч[её]т/iu;
 
 /** Money as code finds it in any text: a currency sign, a sum with its unit, a word of roubles or of money. */
 const moneyPatterns: readonly RegExp[] = [
@@ -267,7 +264,18 @@ function promiseCovered(
   v2: NonNullable<GateAllowance["v2Allowed"]>
 ) {
   return (
-    paymentCovered(text, v2.paysFor, [allowed.self.name, allowed.peer.name]) ||
+    paymentCovered(
+      text,
+      // «скинусь» without for what is for what the errand is about.
+      v2.paysFor.some((part) => namesNothing(part))
+        ? [...v2.paysFor, allowed.goal]
+        : v2.paysFor,
+      {
+        other: allowed.peer.name,
+        payer: allowed.self.name,
+        together: v2.paysFor.some((part) => paysTogether(part)),
+      }
+    ) ||
     peerPaymentCovered(
       text,
       v2.peerPays,
@@ -278,21 +286,17 @@ function promiseCovered(
 }
 
 /**
- * Whether the money code found in a text may go, the second version's: the
- * text says no money (`noMoney`), and each sentence of it that promises to
- * pay promises only what the owner's words made (`promiseCovered`).
+ * Whether every promise to pay the packet's texts make, as code reads it
+ * in any form (`promisesIn`), says no money and is all one the owner's
+ * words made (`promiseCovered`).
  */
-function promiseAllowed(
-  text: string,
+function promisesCovered(
+  texts: readonly string[],
   allowed: Pick<GateAllowance, "goal" | "peer" | "self">,
   v2: NonNullable<GateAllowance["v2Allowed"]>
 ) {
-  return (
-    noMoney(text) &&
-    text
-      .split(/(?<!\d)[.!?]+|[.!?]+(?!\d)|[;\n]+/u)
-      .filter((sentence) => paymentPattern.test(normalized(sentence)))
-      .every((sentence) => promiseCovered(sentence, allowed, v2))
+  return promisesIn(texts, [allowed.self.name, allowed.peer.name]).every(
+    (promise) => noMoney(promise) && promiseCovered(promise, allowed, v2)
   );
 }
 
@@ -308,16 +312,18 @@ function codeReasons(packet: OutgoingPacket, allowed: GateAllowance) {
   const amount = packet.proposal?.amountRub;
   if (amount !== undefined) findings.add("money");
   const v2 = allowed.v2Allowed;
+  // The second version's promises to pay are code's to read, in every form
+  // and wherever they stand, not only the checker's to retell.
+  const promises = v2 !== undefined && promisesCovered(texts, allowed, v2);
   if (
     v2 &&
+    promises &&
     findings.has("money") &&
     (amount === undefined || v2.amountsRub.includes(amount)) &&
-    found.every(
-      (each) =>
-        !each.findings.has("money") || promiseAllowed(each.text, allowed, v2)
-    )
+    found.every((each) => !each.findings.has("money") || noMoney(each.text))
   )
     findings.delete("money");
+  if (v2 && !promises) findings.add("money");
   if (packet.proposal && !timeAllowed(packet.proposal, allowed))
     findings.add("time");
   return [...findings].map((finding) => ({ by: "code" as const, finding }));
@@ -538,6 +544,8 @@ function disclosed(
           )
           ? []
           : held;
+      // Code judged every promise it reads in the packet; the checker's
+      // quote goes only as one of those, in the packet's own words.
       if (category === "payment") {
         const readings = promiseReadings(text, texts, names);
         return noMoney(text) &&
