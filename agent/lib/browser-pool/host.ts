@@ -267,16 +267,12 @@ export async function startBrowserSandbox(
     readonly workspaceId: string;
   }
 ) {
-  const rootfs = env.BROWSER_SANDBOX_ROOTFS;
-  if (rootfs === undefined) {
-    throw new Error("BROWSER_SANDBOX_ROOTFS is not configured.");
-  }
   const { from, workspaceId } = input;
+  const { root, usualRoot } = sandboxRoots(workspaceId);
   const fresh = {
     generation: input.generation,
     id: browserSandboxId(workspaceId),
     memoryMb: env.BROWSER_SANDBOX_MEMORY_MB,
-    rootfsVersion: rootfs.version,
     workerKey: browserVmKey(workspaceId).toString("hex"),
     workspace: workspaceId,
   };
@@ -293,11 +289,59 @@ export async function startBrowserSandbox(
             manifestUrl: manifestUrl(from.key, "GET", restoreUrlSeconds),
           },
         };
-  return sandboxSchema.parse(
-    await request(host, "POST", "/v1/sandboxes", {
-      body,
+  const start = (rootfsVersion: string) =>
+    request(host, "POST", "/v1/sandboxes", {
+      body: { ...body, rootfsVersion },
       timeoutMs: startTimeoutMs,
-    })
+    });
+  try {
+    return sandboxSchema.parse(await start(root.version));
+  } catch (error) {
+    if (
+      usualRoot === undefined ||
+      !(error instanceof BrowserHostError) ||
+      !lacksRoot(error)
+    ) {
+      throw error;
+    }
+    // The canary root is not on this host yet (hostd's POST
+    // /v1/admin/rootfs puts it there): the sandbox runs as everyone's does.
+    console.warn(
+      "[browser-pool] the host has no canary root: the sandbox starts on the usual one",
+      { canary: root.version, hostId: host.id, workspaceId }
+    );
+    return sandboxSchema.parse(await start(usualRoot.version));
+  }
+}
+
+/**
+ * The roots a workspace's sandbox may start on, first choice first: the
+ * canary root (BROWSER_SANDBOX_ROOTFS_CANARY) for the workspaces of
+ * BROWSER_ROOTFS_CANARY_WORKSPACES, with everyone's behind it, else
+ * everyone's alone. A snapshot taken on the other root restores as a cold
+ * start from its profile (`hostd` checks the root of a snapshot).
+ */
+function sandboxRoots(workspaceId: string) {
+  const rootfs = env.BROWSER_SANDBOX_ROOTFS;
+  if (rootfs === undefined) {
+    throw new Error("BROWSER_SANDBOX_ROOTFS is not configured.");
+  }
+  const canary = env.BROWSER_SANDBOX_ROOTFS_CANARY;
+  const listed = env.BROWSER_ROOTFS_CANARY_WORKSPACES ?? [];
+  const onCanary =
+    canary !== undefined &&
+    canary.version !== rootfs.version &&
+    (listed.includes("*") || listed.includes(workspaceId));
+  return onCanary
+    ? { root: canary, usualRoot: rootfs }
+    : { root: rootfs, usualRoot: undefined };
+}
+
+/** `hostd`'s 409 for a start on a root the host does not have. */
+function lacksRoot(error: BrowserHostError) {
+  return (
+    error.status === 409 &&
+    error.body.includes("rootfs version is not on this host")
   );
 }
 

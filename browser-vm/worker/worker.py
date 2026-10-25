@@ -88,7 +88,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-10-24.2"
+VERSION = "2026-10-25.1"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -120,6 +120,11 @@ UPLOADS = ROOT / "uploads"
 MAX_UPLOAD_SIZE = 20 * 1024 * 1024
 GENERATION_FILE = ROOT / "generation"
 TABS_FILE = ROOT / "tabs.json"
+# The browser bro-chrome starts (image/provision.sh, `bro-browser`): "helium" in this file of the profile picks
+# Helium, when the root has it; anything else is Chrome. It lives in the profile, so it outlives a park.
+BROWSER_CHOICE = PROFILE / "bro-browser"
+HELIUM = Path(os.environ.get("BRO_HELIUM", "/opt/helium/helium"))
+BROWSERS = ("chrome", "helium")
 CDP_HTTP = "http://127.0.0.1:9222"
 LISTEN_PORT = int(os.environ.get("BRO_WORKER_PORT", "8080"))
 # Behind Caddy on the VM the worker listens on loopback only; in a gVisor sandbox (browser-vm/image/sandbox)
@@ -446,6 +451,15 @@ async def chrome_ready():
         return True
     except Exception:
         return False
+
+
+def chosen_browser():
+    """The browser `bro-browser` starts for this profile: Helium only when the profile chose it and the root
+    has it."""
+    with contextlib.suppress(OSError):
+        if BROWSER_CHOICE.read_text().strip() == "helium" and HELIUM.exists():
+            return "helium"
+    return "chrome"
 
 
 async def systemctl(action, unit="bro-chrome"):
@@ -1338,6 +1352,7 @@ class Run:
         self.usage = None
         self.traffic = None  # bytes through the residential proxy while it ran: {"up", "down"}, once it ended
         self.engine = "agent"
+        self.browser = None  # the browser the run worked in: "chrome" or "helium"
         self.jev = None
         self.messages = []
         self.cancel_requested = False
@@ -1361,7 +1376,7 @@ class Run:
             "createdAt": self.created_at, "startedAt": self.started_at, "finishedAt": self.finished_at,
             "steps": self.steps[-50:], "stepCount": len(self.steps), "finalUrl": self.final_url,
             "finalTitle": self.final_title, "usage": self.usage, "traffic": self.traffic, "engine": self.engine,
-            "jev": self.jev,
+            "browser": self.browser, "jev": self.jev,
             "unreadMessages": self.unread_messages,
         }
 
@@ -1385,7 +1400,8 @@ class Run:
                                ("success", "success"), ("createdAt", "created_at"),
                                ("startedAt", "started_at"), ("finishedAt", "finished_at"),
                                ("steps", "steps"), ("finalUrl", "final_url"), ("finalTitle", "final_title"),
-                               ("usage", "usage"), ("traffic", "traffic"), ("engine", "engine"), ("jev", "jev"),
+                               ("usage", "usage"), ("traffic", "traffic"), ("engine", "engine"), ("browser", "browser"),
+                               ("jev", "jev"),
                                ("unreadMessages", "unread_messages"), ("seq", "seq")]:
             if key in record:
                 setattr(run, attribute, record[key])
@@ -1737,6 +1753,28 @@ class Worker:
             size = await asyncio.to_thread(profile_mb)
             self.profile_walk = (time.monotonic(), size)
         return size
+
+    async def switch_browser(self, wanted):
+        """Run the browser Bro asked for (BROWSER_HELIUM_WORKSPACES): the choice goes into the profile, where
+        `bro-browser` reads it at every start of bro-chrome, a park's included, and the browser restarts on it
+        once. The restart drops every session's pages, as POST /v1/browser/restart does, so it happens only
+        when the choice changes. A run that names no browser, and a root without Helium, keep what runs. The
+        browser that runs is the answer."""
+        if wanted not in BROWSERS or (wanted == "helium" and not HELIUM.exists()):
+            return chosen_browser()
+        if wanted == chosen_browser():
+            return wanted
+        temporary = BROWSER_CHOICE.with_name(".bro-browser.tmp")
+        temporary.write_text(wanted + "\n")
+        temporary.replace(BROWSER_CHOICE)
+        log.info("browser: %s from now on, restarting it", wanted)
+        await systemctl("restart")
+        for session in self.sessions.values():
+            session.tab, session.tabs = None, set()
+        self.save_tabs()
+        if await wait_chrome(30):
+            await close_restored_tabs(owned_tabs())
+        return chosen_browser()
 
     async def ensure_tab(self, session, *, locked=False):
         if not locked:
@@ -2362,6 +2400,7 @@ class Worker:
         status, result, error = "failed", None, "The run was interrupted."
         try:
             run.save()  # a disk that refuses the record fails the run with the reason, never holds the browser
+            run.browser = await self.switch_browser(session.options.get("browser"))
             if not await chrome_ready():
                 await systemctl("start")
                 if not await wait_chrome(30):
@@ -2511,7 +2550,7 @@ class Worker:
                 key = captcha.get("twoCaptchaKey") if isinstance(captcha, dict) else None
                 session.captcha = {"twoCaptchaKey": key} if isinstance(key, str) and key else None
             session.options = {k: body.get(k) for k in ("maxSteps", "timeoutSeconds", "allowedDomains", "vision",
-                                                         "jev", "jevCanFinish", "continueMemory")}
+                                                         "jev", "jevCanFinish", "continueMemory", "browser")}
             session.options["tuning"] = tuning or None
             run = Run(run_id, session_id, task)
             run.seq, self.run_seq = self.run_seq, self.run_seq + 1
@@ -4175,8 +4214,8 @@ async def health(request):
     return web.json_response({
         "worker": VERSION, "image": IMAGE_FILE.read_text().strip() if IMAGE_FILE.exists() else None,
         "configured": worker.config is not None, "uptimeSeconds": float(Path("/proc/uptime").read_text().split()[0]),
-        "chrome": await chrome_ready(), "busy": worker.busy(), "proxy": worker.forwarder.upstream is not None,
-        "stage": stage_file.read_text().strip() if stage_file.exists() else None, "generation": worker.generation,
+        "chrome": await chrome_ready(), "browser": chosen_browser(), "busy": worker.busy(),
+        "proxy": worker.forwarder.upstream is not None, "stage": stage_file.read_text().strip() if stage_file.exists() else None, "generation": worker.generation,
         "tunnel": worker.forwarder.tunnel_health(), **details,
     })
 

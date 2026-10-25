@@ -50,6 +50,31 @@ export async function reportFastPilot(scope: {
   return inPilot("browser-report", env.BROWSER_REPORT_FAST_WORKSPACES, scope);
 }
 
+/**
+ * The browser a workspace's errands ask for: Helium in the pilot
+ * (BROWSER_HELIUM_WORKSPACES) — the same Chromium as Chrome there, with
+ * uBlock Origin built in and none of Google's background downloads. The
+ * worker switches to it once and remembers it in the profile
+ * (`browser-vm/worker/worker.py`, `switch_browser`); a root without Helium
+ * keeps Chrome. Chrome is asked for only on the canary root
+ * (BROWSER_ROOTFS_CANARY_WORKSPACES), the one root with Helium, so that a
+ * workspace taken out of the pilot goes back; everyone else's errands name
+ * no browser and go to the worker byte for byte as before. The list reads
+ * as BROWSER_FAST_WORKSPACES does, and a failed lookup asks for no Helium.
+ */
+export async function errandBrowser(scope: {
+  readonly userId?: string;
+  readonly workspaceId: string;
+}) {
+  if (await inPilot("browser-helium", env.BROWSER_HELIUM_WORKSPACES, scope)) {
+    return "helium" as const;
+  }
+  const canary = env.BROWSER_ROOTFS_CANARY_WORKSPACES ?? [];
+  return canary.includes("*") || canary.includes(scope.workspaceId)
+    ? ("chrome" as const)
+    : undefined;
+}
+
 async function inPilot(
   pilot: string,
   entries: readonly string[] | undefined,

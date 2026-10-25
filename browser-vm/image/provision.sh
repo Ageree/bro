@@ -141,6 +141,35 @@ cat > /etc/opt/chrome/policies/managed/bro.json <<'JSON'
   "GenAILocalFoundationalModelSettings": 1
 }
 JSON
+# Helium (github.com/imputnet/helium-linux): the browser of the Helium pilot (BROWSER_HELIUM_WORKSPACES).
+# The same Chromium build as Chrome here, with uBlock Origin built in and none of Google's background
+# downloads: a fresh profile pulled 0.4 MB through the proxy in three idle minutes against Chrome's 12 MB
+# (Safe Browsing lists and components, 25.10.2026). A pinned release checked against its SHA-256 (the AUR
+# package helium-browser-bin pins the same). Helium reads the managed policies from /etc/chromium, and it
+# opens Chrome's profile with its cookies and back again at the same Chromium version.
+HELIUM_VERSION=0.20.1.1
+HELIUM_SHA256=2023fa44cefa0fbd3e19071c87e90d61275f08ba8f5b48d58c235215565e9b53
+retry apt-get install -yq xz-utils
+retry curl -fsSL -o /tmp/helium.tar.xz \
+  "https://github.com/imputnet/helium-linux/releases/download/$HELIUM_VERSION/helium-$HELIUM_VERSION-x86_64_linux.tar.xz"
+echo "$HELIUM_SHA256  /tmp/helium.tar.xz" | sha256sum -c --quiet -
+rm -rf /opt/helium
+mkdir -p /opt/helium
+tar -xJf /tmp/helium.tar.xz -C /opt/helium --strip-components=1 --no-same-owner
+rm -f /tmp/helium.tar.xz
+/opt/helium/helium --version
+mkdir -p /etc/chromium/policies/managed
+cp /etc/opt/chrome/policies/managed/bro.json /etc/chromium/policies/managed/bro.json
+# The browser bro-chrome runs: Helium when the worker chose it for this profile (it writes `bro-browser` into
+# the profile, which outlives a park), else Chrome. The same flags go to either.
+cat > /usr/local/bin/bro-browser <<'SCRIPT'
+#!/bin/sh
+if [ "$(cat /var/lib/bro/profile/bro-browser 2>/dev/null)" = helium ] && [ -x /opt/helium/helium ]; then
+  exec /opt/helium/helium-wrapper "$@"
+fi
+exec /usr/bin/google-chrome "$@"
+SCRIPT
+chmod 755 /usr/local/bin/bro-browser
 cat > /etc/systemd/system/bro-xvfb.service <<'UNIT'
 [Unit]
 Description=Xvfb display :99 for the browser
@@ -164,7 +193,7 @@ Environment=DISPLAY=:99 TZ=Europe/Moscow LANG=ru_RU.UTF-8 LANGUAGE=ru_RU:ru
 # A profile restored from a backup or moved to a re-created VM still carries the old host's lock, and
 # Chrome refuses it as "in use by another computer": only this unit ever runs Chrome on this profile.
 ExecStartPre=/bin/sh -c 'rm -f /var/lib/bro/profile/SingletonLock /var/lib/bro/profile/SingletonSocket /var/lib/bro/profile/SingletonCookie'
-ExecStart=/usr/bin/google-chrome --user-data-dir=/var/lib/bro/profile --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 --proxy-server=http://127.0.0.1:3128 --proxy-bypass-list=<-loopback> --no-first-run --no-default-browser-check --disable-dev-shm-usage --password-store=basic --window-size=1366,900 --lang=ru-RU --accept-lang=ru-RU,ru,en-US,en --disable-features=OptimizationGuideModelDownloading,OptimizationHintsFetching,OptimizationTargetPrediction about:blank
+ExecStart=/usr/local/bin/bro-browser --user-data-dir=/var/lib/bro/profile --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 --proxy-server=http://127.0.0.1:3128 --proxy-bypass-list=<-loopback> --no-first-run --no-default-browser-check --disable-dev-shm-usage --password-store=basic --window-size=1366,900 --lang=ru-RU --accept-lang=ru-RU,ru,en-US,en --disable-features=OptimizationGuideModelDownloading,OptimizationHintsFetching,OptimizationTargetPrediction about:blank
 # SIGTERM lets Chrome write cookies and local storage to the profile before the VM powers off.
 KillMode=mixed
 TimeoutStopSec=30
@@ -179,8 +208,9 @@ chmod 440 /etc/sudoers.d/bro-chrome
 visudo -cf /etc/sudoers.d/bro-chrome
 stage chrome
 
-# Python: browser-use 0.13.10 (the agent), aiohttp (the worker), OpenCV (slider puzzles); jev-ultrafast
-# at the pinned commit for the jev-then-agent engine.
+# Python: browser-use 0.13.10 (the agent), aiohttp (the worker), OpenCV (slider puzzles); Playwright (its
+# client only, against this Chrome over CDP: aria snapshots) and QuickJS (the model's code in a sandbox) for
+# the code engine; jev-ultrafast at the pinned commit for the jev-then-agent engine.
 # BRO_PYTHON_PREINSTALLED=1: /opt/bro/bu/.venv is already there (a sandbox root built where GitHub and PyPI
 # are out of reach, sandbox/build_rootfs.sh BRO_PYTHON_SETUP); jev is then not installed.
 if [ "${BRO_PYTHON_PREINSTALLED:-0}" != 1 ]; then
@@ -188,7 +218,7 @@ export UV_PYTHON_INSTALL_DIR=/opt/bro/python UV_CACHE_DIR=/opt/bro/uv-cache
 retry sh -c 'curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh'
 retry uv venv -q --python 3.12 /opt/bro/bu/.venv
 retry uv pip install -q --python /opt/bro/bu/.venv/bin/python browser-use==0.13.10 aiohttp==3.14.3 \
-  opencv-python-headless==5.0.0.93 numpy==2.5.3
+  opencv-python-headless==5.0.0.93 numpy==2.5.3 playwright==1.64.1 quickjs==1.19.4
 retry apt-get install -yq git
 retry git clone -q https://github.com/browser-use/jev-ultrafast.git /opt/bro/jev-ultrafast
 git -C /opt/bro/jev-ultrafast checkout -q 1231850

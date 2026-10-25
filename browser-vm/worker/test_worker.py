@@ -615,6 +615,7 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
             (worker, "ROOT", root), (worker, "RUNS", root / "runs"), (worker, "SESSIONS", root / "sessions"),
             (worker, "UPLOADS", root / "uploads"), (worker, "GENERATION_FILE", root / "generation"),
             (worker, "TABS_FILE", root / "tabs.json"), (worker, "load_config", lambda: CONFIG),
+            (worker, "BROWSER_CHOICE", root / "profile" / "bro-browser"), (worker, "HELIUM", root / "helium"),
             (worker, "chrome_ready", mock.AsyncMock(return_value=True)),
             (worker, "page_targets", self.chrome.page_targets), (worker, "new_tab", self.chrome.new_tab),
             (worker, "close_tab", self.chrome.close_tab), (worker, "screenshot", self.chrome.screenshot),
@@ -636,6 +637,7 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
             "browser_use.agent.views": views, "browser_use.agent.message_manager": types.SimpleNamespace(),
             "browser_use.agent.message_manager.views": message_views,
         }))
+        (root / "profile").mkdir()
         self.worker = self.restart()
         self.client = TestClient(TestServer(worker.application()))
         await self.client.start_server()
@@ -2031,6 +2033,53 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("memoryMb", details)
         self.assertEqual(len(walks), 1)  # the minute's second answer reuses the walk
         self.assertNotEqual(walks[0], threading.get_ident())  # not on the loop the forwarder shares
+
+    async def test_a_run_switches_the_browser_once_and_back(self):
+        worker.HELIUM.write_text("")
+        systemctl = mock.AsyncMock(return_value=(0, ""))
+        self.enterContext(mock.patch.object(worker, "systemctl", systemctl))
+        self.enterContext(mock.patch.object(worker, "wait_chrome", mock.AsyncMock(return_value=True)))
+        runs = [("r1", "helium"), ("r2", "helium"), ("r3", None), ("r4", "chrome"), ("r5", "chrome")]
+        seen = []
+        for run_id, browser in runs:
+            await self.worker.start_run({"id": run_id, "sessionId": run_id, "llm": LLM, "task": "Open the shop.",
+                                         **({"browser": browser} if browser else {})})
+            run = await self.settled(run_id)
+            seen.append((run.browser, len(systemctl.await_args_list)))
+            self.assertEqual(self.on_disk(run_id)["browser"], run.browser)
+        # One restart onto Helium, none while it stays (a run that names no browser keeps it), one back.
+        self.assertEqual(seen, [("helium", 1), ("helium", 1), ("helium", 1), ("chrome", 2), ("chrome", 2)])
+        self.assertEqual({call.args for call in systemctl.await_args_list}, {("restart",)})
+        self.assertEqual(worker.BROWSER_CHOICE.read_text().strip(), "chrome")
+        self.assertEqual((await (await self.client.get("/v1/health")).json())["browser"], "chrome")
+
+    async def test_a_root_without_helium_stays_on_chrome(self):
+        systemctl = mock.AsyncMock(return_value=(0, ""))
+        self.enterContext(mock.patch.object(worker, "systemctl", systemctl))
+        await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Open the shop.",
+                                     "browser": "helium"})
+        self.assertEqual((await self.settled("r1")).browser, "chrome")
+        systemctl.assert_not_awaited()
+        self.assertFalse(worker.BROWSER_CHOICE.exists())
+        # A profile that chose Helium on a root that lost it runs Chrome, and says so.
+        worker.BROWSER_CHOICE.write_text("helium\n")
+        self.assertEqual((await (await self.client.get("/v1/health")).json())["browser"], "chrome")
+
+    async def test_a_switch_drops_the_pages_of_every_session(self):
+        worker.HELIUM.write_text("")
+        self.enterContext(mock.patch.object(worker, "systemctl", mock.AsyncMock(return_value=(0, ""))))
+        self.enterContext(mock.patch.object(worker, "wait_chrome", mock.AsyncMock(return_value=True)))
+        await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Open the shop."})
+        await self.settled("r1")
+        left = self.worker.sessions["s1"].tab
+        self.assertIsNotNone(left)
+        await self.worker.start_run({"id": "r2", "sessionId": "s2", "llm": LLM, "task": "Open the shop.",
+                                     "browser": "helium"})
+        await self.settled("r2")
+        # Chrome's tab ids do not outlive the restart: the other session forgets its page, as after
+        # POST /v1/browser/restart, rather than steering a run into a tab that is gone.
+        self.assertIsNone(self.worker.sessions["s1"].tab)
+        self.assertEqual(self.worker.sessions["s1"].tabs, set())
 
     async def test_health_says_whether_the_exit_still_opens_tunnels(self):
         forwarder = self.worker.forwarder

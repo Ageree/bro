@@ -674,6 +674,55 @@ describe("starting a run on a workspace's browser VM", () => {
     });
   });
 
+  it("asks the worker for Helium in its pilot, for Chrome on the canary root, and for nothing elsewhere", async () => {
+    worker.startBrowserVmWorkerRun.mockImplementation((_vm, input) =>
+      Promise.resolve({
+        id: input.id,
+        sessionId: input.sessionId ?? "",
+        status: "queued",
+      })
+    );
+    const browsers = async (settings: Record<string, string>) => {
+      vi.resetModules();
+      worker.startBrowserVmWorkerRun.mockClear();
+      const client = await importWithSettings(
+        {
+          ...browserVmTestEnvironment,
+          BROWSER_HELIUM_WORKSPACES: "",
+          BROWSER_ROOTFS_CANARY_WORKSPACES: "",
+          ...settings,
+        },
+        async () => import("@agent/lib/browser-use/client")
+      );
+      await client.createBrowserUseRun({ profileId, task: composedTask });
+      return worker.startBrowserVmWorkerRun.mock.calls.map(
+        ([, input]) => input.browser
+      );
+    };
+
+    expect(
+      await browsers({
+        BROWSER_HELIUM_WORKSPACES: `other@example.test,${workspaceId}`,
+      })
+    ).toEqual(["helium"]);
+    expect(await browsers({ BROWSER_HELIUM_WORKSPACES: "*" })).toEqual([
+      "helium",
+    ]);
+    // Out of the pilot on the canary root, the root with Helium, an errand
+    // asks for Chrome: that is how a workspace taken out of it goes back.
+    expect(
+      await browsers({
+        BROWSER_HELIUM_WORKSPACES: "personal:another",
+        BROWSER_ROOTFS_CANARY_WORKSPACES: workspaceId,
+      })
+    ).toEqual(["chrome"]);
+    // Everyone else names no browser (the worker's body is as before).
+    expect(
+      await browsers({ BROWSER_HELIUM_WORKSPACES: "personal:another" })
+    ).toEqual([undefined]);
+    expect(await browsers({})).toEqual([undefined]);
+  });
+
   it("gives the worker the 2Captcha key only when the deployment has one", async () => {
     worker.startBrowserVmWorkerRun.mockImplementation((_vm, input) =>
       Promise.resolve({

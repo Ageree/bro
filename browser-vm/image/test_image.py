@@ -433,9 +433,49 @@ class ChromeUnitTest(unittest.TestCase):
     def test_loopback_goes_through_the_forwarder_too(self):
         # Chrome sends localhost past --proxy-server unless `<-loopback>` subtracts that implicit rule:
         # a page could then reach CDP, the worker and Caddy on the VM itself.
-        start = next(line for line in PROVISION.splitlines() if line.startswith("ExecStart=/usr/bin/google-chrome"))
+        start = next(line for line in PROVISION.splitlines() if line.startswith("ExecStart=/usr/local/bin/bro-browser"))
         self.assertIn(" --proxy-server=http://127.0.0.1:3128 ", start)
         self.assertIn(" --proxy-bypass-list=<-loopback> ", start)
+
+    def browser_run(self, choice, helium_installed):
+        """bro-browser from provision.sh with its paths under a temp directory and fake browsers that print
+        their name and arguments."""
+        script = re.search(r"cat > /usr/local/bin/bro-browser <<'SCRIPT'\n(.*?)\nSCRIPT\n", PROVISION, re.S).group(1)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fakes = {"/usr/bin/google-chrome": "chrome", "/opt/helium/helium-wrapper": "helium"}
+            if helium_installed:
+                fakes["/opt/helium/helium"] = "helium-binary"
+            for path, name in fakes.items():
+                fake = root / path.lstrip("/")
+                fake.parent.mkdir(parents=True, exist_ok=True)
+                fake.write_text(f'#!/bin/sh\necho {name} "$@"\n')
+                fake.chmod(0o755)
+            profile = root / "var/lib/bro/profile"
+            profile.mkdir(parents=True)
+            if choice is not None:
+                (profile / "bro-browser").write_text(choice + "\n")
+            for path in ("/var/lib/bro/profile", "/opt/helium", "/usr/bin/google-chrome"):
+                script = script.replace(path, f"{root}{path}")
+            wrapper = root / "bro-browser"
+            wrapper.write_text(script)
+            wrapper.chmod(0o755)
+            return subprocess.run([str(wrapper), "--user-data-dir=/p", "about:blank"], capture_output=True,
+                                  text=True, check=True).stdout.strip()
+
+    def test_the_profile_chooses_helium_and_chrome_is_the_default(self):
+        self.assertEqual(self.browser_run("helium", True), "helium --user-data-dir=/p about:blank")
+        self.assertEqual(self.browser_run(None, True), "chrome --user-data-dir=/p about:blank")
+        self.assertEqual(self.browser_run("chrome", True), "chrome --user-data-dir=/p about:blank")
+        # A root without Helium keeps a profile that chose it on Chrome rather than leaving the unit without a
+        # browser.
+        self.assertEqual(self.browser_run("helium", False), "chrome --user-data-dir=/p about:blank")
+
+    def test_helium_is_pinned_and_gets_the_same_policies(self):
+        self.assertRegex(PROVISION, r"(?m)^HELIUM_SHA256=[0-9a-f]{64}$")
+        self.assertIn('echo "$HELIUM_SHA256  /tmp/helium.tar.xz" | sha256sum -c --quiet -', PROVISION)
+        self.assertIn("cp /etc/opt/chrome/policies/managed/bro.json /etc/chromium/policies/managed/bro.json",
+                      PROVISION)
 
 
 if __name__ == "__main__":

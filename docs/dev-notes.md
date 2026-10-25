@@ -2239,6 +2239,21 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   Снимок памяти на 3 ГБ восстанавливается и в песочницу с большим `BROWSER_SANDBOX_MEMORY_MB`, гость остаётся
   3 ГБ до холодного старта. OOM виден в журнале гостя `GET /h/v1/sandboxes/<id>/log`
   токеном оператора (`boot.py token`), свободная память и оверлей — `GET /v1/health?machine=1` worker.
+- Helium вместо Chrome (25.10, владелец — сначала себе: `BROWSER_HELIUM_WORKSPACES`): тот же Chromium 156, что
+  Chrome корня, с встроенным uBlock Origin и без фоновых загрузок Google (свежий профиль за 3 минуты простоя — 0,4 МБ
+  через прокси против 12 МБ у Chrome; Safe Browsing у Helium нет). Ставит его `provision.sh` (закреплён sha256), юнит
+  `bro-chrome` запускает `bro-browser`: Helium, если в профиле лежит `bro-browser` с `helium`. Его пишет worker ≥
+  2026-10-25.1 по опции `browser` поручения и один раз перезапускает браузер (`switch_browser`, вкладки всех сессий
+  теряются, как при `POST /v1/browser/restart`); браузер — в записи запуска и в `/v1/health`. Профиль Chrome ↔ Helium
+  одной версии Chromium переносится с cookies в обе стороны, политики Helium берёт из `/etc/chromium/policies`.
+  Профиль после Chrome/Helium 156 не возвращайте на старый корень с Chrome 154 (даунгрейд): откат Helium — убрать
+  воркспейс из флага, на канареечном корне worker вернёт Chrome той же версии. Проверяя cookies при перезапуске,
+  держите браузер ≥ 30 с: Chromium сбрасывает их на диск раз в 30 с, и SIGTERM сразу после записи терял их и у
+  Chrome. Канареечный корень — `BROWSER_SANDBOX_ROOTFS_CANARY` и `BROWSER_ROOTFS_CANARY_WORKSPACES` (id или `*`):
+  статичному хосту корень ставит только установка, второй — операторская ручка `hostd` `POST /v1/admin/rootfs`;
+  хост без канарейки стартует песочницу на обычном корне. Корень собирали в облачной сессии
+  (`build_rootfs.sh` с прокси сессии в `chroot`: прямой TLS сессии подменяет шлюз со своим CA, его в корень нельзя);
+  Python и 108 пакетов — по `*.dist-info` прежнего корня (3.11, `BRO_PYTHON_SETUP`).
 - Узкое место браузерного поручения — LLM шага и число шагов, не VM и профиль:
   Chrome до CDP — 0,2–0,8 с, профиль 178 МБ распаковывается за 0,35 с. Замеры,
   гипотезы и сравнение моделей — `docs/browser-speed.md`.
