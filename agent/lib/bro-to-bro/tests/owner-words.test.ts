@@ -370,6 +370,15 @@ describe("paymentsSaid", () => {
       )
     ).toEqual(["Савелий оплатит торт автомобиль для Николь"]);
     expect(promisesIn(["Савелий расплатится за шубу"], names)).toHaveLength(1);
+    expect(
+      promisesIn(
+        ["Савелий оплатит торт, автомобиль для моей подруги Николь"],
+        ["Савелий", "Николь"]
+      )
+    ).toEqual(["Савелий оплатит торт автомобиль для моей подруги Николь"]);
+    expect(promisesIn(["Кому надо заплачу"], names)).toEqual([
+      "Кому надо заплачу",
+    ]);
   });
 
   it("hears what the owner says the other person pays for", () => {

@@ -294,20 +294,17 @@ function promisesCovered(
     promisesIn(texts, names).every(
       (promise) => noMoney(promise) && promiseCovered(promise, allowed, v2)
     ) &&
-    // A question of who pays tells what is to be paid for: only what the
-    // owner's words or the goal name («кто купит подарок?», not «шубу»).
+    // A question of who pays tells what is to be paid for, and may answer it
+    // («Кто оплатит? Савелий.»): only what the owner's words of paying name
+    // («кто купит подарок?», not «шубу»), never the goal.
     paymentQuestions(texts, names).every(
       (question) =>
         noMoney(question) &&
-        paymentCovered(
-          question,
-          [...v2.paysFor, ...v2.peerPays, allowed.goal],
-          {
-            other: allowed.peer.name,
-            payer: allowed.self.name,
-            together: true,
-          }
-        )
+        paymentCovered(question, [...v2.paysFor, ...v2.peerPays], {
+          other: allowed.peer.name,
+          payer: allowed.self.name,
+          together: true,
+        })
     ) &&
     // A sentence with a word of paying code reads no promise in is held:
     // the reading of promises must not miss one.

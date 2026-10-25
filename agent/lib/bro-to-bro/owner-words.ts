@@ -1111,11 +1111,19 @@ function readPromises(text: string, names: readonly string[]) {
   const isName = (word: string) => people.some((name) => nameForm(word, name));
   // Who a part is of: a name as it is or «я», «ты», «он» — not after a
   // preposition, whose name it is that a promise is for («для Николь»).
+  const subjectWord = (word: string) =>
+    people.includes(word) || /^(?:ты|вы|я|мы|он|она|они)$/u.test(word);
   const subjectIn = (words: readonly string[]) =>
     words.some(
       (word, index) =>
-        !preposition.test(words[index - 1] ?? "") &&
-        (people.includes(word) || /^(?:ты|вы|я|мы|он|она|они)$/u.test(word))
+        !preposition.test(words[index - 1] ?? "") && subjectWord(word)
+    );
+  // A statement of its own starts with whose it is («Пётр за», «а он
+  // против»); one with a name further on may be whom a promise is for
+  // («автомобиль для моей подруги Николь»), and stays with the promise.
+  const statement = (words: readonly string[]) =>
+    subjectWord(
+      words.find((word) => !/^(?:а|и|но|да|ну|тогда|так)$/u.test(word)) ?? ""
     );
   const promises: string[][] = [];
   const questions: string[] = [];
@@ -1143,8 +1151,11 @@ function readPromises(text: string, names: readonly string[]) {
       let before: string[] = [];
       for (const part of promiseParts(segment)) {
         const own = comparableWords(part);
+        // A question of who pays names nobody as paying, and its verb is no
+        // promise of the owner's own («кому надо заплачу» is one).
         if (
           !subjectIn(own) &&
+          !paysPattern.test(own.join(" ")) &&
           (whoWord.test(own[0] ?? "") ||
             (asks && own.some((word) => whoWord.test(word))))
         ) {
@@ -1154,7 +1165,7 @@ function readPromises(text: string, names: readonly string[]) {
         } else if (promising(part, people)) {
           promises.push([...before, part]);
           before = [];
-        } else if (subjectIn(own))
+        } else if (statement(own))
           before = own.every((word) => isName(word)) ? [part] : [];
         else if (promises.length > 0) promises.at(-1)?.push(part);
         else before.push(part);

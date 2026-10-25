@@ -541,11 +541,13 @@ describe("screenOutgoing, the second version's", () => {
       "Савелий оплатит шубу кому-нибудь из родных?",
       "Савелий согласен. Кому угодно он купит автомобиль",
       "Кто купит шубу?",
+      "Кто оплатит автомобиль? Савелий.",
+      "Кому надо заплачу",
     ])
       expect((await verdict({ body }, [], ownerSaid)).verdict).toBe("hold");
     /* oxlint-enable eslint/no-await-in-loop */
     // A question of who pays goes when it asks only of what the owner's
-    // words or the goal name.
+    // words of paying name.
     await expect(
       verdict({ body: "Кто из вас купит подарок?" }, [], ownerSaid)
     ).resolves.toEqual({ verdict: "pass" });
