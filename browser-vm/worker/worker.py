@@ -92,7 +92,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-10-25.12"
+VERSION = "2026-10-25.13"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -1497,11 +1497,27 @@ def site_status_failure(status, what):
     return SiteOpFailure("failed", f"{what} answered {status or 'nothing'}: read the page instead")
 
 
+def site_same_place(url, landed):
+    """Whether a page that landed at `landed` is still on the host it was asked at: the same host, `www.` aside,
+    or one under the other. hh.ru sends a Russian exit to its city's own host (blagoveschensk.hh.ru for the
+    owner's exit on 25.10, hh.ru itself for the stand's US one), and a host learned there sends another city
+    back; a sibling under the same registry (a .msk.ru neighbour) is not the site."""
+    def host(address):
+        try:
+            return (urllib.parse.urlsplit(address or "").hostname or "").rstrip(".").lower().removeprefix("www.")
+        except ValueError:
+            return ""
+
+    asked, got = host(url), host(landed)
+    return bool(asked and got) and (asked == got or got.endswith("." + asked) or asked.endswith("." + got))
+
+
 def site_same_path(url, landed):
     """Whether the page answered from the address it was asked for, not one it redirected to (its home, a city
-    picker, a search with nothing in it): the errand's values reached it (Pomerado's `InputNotApplied`)."""
+    picker, a search with nothing in it): the errand's values reached it (Pomerado's `InputNotApplied`). A city's
+    own host of the site is the same place (`site_same_place`)."""
     asked, got = urllib.parse.urlsplit(url), urllib.parse.urlsplit(landed or "")
-    return ((got.hostname or "").removeprefix("www.") == (asked.hostname or "").removeprefix("www.")
+    return (site_same_place(url, landed)
             and urllib.parse.unquote(got.path).rstrip("/") == urllib.parse.unquote(asked.path).rstrip("/"))
 
 
@@ -1547,6 +1563,11 @@ async def site_op_fetched(page, operation, url):
     origin = f"https://{parts.hostname}"
     if not (page.url or "").startswith(origin + "/"):
         await page.goto(origin + "/robots.txt", wait_until="commit", timeout=SITE_OP_LOAD_S * 1000)
+    # A site that sent the tab to its city's own host (`site_same_place`) is asked there: a fetch the site would
+    # redirect across hosts is refused by the browser (CORS), and the page would have to be drawn instead.
+    here = urllib.parse.urlsplit(page.url or "")
+    if here.hostname and here.hostname != parts.hostname and site_same_place(url, page.url):
+        url = urllib.parse.urlunsplit(("https", here.hostname, parts.path, parts.query, ""))
     answer = await asyncio.wait_for(page.evaluate(
         "async (u) => { const r = await fetch(u, {credentials: 'include'});"
         " return {status: r.status, url: r.url, text: await r.text()}; }", url),
@@ -6772,7 +6793,7 @@ async def site_look(request):
     # Only a link on the page's own host, https: a card's first link can be an ad's, a tracker's or a seller's.
     picked = [{"title": card.get("title") or "", "text": card.get("text", "")[:SITE_OP_FIELD_CHARS * 3],
                "link": next((link for link in card.get("links") or []
-                             if link.startswith("https://") and same_host(link, landed)), None)}
+                             if link.startswith("https://") and site_same_place(landed, link)), None)}
               for card in cards[:SITE_LOOK_CARDS]]
     log.info("site look %s: %d cards, %d operations, %d ms", parts.hostname, len(cards), len(operations), ms)
     return web.json_response({"ok": True, "cards": picked, "count": len(cards), "operations": operations,
@@ -6805,7 +6826,7 @@ async def site_look_page(url, holder, recorder, until):
     status = response.status if response is not None else None
     if status in SITE_GONE:
         raise site_status_failure(status, "the page")
-    if not same_host(page.url, url):
+    if not site_same_place(url, page.url):
         raise SiteOpFailure("moved", "the page went to another site")
     began, best, last = time.monotonic(), [], None
     while True:
@@ -6817,7 +6838,7 @@ async def site_look_page(url, holder, recorder, until):
             if "context was destroyed" not in str(error) or time.monotonic() >= until - 1.5:
                 raise
             await asyncio.sleep(0.7)
-            if not same_host(page.url, url):
+            if not site_same_place(url, page.url):
                 raise SiteOpFailure("moved", "the page went to another site") from None
             continue
         mark = (len(now), now[0]["text"] if now else "")
