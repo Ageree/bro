@@ -81,8 +81,9 @@ const datedVersion = /^(?<day>\d{4}-\d{2}-\d{2})\.(?<count>\d+)$/u;
 /**
  * The published worker when this VM's worker should get it before the
  * errand: an older version answers, the worker is idle and the VM was not
- * just handed to an errand, the VM is a workspace's own or a files-pilot
- * sandbox, the version has not failed on it, and no attempt is under way
+ * just handed to an errand, the VM is a workspace's own or a pool sandbox
+ * the rollout reaches (`browserPoolWorkerRolloutEnabled`), the version has
+ * not failed on it, and no attempt is under way
  * or failed a moment ago. A freshly started sandbox is not handed out yet.
  * Asks nothing of anyone.
  */
@@ -111,9 +112,20 @@ export function browserVmWorkerDue(
   return published;
 }
 
+/**
+ * Whether the published worker reaches this workspace's pool sandbox. The
+ * files pilot needs it (its uploads live in the newer worker), and
+ * BROWSER_POOL_WORKER_WORKSPACES takes it to everyone else without the
+ * pilot: before it, a fix in the worker (24.10: memory the guest ran out of,
+ * tabs an errand piled up) reached only the owner, and the rest ran the
+ * worker of the sandbox image.
+ */
 export function browserPoolWorkerRolloutEnabled(workspaceId: string) {
-  const workspaces = env.BROWSER_VM_FILES_WORKSPACES ?? [];
-  return workspaces.includes("*") || workspaces.includes(workspaceId);
+  const workspaces = new Set([
+    ...(env.BROWSER_POOL_WORKER_WORKSPACES ?? []),
+    ...(env.BROWSER_VM_FILES_WORKSPACES ?? []),
+  ]);
+  return workspaces.has("*") || workspaces.has(workspaceId);
 }
 
 /**
