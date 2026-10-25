@@ -702,7 +702,7 @@ describe("starting a run on a workspace's browser VM", () => {
 
     expect(
       await browsers({
-        BROWSER_HELIUM_WORKSPACES: `other@example.test,${workspaceId}`,
+        BROWSER_HELIUM_WORKSPACES: `personal:other,${workspaceId}`,
       })
     ).toEqual(["helium"]);
     expect(await browsers({ BROWSER_HELIUM_WORKSPACES: "*" })).toEqual([

@@ -268,7 +268,7 @@ export async function startBrowserSandbox(
   }
 ) {
   const { from, workspaceId } = input;
-  const { root, usualRoot } = sandboxRoots(workspaceId);
+  const root = sandboxRoot(workspaceId);
   const fresh = {
     generation: input.generation,
     id: browserSandboxId(workspaceId),
@@ -289,39 +289,26 @@ export async function startBrowserSandbox(
             manifestUrl: manifestUrl(from.key, "GET", restoreUrlSeconds),
           },
         };
-  const start = (rootfsVersion: string) =>
-    request(host, "POST", "/v1/sandboxes", {
-      body: { ...body, rootfsVersion },
+  return sandboxSchema.parse(
+    await request(host, "POST", "/v1/sandboxes", {
+      body: { ...body, rootfsVersion: root.version },
       timeoutMs: startTimeoutMs,
-    });
-  try {
-    return sandboxSchema.parse(await start(root.version));
-  } catch (error) {
-    if (
-      usualRoot === undefined ||
-      !(error instanceof BrowserHostError) ||
-      !lacksRoot(error)
-    ) {
-      throw error;
-    }
-    // The canary root is not on this host yet (hostd's POST
-    // /v1/admin/rootfs puts it there): the sandbox runs as everyone's does.
-    console.warn(
-      "[browser-pool] the host has no canary root: the sandbox starts on the usual one",
-      { canary: root.version, hostId: host.id, workspaceId }
-    );
-    return sandboxSchema.parse(await start(usualRoot.version));
-  }
+    })
+  );
 }
 
 /**
- * The roots a workspace's sandbox may start on, first choice first: the
- * canary root (BROWSER_SANDBOX_ROOTFS_CANARY) for the workspaces of
- * BROWSER_ROOTFS_CANARY_WORKSPACES, with everyone's behind it, else
- * everyone's alone. A snapshot taken on the other root restores as a cold
- * start from its profile (`hostd` checks the root of a snapshot).
+ * The root a workspace's sandbox starts on: the canary root
+ * (BROWSER_SANDBOX_ROOTFS_CANARY) for the workspaces of
+ * BROWSER_ROOTFS_CANARY_WORKSPACES, everyone's (BROWSER_SANDBOX_ROOTFS)
+ * otherwise. A host without the canary root answers 409, and the sandbox
+ * waits for room as on a full host (`startRefused`): it never falls back to
+ * everyone's root, whose older Chrome must not open a profile a newer one
+ * has written (the canary's Chromium 156 against 154 on 25.10). A snapshot
+ * taken on the other root restores as a cold start from its profile
+ * (`hostd` checks the root of a snapshot).
  */
-function sandboxRoots(workspaceId: string) {
+function sandboxRoot(workspaceId: string) {
   const rootfs = env.BROWSER_SANDBOX_ROOTFS;
   if (rootfs === undefined) {
     throw new Error("BROWSER_SANDBOX_ROOTFS is not configured.");
@@ -332,17 +319,7 @@ function sandboxRoots(workspaceId: string) {
     canary !== undefined &&
     canary.version !== rootfs.version &&
     (listed.includes("*") || listed.includes(workspaceId));
-  return onCanary
-    ? { root: canary, usualRoot: rootfs }
-    : { root: rootfs, usualRoot: undefined };
-}
-
-/** `hostd`'s 409 for a start on a root the host does not have. */
-function lacksRoot(error: BrowserHostError) {
-  return (
-    error.status === 409 &&
-    error.body.includes("rootfs version is not on this host")
-  );
+  return onCanary ? canary : rootfs;
 }
 
 /** The workspace's sandbox on the host, or undefined when it has none. */

@@ -458,6 +458,16 @@ async def chrome_ready():
         return False
 
 
+def choose(choice):
+    """Write the profile's browser choice in one step (None: none, which is Chrome)."""
+    if choice is None:
+        BROWSER_CHOICE.unlink(missing_ok=True)
+        return
+    temporary = BROWSER_CHOICE.with_name(".bro-browser.tmp")
+    temporary.write_text(choice)
+    temporary.replace(BROWSER_CHOICE)
+
+
 def chosen_browser():
     """The browser `bro-browser` starts for this profile: Helium only when the profile chose it and the root
     has it."""
@@ -2217,11 +2227,16 @@ class Worker:
             return chosen_browser()
         if wanted == chosen_browser():
             return wanted
-        temporary = BROWSER_CHOICE.with_name(".bro-browser.tmp")
-        temporary.write_text(wanted + "\n")
-        temporary.replace(BROWSER_CHOICE)
+        before = BROWSER_CHOICE.read_text() if BROWSER_CHOICE.exists() else None
+        choose(wanted + "\n")
         log.info("browser: %s from now on, restarting it", wanted)
-        await systemctl("restart")
+        code, output = await systemctl("restart")
+        if code != 0:
+            # The choice goes back, so the record and /v1/health name the browser that runs, and the next start
+            # of bro-chrome (the run's own, a park's) does not switch it behind Bro's back.
+            log.warning("browser: the restart into %s failed (%s): %s", wanted, code, output.strip())
+            choose(before)
+            return chosen_browser()
         for session in self.sessions.values():
             session.tab, session.tabs = None, set()
         self.save_tabs()

@@ -246,29 +246,23 @@ describe("browser host client", () => {
     });
   });
 
-  it("starts a canary workspace on the canary root, and on the usual one where the host lacks it", async () => {
+  it("starts a canary workspace on the canary root only, never on the usual one", async () => {
     const canary = `2026-10-25.1:rootfs/2026-10-25.1.tar.zst:${"ef".repeat(32)}`;
     const client = await loadHost({
       BROWSER_ROOTFS_CANARY_WORKSPACES: `personal:other,${workspaceId}`,
       BROWSER_SANDBOX_ROOTFS_CANARY: canary,
     });
-    const lacking = Response.json(
-      {
-        error: "rootfs version is not on this host",
-        rootfsVersion: "2026-10-25.1",
-      },
-      { status: 409 }
-    );
     const calls = stubHost(
       Response.json(sandbox, { status: 201 }),
-      lacking,
-      Response.json(sandbox, { status: 201 }),
+      Response.json(
+        {
+          error: "rootfs version is not on this host",
+          rootfsVersion: "2026-10-25.1",
+        },
+        { status: 409 }
+      ),
       Response.json(sandbox, { status: 201 })
     );
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    onTestFinished(() => {
-      warn.mockRestore();
-    });
     const roots = () =>
       calls.map(
         (call) => startBodySchema.parse(JSON.parse(call.body)).rootfsVersion
@@ -276,34 +270,18 @@ describe("browser host client", () => {
 
     await client.startBrowserSandbox(host, { generation: 5, workspaceId });
     expect(roots()).toEqual(["2026-10-25.1"]);
-    // A host without the canary root: the same start again on everyone's.
-    await client.startBrowserSandbox(host, { generation: 6, workspaceId });
-    expect(roots()).toEqual(["2026-10-25.1", "2026-10-25.1", "2026-09-30.1"]);
-    expect(warn).toHaveBeenCalledOnce();
+    // A host without the canary root refuses, and the start goes nowhere
+    // else: the usual root's older Chrome must not open the profile.
+    await expect(
+      client.startBrowserSandbox(host, { generation: 6, workspaceId })
+    ).rejects.toMatchObject({ status: 409 });
+    expect(roots()).toEqual(["2026-10-25.1", "2026-10-25.1"]);
     // Everyone else stays on the usual root.
     await client.startBrowserSandbox(host, {
       generation: 5,
       workspaceId: "personal:someone",
     });
     expect(roots().at(-1)).toBe("2026-09-30.1");
-  });
-
-  it("does not take another refusal for a missing root", async () => {
-    const client = await loadHost({
-      BROWSER_ROOTFS_CANARY_WORKSPACES: "*",
-      BROWSER_SANDBOX_ROOTFS_CANARY: `2026-10-25.1:rootfs/2026-10-25.1.tar.zst:${"ef".repeat(32)}`,
-    });
-    const calls = stubHost(
-      Response.json(
-        { error: "stale generation", generation: 9 },
-        { status: 409 }
-      )
-    );
-
-    await expect(
-      client.startBrowserSandbox(host, { generation: 5, workspaceId })
-    ).rejects.toMatchObject({ status: 409 });
-    expect(calls).toHaveLength(1);
   });
 
   it("restores from a set with GET URLs for its chunks, or cold from its profile", async () => {

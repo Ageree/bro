@@ -2179,6 +2179,15 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(worker.BROWSER_CHOICE.read_text().strip(), "chrome")
         self.assertEqual((await (await self.client.get("/v1/health")).json())["browser"], "chrome")
 
+    async def test_a_restart_that_fails_keeps_the_browser_that_runs(self):
+        worker.HELIUM.write_text("")
+        self.enterContext(mock.patch.object(worker, "systemctl", mock.AsyncMock(return_value=(1, "Job failed"))))
+        await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Open the shop.",
+                                     "browser": "helium"})
+        self.assertEqual((await self.settled("r1")).browser, "chrome")
+        self.assertFalse(worker.BROWSER_CHOICE.exists())
+        self.assertEqual((await (await self.client.get("/v1/health")).json())["browser"], "chrome")
+
     async def test_a_root_without_helium_stays_on_chrome(self):
         systemctl = mock.AsyncMock(return_value=(0, ""))
         self.enterContext(mock.patch.object(worker, "systemctl", systemctl))
