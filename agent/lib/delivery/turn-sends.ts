@@ -153,6 +153,14 @@ const failedSendSchema = z.union([
 
 const skippedPrefix = "Not delivered:";
 const rewritePrefix = "Not delivered, rewrite it:";
+/**
+ * What `send_message` answers for a stale report's send and a reaction
+ * that cannot go (`agent/tools/messaging.ts`): it did not reach the
+ * person either. Read as a send that did, it stood for the question a
+ * person's «да» answers (25.10: a stale «DELIVERY_COMPLETE» after Bro's
+ * question about a proposal).
+ */
+const notSentPrefix = "Not sent:";
 
 /**
  * How every rewrite notice ends. The draft never reached the person, so its
@@ -702,7 +710,11 @@ function listsAfterClaim(line: string, turn: ReturnType<typeof turnSends>) {
 
 function refusalOf(output: ToolResultPart["output"]) {
   if (output.type !== "text") return undefined;
-  if (output.value.startsWith(skippedPrefix)) return "skipped" as const;
+  if (
+    output.value.startsWith(skippedPrefix) ||
+    output.value.startsWith(notSentPrefix)
+  )
+    return "skipped" as const;
   if (output.value.startsWith(rewritePrefix)) return "rewrite" as const;
   return undefined;
 }

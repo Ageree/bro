@@ -769,6 +769,47 @@ describe("the second version's Bro ↔ Bro tools", () => {
       expect(
         await after(question, "[голосом] (ты: «Подходит?»)\nда")
       ).toMatchObject({ yesTo: draftId });
+      // A stale report's send after the question did not go out: the yes
+      // still answers the question (live 25.10).
+      turns += 1;
+      const stale = await turn("person-message", {
+        messages: [
+          person("Договорись с братом об ужине"),
+          ...sent(question),
+          {
+            content: [
+              {
+                input: { text: "DELIVERY_COMPLETE" },
+                toolCallId: "send-2",
+                toolName: "send_message",
+                type: "tool-call",
+              },
+            ],
+            role: "assistant",
+          },
+          {
+            content: [
+              {
+                output: {
+                  type: "text",
+                  value:
+                    "Not sent: this Bro ↔ Bro report is stale or already delivered. End this turn silently; do not repeat, rephrase or react to it.",
+                },
+                toolCallId: "send-2",
+                toolName: "send_message",
+                type: "tool-result",
+              },
+            ],
+            role: "tool",
+          },
+          person("да"),
+        ],
+        step: { index: 0, turnId: `turn-bound-${String(turns)}` },
+      });
+      await (await stale.call("bro_talk", input)).execute();
+      expect(bro.appendOwnerAnswer.mock.calls.at(-1)?.[4]).toMatchObject({
+        yesTo: draftId,
+      });
       // A yes to other words, or no plain yes, binds nothing.
       expect(await after("Подходит суббота?", "да")).not.toHaveProperty(
         "yesTo"

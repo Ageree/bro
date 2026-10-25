@@ -2592,6 +2592,14 @@ describe("turnSends", () => {
       false
     );
     expect(sendReachedPerson(textOutput("submitted"))).toBe(true);
+    // A stale report's send, as `send_message` answers it, did not go out.
+    expect(
+      sendReachedPerson(
+        textOutput(
+          "Not sent: this Bro ↔ Bro report is stale or already delivered. End this turn silently; do not repeat, rephrase or react to it."
+        )
+      )
+    ).toBe(false);
   });
 
   it("ends a turn after its first dropped send", () => {

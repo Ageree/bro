@@ -796,6 +796,7 @@ function promising(part: string, people: readonly string[] = []) {
   );
   return (
     paymentPattern.test(part) ||
+    paysPattern.test(words.join(" ")) ||
     takesOn.test(part) ||
     onSomeone.test(part) ||
     onPerson ||
@@ -813,9 +814,11 @@ export function paysTogether(part: string) {
 }
 
 /**
- * What the owner's words say they pay for, buy or chip in on: each part of
- * a clause of their own that says yes (`affirmed`) with their word of paying
- * («скинемся маме на подарок», «торт я куплю», «я плачу»). A promise of the
+ * What the owner's words say they pay for, buy or chip in on: each promise
+ * of a clause of their own that says yes (`affirmed`), read as a packet's is
+ * (`readPromises`), with their word of paying («скинемся маме на подарок»,
+ * «торт я куплю», «я плачу»; «скинемся вчетвером, я, Аня и Вика, на
+ * юбилей маме» is one, whom with and for what). A promise of the
  * owner's goes only when all of it is in one of these (`paymentCovered`):
  * «я плачу» covers «Савелий заплатит» and no more. Empty when they said
  * nothing of it.
@@ -823,9 +826,9 @@ export function paysTogether(part: string) {
 export function paymentsSaid(text: string) {
   if (secret.test(text)) return [];
   return affirmed(text)
-    .flatMap((clause) => promiseParts(clause))
-    .filter((part) => paysPattern.test(part))
-    .map((part) => part.slice(0, 200))
+    .flatMap((clause) => readPromises(clause, []).promises)
+    .filter((promise) => paysPattern.test(promise))
+    .map((promise) => promise.slice(0, 200))
     .slice(0, 10);
 }
 
@@ -843,9 +846,9 @@ export function peerPaysSaid(text: string) {
       (clause) =>
         !negated(clause) && !reportedWords.test(clause) && !doubt.test(clause)
     )
-    .flatMap((clause) => promiseParts(clause))
-    .filter((part) => !paysPattern.test(part) && promising(part))
-    .map((part) => part.slice(0, 200))
+    .flatMap((clause) => readPromises(clause, []).promises)
+    .filter((promise) => !paysPattern.test(promise))
+    .map((promise) => promise.slice(0, 200))
     .slice(0, 10);
 }
 
