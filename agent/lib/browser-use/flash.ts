@@ -5,6 +5,7 @@ import { browserRunTaskOrigin } from "@db/services/browser-runs";
 import { env } from "@shared/environment";
 import type { AccessScope } from "@shared/identity/access-scope";
 import type { BrowserUseSecretBinding } from "./client";
+import { browserSecretAliases } from "./secrets";
 import { stagesErrand } from "./staging";
 
 /**
@@ -70,12 +71,49 @@ export async function errandSearches(
 }
 
 /**
+ * The secrets that only sign a run in to the errand's own site: a saved login
+ * and the person's phone. Госуслуги's login is not one of them — signing in
+ * there hands a site the person's profile — nor is a card.
+ */
+const signInAliases: ReadonlySet<string> = new Set([
+  browserSecretAliases.loginPassword,
+  browserSecretAliases.loginPhoneDigits,
+  browserSecretAliases.loginUsername,
+  browserSecretAliases.signinPhone,
+  browserSecretAliases.signinPhoneDigits,
+]);
+
+/**
+ * Whether an errand only finds things, whatever it may sign in with: nothing
+ * allowed in the person's name, nothing to pay or stage, and no secret bound
+ * but a sign-in on its own site. The code engine takes such a start
+ * (`errandEngine`): on the owner's account every errand with a site binds
+ * their phone or a saved login (`resolveBrowserSecretBindings`), so `search`,
+ * which takes none, never reached it (25.10). Flash mode stays with `search`:
+ * it was never measured on a run that signs in.
+ */
+export function errandFindsOnly(errand: {
+  readonly bindings: readonly BrowserUseSecretBinding[];
+  readonly paymentAllowed: boolean;
+  readonly staged: boolean;
+  readonly submits: boolean;
+}) {
+  return (
+    !errand.submits &&
+    !errand.paymentAllowed &&
+    !errand.staged &&
+    errand.bindings.every((binding) => signInAliases.has(binding.alias))
+  );
+}
+
+/**
  * The same for a queued start or an anti-bot retry, decided again from what
  * the errand's row keeps, never carried over from an earlier start: no
  * payment allowed, no submission confirmed, no staging in the composed task,
  * no secret bound now, the pilot on — and the errand's own start, through
  * its retries and its queued start, never a follow-up (`browserRunTaskOrigin`),
- * which keeps full mode wherever it runs. A lookup that fails keeps full mode.
+ * which keeps full mode wherever it runs; `findsOnly` likewise, for the code
+ * engine. A lookup that fails keeps full mode and browser-use.
  */
 export async function storedErrandSearches(
   row: Pick<
@@ -91,20 +129,26 @@ export async function storedErrandSearches(
   bindings: readonly BrowserUseSecretBinding[]
 ) {
   const scope = { userId: row.createdByUserId, workspaceId: row.workspaceId };
-  const searches = await errandSearches(scope, {
+  const errand = {
     bindings,
     paymentAllowed: row.paymentAllowed,
     staged: stagesErrand(composedTask),
     submits: row.submission !== null,
-  });
-  if (!searches) return false;
+  };
+  const searches = await errandSearches(scope, errand);
+  // Only where the code engine has a pilot at all: unset, nothing is read.
+  const findsOnly =
+    (env.BROWSER_CODE_ENGINE_WORKSPACES ?? []).length > 0 &&
+    errandFindsOnly(errand);
+  if (!searches && !findsOnly) return { findsOnly: false, search: false };
   try {
-    return (await browserRunTaskOrigin(scope, row)) === "start";
+    const start = (await browserRunTaskOrigin(scope, row)) === "start";
+    return { findsOnly: findsOnly && start, search: searches && start };
   } catch (error) {
     console.warn("[flash-search] the errand's origin could not be read", {
       cause: error,
       runId: row.id,
     });
-    return false;
+    return { findsOnly: false, search: false };
   }
 }

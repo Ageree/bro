@@ -276,6 +276,11 @@ export async function createBrowserVmRun(input: {
    */
   readonly freshExit?: boolean;
   /**
+   * The errand only finds things, signing in at most (`errandFindsOnly` in
+   * `agent/lib/browser-use/flash.ts`): the code engine may take its start.
+   */
+  readonly findsOnly?: boolean;
+  /**
    * A person's turn waits for the start: the search for an exit stops after
    * a short while and the errand queues (`prepareBrowserVmSession`).
    */
@@ -334,7 +339,10 @@ export async function createBrowserVmRun(input: {
     fastBrowserPilot({ workspaceId }),
     // A retry past an anti-bot wall goes on browser-use, which solves captchas;
     // the code engine has no solve_captcha and would stop at the same wall.
-    errandEngine({ workspaceId }, input.search && input.freshExit !== true),
+    errandEngine(
+      { workspaceId },
+      input.findsOnly === true && input.freshExit !== true
+    ),
   ]);
   const browser = errandBrowser({ workspaceId });
   // Recorded before the worker is asked: a start whose answer is lost still

@@ -318,8 +318,9 @@ export async function startCaptchaRetry(row: BrowserRunRow, now = new Date()) {
           );
         }
         // Flash mode only for the start of an errand that searches, decided
-        // again from the row: never wider than the attempt before it.
-        const search = await storedErrandSearches(
+        // again from the row: never wider than the attempt before it. The
+        // code engine never takes a retry past a wall (`freshExit`).
+        const { findsOnly, search } = await storedErrandSearches(
           row,
           previous.task,
           secrets.bindings
@@ -329,6 +330,7 @@ export async function startCaptchaRetry(row: BrowserRunRow, now = new Date()) {
           ...retryProxySettings(attempt, randomUUID().replaceAll("-", "")),
           // A VM profile only (cloud ignores it): the wall has already
           // judged the address the last attempt came from.
+          findsOnly,
           freshExit: true,
           maxCostUsd: env.BROWSER_USE_MAX_COST_USD,
           model: env.BROWSER_USE_MODEL,
