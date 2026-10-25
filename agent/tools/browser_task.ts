@@ -4901,9 +4901,6 @@ async function runBrowserTask(
       }
     };
     const paymentDispatch = { sent: false };
-    // The run a person's errand made way for (`make-way.ts`): it waits
-    // behind this errand, even when this one queues after all.
-    let madeWay: string | undefined;
     const startErrandRun = () =>
       undoneOnFailure(forgetSignUpLogin, () =>
         releasedOnFailure(undefined, async () => {
@@ -5021,7 +5018,7 @@ async function runBrowserTask(
               if (!browserUseBusy(error) || browserExitSearch(error))
                 throw error;
               paymentDispatch.sent = false;
-              madeWay = byPerson
+              const madeWay = byPerson
                 ? await makeWayForPerson(scope, profileId)
                 : undefined;
               if (madeWay === undefined) throw error;
@@ -5100,7 +5097,9 @@ async function runBrowserTask(
         })
       );
       if (placeholder) await moveSpendReservation(placeholder, queued.runId);
-      if (madeWay !== undefined) await waitBehindPerson(madeWay);
+      // A run that made way for an errand of the person's waits behind this
+      // one too (`make-way.ts`).
+      if (byPerson) await waitBehindPerson(scope);
       return {
         note: [
           queued.note,

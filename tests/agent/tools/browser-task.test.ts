@@ -616,7 +616,7 @@ const makeWayForPerson = vi.hoisted(() =>
   )
 );
 const waitBehindPerson = vi.hoisted(() =>
-  vi.fn<(runId: string) => Promise<void>>(() => Promise.resolve())
+  vi.fn<(scope: AccessScope) => Promise<void>>(() => Promise.resolve())
 );
 vi.mock("@agent/lib/browser-use/make-way", async (importOriginal) => ({
   ...(await importOriginal<typeof browserUseMakeWay>()),
@@ -4553,7 +4553,7 @@ describe("browser_task on a workspace's own browser VM", () => {
     await vi.advanceTimersByTimeAsync(10_000);
     expect(await queued).toMatchObject({ status: "queued" });
     expect(waitBehindPerson).toHaveBeenCalledExactlyOnceWith(
-      "queued:follow-up"
+      accessScopeForUser("better-auth:alice")
     );
     vi.useRealTimers();
   });

@@ -792,8 +792,9 @@ describe("browser run persistence", () => {
       retryAt: now,
       sessionId: null,
     });
-    await browserRuns.moveQueuedBrowserRunBack(
-      queued?.id ?? "",
+    await browserRuns.moveQueuedBrowserRunsBack(
+      alice.workspaceId,
+      "two more",
       new Date(now.getTime() + 1_000)
     );
     const later = new Date(now.getTime() + 10 * 60_000);

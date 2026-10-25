@@ -3,12 +3,13 @@ import type { AccessScope } from "@shared/identity/access-scope";
 import {
   findBrowserRunMakingWay,
   makeWayForPersonErrand,
-  moveQueuedBrowserRunBack,
+  listBrowserHoldingRuns,
+  moveQueuedBrowserRunsBack,
 } from "@db/services/browser-runs";
 import { readBrowserVmRun } from "@db/services/browser-vms";
+import { browserVmCallerTask } from "@agent/lib/browser-vm/runs";
 import { browserUseBusy, cancelBrowserUseRun } from "./client";
 import { onOwnBrowser } from "./own-browser";
-import { queueRetryAt } from "./queue";
 
 /**
  * The longest a run that made way waits before it is tried again; the end
@@ -17,18 +18,27 @@ import { queueRetryAt } from "./queue";
 const madeWayWaitMs = 5 * 60_000;
 
 const pauseNote = "[Carried on after a pause]";
-const pausedTail = /\n\n\[Carried on after a pause\][^\n]*$/u;
-const queueReferenceTail =
-  /\n\n\(Queued errand [^\n]*; for bookkeeping only\.\)$/u;
+const queueReference = /^\(Queued errand .*; for bookkeeping only\.\)$/u;
 
 /**
- * The instruction a run that made way starts with again: its own, without
- * the queue's bookkeeping line (the queue adds its own) and with a note that
- * replaces any earlier one.
+ * The instruction a run that made way starts with again: the one its errand
+ * was given, without what its start and the queue added to it (they add
+ * their own again) and with one pause note, replacing any earlier one.
  */
 export function madeWayTask(task: string) {
-  const base = task.replace(queueReferenceTail, "").replace(pausedTail, "");
+  const base = browserVmCallerTask(task)
+    .split("\n\n")
+    .filter(
+      (paragraph) =>
+        !paragraph.startsWith(pauseNote) && !queueReference.test(paragraph)
+    )
+    .join("\n\n");
   return `${base}\n\n${pauseNote} Bro stopped this errand for a while to do another errand of the user's in this browser first. Carry on from where it stopped, in this tab if it is still open: do not check again what it already found.`;
+}
+
+/** Whether a queued errand is a run that made way for a person's errand. */
+export function madeWay(row: { readonly pendingTask: string | null }) {
+  return row.pendingTask?.includes(`\n\n${pauseNote} `) === true;
 }
 
 /**
@@ -86,10 +96,7 @@ async function queueInstead(workspaceId: string, profileId: string, now: Date) {
   if (!record) return undefined;
   const queued = await makeWayForPersonErrand(holder.id, {
     pendingTask: madeWayTask(record.task),
-    retryAt: queueRetryAt(now, {
-      ownBrowser: true,
-      retryAfterMs: madeWayWaitMs,
-    }),
+    retryAt: new Date(now.getTime() + madeWayWaitMs),
   });
   return queued === undefined ? undefined : { from: holder.id, id: queued.id };
 }
@@ -126,9 +133,26 @@ export async function startOnceFreed<T>(
 }
 
 /**
- * The person's errand had to queue after all: the run that made way for it
- * goes to the back of the line, behind it.
+ * A person's errand of the workspace queued: the runs that made way wait
+ * behind it, not only behind the errand they made way for (the line would
+ * otherwise put them first, being older).
  */
-export async function waitBehindPerson(queuedRunId: string) {
-  await moveQueuedBrowserRunBack(queuedRunId);
+export async function waitBehindPerson(scope: AccessScope, now = new Date()) {
+  if (!(await makeWayPilot(scope))) return;
+  await moveQueuedBrowserRunsBack(scope.workspaceId, `\n\n${pauseNote} `, now);
+}
+
+/**
+ * Whether a run that made way waits on: a run the person started still
+ * holds the browser, a page kept for their code or answer among them. The
+ * copy taking the browser then would make the person's follow-up wait for
+ * the very gathering that made way for them.
+ */
+export async function madeWayWaits(
+  row: { readonly pendingTask: string | null; readonly workspaceId: string },
+  now = new Date()
+) {
+  if (!madeWay(row)) return false;
+  const holding = await listBrowserHoldingRuns(row.workspaceId, now);
+  return holding.some((run) => run.startedByPerson !== false);
 }

@@ -37,6 +37,7 @@ import { onOwnBrowser, ownBrowserRetryMs } from "./own-browser";
 import { customProxy } from "./proxy";
 import { resolveBrowserSecretBindings, signsInByPhone } from "./secrets";
 import { gosuslugiDomain } from "./public-services";
+import { madeWayWaits } from "./make-way";
 import { accountInUse } from "./sign-ins";
 import { releaseBrowserRunSpend } from "./spend";
 
@@ -546,6 +547,12 @@ export async function startQueuedBrowserRun(
           current.retryAt ?? queueRetryAt(now),
           { waitsForAccount: null }
         );
+      }
+      // A run that made way for the person's errand does not take the browser
+      // while their page waits for them (`make-way.ts`).
+      if (await madeWayWaits(current, now)) {
+        await parkQueuedBrowserRun(current.id, queueRetryAt(now));
+        return { status: "waiting" };
       }
       if (current.paymentAllowed) {
         const nextDispatch = `${stickyPayment ? "pending:dispatch" : "pending"}:queue:${encodeURIComponent(current.id)}:${String(revision)}`;

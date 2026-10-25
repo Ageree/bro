@@ -7,7 +7,8 @@ const {
   cancelBrowserUseRun,
   findBrowserRunMakingWay,
   makeWayForPersonErrand,
-  moveQueuedBrowserRunBack,
+  listBrowserHoldingRuns,
+  moveQueuedBrowserRunsBack,
   readBrowserVmRun,
 } = vi.hoisted(() => ({
   cancelBrowserUseRun: vi.fn<(runId: string) => Promise<object>>(),
@@ -26,15 +27,23 @@ const {
         queued: { readonly pendingTask: string; readonly retryAt: Date }
       ) => Promise<{ readonly id: string } | undefined>
     >(),
-  moveQueuedBrowserRunBack: vi.fn<(runId: string) => Promise<void>>(),
+  listBrowserHoldingRuns:
+    vi.fn<
+      (
+        workspaceId: string
+      ) => Promise<{ readonly startedByPerson: boolean | null }[]>
+    >(),
+  moveQueuedBrowserRunsBack:
+    vi.fn<(workspaceId: string, marker: string, now?: Date) => Promise<void>>(),
   readBrowserVmRun:
     vi.fn<(runId: string) => Promise<{ readonly task: string } | undefined>>(),
 }));
 
 vi.mock("@db/services/browser-runs", () => ({
   findBrowserRunMakingWay,
+  listBrowserHoldingRuns,
   makeWayForPersonErrand,
-  moveQueuedBrowserRunBack,
+  moveQueuedBrowserRunsBack,
 }));
 vi.mock("@db/services/browser-vms", () => ({ readBrowserVmRun }));
 vi.mock("@agent/lib/browser-use/client", async (importOriginal) => ({
@@ -113,19 +122,60 @@ describe("a person's errand making its way", () => {
     expect(await makeWayForPerson(scope, profileId)).toBe("queued:copy");
   });
 
-  it("starts again with one pause note and none of the queue's bookkeeping", async () => {
-    const { madeWayTask } = await load();
+  it("starts again with the errand's own instruction and one pause note", async () => {
+    const { madeWay, madeWayTask } = await load();
+    const { siteOperationsLead } =
+      await import("@agent/lib/browser-vm/site-ops/run");
+    // A start puts the queue's bookkeeping after the errand, then the site's
+    // known operations and the wall rule: each start adds them anew.
     const once = madeWayTask(
-      "Find two more chargers\n\n(Queued errand queued:a; for bookkeeping only.)"
+      [
+        "Find two more chargers",
+        "(Queued errand queued:a; for bookkeeping only.)",
+        `${siteOperationsLead} op("wb", url) for a results page like …`,
+      ].join("\n\n")
     );
     const twice = madeWayTask(
-      `${once}\n\n(Queued errand queued:b; for bookkeeping only.)`
+      [once, "(Queued errand queued:b; for bookkeeping only.)"].join("\n\n")
     );
     expect(twice).toBe(once);
     expect(
       once.startsWith("Find two more chargers\n\n[Carried on after a pause]")
     ).toBe(true);
     expect(once).not.toContain("Queued errand");
+    expect(once).not.toContain(siteOperationsLead);
+    expect(madeWay({ pendingTask: once })).toBe(true);
+    expect(madeWay({ pendingTask: "Find two more chargers" })).toBe(false);
+  });
+
+  it("keeps a run that made way off the browser while a page waits for the person", async () => {
+    const { madeWayTask, madeWayWaits } = await load();
+    const copy = {
+      pendingTask: madeWayTask("Find two more chargers"),
+      workspaceId: scope.workspaceId,
+    };
+    listBrowserHoldingRuns.mockResolvedValueOnce([{ startedByPerson: true }]);
+    expect(await madeWayWaits(copy)).toBe(true);
+    listBrowserHoldingRuns.mockResolvedValueOnce([{ startedByPerson: false }]);
+    expect(await madeWayWaits(copy)).toBe(false);
+    // Any other queued errand starts as before, without a look.
+    expect(
+      await madeWayWaits({ pendingTask: "Find a kettle", workspaceId: "w" })
+    ).toBe(false);
+    expect(listBrowserHoldingRuns).toHaveBeenCalledTimes(2);
+  });
+
+  it("puts every run that made way behind a person's queued errand, in the pilot only", async () => {
+    const outside = await load();
+    await outside.waitBehindPerson(scope);
+    expect(moveQueuedBrowserRunsBack).not.toHaveBeenCalled();
+    const { waitBehindPerson } = await load("*");
+    await waitBehindPerson(scope);
+    expect(moveQueuedBrowserRunsBack).toHaveBeenCalledWith(
+      scope.workspaceId,
+      "\n\n[Carried on after a pause] ",
+      expect.any(Date)
+    );
   });
 
   it("tries the start again while the stopped run lets the browser go, then gives the busy answer back", async () => {

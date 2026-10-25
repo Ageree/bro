@@ -76,6 +76,10 @@ export async function siteOperationsFor(
  * browser-vm/worker/worker.py): one call reads a results page's results
  * from the site's own data instead of the page.
  */
+/** How the task line of a site's known operations begins. */
+export const siteOperationsLead =
+  "Known operations of this site, read in one call from the site's own data:";
+
 export function siteOperationsLine(operations: readonly SiteOperation[]) {
   if (operations.length === 0) return undefined;
   const each = operations.map((operation) => {
@@ -85,7 +89,7 @@ export function siteOperationsLine(operations: readonly SiteOperation[]) {
     const about = operation.about === undefined ? "" : `; ${operation.about}`;
     return `op(${JSON.stringify(operation.name)}, url) for a results page like ${operation.page} (cards with ${[...known, "more"].join(", ")}${about})`;
   });
-  return `Known operations of this site, read in one call from the site's own data: ${each.join("; ")}. op(name, url) opens url — that results page, each %placeholder% filled from the errand the way the site writes it in its addresses — and returns {cards, count}: every result the page has, in the site's order, each card with its name, price and link where known and \`more\`, the result's other fields keyed by their dotted paths (more["company.name"]). Call it first instead of goto() and cards(), then filter, sort and pick in your own code: most errands are that one call and then \`done\`. The cards are the site's own data for that page, and a card's link is the result's own address as the site gives it: it counts as observed, as a link read off the page does, so do not open the results' pages to check them; open one only for a detail the errand names that neither its card nor \`more\` has. op() leaves the tab on that results page, so the picture is of it. If op() fails, go on with the page as usual.`;
+  return `${siteOperationsLead} ${each.join("; ")}. op(name, url) opens url — that results page, each %placeholder% filled from the errand the way the site writes it in its addresses — and returns {cards, count}: every result the page has, in the site's order, each card with its name, price and link where known and \`more\`, the result's other fields keyed by their dotted paths (more["company.name"]). Call it first instead of goto() and cards(), then filter, sort and pick in your own code: most errands are that one call and then \`done\`. The cards are the site's own data for that page, and a card's link is the result's own address as the site gives it: it counts as observed, as a link read off the page does, so do not open the results' pages to check them; open one only for a detail the errand names that neither its card nor \`more\` has. op() leaves the tab on that results page, so the picture is of it. If op() fails, go on with the page as usual.`;
 }
 
 /**

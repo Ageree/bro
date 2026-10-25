@@ -594,13 +594,14 @@ export async function makeWayForPersonErrand(
 }
 
 /**
- * Put a queued errand at the back of its line, as if it had just been
- * queued: the line goes by `created_at` (`claimNextQueuedBrowserRun`), and
- * a run that made way for a person's errand waits behind it even when that
- * errand had to queue as well.
+ * Put the workspace's queued errands whose instruction holds `marker` at the
+ * back of their line, as if they had just been queued: the line goes by
+ * `created_at` (`claimNextQueuedBrowserRun`), and runs that made way for a
+ * person's errand wait behind it even when that errand had to queue as well.
  */
-export async function moveQueuedBrowserRunBack(
-  runId: string,
+export async function moveQueuedBrowserRunsBack(
+  workspaceId: string,
+  marker: string,
   now = new Date()
 ) {
   await db
@@ -608,9 +609,10 @@ export async function moveQueuedBrowserRunBack(
     .set({ createdAt: now, updatedAt: now })
     .where(
       and(
-        eq(browserRuns.id, runId),
+        eq(browserRuns.workspaceId, workspaceId),
         eq(browserRuns.status, "queued"),
-        isNull(browserRuns.retriedAsRunId)
+        isNull(browserRuns.retriedAsRunId),
+        sql`strpos(${browserRuns.pendingTask}, ${marker}) > 0`
       )
     );
 }
@@ -1352,6 +1354,7 @@ export async function listBrowserHoldingRuns(
       outcome: browserRuns.outcome,
       sessionId: browserRuns.sessionId,
       site: browserRuns.site,
+      startedByPerson: browserRuns.startedByPerson,
     })
     .from(browserRuns)
     .where(and(eq(browserRuns.workspaceId, workspaceId), holdsBrowser(now)))
