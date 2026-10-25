@@ -32,8 +32,20 @@ describe("a site's note in the errand's task", () => {
     expect(await lineFor("", "https://www.tutu.ru/")).toBeUndefined();
   });
 
+  it("gives a hotel site's own filters and a store's own sort, as the sites write them", async () => {
+    const ostrovok = await lineFor("*", "https://ostrovok.ru/");
+    expect(ostrovok).toContain("&type_group=hotel&reviews_rating=8");
+    expect(ostrovok).toContain("sort=price.asc");
+    expect(await lineFor("*", "https://www.citilink.ru/")).toContain(
+      "citilink.ru/search/?text=<words>&sorting=price_asc"
+    );
+    expect(await lineFor("*", "https://www.ozon.ru/")).toContain(
+      "ozon.ru/search/?text=<words>&from_global=true&sorting=price"
+    );
+  });
+
   it("has nothing for a site it has no note about, a look-alike host or no site", async () => {
-    expect(await lineFor("*", "https://www.ozon.ru/")).toBeUndefined();
+    expect(await lineFor("*", "https://www.rzd.ru/")).toBeUndefined();
     expect(await lineFor("*", "https://nottutu.ru/")).toBeUndefined();
     expect(await lineFor("*", undefined)).toBeUndefined();
     expect(await lineFor("*", "not a url")).toBeUndefined();
