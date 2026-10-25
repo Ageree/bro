@@ -115,6 +115,21 @@ export async function fastDeliveryPilot(scope: {
   );
 }
 
+/**
+ * Whether a person's new errand may take the workspace's browser from an
+ * errand Bro carries on by itself (BROWSER_MAKE_WAY_WORKSPACES,
+ * `agent/lib/browser-use/make-way.ts`): the report turn's follow-up that
+ * gathers more stops and waits behind the person's errand. The list reads as
+ * BROWSER_FAST_WORKSPACES does; a failed lookup leaves the person's errand to
+ * wait its turn as before.
+ */
+export async function makeWayPilot(scope: {
+  readonly userId?: string;
+  readonly workspaceId: string;
+}) {
+  return inPilot("browser-make-way", env.BROWSER_MAKE_WAY_WORKSPACES, scope);
+}
+
 async function inPilot(
   pilot: string,
   entries: readonly string[] | undefined,

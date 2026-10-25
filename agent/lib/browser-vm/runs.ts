@@ -39,6 +39,7 @@ import {
   errandSite,
   rememberSiteOperations,
   siteOperationsFor,
+  siteOperationsLead,
   siteOperationsLine,
   siteOpsPilot,
 } from "./site-ops/run";
@@ -231,6 +232,23 @@ export function browserVmReconcileConfigured() {
  */
 const addressWallLine =
   "If the site blocks this network address (for example «Доступ ограничен: проблема с IP») or shows any captcha — a slider, «I'm not a robot», hCaptcha, Turnstile, Yandex SmartCaptcha, characters in a picture or pictures to click — call the solve_captcha action first, before you tick, drag, type or click anything in the check yourself, and never ask for an audio challenge: that gets this address flagged. Once solve_captcha says the check is solved, leave the check alone and do what it says, usually submit the form. A picture to click in on the site's own page (not «I'm not a robot» or hCaptcha: their pictures are answered without them) that it did not solve goes to it once more with the check's instruction text. Call solve_captcha at most three times in this run. If the wall or the check is still there after that, or solve_captcha cannot solve it, stop right away and end with NEEDS: captcha: Bro retries from another address. Do not keep solving it.";
+
+/**
+ * A run's task as its caller gave it, without the lines a start adds after
+ * it (the known operations of the site, `addressWallLine`): the instruction
+ * a run that made way starts again with (`agent/lib/browser-use/make-way.ts`)
+ * is given those lines anew by its own start.
+ */
+export function browserVmCallerTask(task: string) {
+  return task
+    .split("\n\n")
+    .filter(
+      (paragraph) =>
+        paragraph !== addressWallLine &&
+        !paragraph.startsWith(siteOperationsLead)
+    )
+    .join("\n\n");
+}
 
 /**
  * How long a person's turn waits for their sandbox on the operator's own

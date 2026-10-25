@@ -489,6 +489,134 @@ export async function handOffBrowserRunRetry(
   });
 }
 
+/**
+ * A run on the workspace's own browser that Bro started by itself and that
+ * only finds: a report turn's follow-up gathering more of what the person
+ * asked («добираю ещё два»), with no submission, payment or recovery step of
+ * its own. A person's new errand may take its browser
+ * (`agent/lib/browser-use/make-way.ts`).
+ */
+export async function findBrowserRunMakingWay(
+  workspaceId: string,
+  profileId: string,
+  now = new Date()
+) {
+  const [row] = await db
+    .select()
+    .from(browserRuns)
+    .where(
+      and(
+        eq(browserRuns.workspaceId, workspaceId),
+        eq(browserRuns.profileId, profileId),
+        inArray(browserRuns.status, ["created", "running"]),
+        isNull(browserRuns.completedAt),
+        isNull(browserRuns.retriedAsRunId),
+        sql`${browserRuns.id} NOT LIKE 'queued:%'`,
+        eq(browserRuns.startedByPerson, false),
+        isNull(browserRuns.submission),
+        eq(browserRuns.paymentAllowed, false),
+        isNull(browserRuns.recoveryPhase),
+        gt(
+          browserRuns.createdAt,
+          new Date(now.getTime() - workingBrowserWindowMs)
+        )
+      )
+    )
+    .orderBy(desc(browserRuns.createdAt))
+    .limit(1);
+  return row;
+}
+
+/**
+ * Hand a run Bro started by itself (`findBrowserRunMakingWay`) to a queued
+ * copy of it, in one transaction: the run is closed with nothing to report,
+ * and the copy carries its errand, conversation and session, to start once
+ * the person's errand let the browser go. Closed first, before its worker
+ * run is stopped, so that neither the poller nor the run's end settles it
+ * as stopped and tells the person so. Undefined when the run is no longer
+ * one to make way: it settled, or something took it over in the meantime.
+ */
+export async function makeWayForPersonErrand(
+  fromRunId: string,
+  queued: { readonly pendingTask: string; readonly retryAt: Date }
+) {
+  return db.transaction(async (tx) => {
+    const now = new Date();
+    const id = `queued:${crypto.randomUUID()}`;
+    const [from] = await tx
+      .update(browserRuns)
+      .set({
+        completedAt: now,
+        reportClaimedAt: null,
+        reportDeliveredAt: sql`coalesce(${browserRuns.reportDeliveredAt}, ${now})`,
+        retriedAsRunId: id,
+        retryAt: null,
+        status: "stopped",
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(browserRuns.id, fromRunId),
+          inArray(browserRuns.status, ["created", "running"]),
+          isNull(browserRuns.completedAt),
+          isNull(browserRuns.retriedAsRunId),
+          eq(browserRuns.startedByPerson, false),
+          isNull(browserRuns.submission),
+          eq(browserRuns.paymentAllowed, false)
+        )
+      )
+      .returning();
+    if (!from) return undefined;
+    const [row] = await tx
+      .insert(browserRuns)
+      .values({
+        conversationChannel: from.conversationChannel,
+        conversationId: from.conversationId,
+        createdByUserId: from.createdByUserId,
+        delegatedByPerson: from.delegatedByPerson,
+        id,
+        pendingTask: queued.pendingTask,
+        profileId: from.profileId,
+        replyAnchorMessageId: from.replyAnchorMessageId,
+        retryAt: queued.retryAt,
+        rootSessionId: from.rootSessionId,
+        sessionId: from.sessionId,
+        site: from.site,
+        startedByPerson: false,
+        status: "queued",
+        task: from.task,
+        workspaceId: from.workspaceId,
+      })
+      .returning();
+    if (!row) throw new Error("The browser run could not be recorded.");
+    return row;
+  });
+}
+
+/**
+ * Put the workspace's queued errands whose instruction holds `marker` at the
+ * back of their line, as if they had just been queued: the line goes by
+ * `created_at` (`claimNextQueuedBrowserRun`), and runs that made way for a
+ * person's errand wait behind it even when that errand had to queue as well.
+ */
+export async function moveQueuedBrowserRunsBack(
+  workspaceId: string,
+  marker: string,
+  now = new Date()
+) {
+  await db
+    .update(browserRuns)
+    .set({ createdAt: now, updatedAt: now })
+    .where(
+      and(
+        eq(browserRuns.workspaceId, workspaceId),
+        eq(browserRuns.status, "queued"),
+        isNull(browserRuns.retriedAsRunId),
+        sql`strpos(${browserRuns.pendingTask}, ${marker}) > 0`
+      )
+    );
+}
+
 // A chain longer than the retry cap is not one this code builds.
 const maximumRetryHops = 10;
 
@@ -1226,6 +1354,7 @@ export async function listBrowserHoldingRuns(
       outcome: browserRuns.outcome,
       sessionId: browserRuns.sessionId,
       site: browserRuns.site,
+      startedByPerson: browserRuns.startedByPerson,
     })
     .from(browserRuns)
     .where(and(eq(browserRuns.workspaceId, workspaceId), holdsBrowser(now)))

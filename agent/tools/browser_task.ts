@@ -234,6 +234,11 @@ import {
   queuedStatusNote,
 } from "@agent/lib/browser-use/queue";
 import {
+  makeWayForPerson,
+  startOnceFreed,
+  waitBehindPerson,
+} from "@agent/lib/browser-use/make-way";
+import {
   accountInUse,
   keptSignInNote,
   signsInThroughGosuslugi,
@@ -4989,9 +4994,9 @@ async function runBrowserTask(
             submits: consent !== undefined,
           };
           const search = await errandSearches(scope, errandKind);
-          try {
+          const createRun = () => {
             if (placeholder) paymentDispatch.sent = true;
-            const run = await createBrowserUseRun({
+            return createBrowserUseRun({
               customProxy: customProxy(),
               // The code engine takes it with a sign-in too (`errandEngine`).
               findsOnly: errandFindsOnly(errandKind),
@@ -5004,6 +5009,23 @@ async function runBrowserTask(
               secretBindings: secrets.bindings,
               task,
             });
+          };
+          try {
+            let run: Awaited<ReturnType<typeof createBrowserUseRun>>;
+            try {
+              run = await createRun();
+            } catch (error) {
+              if (!browserUseBusy(error) || browserExitSearch(error))
+                throw error;
+              paymentDispatch.sent = false;
+              const madeWay = byPerson
+                ? await makeWayForPerson(scope, profileId)
+                : undefined;
+              if (madeWay === undefined) throw error;
+              run = await startOnceFreed(createRun, () => {
+                paymentDispatch.sent = false;
+              });
+            }
             return { kind: "started" as const, profileId, run, secrets };
           } catch (error) {
             if (browserUseBusy(error)) {
@@ -5075,6 +5097,9 @@ async function runBrowserTask(
         })
       );
       if (placeholder) await moveSpendReservation(placeholder, queued.runId);
+      // A run that made way for an errand of the person's waits behind this
+      // one too (`make-way.ts`).
+      if (byPerson) await waitBehindPerson(scope);
       return {
         note: [
           queued.note,

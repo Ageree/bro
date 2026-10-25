@@ -712,6 +712,100 @@ describe("browser run persistence", () => {
     expect(await browserRuns.listPendingBrowserRunReports(10)).toEqual([]);
   }, 20_000);
 
+  it("hands a follow-up Bro started by itself to a queued copy behind the person's errand", async () => {
+    const browserRuns = await browserRunsDatabase();
+    const profileId = "vm:workspace:alice";
+    const now = new Date();
+    const own = { ...conversation(), profileId, status: "running" as const };
+    // The person's own errand, and one that acts for them, never make way.
+    await browserRuns.createBrowserRun(alice, {
+      ...own,
+      id: "vm:person",
+      startedByPerson: true,
+    });
+    await browserRuns.createBrowserRun(alice, {
+      ...own,
+      id: "vm:paying",
+      paymentAllowed: true,
+      startedByPerson: false,
+    });
+    expect(
+      await browserRuns.findBrowserRunMakingWay(alice.workspaceId, profileId)
+    ).toBeUndefined();
+    await browserRuns.createBrowserRun(alice, {
+      ...own,
+      id: "vm:follow-up",
+      startedByPerson: false,
+    });
+    const holder = await browserRuns.findBrowserRunMakingWay(
+      alice.workspaceId,
+      profileId
+    );
+    expect(holder?.id).toBe("vm:follow-up");
+    expect(
+      await browserRuns.findBrowserRunMakingWay(bob.workspaceId, profileId)
+    ).toBeUndefined();
+
+    const queued = await browserRuns.makeWayForPersonErrand("vm:follow-up", {
+      pendingTask: "Find two more chargers",
+      retryAt: new Date(now.getTime() + 5 * 60_000),
+    });
+    expect(queued).toMatchObject({
+      conversationId: own.conversationId,
+      pendingTask: "Find two more chargers",
+      profileId,
+      sessionId: own.sessionId,
+      startedByPerson: false,
+      status: "queued",
+    });
+    // Closed with nothing to report: no settle reads it again, it holds no
+    // browser, and the errand is followed to the copy.
+    const closed = await browserRuns.readBrowserRun("vm:follow-up");
+    expect(closed).toMatchObject({
+      retriedAsRunId: queued?.id,
+      status: "stopped",
+    });
+    expect(closed?.completedAt).not.toBeNull();
+    expect(closed?.reportDeliveredAt).not.toBeNull();
+    expect(
+      (await browserRuns.listBrowserHoldingRuns(alice.workspaceId)).map(
+        (row) => row.id
+      )
+    ).not.toContain("vm:follow-up");
+    expect(
+      (await browserRuns.readLatestBrowserRunForScope(alice, "vm:follow-up"))
+        ?.id
+    ).toBe(queued?.id);
+    // Made way once: a second person's errand finds nothing to stop.
+    expect(
+      await browserRuns.makeWayForPersonErrand("vm:follow-up", {
+        pendingTask: "again",
+        retryAt: now,
+      })
+    ).toBeUndefined();
+
+    // The person's errand had to queue as well: the copy goes behind it.
+    const person = await browserRuns.createQueuedBrowserRun(alice, {
+      ...conversation(),
+      pendingTask: "Find five vacancies",
+      profileId,
+      retryAt: now,
+      sessionId: null,
+    });
+    await browserRuns.moveQueuedBrowserRunsBack(
+      alice.workspaceId,
+      "two more",
+      new Date(now.getTime() + 1_000)
+    );
+    const later = new Date(now.getTime() + 10 * 60_000);
+    expect((await browserRuns.claimNextQueuedBrowserRun(later))?.id).toBe(
+      person.id
+    );
+    expect((await browserRuns.claimNextQueuedBrowserRun(later))?.id).toBe(
+      queued?.id
+    );
+  }, 20_000);
+
   it("finds the open run of a Browser Use session", async () => {
     const browserRuns = await browserRunsDatabase();
     await browserRuns.createBrowserRun(alice, {
