@@ -294,11 +294,10 @@ describe("a workspace's site operations", { timeout: 30_000 }, () => {
       "https://hh.ru"
     );
     // hh.ru moved its list: the same page, the vacancies elsewhere in it.
-    const moved = {
-      ...vacancies,
-      about: undefined,
-      items: ["searchResult", "vacancies"],
-    };
+    if (vacancies === undefined) throw new Error("hh.ru has no operation");
+    // What a run's record carries: no words about the fields.
+    const { about: _about, ...found } = vacancies;
+    const moved = { ...found, items: ["searchResult", "vacancies"] };
     // Found while the reviewed one still reads: not kept.
     await run.rememberSiteOperations(alice.workspaceId, [moved], "run-7");
     const rows = async () =>
@@ -309,16 +308,8 @@ describe("a workspace's site operations", { timeout: 30_000 }, () => {
       ).rows;
     expect(await rows()).toEqual([]);
     const broken = { fit: "exact", ok: false, reason: "no_data" } as const;
-    await run.noteSiteOperationRead(
-      alice.workspaceId,
-      vacancies?.name ?? "",
-      broken
-    );
-    await run.noteSiteOperationRead(
-      alice.workspaceId,
-      vacancies?.name ?? "",
-      broken
-    );
+    await run.noteSiteOperationRead(alice.workspaceId, vacancies.name, broken);
+    await run.noteSiteOperationRead(alice.workspaceId, vacancies.name, broken);
     expect(
       await run.siteOperationsFor(alice.workspaceId, "https://hh.ru")
     ).toEqual([]);
