@@ -1585,6 +1585,10 @@ def agent_tuning(value):
         routing = provider_routing(value["provider"])
         if routing:
             tuning["provider"] = routing
+    if value.get("rescueModel") is not None:
+        if not isinstance(value["rescueModel"], str) or not CODE_MODEL_ID.fullmatch(value["rescueModel"]):
+            raise web.HTTPBadRequest(text="tuning.rescueModel must be a model id")
+        tuning["rescueModel"] = value["rescueModel"]
     return tuning
 
 
@@ -1877,6 +1881,33 @@ for line in sys.stdin:
     sys.stdout.flush()
 """
 
+# A run that is stuck (CodeStall) gets a few calls from a stronger model (`tuning.rescueModel`, Bro's
+# BROWSER_STEP_ROUTE_WORKSPACES) and goes back to its own. On the stand (25.10) a quarter of the runs spent 30 to
+# 60 calls on one control or one markup question: Ostrovok's currency menu, tutu.ru's seat map and tooltips.
+CODE_RESCUE_CALLS = 2  # calls a rescue takes
+CODE_RESCUE_MAX = 3  # rescues in a run
+CODE_RESCUE_GAP = 4  # calls of the run's own model between two rescues
+CODE_STUCK_ERRORS = 3  # calls in a row whose every block ended in an error
+CODE_STUCK_REPEATS = 3  # the same address opened this many times among the last CODE_STUCK_RECENT calls
+CODE_STUCK_RECENT = 6
+CODE_STUCK_FLAT = 8  # calls in a row that opened no new address and no new page, and read no cards or pages
+CODE_STUCK_WHAT = {
+    "errors": "they ended in errors",
+    "repeat": "you opened the same address again and again",
+    "stall": "they stayed on the same page without getting you any new results",
+}
+CODE_RESCUE_TRIED = 25  # the calls before it that the rescue model is told of, by their titles
+CODE_RESCUE_OUTPUTS = 3  # the outputs of the run's last calls it is shown
+CODE_RESCUE_OUTPUT_CHARS = 1500
+CODE_RESCUE = ("You are taking over an errand whose run got stuck: its last calls got nowhere ({what}). What the run "
+               "did, call by call: {tried}.\nThe browser is open on: {tabs}.\nWhat its last calls printed:\n{printed}\n\n"
+               "Take a route the run has not tried: the site's own address with its parameters (if you know how it "
+               "writes them), the data in the page's scripts or text, another element, or leave the control that "
+               "fails and work with what the page gives. Call `done` only if you already hold what the errand asks "
+               "for; do not give up before that.")
+CODE_RESCUED = ("[Bro: your last calls got nowhere ({what}), so the next calls are written by another model that took "
+                "the errand over. Go on from what it finds.]")
+CODE_MODEL_ID = re.compile(r"^~?[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}$")
 CODE_METHODS = frozenset({"tabs", "open_tab", "goto", "snapshot", "click", "fill", "select", "press", "check", "hover",
                           "scroll", "back", "text", "evaluate", "cards", "visit", "url", "title", "wait", "close_tab"})
 
@@ -1918,13 +1949,75 @@ def code_secrets(sensitive_data):
     return bindings
 
 
-def code_llm_body(tuning):
+def code_llm_body(tuning, rescue=False):
     """The model's routing as Bro tuned it (`tuning.provider`), with a little reasoning: code is written better
-    with it, and its calls are few (DeepSeek V4.1 Flash, `low`, 25.10)."""
-    body = {"reasoning": {"effort": "low"}}
-    if tuning.get("provider"):
+    with it, and its calls are few (DeepSeek V4.1 Flash, `low`, 25.10). The rescue model is another model: the
+    hosts Bro named are the run's model's, and are not its."""
+    body = {"reasoning": {"effort": "medium" if rescue else "low"}}
+    if tuning.get("provider") and not rescue:
         body["provider"] = {PROVIDER_FIELDS[key]: value for key, value in tuning["provider"].items()}
     return body
+
+
+class CodeStall:
+    """Whether a code run is stuck, from what the worker sees of its calls and nothing else: three calls in a
+    row that all ended in errors, one address opened three times among the last six calls, or eight calls in a
+    row that opened no address and no page the run had not seen and read no cards or pages (the model going
+    over one page's markup, or fighting one control). `reason()` names the first that holds."""
+
+    def __init__(self):
+        self.errors = self.flat = 0
+        self.recent, self.addresses, self.pages = [], set(), set()
+
+    def note(self, used, failed, url):
+        """One call of the model: `used` are the (method, address) its blocks made, `failed` whether every
+        block ended in an error, `url` the page it touched last."""
+        self.errors = self.errors + 1 if failed else 0
+        opened = [urllib.parse.urldefrag(address)[0] for method, address in used
+                  if method in ("goto", "open_tab") and isinstance(address, str)]
+        self.recent = [*self.recent, opened][-CODE_STUCK_RECENT:]
+        parts = urllib.parse.urlsplit(url or "")
+        page = (parts.netloc, parts.path)
+        fresh = (page not in self.pages and bool(parts.netloc)) or any(a not in self.addresses for a in opened)
+        fresh = fresh or any(method in ("cards", "visit") for method, _ in used)
+        self.flat = 0 if fresh else self.flat + 1
+        self.addresses.update(opened)
+        self.pages.add(page)
+
+    def reason(self):
+        if self.errors >= CODE_STUCK_ERRORS:
+            return "errors"
+        counts = {}
+        for opened in self.recent:
+            for address in set(opened):
+                counts[address] = counts.get(address, 0) + 1
+        if any(count >= CODE_STUCK_REPEATS for count in counts.values()):
+            return "repeat"
+        return "stall" if self.flat >= CODE_STUCK_FLAT else None
+
+    def reset(self):
+        """After a rescue the count starts again: what it did is not held against the model that goes on."""
+        self.errors = self.flat = 0
+        self.recent = []
+
+
+def code_rescue_context(messages, trail, tabs, what):
+    """What a rescue model reads instead of the run's whole history: the system message, then the errand, what the
+    run did call by call (its titles, the failed ones marked) and printed last. Given the run's own history, a
+    stronger model went on with the same approach (the date picker of tutu.ru, 25.10: Sonnet, GPT-6.1 Sol, Luna
+    and DeepSeek V4 Pro all clicked the same cell), and given this summary Haiku 5.5 tried the site's own address
+    with the date in it, four times of four (the address works: it redirects to the results). It is also a third of
+    the tokens."""
+    asked = [m["content"] for m in messages if m["role"] == "user" and m["content"].startswith("A new message about")]
+    printed = [m["content"] for m in messages if m["role"] == "tool"][-CODE_RESCUE_OUTPUTS:]
+    tried = "; ".join(f"«{title}»" + (" (failed)" if failed else "") for title, failed in trail[-CODE_RESCUE_TRIED:])
+    text = "\n\n".join([
+        messages[1]["content"], *asked,
+        CODE_RESCUE.format(
+            what=CODE_STUCK_WHAT[what], tried=tried or "nothing yet",
+            tabs=json.dumps(tabs, ensure_ascii=False)[:1000],
+            printed="\n---\n".join(code_cut(output, CODE_RESCUE_OUTPUT_CHARS) for output in printed) or "(nothing)")])
+    return [messages[0], {"role": "user", "content": text}]
 
 
 # The page's list of results as cards: of every element's children that share a tag and classes, the group of
@@ -2216,6 +2309,9 @@ class CodeSandbox:
 
     def __init__(self, api):
         self.api, self.process = api, None
+        # What the last block did, for CodeStall: the (method, address) of its API calls, and whether it ended in
+        # an error.
+        self.used, self.failed = [], False
 
     async def start(self):
         self.process = await asyncio.create_subprocess_exec(
@@ -2238,6 +2334,8 @@ class CodeSandbox:
                 if name not in CODE_METHODS or not isinstance(args, list):
                     raise ValueError(f"no function {name}")
                 limit = CODE_VISIT_PAGE_S * -(-CODE_VISIT_PAGES // CODE_VISIT_AT_ONCE) if name == "visit" else CODE_CALL_S
+                address = args[1] if name == "goto" and len(args) > 1 else args[0] if name == "open_tab" and args else None
+                self.used.append((name, address if isinstance(address, str) else None))
                 answer = {"value": await asyncio.wait_for(getattr(self.api, name)(*args), limit)}
             except Exception as error:  # the model sees the reason as a JavaScript error
                 answer = {"error": f"{name}: {type(error).__name__}: {str(error)[:300]}"}
@@ -2247,6 +2345,7 @@ class CodeSandbox:
     async def run(self, code):
         """What the block printed, its value or its error, as the model reads it; and how long it took."""
         started = time.monotonic()
+        self.used = []
         if self.process is None or self.process.returncode is not None:
             await self.start()
         try:
@@ -2255,6 +2354,7 @@ class CodeSandbox:
             await self.close()
             state = {"done": False, "error": f"the code ran past {CODE_BLOCK_S} s and was stopped; "
                                              "the variables it kept are gone"}
+        self.failed = bool(state.get("error"))
         parts = [state["printed"]] if state.get("printed") else []
         if state.get("error"):
             parts.append(f"Error: {state['error'][:1500]}")
@@ -3138,6 +3238,10 @@ class Worker:
                         {"role": "user", "content": f"{text}\n\nYour tab: {json.dumps(opened, ensure_ascii=False)}\n"
                                                     f"You have at most {max_steps} calls for this errand."}]
             walled = 0  # calls in a row that ended on an anti-bot check (`code_wall`)
+            rescue_model, rescue_tabs, rescue_start = tuning.get("rescueModel"), [], None
+            stall, rescue_left, rescues, since_rescue, rescue_reason = CodeStall(), 0, 0, CODE_RESCUE_GAP, None
+            trail = []  # (title, failed) of each block it ran, for the rescue model
+            episode = 0  # where in `messages` the rescue model's own calls begin
             for number in range(1, max_steps + 1):
                 if run.cancel_requested or time.monotonic() > deadline:
                     break
@@ -3148,12 +3252,48 @@ class Worker:
                 last = number == max_steps or deadline - time.monotonic() < CODE_LAST_CALL_S or walled >= CODE_WALL_CALLS
                 if last:
                     messages.append({"role": "user", "content": CODE_WALL if walled >= CODE_WALL_CALLS else CODE_LAST_CALL})
+                # A stuck run: its next calls go to the rescue model, which is told what looks stuck.
+                if rescue_model and not last and not walled and rescue_left == 0 and rescues < CODE_RESCUE_MAX and since_rescue >= CODE_RESCUE_GAP:
+                    rescue_reason = stall.reason()
+                    if rescue_reason:
+                        rescue_left, rescues, since_rescue = CODE_RESCUE_CALLS, rescues + 1, 0
+                        with contextlib.suppress(Exception):
+                            rescue_tabs = await api.tabs()
+                        rescue_start = code_rescue_context(messages, trail, rescue_tabs, rescue_reason)
+                        messages.append({"role": "user", "content": CODE_RESCUED.format(what=CODE_STUCK_WHAT[rescue_reason])})
+                        episode = len(messages)
+                        log.info("code run %s is stuck at call %d (%s): the next %d calls go to %s", run.id, number,
+                                 rescue_reason, rescue_left, rescue_model)
+                        stall.reset()
+                rescued = rescue_left > 0 and not last
+                if rescued:
+                    rescue_left -= 1
+                else:
+                    since_rescue += 1
                 asked = time.monotonic()
-                answer = await client.chat.completions.create(
-                    model=llm["model"], messages=messages, tools=CODE_TOOLS,
+                create = functools.partial(
+                    client.chat.completions.create, messages=messages, tools=CODE_TOOLS,
                     tool_choice={"type": "function", "function": {"name": "done"}} if last else "required",
-                    extra_body=code_llm_body(tuning), timeout=CODE_LLM_S)
+                    timeout=CODE_LLM_S)
+                answer = None
+                if rescued:
+                    try:
+                        answer = await create(model=rescue_model, extra_body=code_llm_body(tuning, rescue=True),
+                                              messages=[*rescue_start, *messages[episode:]])
+                        if not answer.choices:
+                            raise ValueError("the answer has no choices")
+                    except Exception as error:
+                        # Not served, or not answering: the run goes on with its own model, and is rescued no more.
+                        log.warning("the rescue model %s did not answer a code run (%s): %s", rescue_model,
+                                    type(error).__name__, str(error)[:200])
+                        rescue_model = rescue_left = 0
+                        rescued = False
+                        answer = None
+                if answer is None:
+                    answer = await create(model=llm["model"], extra_body=code_llm_body(tuning))
                 timing = {"modelMs": round((time.monotonic() - asked) * 1000), "codeMs": 0}
+                if rescued:
+                    timing["rescue"] = rescue_reason
                 tokens = {"in": 0, "cached": 0, "out": 0, "calls": 1}
                 if answer.usage:
                     details = getattr(answer.usage, "prompt_tokens_details", None)
@@ -3169,7 +3309,7 @@ class Worker:
                 if not calls:
                     messages.append({"role": "user", "content": "Call `repl` or `done`."})
                     continue
-                goals = []
+                goals, used, repls, failures = [], [], 0, 0
                 for call in calls:
                     try:
                         arguments = json.loads(call.function.arguments or "{}")
@@ -3181,8 +3321,11 @@ class Worker:
                         messages.append({"role": "tool", "tool_call_id": call.id, "content": "ok"})
                         continue
                     output, seconds = await sandbox.run(str(arguments.get("code") or ""))
+                    used.extend(sandbox.used)
+                    repls, failures = repls + 1, failures + sandbox.failed
                     timing["codeMs"] += round(seconds * 1000)
                     goals.append(str(arguments.get("title") or ""))
+                    trail.append((code_cut(goals[-1], 80), sandbox.failed))
                     left = max_steps - number
                     if left <= CODE_CALLS_WARNED:
                         output += (f"\n[Calls left: {left}. Call `done` before they run out, with what you have, "
@@ -3194,6 +3337,7 @@ class Worker:
                     messages.append({"role": "tool", "tool_call_id": call.id, "content": output})
                 page = api.last
                 if any(call.function.name == "repl" for call in calls):
+                    stall.note(used, failures == repls, page.url if page else None)
                     wall = await code_wall(page)
                     walled = walled + 1 if wall else walled if wall is None else 0
                     if wall is not False:

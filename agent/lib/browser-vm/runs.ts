@@ -27,7 +27,12 @@ import {
   prepareBrowserVmSession,
   touchBrowserVm,
 } from "./lifecycle";
-import { errandBrowser, errandEngine, fastBrowserPilot } from "./pilot";
+import {
+  errandBrowser,
+  errandEngine,
+  fastBrowserPilot,
+  stepRoutePilot,
+} from "./pilot";
 import { browserVmProxyLines, browserVmProxyPlace } from "./proxy";
 import { staticBrowserPool } from "@agent/lib/browser-pool/hosts";
 import {
@@ -134,8 +139,13 @@ function runTuning(
   model: string,
   {
     fast = false,
+    rescueModel,
     search = false,
-  }: { readonly fast?: boolean; readonly search?: boolean } = {}
+  }: {
+    readonly fast?: boolean;
+    readonly rescueModel?: string;
+    readonly search?: boolean;
+  } = {}
 ) {
   const service = browserVmLlmService();
   const deepSeekOnRouterAi =
@@ -164,7 +174,11 @@ function runTuning(
   const timed = together
     ? { ...tuning, llmTimeoutSeconds: fastLlmTimeoutSeconds }
     : tuning;
-  return search ? { flashMode: true, ...timed } : timed;
+  const tuned = search ? { flashMode: true, ...timed } : timed;
+  // A code run that gets stuck hands its next calls to this model
+  // (`run_code`); browser-use's runs ignore it, and the key is absent
+  // outside the pilot.
+  return rescueModel === undefined ? tuned : { ...tuned, rescueModel };
 }
 /** Another errand holds the VM's one browser: this one waits in the queue. */
 const busyRetryMs = 60_000;
@@ -335,7 +349,7 @@ export async function createBrowserVmRun(input: {
   const id = newBrowserVmRunId(workspaceId);
   const sessionId = input.sessionId ?? newBrowserVmSessionId(workspaceId);
   const task = `${input.task}\n\n${addressWallLine}`;
-  const [fast, engine] = await Promise.all([
+  const [fast, engine, stepRoute] = await Promise.all([
     fastBrowserPilot({ workspaceId }),
     // A retry past an anti-bot wall goes on browser-use, which solves captchas;
     // the code engine has no solve_captcha and would stop at the same wall.
@@ -343,6 +357,7 @@ export async function createBrowserVmRun(input: {
       { workspaceId },
       input.findsOnly === true && input.freshExit !== true
     ),
+    stepRoutePilot({ workspaceId }),
   ]);
   const browser = errandBrowser({ workspaceId });
   // Recorded before the worker is asked: a start whose answer is lost still
@@ -372,7 +387,15 @@ export async function createBrowserVmRun(input: {
     sessionId,
     task,
     timeoutSeconds: runTimeoutSeconds,
-    tuning: runTuning(llm.model, { fast, search: input.search }),
+    tuning: runTuning(llm.model, {
+      fast,
+      // Only the code engine's calls can be handed on, and to another model.
+      rescueModel:
+        engine === "code" && stepRoute && env.BROWSER_RESCUE_MODEL !== llm.model
+          ? env.BROWSER_RESCUE_MODEL
+          : undefined,
+      search: input.search,
+    }),
   });
   // The worker has it: the record says what the worker says from here. The
   // run is acting already, so a write that fails does not fail the start:

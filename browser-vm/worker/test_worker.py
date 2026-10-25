@@ -540,13 +540,18 @@ class FakeModel:
     """openai.AsyncOpenAI for the code engine: plays its answers and keeps a copy of every request's messages."""
 
     def __init__(self, answers):
-        self.answers, self.requests, self.choices = list(answers), [], []
+        self.answers, self.requests, self.choices, self.models, self.bodies = list(answers), [], [], [], []
 
     def client(self, **options):
         async def create(**request):
             self.requests.append(json.loads(json.dumps(request["messages"], default=str)))
             self.choices.append(request.get("tool_choice"))
-            return self.answers.pop(0)
+            self.models.append(request.get("model"))
+            self.bodies.append(request.get("extra_body"))
+            answer = self.answers.pop(0)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
 
         return types.SimpleNamespace(chat=types.SimpleNamespace(completions=types.SimpleNamespace(create=create)))
 
@@ -2661,6 +2666,115 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("[Calls left: 1.", model.requests[1][-2]["content"])
         self.assertEqual(model.requests[1][-1], {"role": "user", "content": worker.CODE_LAST_CALL})
         self.assertEqual(model.choices, ["required", {"type": "function", "function": {"name": "done"}}])
+
+    def stuck_answers(self, count=3):
+        """`count` calls whose code throws: the first mark of a stuck run."""
+        return [FakeAnswer([("repl", {"title": f"try {n}", "code": "throw new Error('no such control')"})])
+                for n in range(count)]
+
+    @unittest.skipUnless(importlib.util.find_spec("quickjs"), "the code engine's sandbox needs quickjs")
+    async def test_a_stuck_code_run_gets_two_calls_of_the_rescue_model_and_goes_back_to_its_own(self):
+        model, _playwright = self.code_engine([
+            *self.stuck_answers(),
+            FakeAnswer([("repl", {"title": "another way", "code": "console.log('direct address')"})]),
+            FakeAnswer([("repl", {"title": "read it", "code": "console.log('read')"})]),
+            FakeAnswer([("done", {"result": "Нашёл.\nRESULT: чайник\nNEEDS: none"})]),
+        ])
+        await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Find a kettle.",
+                                     "engine": "code", "tuning": {"rescueModel": "openai/rescue-1",
+                                                                   "provider": {"order": ["together"]}}})
+        run = await self.settled("r1")
+        self.assertEqual(run.status, "completed")
+        own = LLM["model"]
+        self.assertEqual(model.models, [own] * 3 + ["openai/rescue-1"] * 2 + [own])
+        # The rescue reads a summary of the run, not its history: the errand, what was tried and printed, what looks
+        # stuck. It does not get the hosts Bro named for the run's own model.
+        briefing = model.requests[3]
+        self.assertEqual([m["role"] for m in briefing], ["system", "user"])
+        self.assertIn("Find a kettle.", briefing[1]["content"])
+        self.assertIn("they ended in errors", briefing[1]["content"])
+        self.assertIn("«try 0» (failed); «try 1» (failed); «try 2» (failed)", briefing[1]["content"])
+        self.assertIn("no such control", briefing[1]["content"])
+        self.assertEqual(model.bodies[3], {"reasoning": {"effort": "medium"}})
+        # Its second call goes on from its own first; the run's own model then reads all of it, with the line that
+        # says another model wrote those calls.
+        self.assertEqual([m["role"] for m in model.requests[4]], ["system", "user", "assistant", "tool"])
+        self.assertIn("another model that took the errand over", model.requests[5][-5]["content"])
+        self.assertEqual(model.requests[5][-4]["tool_calls"][0]["function"]["name"], "repl")
+        self.assertEqual(model.bodies[0]["provider"], {"order": ["together"]})
+        self.assertEqual([step["timing"].get("rescue") for step in run.steps],
+                         [None, None, None, "errors", "errors", None])
+
+    @unittest.skipUnless(importlib.util.find_spec("quickjs"), "the code engine's sandbox needs quickjs")
+    async def test_a_code_run_is_not_rescued_unless_bro_asked_and_never_on_its_report(self):
+        model, _playwright = self.code_engine([
+            *self.stuck_answers(4),
+            FakeAnswer([("done", {"result": "Не вышло.\nRESULT: нет\nNEEDS: none"})]),
+        ])
+        await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Find a kettle.",
+                                     "engine": "code"})
+        self.assertEqual((await self.settled("r1")).status, "completed")
+        self.assertEqual(set(model.models), {LLM["model"]})
+        model, _playwright = self.code_engine([
+            *self.stuck_answers(3),
+            FakeAnswer([("done", {"result": "Не вышло.\nRESULT: нет\nNEEDS: none"})]),
+        ])
+        await self.worker.start_run({"id": "r2", "sessionId": "s2", "llm": LLM, "task": "Find a kettle.",
+                                     "engine": "code", "maxSteps": 4, "tuning": {"rescueModel": "openai/rescue-1"}})
+        run = await self.settled("r2")
+        # The fourth call is the last: the report is the run's own model's.
+        self.assertEqual(model.models, [LLM["model"]] * 4)
+        self.assertEqual(model.choices[-1], {"type": "function", "function": {"name": "done"}})
+        self.assertEqual([step["timing"].get("rescue") for step in run.steps], [None] * 4)
+
+    @unittest.skipUnless(importlib.util.find_spec("quickjs"), "the code engine's sandbox needs quickjs")
+    async def test_a_rescue_model_that_does_not_answer_leaves_the_run_with_its_own_for_good(self):
+        model, _playwright = self.code_engine([
+            *self.stuck_answers(),
+            RuntimeError("404 no such model"),
+            FakeAnswer([("repl", {"title": "again", "code": "console.log('ok')"})]),
+            *self.stuck_answers(3),
+            FakeAnswer([("done", {"result": "Нашёл.\nRESULT: чайник\nNEEDS: none"})]),
+        ])
+        await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Find a kettle.",
+                                     "engine": "code", "tuning": {"rescueModel": "openai/rescue-1"}})
+        run = await self.settled("r1")
+        self.assertEqual(run.status, "completed")
+        self.assertEqual(model.models[3:5], ["openai/rescue-1", LLM["model"]])
+        self.assertNotIn("openai/rescue-1", model.models[5:])
+        self.assertEqual([step["timing"].get("rescue") for step in run.steps], [None] * len(run.steps))
+
+    def test_a_code_run_is_stuck_on_errors_on_one_address_opened_again_or_on_one_page_without_news(self):
+        stall = worker.CodeStall()
+        for _ in range(2):
+            stall.note([("click", None)], True, "https://shop.test/a")
+        self.assertIsNone(stall.reason())
+        stall.note([("click", None)], True, "https://shop.test/a")
+        self.assertEqual(stall.reason(), "errors")
+        stall = worker.CodeStall()
+        for _ in range(3):
+            stall.note([("goto", "https://shop.test/a?x=1#top")], False, "https://shop.test/a")
+        self.assertEqual(stall.reason(), "repeat")
+        # Eight calls on a page the run has seen, that read no cards and open nothing new.
+        stall = worker.CodeStall()
+        stall.note([("goto", "https://shop.test/list")], False, "https://shop.test/list")
+        for _ in range(worker.CODE_STUCK_FLAT - 1):
+            stall.note([("evaluate", None)], False, "https://shop.test/list")
+        self.assertIsNone(stall.reason())
+        stall.note([("evaluate", None)], False, "https://shop.test/list")
+        self.assertEqual(stall.reason(), "stall")
+        # Cards, a new address or a new page is news; so is nothing but time not.
+        for news in ([("cards", None)], [("goto", "https://shop.test/list?page=2")], [("visit", None)]):
+            stall.note(news, False, "https://shop.test/list")
+            self.assertIsNone(stall.reason(), news)
+        stall.note([("evaluate", None)], False, "https://shop.test/item")
+        self.assertIsNone(stall.reason())
+
+    def test_the_rescue_model_is_a_model_id_and_nothing_else(self):
+        self.assertEqual(worker.agent_tuning({"rescueModel": "openai/gpt-6-luna"}), {"rescueModel": "openai/gpt-6-luna"})
+        for bad in (5, "", "a b", "x" * 101, "../evil"):
+            with self.assertRaises(worker.web.HTTPBadRequest):
+                worker.agent_tuning({"rescueModel": bad})
 
     def test_the_code_engine_needs_playwright_with_ai_snapshots(self):
         found = types.SimpleNamespace()

@@ -766,6 +766,52 @@ describe("starting a run on a workspace's browser VM", () => {
     expect(await (await pilot("personal:another"))(true)).toEqual([undefined]);
   });
 
+  it("names a rescue model only for a code-engine run in the step-route pilot", async () => {
+    worker.startBrowserVmWorkerRun.mockImplementation((_vm, input) =>
+      Promise.resolve({
+        id: input.id,
+        sessionId: input.sessionId ?? "",
+        status: "queued",
+      })
+    );
+    const rescues = async (settings: Record<string, string>) => {
+      vi.resetModules();
+      const client = await importWithSettings(
+        {
+          ...browserVmTestEnvironment,
+          BROWSER_CODE_ENGINE_WORKSPACES: "*",
+          ...settings,
+        },
+        async () => import("@agent/lib/browser-use/client")
+      );
+      return async (findsOnly: boolean) => {
+        worker.startBrowserVmWorkerRun.mockClear();
+        await client.createBrowserUseRun({
+          findsOnly,
+          profileId,
+          search: false,
+          task: composedTask,
+        });
+        return worker.startBrowserVmWorkerRun.mock.calls.map(
+          ([, input]) => input.tuning?.rescueModel
+        );
+      };
+    };
+
+    const piloted = await rescues({
+      BROWSER_RESCUE_MODEL: "openai/gpt-6-luna",
+      BROWSER_STEP_ROUTE_WORKSPACES: workspaceId,
+    });
+    expect(await piloted(true)).toEqual(["openai/gpt-6-luna"]);
+    // browser-use has no calls to hand on, and outside the pilot the tuning
+    // is what it always was.
+    expect(await piloted(false)).toEqual([undefined]);
+    const outside = await rescues({
+      BROWSER_STEP_ROUTE_WORKSPACES: "personal:another",
+    });
+    expect(await outside(true)).toEqual([undefined]);
+  });
+
   it("gives the worker the 2Captcha key only when the deployment has one", async () => {
     worker.startBrowserVmWorkerRun.mockImplementation((_vm, input) =>
       Promise.resolve({

@@ -98,6 +98,23 @@ export async function errandEngine(
     : undefined;
 }
 
+/**
+ * Whether the workspace's code-engine errands that get stuck hand a few calls
+ * to the rescue model (BROWSER_STEP_ROUTE_WORKSPACES, `tuning.rescueModel`):
+ * the worker decides when, from what its calls did. The list reads as
+ * BROWSER_FAST_WORKSPACES does; a failed lookup keeps the run on its own model.
+ */
+export async function stepRoutePilot(scope: {
+  readonly userId?: string;
+  readonly workspaceId: string;
+}) {
+  return inPilot(
+    "browser-step-route",
+    env.BROWSER_STEP_ROUTE_WORKSPACES,
+    scope
+  );
+}
+
 async function inPilot(
   pilot: string,
   entries: readonly string[] | undefined,

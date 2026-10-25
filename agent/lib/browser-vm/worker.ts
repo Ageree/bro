@@ -122,6 +122,12 @@ const stepSchema = z.object({
     .object({
       codeMs: z.number().nonnegative(),
       modelMs: z.number().nonnegative(),
+      /**
+       * Why this call went to the rescue model instead of the run's own
+       * (`errors`, `repeat`, `stall`): absent from a call the run's own
+       * model made, and from workers before the rescue.
+       */
+      rescue: z.string().max(16).nullish(),
     })
     .nullish()
     .catch(null),
@@ -229,7 +235,8 @@ const hostsSchema = z
  * in its `provider` routing (`requireParameters` is `require_parameters`).
  * One older than 2026-10-05.6 ignores `llmTimeoutSeconds`, browser-use's
  * `llm_timeout`: how long a model call may take before the step is taken
- * again.
+ * again. One older than the rescue ignores `rescueModel`: the model a code
+ * run that gets stuck hands its next calls to (`CodeStall` in the worker).
  */
 const tuningSchema = z.object({
   flashMode: z.boolean().optional(),
@@ -243,6 +250,10 @@ const tuningSchema = z.object({
     })
     .optional(),
   reasoning: z.enum(["none", "minimal", "low", "medium", "high"]).optional(),
+  rescueModel: z
+    .string()
+    .regex(/^~?[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}$/u)
+    .optional(),
 });
 
 const runInputSchema = z.object({

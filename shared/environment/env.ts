@@ -371,6 +371,13 @@ export const env = createEnv({
     // the note in their task: how the site writes the address of its results
     // (`agent/lib/browser-use/site-notes.ts`). Unset, nobody.
     BROWSER_SITE_NOTES_WORKSPACES: workspaceListSchema.optional(),
+    // Workspace ids or `*` whose code-engine errands that get stuck (errors
+    // in a row, one address again and again, one page without news) hand
+    // their next two calls to BROWSER_RESCUE_MODEL, then go on with their own
+    // (`tuning.rescueModel`, `run_code` in `browser-vm/worker/worker.py`).
+    // Unset, nobody.
+    BROWSER_STEP_ROUTE_WORKSPACES: workspaceListSchema.optional(),
+    BROWSER_RESCUE_MODEL: trimmedValue.default("anthropic/claude-haiku-5.5"),
     // Who may get the sign-in link, where the person signs in to a site
     // themselves in a live view of their own cloud browser
     // (`agent/lib/login-handoff/`, docs/login-handoff.md). Unset or empty,
