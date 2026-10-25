@@ -797,9 +797,9 @@ SITE_LOOSE_PART = re.compile(r"[\w\-.]{1,60}")
 # such reads go at once, each in a tab of its own.
 SITE_OP_FETCH_S = 15
 SITE_OP_DIRECT_AT_ONCE = 2
-# How long a direct read waits for an xhr page's own request: a fast path that is slower than the errand it saves
-# is no fast path (ostrovok.ru's serp came in 7 s through the stand's exit, 25.10).
-SITE_OP_DIRECT_XHR_S = 15
+# How long a direct read waits for an xhr page's own request: well short of the minute and more the errand it saves
+# takes (ostrovok.ru's serp came in 6–17 s through the stand's exit, 25.10).
+SITE_OP_DIRECT_XHR_S = 25
 # What a direct read hands back: at most this many cards, each with at most this many of its own fields beside its
 # name, price and link (`site_op_pick`): the cards go into Bro's own context, not a model's code.
 SITE_OP_PICKED = 60
@@ -814,8 +814,8 @@ SITE_OP_TELLING = re.compile(r"name|title|rating|score|review|address|city|area|
 # its anti-bot check turned the browser away (nothing about the operation); `moved` — the page answered from
 # another address or not at all (404, a redirect home); `no_data` — the page no longer holds its results where the
 # operation reads them, the site changed; `empty` — it holds no result for this page; `failed` — anything else
-# (the network, a timeout). Only `moved`, `no_data` and `failed` on a page that fits the template exactly count
-# against the operation in Bro (`agent/lib/browser-vm/site-ops/health.ts`).
+# (the network, a timeout). Only `moved` and `no_data` on a page that fits the template exactly count against the
+# operation in Bro (`agent/lib/browser-vm/site-ops/health.ts`).
 SITE_BLOCKED = {401, 403, 407, 429, 451, 498, 503}
 SITE_GONE = {404, 410}
 SITE_HEAVY = ["*.png", "*.jpg", "*.jpeg", "*.gif", "*.webp", "*.avif", "*.svg", "*.ico", "*.woff", "*.woff2",
@@ -1616,11 +1616,18 @@ def site_op_checked(operation, cards):
     return cards
 
 
+# The query keys a site writes its search's words in (`site_query_words`): not a filter's (`type_group=hotel`,
+# `color=red`), whose value no result needs to name.
+SITE_SEARCH_KEY = re.compile(r"q|qt|k|kw|s|st|text|query|keywords?|what|phrase|term|.*search.*|.*query.*", re.I)
+
+
 def site_query_words(operation, url):
-    """The words a results page was asked for: the values of its template's %query% keys, each word of four letters
-    or more as its first four (a stem: «чайники» and «чайник» share it)."""
+    """The words a results page was asked for: the values of its template's %query% keys that hold a search's words
+    (SITE_SEARCH_KEY), each word of four letters or more as its first four (a stem: «чайники» and «чайник» share
+    it)."""
     template = urllib.parse.urlsplit(operation["page"])
-    keys = {key for key, value in urllib.parse.parse_qsl(template.query) if value == "%query%"}
+    keys = {key for key, value in urllib.parse.parse_qsl(template.query)
+            if value == "%query%" and SITE_SEARCH_KEY.fullmatch(key)}
     words = set()
     for key, value in urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query):
         if key in keys:

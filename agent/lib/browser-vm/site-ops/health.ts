@@ -12,7 +12,11 @@ import type { SiteReadFailure } from "./operation";
  * when the site itself answered otherwise than before (Pomerado's outcome
  * classes, docs: a challenge or a host problem «does not count against the
  * tool»): `blocked` is the site's anti-bot or the exit, `empty` a search
- * with nothing, and a `loose` page may be the fill's own mistake.
+ * with nothing, `failed` a page slower than the read waits (ostrovok.ru's
+ * serp took 6–17 s through the stand's exit, 25.10) or the network, and a
+ * `loose` page may be the fill's own mistake. A site that moved its data
+ * elsewhere is mended all the same: the errand the read gives way to finds
+ * the operation anew, and the changed find replaces it.
  */
 export const brokenAfter = 2;
 
@@ -26,7 +30,7 @@ const retryBrokenAfterMs = 6 * 60 * 60_000;
 export function readCounts(reason: SiteReadFailure, fit: "exact" | "loose") {
   return (
     fit === "exact" &&
-    (reason === "moved" || reason === "no_data" || reason === "failed")
+    (reason === "moved" || reason === "no_data")
   );
 }
 

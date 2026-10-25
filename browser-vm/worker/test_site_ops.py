@@ -504,6 +504,10 @@ class FitAndPickTest(unittest.TestCase):
                                                "https://c.ru/s/?text=электрические+чайники", kettles))
         self.assertTrue(worker.site_op_answers({"page": "https://auto.drom.ru/toyota/camry/"},
                                                "https://auto.drom.ru/kia/rio/", sponge))
+        # A filter's value is no word the results must name: ostrovok.ru's hotels are «Отель …», not «hotel».
+        hotels = {"page": "https://ostrovok.ru/hotel/russia/%word%/?type_group=%query%&q=%query%"}
+        self.assertTrue(worker.site_op_answers(hotels, "https://ostrovok.ru/hotel/russia/sochi/?type_group=hotel",
+                                               [{"name": "Отель Булгар", "more": {}}]))
 
     def test_a_direct_read_picks_by_price_and_keeps_the_telling_fields(self):
         cards = [{"name": f"Отель {n}", "price": price, "link": f"https://ostrovok.ru/h/{n}/",

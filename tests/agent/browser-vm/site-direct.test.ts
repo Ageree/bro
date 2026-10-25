@@ -126,7 +126,7 @@ describe("Bro's own read of a site it has read before", () => {
       priceMin: asked?.priceMin,
       url: asked?.url,
     }).toEqual({
-      limit: 10,
+      limit: 12,
       priceMin: 300000,
       url,
     });

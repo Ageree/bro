@@ -188,7 +188,9 @@ async function readSite(
     return undefined;
   }
   const read = await readBrowserVmSiteDirectly(scope.workspaceId, {
-    limit: Math.max(1, Math.min(Math.round(fill?.limit ?? 10) * 2, 30)),
+    // Twice what the errand asks, and a dozen at least: the site's filters do
+    // not hold every condition, and the turn picks among them.
+    limit: Math.min(Math.max(Math.round(fill?.limit ?? 10) * 2, 12), 30),
     operation,
     priceMax: fill?.priceMax ?? null,
     priceMin: fill?.priceMin ?? null,
