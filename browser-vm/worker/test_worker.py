@@ -2559,6 +2559,9 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(shop.url, "https://shop.test/login")
         self.assertEqual(model.requests[2][-1]["content"], "42 https://shop.test/login")
         self.assertEqual([step["goal"] for step in run.steps], ["sign in", "check", "done"])
+        # Where each call went: the model's answer and the code it ran (none for the report).
+        self.assertEqual([sorted(step["timing"]) for step in run.steps], [["codeMs", "modelMs"]] * 3)
+        self.assertEqual(run.steps[-1]["timing"]["codeMs"], 0)
         self.assertEqual({key: run.usage[key] for key in ("total_prompt_tokens", "total_prompt_cached_tokens")},
                          {"total_prompt_tokens": 3000, "total_prompt_cached_tokens": 2400})
         # The page it touched last is the session's, and the tab it opened elsewhere is closed after it.

@@ -2971,10 +2971,12 @@ class Worker:
                 last = number == max_steps or deadline - time.monotonic() < CODE_LAST_CALL_S
                 if last:
                     messages.append({"role": "user", "content": CODE_LAST_CALL})
+                asked = time.monotonic()
                 answer = await client.chat.completions.create(
                     model=llm["model"], messages=messages, tools=CODE_TOOLS,
                     tool_choice={"type": "function", "function": {"name": "done"}} if last else "required",
                     extra_body=code_llm_body(tuning), timeout=CODE_LLM_S)
+                timing = {"modelMs": round((time.monotonic() - asked) * 1000), "codeMs": 0}
                 tokens = {"in": 0, "cached": 0, "out": 0, "calls": 1}
                 if answer.usage:
                     details = getattr(answer.usage, "prompt_tokens_details", None)
@@ -3001,7 +3003,8 @@ class Worker:
                         goals.append("done")
                         messages.append({"role": "tool", "tool_call_id": call.id, "content": "ok"})
                         continue
-                    output, _seconds = await sandbox.run(str(arguments.get("code") or ""))
+                    output, seconds = await sandbox.run(str(arguments.get("code") or ""))
+                    timing["codeMs"] += round(seconds * 1000)
                     goals.append(str(arguments.get("title") or ""))
                     left = max_steps - number
                     if left <= CODE_CALLS_WARNED:
@@ -3017,7 +3020,7 @@ class Worker:
                 run.steps.append({"number": number, "at": now_iso(), "url": page.url if page else None,
                                   "title": "", "goal": "; ".join(goals)[:300],
                                   "actions": [{"action": call.function.name, "index": None} for call in calls][:10],
-                                  "tokens": tokens})
+                                  "tokens": tokens, "timing": timing})
                 run.final_url = (page.url if page else None) or run.final_url
                 with contextlib.suppress(Exception):
                     run.save()

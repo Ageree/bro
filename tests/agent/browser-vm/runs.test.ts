@@ -1147,8 +1147,9 @@ describe("reading a VM run", () => {
             url: "https://www.pochta.ru/tracking/80080012345678",
           },
           {
-            actions: [{ action: "extract" }, { action: "done" }],
+            actions: [{ action: "repl" }, { action: "done" }],
             at: "2026-09-28T11:50:12.5Z",
+            timing: { codeMs: 5200, modelMs: 2100 },
           },
         ],
       })
@@ -1169,7 +1170,12 @@ describe("reading a VM run", () => {
           seconds: 3,
           tokens: { in: 9000, out: 120 },
         },
-        { actions: ["extract", "done"], host: null, seconds: 7.5 },
+        {
+          actions: ["repl", "done"],
+          host: null,
+          seconds: 7.5,
+          timing: { codeMs: 5200, modelMs: 2100 },
+        },
       ],
     });
     expect(line).not.toMatch(/tracking|Anna/u);

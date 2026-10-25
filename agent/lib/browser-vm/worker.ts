@@ -114,6 +114,17 @@ const stepSchema = z.object({
   at: z.string().nullish(),
   goal: z.string().nullish(),
   number: z.number().nullish(),
+  /**
+   * Where a code engine's step went: the model's answer and the blocks it
+   * ran. Absent from browser-use's steps and older workers.
+   */
+  timing: z
+    .object({
+      codeMs: z.number().nonnegative(),
+      modelMs: z.number().nonnegative(),
+    })
+    .nullish()
+    .catch(null),
   title: z.string().nullish(),
   /**
    * The model's tokens since the step before (`step_tokens` in the worker).
