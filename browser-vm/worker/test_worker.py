@@ -568,7 +568,10 @@ class FakePage:
     async def wait_for_load_state(self, state, timeout):
         pass
 
-    async def evaluate(self, expression):
+    async def evaluate(self, expression, arg=None):
+        if expression == worker.CODE_CARDS_JS:
+            return [{"text": f"Чайник {n} — {1000 + n} ₽ " + "х" * 900, "links": [f"https://shop.test/{n}"], "image": None}
+                    for n in range(arg)]
         self.chrome.open_while_read = [*getattr(self.chrome, "open_while_read", []), len(self.chrome.tabs)]
         await asyncio.sleep(0.01)  # the other pages of a visit() load meanwhile
         return {"url": self.url, "expression": expression}
@@ -2558,6 +2561,22 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(model.choices[-1], {"type": "function", "function": {"name": "done"}})
         self.assertEqual(model.requests[-1][-1]["content"], worker.CODE_WALL)
         self.assertIn("NEEDS: captcha", run.result)
+
+    @unittest.skipUnless(importlib.util.find_spec("quickjs"), "the code engine's sandbox needs quickjs")
+    async def test_cards_hands_the_models_code_the_pages_results_within_their_size(self):
+        model, playwright = self.code_engine([
+            FakeAnswer([("repl", {"title": "results", "code": """
+                const found = cards('t1');
+                console.log(found.length, found[0].links[0], found[0].text.slice(0, 20));"""})]),
+            FakeAnswer([("done", {"result": "Нашёл.\nRESULT: чайники\nNEEDS: none"})]),
+        ])
+        await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Find kettles.",
+                                     "engine": "code"})
+        self.assertEqual((await self.settled("r1")).status, "completed")
+        count, link, text = model.requests[1][-1]["content"].split(" ", 2)
+        # 80 cards of ~950 characters are past CODE_CARDS_CHARS: the first ones that fit are kept.
+        self.assertTrue(0 < int(count) < worker.CODE_CARDS, count)
+        self.assertEqual((link, text), ("https://shop.test/0", "Чайник 0 — 1000 ₽ хх"))
 
     @unittest.skipUnless(importlib.util.find_spec("quickjs"), "the code engine's sandbox needs quickjs")
     async def test_visit_reads_pages_side_by_side_in_tabs_it_closes_and_leaves_the_models_page_as_it_was(self):

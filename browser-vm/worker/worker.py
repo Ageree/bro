@@ -90,7 +90,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-10-25.5"
+VERSION = "2026-10-25.6"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -1457,6 +1457,7 @@ class Run:
         self.success = None
         self.created_at = now_iso()
         self.started_at = None
+        self.began = time.monotonic()  # when execute() took it, on the monotonic clock: the logs only
         self.finished_at = None
         self.steps = []
         self.final_url = None
@@ -1712,6 +1713,10 @@ CODE_SNAPSHOT_CHARS = 24_000
 CODE_TEXT_CHARS = 12_000
 CODE_OUTPUT_CHARS = 16_000
 CODE_CALL_S = 45  # one API call: a page load, a click and what it starts
+CODE_CARDS = 80  # the cards one cards() call returns, the page's first ones
+CODE_CARDS_WAIT_S = 5  # a list that is still drawing: how long cards() waits for its first three cards
+CODE_CARDS_SCROLL_S = 10  # how long cards() scrolls down for cards a page loads as it is scrolled
+CODE_CARDS_CHARS = 60_000  # cards() goes to the model's code, not its context: printing is cut apart
 CODE_VISIT_PAGES = 8  # the pages one visit() reads, CODE_VISIT_AT_ONCE at a time, each in a tab of its own
 CODE_VISIT_AT_ONCE = 3  # a page of a heavy site holds ~200 MB of a 3 GB sandbox while it is open
 CODE_VISIT_PAGE_S = 25  # one page of a visit: its load and the expression
@@ -1750,6 +1755,8 @@ runs in a sandbox with this API (every call is synchronous; `await` before a cal
   hover(tab, ref)                   scroll(tab, pixels)           back(tab)
   text(tab, ref?)                -> the visible text of the element (or of the page)
   evaluate(tab, js)              -> the value of a JavaScript expression evaluated in the page (JSON)
+  cards(tab, limit?)             -> [{text, links, image}]: the page's list of results (trains, hotels, products, \
+vacancies…) found for you, up to 80 cards, each with its whole text and its links
   visit(urls, js?)               -> [{url, value} or {url, error}]: up to 8 pages read at once, each in a \
 background tab closed after it; value is js evaluated on the page, or the page's text without js
   url(tab), title(tab)              wait(ms) (at most 10000)      closeTab(tab)
@@ -1766,8 +1773,10 @@ option's own page, read them all with one visit() call (a page load through this
 several seconds; visit() loads them side by side), never goto() them one by one.
 - Every call keeps the person waiting: a search should take a handful of calls, not dozens. Get to the results \
 with the site's search URL (its filters in the URL when you can see how it writes them) or its search box, \
-extract every card on the page in one evaluate() (name, price, rating, link, whatever the errand needs), and \
-sort and filter that list in your own code. Do not fight a site's sort menus, filter checkboxes, sliders or \
+then take every card on it with cards(tab) and read the name, price, rating and link the errand needs out of \
+each card's text and links in your own code, then sort and filter that list there: do not study the page's \
+markup to find the cards. Only when cards() gives something else than the results, extract them with one \
+evaluate(). Do not fight a site's sort menus, filter checkboxes, sliders or \
 tabs: when the errand asks for results sorted or filtered, sorting and filtering the list you extracted is how \
 you meet it. Use a site's control only when what you need is not on the page without it, and after two failed \
 tries at one control, go on without it. Scroll or open the next page for more cards.
@@ -1826,6 +1835,7 @@ globalThis.scroll = (tab, px) => __call('scroll', [tab, px]);
 globalThis.back = (tab) => __call('back', [tab]);
 globalThis.text = (tab, ref) => __call('text', [tab, ref === undefined ? null : ref]);
 globalThis.evaluate = (tab, js) => __call('evaluate', [tab, js]);
+globalThis.cards = (tab, limit) => __call('cards', [tab, limit === undefined ? 80 : limit]);
 globalThis.visit = (urls, js) => __call('visit', [urls, js === undefined ? null : js]);
 globalThis.url = (tab) => __call('url', [tab]);
 globalThis.title = (tab) => __call('title', [tab]);
@@ -1868,7 +1878,7 @@ for line in sys.stdin:
 """
 
 CODE_METHODS = frozenset({"tabs", "open_tab", "goto", "snapshot", "click", "fill", "select", "press", "check", "hover",
-                          "scroll", "back", "text", "evaluate", "visit", "url", "title", "wait", "close_tab"})
+                          "scroll", "back", "text", "evaluate", "cards", "visit", "url", "title", "wait", "close_tab"})
 
 
 def code_engine_available():
@@ -1915,6 +1925,45 @@ def code_llm_body(tuning):
     if tuning.get("provider"):
         body["provider"] = {PROVIDER_FIELDS[key]: value for key, value in tuning["provider"].items()}
     return body
+
+
+# The page's list of results as cards: of every element's children that share a tag and classes, the group of
+# three or more with text (and most with digits and links) that covers the most of the page wins. Each card is its
+# text, its links and its picture. The model spent 10 to 40 calls a search reading the markup of the results to
+# find them itself (tutu.ru, ostrovok.ru, hh.ru on the stand and on the owner's account, 25.10).
+CODE_CARDS_JS = r"""(limit) => {
+  const clean = (s) => (s || '').replace(/\s+/g, ' ').trim();
+  const shape = (el) => el.tagName + '.' + [...el.classList].filter((c) => !/\d{3,}/.test(c)).sort().join('.');
+  const seen = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+  let best = null, bestScore = 0;
+  for (const parent of document.body.querySelectorAll('*')) {
+    if (parent.children.length < 3) continue;
+    const groups = new Map();
+    for (const child of parent.children) {
+      const key = shape(child);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(child);
+    }
+    for (const els of groups.values()) {
+      if (els.length < 3) continue;
+      const shown = els.filter(seen);
+      const texts = shown.map((el) => clean(el.innerText)).filter((t) => t.length >= 15 && t.length <= 3000);
+      if (texts.length < 3) continue;
+      const digits = texts.filter((t) => /\d/.test(t)).length / texts.length;
+      const linked = shown.filter((el) => el.matches('a[href]') || el.querySelector('a[href]')).length / shown.length;
+      const covered = texts.reduce((sum, t) => sum + Math.min(t.length, 600), 0);
+      const score = covered * (0.5 + digits) * (0.5 + linked);
+      if (score > bestScore) { bestScore = score; best = shown; }
+    }
+  }
+  if (!best) return [];
+  return best.filter((el) => clean(el.innerText).length >= 15).slice(0, limit).map((el) => {
+    const links = [...new Set([...(el.matches('a[href]') ? [el] : []), ...el.querySelectorAll('a[href]')]
+      .map((a) => a.href).filter((h) => /^https?:/.test(h)))].slice(0, 4);
+    const img = el.querySelector('img[src]');
+    return {text: clean(el.innerText).slice(0, 700), links, image: img && /^https?:/.test(img.src) ? img.src : null};
+  });
+}"""
 
 
 class CodeApi:
@@ -2035,6 +2084,43 @@ class CodeApi:
         value = await self.page(tab).evaluate(str(expression))
         encoded = json.dumps(value, ensure_ascii=False, default=str)
         return value if len(encoded) <= CODE_TEXT_CHARS else code_cut(encoded, CODE_TEXT_CHARS)
+
+    async def cards(self, tab, limit=CODE_CARDS):
+        """The page's cards once its list stopped growing: it waits for a list that is still drawing and
+        scrolls down while more cards come (tutu.ru showed 3 trains right after its page loaded, 11 five
+        seconds later, the rest only on scrolling), then scrolls back to the top."""
+        page = self.page(tab)
+        limit = max(1, min(int(limit), CODE_CARDS))
+        # A list still drawing first shows other repeated things (a menu's three items on tutu.ru): the page's
+        # requests quieting down, then the same cards twice in a row, is a list that is there.
+        with contextlib.suppress(Exception):
+            await page.wait_for_load_state("networkidle", timeout=CODE_CARDS_WAIT_S * 1000)
+
+        def mark(cards):
+            return len(cards), cards[0]["text"] if cards else ""
+
+        found = await page.evaluate(CODE_CARDS_JS, limit)
+        settle = time.monotonic()
+        while time.monotonic() - settle < CODE_CARDS_WAIT_S:
+            await asyncio.sleep(1)
+            again = await page.evaluate(CODE_CARDS_JS, limit)
+            if len(again) >= 3 and mark(again) == mark(found):
+                break
+            found = again
+        started, idle = time.monotonic(), 0
+        while len(found) < limit and idle < 2 and time.monotonic() - started < CODE_CARDS_SCROLL_S:
+            await page.evaluate("window.scrollTo(0, document.documentElement.scrollHeight)")
+            await asyncio.sleep(1.2)
+            more = await page.evaluate(CODE_CARDS_JS, limit)
+            idle = idle + 1 if len(more) <= len(found) else 0
+            found = more if len(more) >= len(found) else found
+        with contextlib.suppress(Exception):
+            await page.evaluate("window.scrollTo(0, 0)")
+        encoded = json.dumps(found, ensure_ascii=False)
+        while len(encoded) > CODE_CARDS_CHARS and len(found) > 1:
+            found = found[:len(found) * 3 // 4]
+            encoded = json.dumps(found, ensure_ascii=False)
+        return found
 
     async def visit(self, urls, expression=None):
         """Several pages read at once, each in a background tab closed right after: the value of `expression`
@@ -3016,9 +3102,12 @@ class Worker:
         usage = {"total_prompt_tokens": 0, "total_prompt_cached_tokens": 0, "total_completion_tokens": 0}
         final = None
         sandbox = api = browser = context = pw = None
+        setup = {"start": time.monotonic()}
         try:
             pw = await async_playwright().start()
+            setup["playwright"] = time.monotonic()
             browser = await pw.chromium.connect_over_cdp(CDP_HTTP)
+            setup["connect"] = time.monotonic()
             context = browser.contexts[0]
             # Playwright points the browser's downloads at a temporary folder of its own when it connects: back to
             # the session's, where the run's files are looked for (`run_downloads`), as browser-use has them.
@@ -3040,6 +3129,11 @@ class Worker:
                         api.last = page
             sandbox = CodeSandbox(api)
             opened = [t for t in await api.tabs() if t["tab"] == "t1"] or await api.tabs()
+            # On the owner's account (25.10) the first call ended 37 s after the run began, 3 s of it the model's.
+            log.info("code run %s set up in %.1f s (playwright %.1f, connect %.1f, %d tabs %.1f), since its start %.1f s",
+                     run.id, time.monotonic() - setup["start"], setup["playwright"] - setup["start"],
+                     setup["connect"] - setup["playwright"], len(context.pages), time.monotonic() - setup["connect"],
+                     time.monotonic() - run.began)
             messages = [{"role": "system", "content": CODE_SYSTEM},
                         {"role": "user", "content": f"{text}\n\nYour tab: {json.dumps(opened, ensure_ascii=False)}\n"
                                                     f"You have at most {max_steps} calls for this errand."}]
@@ -3203,6 +3297,7 @@ class Worker:
     async def execute(self, run, session, text):
         run.status = "running"
         run.started_at = now_iso()
+        run.began = time.monotonic()
         # One run holds the browser at a time, so the proxy's bytes while it works are its own: Bro prices them.
         traffic_start = dict(self.forwarder.totals)
         folder = session.workspace / DOWNLOADS
