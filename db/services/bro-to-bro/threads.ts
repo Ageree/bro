@@ -400,6 +400,7 @@ export async function appendOwnerAnswer(
   said: {
     readonly amountsRub?: readonly number[];
     readonly paysFor?: readonly string[];
+    readonly peerPays?: readonly string[];
     readonly yesTo?: string;
   } = {}
 ) {
@@ -410,6 +411,8 @@ export async function appendOwnerAnswer(
     ...(said.amountsRub &&
       said.amountsRub.length > 0 && { amountsRub: said.amountsRub }),
     ...(said.paysFor && said.paysFor.length > 0 && { paysFor: said.paysFor }),
+    ...(said.peerPays &&
+      said.peerPays.length > 0 && { peerPays: said.peerPays }),
   };
   return db.transaction(async (transaction) => {
     const own = await lockOwnBroThread(transaction, scope, threadId);

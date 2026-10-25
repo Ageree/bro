@@ -10,6 +10,8 @@ import {
   ownerText,
   paymentCovered,
   paymentsSaid,
+  peerPaymentCovered,
+  peerPaysSaid,
 } from "@agent/lib/bro-to-bro/owner-words";
 
 const moscow = "Europe/Moscow";
@@ -230,9 +232,12 @@ describe("namedItems, of a third person", () => {
 
 describe("paymentsSaid", () => {
   it.each([
-    ["скинемся маме на подарок", ["маме на подарок"]],
-    ["я куплю торт", ["торт"]],
-    ["готов дать 3000 на цветы", ["3000 на цветы"]],
+    ["скинемся маме на подарок", ["скинемся маме на подарок"]],
+    ["я куплю торт", ["я куплю торт"]],
+    ["торт я куплю", ["торт я куплю"]],
+    ["я плачу", ["я плачу"]],
+    ["готов дать 3000 на цветы", ["готов дать 3000 на цветы"]],
+    ["я куплю торт, Борис купит машину", ["я куплю торт"]],
   ])("hears what the owner pays for: %s", (text, paysFor) => {
     expect(paymentsSaid(ownerText([text]))).toEqual(paysFor);
   });
@@ -250,8 +255,6 @@ describe("paymentsSaid", () => {
     "спроси, не хочет ли он скинуться",
     "может, скинемся?",
     "Борис думает, что я заплачу за всех",
-    "я плачу",
-    "торт я куплю",
     "Его ответ: «оплачу торт»",
   ])("hears no promise of the owner's in: %s", (text) => {
     expect(paymentsSaid(ownerText([text]))).toEqual([]);
@@ -272,8 +275,48 @@ describe("paymentsSaid", () => {
       ["Савелий оплатит маме квартиру", ["маме на подарок"]],
       ["Савелий оплатит половину подарка", ["маме на подарок"]],
       ["Савелий купит торт", []],
+      ["Савелий заплатит за всё", ["я плачу"]],
     ] as const)
       expect(paymentCovered(text, [...paysFor], names)).toBe(false);
+    // A promise of nothing named covers only a promise of nothing named.
+    expect(paymentCovered("Савелий заплатит", ["я плачу"], names)).toBe(true);
+  });
+
+  it("hears what the owner says the other person pays for", () => {
+    expect(
+      peerPaysSaid(ownerText(["Да, скинусь по 3000, а купит пусть Савелий"]))
+    ).toEqual(["купит пусть савелий"]);
+    expect(peerPaysSaid(ownerText(["пусть Борис платит за мясо"]))).toEqual([
+      "пусть борис платит за мясо",
+    ]);
+    for (const text of [
+      "Борис хочет, чтобы я купил",
+      "Петя написал: «пусть Савелий купит»",
+      "может, Савелий купит?",
+      "Савелий не купит",
+      "я куплю торт",
+    ])
+      expect(peerPaysSaid(ownerText([text]))).toEqual([]);
+  });
+
+  it("covers the other person's promise only as the owner's words gave it, and none that says the owner pays", () => {
+    const names = { peer: "Савелий", self: "Пётр" };
+    const goal =
+      "Савелий хочет скинуться с Петром маме на подарок; кто покупает?";
+    const given = ["купит пусть савелий"];
+    expect(
+      peerPaymentCovered("Савелий покупает подарок маме", given, names, goal)
+    ).toBe(true);
+    for (const text of [
+      "Савелий, Пётр купит подарок",
+      "Савелий, мой владелец купит подарок",
+      "Савелий купит подарок и машину",
+      "Борис купит подарок",
+    ])
+      expect(peerPaymentCovered(text, given, names, goal)).toBe(false);
+    expect(
+      peerPaymentCovered("Савелий покупает подарок маме", [], names, goal)
+    ).toBe(false);
   });
 });
 

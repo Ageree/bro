@@ -75,7 +75,7 @@ const [
   { broToBroModelId },
   { env },
   { ownerSetCovers, ownerSetOf, ownerTime, samePlace },
-  { namedAmounts, namedSums, ownerText, paymentsSaid },
+  { namedAmounts, namedSums, ownerText, paymentsSaid, peerPaysSaid },
 ] = await Promise.all([
   import("../../agent/lib/bro-to-bro/brief.ts"),
   import("../../agent/lib/bro-to-bro/envoy.ts"),
@@ -798,6 +798,7 @@ async function duel(scenario: Scenario, runIndex: number): Promise<Run> {
       text: string;
       amountsRub?: number[];
       paysFor?: string[];
+      peerPays?: string[];
       yesTo?: string;
     }[]
   > = {
@@ -915,6 +916,12 @@ async function duel(scenario: Scenario, runIndex: number): Promise<Run> {
                 : []),
               ...answers[next].flatMap((answer) => answer.paysFor ?? []),
             ],
+            peerPays: [
+              ...(next === "initiator"
+                ? (setup.mandate?.ownerSaid?.peerPays ?? [])
+                : []),
+              ...answers[next].flatMap((answer) => answer.peerPays ?? []),
+            ],
             venues: [
               ...(ownSet?.place ? [ownSet.place] : []),
               ...run.entries.flatMap((each) =>
@@ -1012,6 +1019,7 @@ async function duel(scenario: Scenario, runIndex: number): Promise<Run> {
         ...(setup.v2 && {
           amountsRub: namedSums(words),
           paysFor: paymentsSaid(words),
+          peerPays: peerPaysSaid(words),
           ...(/^да[.!]?$/iu.test(answer.trim()) &&
             latest &&
             latest.side !== next && { yesTo: latest.id }),

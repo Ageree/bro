@@ -69,12 +69,14 @@ export interface BroOwnerAnswer {
   readonly text: string;
   /**
    * The second version's: the sums of the answer that are in the owner's
-   * own words of that turn, and what those words say they pay for — what the
-   * gate lets go of money; and the peer's proposal the owner said a plain
-   * yes to with it, which then confirms their side once agreed.
+   * own words of that turn, and what those words say they and the other
+   * person pay for — what the gate lets go of money; and the peer's proposal
+   * the owner said a plain yes to with it, which then confirms their side
+   * once agreed.
    */
   readonly amountsRub?: readonly number[];
   readonly paysFor?: readonly string[];
+  readonly peerPays?: readonly string[];
   readonly yesTo?: string;
 }
 

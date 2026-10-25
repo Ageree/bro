@@ -8,6 +8,8 @@ import {
   moneyWords,
   namedAmounts,
   paymentCovered,
+  peerPaymentCovered,
+  promiseReadings,
 } from "@agent/lib/bro-to-bro/owner-words";
 import { documentNumberRanges } from "@shared/privacy/document-numbers";
 import { withoutSecrets } from "@agent/lib/privacy/secrets";
@@ -51,6 +53,8 @@ export type GateAllowance = Pick<
     readonly amountsRub: readonly number[];
     /** What the owner's own words say they pay for (`paymentsSaid`). */
     readonly paysFor: readonly string[];
+    /** What the owner's own words say the other person pays for (`peerPaysSaid`). */
+    readonly peerPays: readonly string[];
   };
 };
 
@@ -253,21 +257,42 @@ function noMoney(text: string) {
 }
 
 /**
+ * Whether a promise to pay is all one the owner's words made: theirs
+ * (`paymentCovered`), or the other person's, as the owner said that person
+ * pays (`peerPaymentCovered`).
+ */
+function promiseCovered(
+  text: string,
+  allowed: Pick<GateAllowance, "goal" | "peer" | "self">,
+  v2: NonNullable<GateAllowance["v2Allowed"]>
+) {
+  return (
+    paymentCovered(text, v2.paysFor, [allowed.self.name, allowed.peer.name]) ||
+    peerPaymentCovered(
+      text,
+      v2.peerPays,
+      { peer: allowed.peer.name, self: allowed.self.name },
+      allowed.goal
+    )
+  );
+}
+
+/**
  * Whether the money code found in a text may go, the second version's: the
  * text says no money (`noMoney`), and each sentence of it that promises to
- * pay promises only what the owner said they pay for (`paymentCovered`).
+ * pay promises only what the owner's words made (`promiseCovered`).
  */
 function promiseAllowed(
   text: string,
-  paysFor: readonly string[],
-  names: readonly string[]
+  allowed: Pick<GateAllowance, "goal" | "peer" | "self">,
+  v2: NonNullable<GateAllowance["v2Allowed"]>
 ) {
   return (
     noMoney(text) &&
     text
       .split(/(?<!\d)[.!?]+|[.!?]+(?!\d)|[;\n]+/u)
       .filter((sentence) => paymentPattern.test(normalized(sentence)))
-      .every((sentence) => paymentCovered(sentence, paysFor, names))
+      .every((sentence) => promiseCovered(sentence, allowed, v2))
   );
 }
 
@@ -283,15 +308,13 @@ function codeReasons(packet: OutgoingPacket, allowed: GateAllowance) {
   const amount = packet.proposal?.amountRub;
   if (amount !== undefined) findings.add("money");
   const v2 = allowed.v2Allowed;
-  const names = [allowed.self.name, allowed.peer.name];
   if (
     v2 &&
     findings.has("money") &&
     (amount === undefined || v2.amountsRub.includes(amount)) &&
     found.every(
       (each) =>
-        !each.findings.has("money") ||
-        promiseAllowed(each.text, v2.paysFor, names)
+        !each.findings.has("money") || promiseAllowed(each.text, allowed, v2)
     )
   )
     findings.delete("money");
@@ -480,8 +503,10 @@ function disclosed(
   facts: z.output<typeof disclosureSchema>["facts"],
   allowed: Pick<
     GateAllowance,
-    "peer" | "role" | "self" | "shareNotes" | "v2Allowed"
-  >
+    "goal" | "peer" | "role" | "self" | "shareNotes" | "v2Allowed"
+  >,
+  /** The packet's own words, which a promise quoted without whose it is is read in. */
+  texts: readonly string[]
 ) {
   const names = [allowed.self.name, allowed.peer.name];
   const v2 = allowed.v2Allowed;
@@ -513,10 +538,17 @@ function disclosed(
           )
           ? []
           : held;
-      if (category === "payment")
-        return noMoney(text) && paymentCovered(text, v2.paysFor, names)
+      if (category === "payment") {
+        const readings = promiseReadings(text, texts, names);
+        return noMoney(text) &&
+          readings.length > 0 &&
+          readings.every(
+            (reading) =>
+              noMoney(reading) && promiseCovered(reading, allowed, v2)
+          )
           ? []
           : held;
+      }
     }
     const allowedBy =
       source !== null &&
@@ -661,7 +693,17 @@ export async function screenOutgoing(
   const disclosure = disclosureSchema.safeParse(answer);
   if (!disclosure.success)
     return { reasons: [{ by: "unchecked" }], verdict: "hold" };
-  const held = disclosed(disclosure.data.facts, input.allowed);
+  const { packet } = input;
+  const held = disclosed(
+    disclosure.data.facts,
+    input.allowed,
+    [
+      packet.body,
+      packet.proposal?.summary,
+      packet.proposal?.place,
+      ...(packet.proposal?.items ?? []),
+    ].filter((text) => text !== undefined)
+  );
   if (held.length === 0) return { verdict: "pass" };
   return {
     reasons: held.map((text) => ({ by: "model" as const, text })),

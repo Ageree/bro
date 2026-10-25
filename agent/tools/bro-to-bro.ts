@@ -16,6 +16,7 @@ import {
   namedTime,
   ownerText,
   paymentsSaid,
+  peerPaysSaid,
 } from "@agent/lib/bro-to-bro/owner-words";
 import { broReportCaller } from "@agent/lib/bro-to-bro/report-caller";
 import {
@@ -849,6 +850,7 @@ function ownerNamed(
       namedSums(text).includes(input.amountRub),
     items: input.items !== undefined && namedItems(text, input.items, names),
     paysFor: paymentsSaid(text),
+    peerPays: peerPaysSaid(text),
     place: input.place !== undefined && namedPlace(text, input.place),
     time:
       (time.at !== null || input.window !== undefined) &&
@@ -1049,6 +1051,7 @@ async function runTalk(turn: BroTurn, input: TalkInput, context: ToolContext) {
             namedSums(said).includes(sum)
           ),
           paysFor: paymentsSaid(said),
+          peerPays: peerPaysSaid(said),
         }
       : {};
     const told = (

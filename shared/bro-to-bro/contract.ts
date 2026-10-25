@@ -101,8 +101,10 @@ export const broMandateSchema = z.object({
       time: z.boolean(),
       place: z.boolean(),
       amount: z.boolean(),
-      /** What the owner said they pay for, each as their words after the verb ("" — nothing after it). */
+      /** What the owner said they pay for: each part of their words with their word of paying («скинемся маме на подарок»). */
       paysFor: z.array(z.string().trim().max(200)).max(10),
+      /** What the owner said someone else pays for («а купит пусть Савелий»). */
+      peerPays: z.array(z.string().trim().max(200)).max(10).optional(),
       /** Every point of `items` is in the owner's words. */
       items: z.boolean().optional(),
       /**

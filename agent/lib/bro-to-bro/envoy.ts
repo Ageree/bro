@@ -10,8 +10,8 @@ import { askBroModel } from "@agent/lib/bro-to-bro/model";
 import type { BroProposal } from "@shared/bro-to-bro/contract";
 import {
   moneyWords,
-  namedSums,
   ownerText,
+  sumsIn,
 } from "@agent/lib/bro-to-bro/owner-words";
 import { ownerTimeCovers, samePlace } from "@shared/bro-to-bro/owner-set";
 import type { BroEnvoyPackage } from "@db";
@@ -358,7 +358,7 @@ function ownerSetProblems(brief: EnvoyBrief, decision: EnvoyDecision) {
     [decision.message, proposal?.summary, ...(proposal?.items ?? [])].some(
       (text) => {
         const words = ownerText([text ?? ""]);
-        return namedSums(words).length > 0 || moneyWords.test(words);
+        return sumsIn(words).length > 0 || moneyWords.test(words);
       }
     )
   )

@@ -258,6 +258,10 @@ function gateAllowanceV2(
       ...(mandate?.ownerSaid?.paysFor ?? []),
       ...view.own.ownerAnswers.flatMap((answer) => answer.paysFor ?? []),
     ],
+    peerPays: [
+      ...(mandate?.ownerSaid?.peerPays ?? []),
+      ...view.own.ownerAnswers.flatMap((answer) => answer.peerPays ?? []),
+    ],
     venues: [
       ...(ownerSet?.place ? [ownerSet.place] : []),
       ...(accepted === undefined ? [] : [accepted]),

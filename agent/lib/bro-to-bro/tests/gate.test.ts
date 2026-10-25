@@ -301,6 +301,7 @@ describe("screenOutgoing, the second version's", () => {
       to: "2026-10-31T21:00:00+03:00",
     },
     paysFor: [],
+    peerPays: [],
     venues: ["Пушкин"],
   };
   const owned: GateAllowance = {
@@ -439,6 +440,45 @@ describe("screenOutgoing, the second version's", () => {
       expect(each).toBe("hold");
     }
     /* oxlint-enable eslint/no-await-in-loop */
+    // The other person's promise goes as the owner's words gave it to them,
+    // and never one that says the owner pays.
+    const peerBuys = {
+      ...owned,
+      goal: "скинемся маме на подарок",
+      v2Allowed: { ...ownedV2, peerPays: ["купит пусть пётр"] },
+    };
+    await expect(
+      verdict(
+        { body: "Подарок маме купит Пётр" },
+        paymentFacts("Пётр купит подарок маме"),
+        peerBuys
+      )
+    ).resolves.toEqual({ verdict: "pass" });
+    for (const [text, allowance] of [
+      ["Пётр купит подарок маме", owned],
+      ["Пётр, мой владелец купит подарок", peerBuys],
+      ["Савелий купит подарок", peerBuys],
+      ["Пётр купит подарок и машину", peerBuys],
+    ] as const)
+      expect(
+        // oxlint-disable-next-line eslint/no-await-in-loop -- One promise after another.
+        (await verdict({ body: text }, paymentFacts(text), allowance)).verdict
+      ).toBe("hold");
+    // A promise quoted without whose it is is read in the packet's words.
+    await expect(
+      verdict(
+        { body: "Савелий за, а Пётр купит подарок маме." },
+        paymentFacts("купит подарок"),
+        peerBuys
+      )
+    ).resolves.toEqual({ verdict: "pass" });
+    await expect(
+      verdict(
+        { body: "Савелий купит подарок маме." },
+        paymentFacts("купит подарок"),
+        peerBuys
+      )
+    ).resolves.toMatchObject({ verdict: "hold" });
     // The checker quoting a part of the promise frees none of the rest.
     await expect(
       verdict(

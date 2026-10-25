@@ -387,6 +387,7 @@ async function deliver(
           {
             amountsRub: ownerWords.namedSums(ownerWords.ownerText([answer])),
             paysFor: ownerWords.paymentsSaid(ownerWords.ownerText([answer])),
+            peerPays: ownerWords.peerPaysSaid(ownerWords.ownerText([answer])),
             ...(payload.proposalId !== undefined &&
               /^да[.!]?$/iu.test(answer.trim()) && {
                 yesTo: payload.proposalId,
@@ -735,6 +736,7 @@ function ownWords(said: string, mandate: BroMandate): BroMandate {
           "брат",
         ]),
       paysFor: ownerWords.paymentsSaid(text),
+      peerPays: ownerWords.peerPaysSaid(text),
       place:
         place !== undefined &&
         place !== null &&
