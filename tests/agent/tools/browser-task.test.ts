@@ -71,6 +71,7 @@ import {
   type VaultCreateItem,
 } from "@shared/vault/schema";
 import type * as browserUseHost from "@agent/lib/browser-use/host";
+import type * as browserUseMakeWay from "@agent/lib/browser-use/make-way";
 
 /**
  * What the direct-purchase judge (`agent/lib/payments/direct.ts`) answers,
@@ -606,6 +607,21 @@ const siteHostMissing = vi.hoisted(() =>
 vi.mock("@agent/lib/browser-use/host", async (importOriginal) => ({
   ...(await importOriginal<typeof browserUseHost>()),
   siteHostMissing,
+}));
+// Whether a person's errand takes the browser from a follow-up Bro carries on
+// by itself is `make-way.ts`'s: here, what the tool does with its answer.
+const makeWayForPerson = vi.hoisted(() =>
+  vi.fn<(scope: AccessScope, profileId: string) => Promise<string | undefined>>(
+    () => Promise.resolve(undefined)
+  )
+);
+const waitBehindPerson = vi.hoisted(() =>
+  vi.fn<(runId: string) => Promise<void>>(() => Promise.resolve())
+);
+vi.mock("@agent/lib/browser-use/make-way", async (importOriginal) => ({
+  ...(await importOriginal<typeof browserUseMakeWay>()),
+  makeWayForPerson,
+  waitBehindPerson,
 }));
 // The owner's alert state lives in the database; what the tool does about a
 // 402 is what these tests read.
@@ -3708,6 +3724,16 @@ describe("browser_task approval", () => {
   });
 });
 
+/** The person's own browser, busy with another errand of theirs. */
+function vmBusy() {
+  return new BrowserUseError(
+    429,
+    "browser-vm",
+    "The browser is busy with another errand.",
+    60_000
+  );
+}
+
 function busy() {
   return new BrowserUseError(
     429,
@@ -4499,6 +4525,65 @@ describe("browser_task on a workspace's own browser VM", () => {
     usesBrowserVm.mockResolvedValue(true);
     await startErrand("");
     expect(createBrowserUseRun.mock.calls[0]?.[0].profileId).toBe(vmProfile(1));
+  });
+
+  it("takes the browser from a follow-up Bro carries on by itself for the person's new errand", async () => {
+    usesBrowserVm.mockResolvedValue(true);
+    readBrowserProfileId.mockResolvedValue(vmProfile(1));
+    readBrowserVm.mockResolvedValue({ state: "ready", vmId: "vm-1" });
+    makeWayForPerson.mockResolvedValueOnce("queued:follow-up");
+    createBrowserUseRun.mockRejectedValueOnce(vmBusy());
+
+    const started = await startVmErrand();
+
+    expect(makeWayForPerson).toHaveBeenCalledExactlyOnceWith(
+      accessScopeForUser("better-auth:alice"),
+      vmProfile(1)
+    );
+    expect(createBrowserUseRun).toHaveBeenCalledTimes(2);
+    expect(started).not.toMatchObject({ status: "queued" });
+    expect(waitBehindPerson).not.toHaveBeenCalled();
+
+    // The browser did not free in time: the person's errand queues, and the
+    // follow-up that made way waits behind it.
+    vi.useFakeTimers();
+    makeWayForPerson.mockResolvedValueOnce("queued:follow-up");
+    createBrowserUseRun.mockRejectedValue(vmBusy());
+    const queued = startVmErrand();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(await queued).toMatchObject({ status: "queued" });
+    expect(waitBehindPerson).toHaveBeenCalledExactlyOnceWith(
+      "queued:follow-up"
+    );
+    vi.useRealTimers();
+  });
+
+  it("leaves Bro's own follow-up alone for an errand nobody waits for", async () => {
+    usesBrowserVm.mockResolvedValue(true);
+    readBrowserProfileId.mockResolvedValue(vmProfile(1));
+    readBrowserVm.mockResolvedValue({ state: "ready", vmId: "vm-1" });
+    createBrowserUseRun.mockRejectedValueOnce(
+      new BrowserUseError(
+        429,
+        "browser-vm",
+        "The browser is busy with another errand.",
+        60_000
+      )
+    );
+    const { browserTask } = await import("@agent/tools/browser_task");
+
+    const result = await browserTask.execute(
+      {
+        action: "start",
+        personWants: "look",
+        site: "https://www.wildberries.ru",
+        task: "Проверь цену на корм",
+      },
+      toolContext("better-auth:alice", "scheduled-worker")
+    );
+
+    expect(result).toMatchObject({ status: "queued" });
+    expect(makeWayForPerson).not.toHaveBeenCalled();
   });
 
   async function startVmErrand() {

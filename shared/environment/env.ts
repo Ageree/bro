@@ -374,6 +374,11 @@ export const env = createEnv({
     // the report does not wait for the next look. Bro's own look at the
     // runs goes on as the fallback. Unset, nobody.
     BROWSER_FAST_DELIVERY_WORKSPACES: workspaceListSchema.optional(),
+    // Workspace ids or `*` whose new errand, given by the person, takes the
+    // browser from an errand Bro carries on by itself (a report turn's
+    // follow-up gathering more): that one stops and waits behind it
+    // (`agent/lib/browser-use/make-way.ts`). Unset, nobody.
+    BROWSER_MAKE_WAY_WORKSPACES: workspaceListSchema.optional(),
     // Workspace ids or `*` whose errands on a site Bro has a note about get
     // the note in their task: how the site writes the address of its results
     // (`agent/lib/browser-use/site-notes.ts`). Unset, nobody.
