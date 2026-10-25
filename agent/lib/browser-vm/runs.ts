@@ -1003,6 +1003,7 @@ function logRunTrace(run: WorkerRun) {
           ? null
           : (URL.parse(step.url)?.hostname ?? null),
       seconds,
+      timing: step.timing ?? undefined,
       tokens: step.tokens ?? undefined,
     };
   });
