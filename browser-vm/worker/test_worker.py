@@ -569,6 +569,8 @@ class FakePage:
         pass
 
     async def evaluate(self, expression, arg=None):
+        if expression.startswith("() => [document.title"):  # code_wall's one look at the page
+            return [await self.title(), self.text]
         if expression == worker.CODE_CARDS_JS:
             return [{"text": f"Чайник {n} — {1000 + n} ₽ " + "х" * 900, "links": [f"https://shop.test/{n}"], "image": None}
                     for n in range(arg)]
