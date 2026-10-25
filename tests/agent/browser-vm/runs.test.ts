@@ -1128,6 +1128,51 @@ describe("reading a VM run", () => {
     });
   });
 
+  it("logs where a settled run's time went, with no page path or goal", async () => {
+    const client = await loadClient();
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    worker.readBrowserVmWorkerRun.mockResolvedValue(
+      workerRun({
+        finishedAt: "2026-09-28T11:51:00Z",
+        status: "completed",
+        stepCount: 2,
+        steps: [
+          {
+            actions: [{ action: "navigate" }],
+            at: "2026-09-28T11:50:05Z",
+            goal: "find Anna's parcel",
+            tokens: { cached: 0, in: 9000, out: 120 },
+            url: "https://www.pochta.ru/tracking/80080012345678",
+          },
+          {
+            actions: [{ action: "extract" }, { action: "done" }],
+            at: "2026-09-28T11:50:12.5Z",
+          },
+        ],
+      })
+    );
+
+    await client.readBrowserUseRun(runId);
+
+    const line = info.mock.calls.find(
+      ([label]) => label === "[browser-vm] run trace"
+    )?.[1];
+    expect(JSON.parse(String(line))).toMatchObject({
+      runId,
+      steps: 2,
+      trace: [
+        {
+          actions: ["navigate"],
+          host: "www.pochta.ru",
+          seconds: 3,
+          tokens: { in: 9000, out: 120 },
+        },
+        { actions: ["extract", "done"], host: null, seconds: 7.5 },
+      ],
+    });
+    expect(String(line)).not.toMatch(/tracking|Anna/u);
+  });
+
   it("records nothing for a run still going, and never fails a read on the accounting", async () => {
     const client = await loadClient();
     vi.spyOn(console, "warn").mockImplementation(() => undefined);

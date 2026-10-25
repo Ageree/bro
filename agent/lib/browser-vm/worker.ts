@@ -110,6 +110,19 @@ const stepSchema = z.object({
   goal: z.string().nullish(),
   number: z.number().nullish(),
   title: z.string().nullish(),
+  /**
+   * The model's tokens since the step before (`step_tokens` in the worker).
+   * Absent from a worker that does not count them; a malformed count is
+   * dropped, not the step.
+   */
+  tokens: z
+    .object({
+      cached: z.number().nonnegative(),
+      in: z.number().nonnegative(),
+      out: z.number().nonnegative(),
+    })
+    .nullish()
+    .catch(null),
   url: z.string().nullish(),
 });
 

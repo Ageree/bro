@@ -131,7 +131,7 @@ export async function recordBrowserVmRunCosts(
  * sandbox restored from its snapshot sets its clock again) is not counted.
  * Read by nothing in Bro: a field the worker left out is only left out here.
  */
-function runTiming(run: WorkerRun) {
+export function runTiming(run: WorkerRun) {
   const stepEnds = run.steps
     .map((step) => Date.parse(step.at ?? ""))
     .filter(Number.isFinite);
