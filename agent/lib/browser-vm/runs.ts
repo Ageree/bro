@@ -332,7 +332,9 @@ export async function createBrowserVmRun(input: {
   const task = `${input.task}\n\n${addressWallLine}`;
   const [fast, engine] = await Promise.all([
     fastBrowserPilot({ workspaceId }),
-    errandEngine({ workspaceId }, input.search),
+    // A retry past an anti-bot wall goes on browser-use, which solves captchas;
+    // the code engine has no solve_captcha and would stop at the same wall.
+    errandEngine({ workspaceId }, input.search && input.freshExit !== true),
   ]);
   const browser = errandBrowser({ workspaceId });
   // Recorded before the worker is asked: a start whose answer is lost still

@@ -731,29 +731,37 @@ describe("starting a run on a workspace's browser VM", () => {
         status: "queued",
       })
     );
-    const engines = async (pilot: string, search: boolean) => {
+    const pilot = async (workspaces: string) => {
       vi.resetModules();
-      worker.startBrowserVmWorkerRun.mockClear();
       const client = await importWithSettings(
-        { ...browserVmTestEnvironment, BROWSER_CODE_ENGINE_WORKSPACES: pilot },
+        {
+          ...browserVmTestEnvironment,
+          BROWSER_CODE_ENGINE_WORKSPACES: workspaces,
+        },
         async () => import("@agent/lib/browser-use/client")
       );
-      await client.createBrowserUseRun({
-        profileId,
-        search,
-        task: composedTask,
-      });
-      return worker.startBrowserVmWorkerRun.mock.calls.map(
-        ([, input]) => input.engine
-      );
+      return async (search: boolean, freshExit = false) => {
+        worker.startBrowserVmWorkerRun.mockClear();
+        await client.createBrowserUseRun({
+          freshExit,
+          profileId,
+          search,
+          task: composedTask,
+        });
+        return worker.startBrowserVmWorkerRun.mock.calls.map(
+          ([, input]) => input.engine
+        );
+      };
     };
 
-    expect(await engines(workspaceId, true)).toEqual(["code"]);
-    expect(await engines("*", true)).toEqual(["code"]);
+    const listed = await pilot(workspaceId);
+    expect(await listed(true)).toEqual(["code"]);
     // An errand that signs in, stages or pays is not a search: browser-use.
-    expect(await engines(workspaceId, false)).toEqual([undefined]);
-    expect(await engines("personal:another", true)).toEqual([undefined]);
-    expect(await engines("", true)).toEqual([undefined]);
+    expect(await listed(false)).toEqual([undefined]);
+    // A retry past an anti-bot wall: browser-use, which solves the captcha.
+    expect(await listed(true, true)).toEqual([undefined]);
+    expect(await (await pilot("*"))(true)).toEqual(["code"]);
+    expect(await (await pilot("personal:another"))(true)).toEqual([undefined]);
   });
 
   it("gives the worker the 2Captcha key only when the deployment has one", async () => {
