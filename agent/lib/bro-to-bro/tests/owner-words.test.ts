@@ -379,6 +379,17 @@ describe("paymentsSaid", () => {
     expect(promisesIn(["Кому надо заплачу"], names)).toEqual([
       "Кому надо заплачу",
     ]);
+    // Whose part it is says no statement of its own unless it only agrees.
+    expect(
+      promisesIn(["Савелий оплатит торт, а он ещё и автомобиль."], names)
+    ).toEqual(["Савелий оплатит торт а он ещё и автомобиль"]);
+    // A question answered right there is a promise of whom it names.
+    expect(promisesIn(["Кто оплатит автомобиль? Савелий."], names)).toEqual([
+      "савелий оплатит автомобиль",
+    ]);
+    expect(
+      promisesIn(["Кто оплатит автомобиль, если не Савелий?"], names)
+    ).toEqual(["савелий оплатит автомобиль"]);
   });
 
   it("hears what the owner says the other person pays for", () => {

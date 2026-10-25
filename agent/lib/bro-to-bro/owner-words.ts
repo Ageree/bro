@@ -778,8 +778,8 @@ const takesOn =
 
 /**
  * Whether a part of a text promises to pay: a word of paying as a verb
- * (@BT@payVerb@BT@), one of @BT@paymentPattern@BT@'s, «берёт на себя», or whose a cost is
- * without a verb («за ним», «на Савелии», «за Петром» of one of @BT@people@BT@).
+ * (`payVerb`), one of `paymentPattern`'s, «берёт на себя», or whose a cost is
+ * without a verb («за ним», «на Савелии», «за Петром» of one of `people`).
  */
 function promising(part: string, people: readonly string[] = []) {
   const words = comparableWords(part);
@@ -1094,7 +1094,7 @@ const whoWord = /^(?:кто|кого|кому|кем)$/u;
 
 /**
  * The promises to pay a text makes, as code reads them whoever retells
- * them: each part of a sentence with a word of paying (@BT@promising@BT@), and with
+ * them: each part of a sentence with a word of paying (`promising`), and with
  * it every part beside it that names neither person as one who pays —
  * «машину и билеты» of «Савелий оплатит торт, машину и билеты»,
  * «автомобиль для Петра», «а шубу — тоже он», «машину» of «Машину, торт
@@ -1103,28 +1103,47 @@ const whoWord = /^(?:кто|кого|кому|кем)$/u;
  * the next one is. A part with one of them as its subject that pays nothing
  * («Пётр за») is a statement of its own, and so is a question of who pays
  * that names nobody as paying: one that starts with «кто» or «кому», or asks
- * it in a sentence that asks («кто из вас купит?»). @BT@unread@BT@: a sentence
+ * it in a sentence that asks («кто из вас купит?»). `unread`: a sentence
  * with a word of paying in which code read no promise and no such question.
  */
+/**
+ * What says only that one of them agrees, or brings in what follows: «за»,
+ * «согласен», «не против», «в деле», «предлагает» (, чтобы…).
+ */
+const agreeing =
+  /^(?:за|согласен|согласна|согласны|не против|в деле|тоже|тоже за|рад|рада|готов|готова|подтвердит|предлагает|предлагаю|хочет|просит|считает|думает)$/u;
+
+/** A question of who pays without its «кто» and «из вас»: what it asks to be paid for. */
+function askedFor(question: string) {
+  return comparableWords(question)
+    .filter((word) => !whoWord.test(word))
+    .join(" ")
+    .replaceAll(/(?<!\p{L})из\s+(?:вас|нас|них)(?!\p{L})/gu, " ")
+    .trim();
+}
+
 function readPromises(text: string, names: readonly string[]) {
   const people = names.flatMap((name) => comparableWords(name));
   const isName = (word: string) => people.some((name) => nameForm(word, name));
-  // Who a part is of: a name as it is or «я», «ты», «он» — not after a
-  // preposition, whose name it is that a promise is for («для Николь»).
   const subjectWord = (word: string) =>
     people.includes(word) || /^(?:ты|вы|я|мы|он|она|они)$/u.test(word);
-  const subjectIn = (words: readonly string[]) =>
-    words.some(
+  // Whom words name as the one who acts: a name as it is or «я», «ты», «он»
+  // — not after a preposition, whose name it is a promise is for («для
+  // Николь»).
+  const subjectsIn = (words: readonly string[]) =>
+    words.filter(
       (word, index) =>
         !preposition.test(words[index - 1] ?? "") && subjectWord(word)
     );
-  // A statement of its own starts with whose it is («Пётр за», «а он
-  // против»); one with a name further on may be whom a promise is for
-  // («автомобиль для моей подруги Николь»), and stays with the promise.
-  const statement = (words: readonly string[]) =>
-    subjectWord(
-      words.find((word) => !/^(?:а|и|но|да|ну|тогда|так)$/u.test(word)) ?? ""
+  // A part that says only that one of them agrees: «Пётр за», «а он не
+  // против». Any other part with whose it is goes with the promise next to
+  // that part: «а он ещё и автомобиль» is the same promise.
+  const agrees = (words: readonly string[]) => {
+    const rest = words.filter(
+      (word) => !/^(?:а|и|но|да|ну|тогда|так)$/u.test(word)
     );
+    return subjectWord(rest[0] ?? "") && agreeing.test(rest.slice(1).join(" "));
+  };
   const promises: string[][] = [];
   const questions: string[] = [];
   let unread = false;
@@ -1145,7 +1164,9 @@ function readPromises(text: string, names: readonly string[]) {
       continue;
     }
     const read = promises.length;
-    let asked = false;
+    let asking = false;
+    const asked: string[] = [];
+    const besides: string[] = [];
     // What comes before a colon introduces what follows: «предлагаю так:».
     for (const segment of sentence.split(":")) {
       let before: string[] = [];
@@ -1154,24 +1175,47 @@ function readPromises(text: string, names: readonly string[]) {
         // A question of who pays names nobody as paying, and its verb is no
         // promise of the owner's own («кому надо заплачу» is one).
         if (
-          !subjectIn(own) &&
+          subjectsIn(own).length === 0 &&
           !paysPattern.test(own.join(" ")) &&
           (whoWord.test(own[0] ?? "") ||
             (asks && own.some((word) => whoWord.test(word))))
         ) {
-          asked = true;
+          asking = true;
           before = [];
-          if (promising(part, people)) questions.push(part);
-        } else if (promising(part, people)) {
+          if (promising(part, people)) asked.push(part);
+          continue;
+        }
+        if (!agrees(own)) besides.push(...own);
+        if (promising(part, people)) {
           promises.push([...before, part]);
           before = [];
-        } else if (statement(own))
-          before = own.every((word) => isName(word)) ? [part] : [];
+        } else if (agrees(own)) before = [];
+        else if (own.length > 0 && own.every((word) => isName(word)))
+          before = [part];
         else if (promises.length > 0) promises.at(-1)?.push(part);
         else before.push(part);
       }
     }
-    if (promises.length === read && !asked && promising(sentence, people))
+    if (asked.length > 0) {
+      // Whom the question is of, when the sentence or the short one after
+      // it names them: «…, если не Савелий?», «Кто оплатит? Савелий.».
+      let payers = subjectsIn(besides);
+      const next = comparableWords(pieces[index + 2] ?? "");
+      if (
+        payers.length === 0 &&
+        next.length > 0 &&
+        next.length <= 3 &&
+        next.every((word) => subjectWord(word) || /^(?:и|или)$/u.test(word))
+      ) {
+        payers = next.filter((word) => subjectWord(word));
+        index += 2;
+      }
+      for (const part of asked)
+        if (payers.length > 0)
+          promises.push([[...payers, askedFor(part)].join(" ")]);
+        else questions.push(part);
+    }
+    if (promises.length === read && !asking && promising(sentence, people))
       unread = true;
   }
   return {
@@ -1181,7 +1225,7 @@ function readPromises(text: string, names: readonly string[]) {
   };
 }
 
-/** The promises to pay texts make, as code reads them (@BT@readPromises@BT@). */
+/** The promises to pay texts make, as code reads them (`readPromises`). */
 export function promisesIn(texts: readonly string[], names: readonly string[]) {
   return texts.flatMap((text) => readPromises(text, names).promises);
 }
@@ -1196,16 +1240,11 @@ export function paymentQuestions(
   names: readonly string[]
 ) {
   return texts.flatMap((text) =>
-    readPromises(text, names).questions.map((question) =>
-      comparableWords(question)
-        .filter((word) => !whoWord.test(word))
-        .join(" ")
-        .replaceAll(/(?<!\p{L})из\s+(?:вас|нас|них)(?!\p{L})/gu, " ")
-    )
+    readPromises(text, names).questions.map((question) => askedFor(question))
   );
 }
 
-/** Whether a text has a word of paying code reads no promise in (@BT@readPromises@BT@): then it is held. */
+/** Whether a text has a word of paying code reads no promise in (`readPromises`): then it is held. */
 export function paymentsUnread(
   texts: readonly string[],
   names: readonly string[]

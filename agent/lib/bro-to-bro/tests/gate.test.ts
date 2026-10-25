@@ -495,6 +495,20 @@ describe("screenOutgoing, the second version's", () => {
         peerBuys
       )
     ).resolves.toMatchObject({ verdict: "hold" });
+    // Whom an answered question names pays: the owner's money needs their
+    // words, whatever the other one may pay for.
+    const peerCar = {
+      ...owned,
+      v2Allowed: { ...ownedV2, peerPays: ["пусть пётр купит автомобиль"] },
+    };
+    for (const body of [
+      "Кто оплатит автомобиль? Савелий.",
+      "Кто оплатит автомобиль, если не Савелий?",
+    ])
+      expect(
+        // oxlint-disable-next-line eslint/no-await-in-loop -- One packet after another.
+        (await verdict({ body }, [], peerCar)).verdict
+      ).toBe("hold");
     await expect(
       verdict(
         { body: "Савелий оплатит ПК" },
