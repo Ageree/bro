@@ -383,6 +383,12 @@ export const env = createEnv({
     // options a run reported; a code-engine errand on such a site gets them
     // as `op()` (`agent/lib/browser-use/site-ops/`). Unset, nobody.
     BROWSER_SITE_OPS_WORKSPACES: workspaceListSchema.optional(),
+    // Workspace ids or `*` whose search on a site with a known operation is
+    // answered from the site's own data with no browser errand: a small
+    // model call fills the results page, the worker reads it
+    // (`agent/lib/browser-vm/site-ops/direct.ts`). Needs the operations
+    // (BROWSER_SITE_OPS_WORKSPACES). Unset, nobody.
+    BROWSER_SITE_API_WORKSPACES: workspaceListSchema.optional(),
     // Who may get the sign-in link, where the person signs in to a site
     // themselves in a live view of their own cloud browser
     // (`agent/lib/login-handoff/`, docs/login-handoff.md). Unset or empty,

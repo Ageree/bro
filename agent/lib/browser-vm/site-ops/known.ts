@@ -10,7 +10,10 @@ import type { SiteOperation } from "./operation";
  * hh.ru's search page carries its 50 vacancies in the state of its
  * document; ostrovok.ru's results page asks its serp for the hotels, and
  * the answer holds every available hotel of the city on its map (2 676 in
- * Kazan, each with its price for the whole stay and its rating).
+ * Kazan, each with its price for the whole stay and its rating). The page
+ * builds its serp from its own filters (`type_group=hotel`,
+ * `reviews_rating=8`, as the site's note has them): with the rating one,
+ * Sochi's 2 955 hotels were 1 258 on the stand (25.10).
  */
 export const knownSiteOperations: readonly SiteOperation[] = [
   {
@@ -44,7 +47,7 @@ export const knownSiteOperations: readonly SiteOperation[] = [
     },
     items: ["map_hotels"],
     name: "ostrovok.ru/hotel/%word%/%word%/",
-    page: "https://ostrovok.ru/hotel/%word%/%word%/?dates=%date%&guests=%number%&sort=%sort%",
+    page: "https://ostrovok.ru/hotel/%word%/%word%/?dates=%date%&guests=%number%&sort=%sort%&type_group=%word%&reviews_rating=%number%",
     seen: { items: 2676, matched: 3, of: 3 },
     source: {
       kind: "xhr",

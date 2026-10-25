@@ -21,6 +21,7 @@ import type * as browserUseSecrets from "@agent/lib/browser-use/secrets";
 import type * as browserUseCredits from "@agent/lib/browser-use/credits";
 import type * as browserPoolHosts from "@agent/lib/browser-pool/hosts";
 import type * as browserVmBackend from "@agent/lib/browser-vm/backend";
+import type * as siteDirect from "@agent/lib/browser-vm/site-ops/direct";
 import type * as browserRunsService from "@db/services/browser-runs";
 import type * as browserVmsService from "@db/services/browser-vms";
 import type { listCurrentRules } from "@db/services/memory/records";
@@ -626,6 +627,17 @@ vi.mock("@db/services/browser-vms", async (importOriginal) => ({
   readBrowserVm,
 }));
 vi.mock("@agent/lib/browser-vm/idle", () => ({ keepBrowserVmForErrand }));
+const siteApi = vi.hoisted(() => ({
+  readSiteDirectly: vi.fn<typeof siteDirect.readSiteDirectly>(() =>
+    Promise.resolve(undefined)
+  ),
+  siteApiPilot: vi.fn<typeof siteDirect.siteApiPilot>(() => false),
+}));
+vi.mock("@agent/lib/browser-vm/site-ops/direct", async (importOriginal) => ({
+  ...(await importOriginal<typeof siteDirect>()),
+  readSiteDirectly: siteApi.readSiteDirectly,
+  siteApiPilot: siteApi.siteApiPilot,
+}));
 vi.mock("@agent/lib/browser-pool/hosts", async (importOriginal) => ({
   ...(await importOriginal<typeof browserPoolHosts>()),
   browserPoolWait,
@@ -3955,6 +3967,73 @@ describe("browser_task on a workspace's own browser VM", () => {
     expect(keepBrowserVmForErrand.mock.invocationCallOrder[0]).toBeLessThan(
       createBrowserUseRun.mock.invocationCallOrder[0] ?? 0
     );
+  });
+
+  it("answers a search on a site it has read before from the site's own data, with no errand", async () => {
+    usesBrowserVm.mockResolvedValue(true);
+    vi.resetModules();
+    vi.stubEnv("BROWSER_SITE_OPS_WORKSPACES", "*");
+    siteApi.siteApiPilot.mockReturnValue(true);
+    const vacancy = {
+      link: "https://hh.ru/vacancy/138625702",
+      more: { "company.visibleName": "Unagrande Company" },
+      name: "Продакт-менеджер",
+      price: 300000,
+    };
+    siteApi.readSiteDirectly.mockResolvedValue({
+      cards: [vacancy],
+      count: 50,
+      url: "https://hh.ru/search/vacancy?text=продакт-менеджер&area=1",
+    });
+    try {
+      const asked = "Найди вакансии продакт-менеджера в Москве";
+      const browserTask = await resolvedBrowserTask([], asked);
+      const found = await browserTask.execute(
+        {
+          action: "start",
+          personWants: "look",
+          site: "https://hh.ru",
+          task: asked,
+        },
+        toolContext("better-auth:alice")
+      );
+      expect(found).toMatchObject({ results: [vacancy], status: "found" });
+      expect(JSON.stringify(found)).toContain("call browser_task start again");
+      expect(siteApi.readSiteDirectly).toHaveBeenCalledWith(
+        accessScopeForUser("better-auth:alice"),
+        expect.objectContaining({
+          sessionId: "session-1",
+          site: "https://hh.ru",
+        })
+      );
+      expect(createBrowserUseRun).not.toHaveBeenCalled();
+      expect(createBrowserRun).not.toHaveBeenCalled();
+      // An errand to be done, not only found, goes to the browser as before.
+      siteApi.readSiteDirectly.mockClear();
+      createBrowserUseRun.mockResolvedValue({
+        id: runId,
+        model: "hosted-agent",
+        sessionId,
+        status: "running",
+      });
+      const done = "Откликнись на вакансию продакт-менеджера";
+      const started = await (
+        await resolvedBrowserTask([], done)
+      ).execute(
+        {
+          action: "start",
+          personWants: "done",
+          site: "https://hh.ru",
+          task: done,
+        },
+        toolContext("better-auth:alice")
+      );
+      expect(started).toMatchObject({ status: "running" });
+      expect(siteApi.readSiteDirectly).not.toHaveBeenCalled();
+    } finally {
+      siteApi.siteApiPilot.mockReturnValue(false);
+      siteApi.readSiteDirectly.mockResolvedValue(undefined);
+    }
   });
 
   it("puts a scheduled errand's VM on the short window of an errand nobody waits for", async () => {

@@ -5,6 +5,8 @@ import {
   type SiteOperation,
   siteOperationOnSite,
   siteOperationSchema,
+  siteReadFit,
+  widenedSiteOperation,
 } from "@agent/lib/browser-vm/site-ops/operation";
 import {
   errandSite,
@@ -175,6 +177,47 @@ describe("a site's operation as Bro keeps it", () => {
         page: "https://ostrovok.ru/hotel/russia/moscow/center/",
       })
     ).toBeUndefined();
+  });
+
+  it("reads an address of another city as a loose fit, never one of another shape or site", () => {
+    expect(
+      siteReadFit(
+        kazan,
+        "https://ostrovok.ru/hotel/russia/kazan/?dates=07.11.2026-09.11.2026&guests=2"
+      )
+    ).toBe("exact");
+    expect(
+      siteReadFit(
+        kazan,
+        "https://ostrovok.ru/hotel/russia/sochi?sort=price.asc"
+      )
+    ).toBe("loose");
+    for (const address of [
+      "https://ostrovok.ru/hotel/russia/sochi/?dates=x&token=1",
+      "https://ostrovok.ru/hotel/russia/",
+      "https://ostrovok.ru/hotel/russia/sochi/mid1/",
+      "https://ostrovok.evil.ru/hotel/russia/sochi/",
+      "http://ostrovok.ru/hotel/russia/sochi/",
+      "https://user:pass@ostrovok.ru/hotel/russia/sochi/",
+      "https://ostrovok.ru/hotel/russia/so%3Cchi/",
+      "not an address",
+    ]) {
+      expect(siteReadFit(kazan, address)).toBeUndefined();
+    }
+  });
+
+  it("widens an operation that read a loose page: its path's other words become placeholders", () => {
+    const wider = widenedSiteOperation(
+      kazan,
+      "https://ostrovok.ru/hotel/russia/sochi/?dates=x"
+    );
+    expect(wider?.name).toBe("ostrovok.ru/hotel/russia/%word%/");
+    expect(wider?.page).toBe(
+      "https://ostrovok.ru/hotel/russia/%word%/?dates=%date%&guests=%number%&sort=%sort%"
+    );
+    expect(
+      siteReadFit(wider ?? kazan, "https://ostrovok.ru/hotel/russia/moscow/")
+    ).toBe("exact");
   });
 
   it("tells the code engine what each operation takes and gives", () => {

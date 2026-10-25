@@ -179,6 +179,46 @@ export type SiteOperation = z.infer<typeof siteOperationSchema>;
  */
 export const foundSiteOperationsSchema = z.array(z.json()).max(10);
 
+/**
+ * Why a read of a site by one of its operations gave no results
+ * (`SiteOpFailure` in browser-vm/worker/worker.py): `blocked` — the site
+ * turned the browser away; `moved` — the page answered from another
+ * address or not at all; `no_data` — the results are no longer where the
+ * operation reads them; `empty` — none for this page; `unanswered` — its
+ * results name none of the words asked (`site_op_answers`); `failed` —
+ * anything else (the network, a timeout).
+ */
+export const siteReadFailures = [
+  "blocked",
+  "moved",
+  "no_data",
+  "empty",
+  "unanswered",
+  "failed",
+] as const;
+
+export type SiteReadFailure = (typeof siteReadFailures)[number];
+
+/**
+ * How a run's op() calls went (`SiteTraffic.op_calls`): `fit` is how its
+ * page fitted the template (`loose` when only literal words of its path
+ * differed). A malformed call is dropped, not the run.
+ */
+export const siteOperationCallsSchema = z
+  .array(
+    z
+      .object({
+        fit: z.enum(["exact", "loose"]),
+        name: z.string().min(1).max(160),
+        ok: z.boolean(),
+        reason: z.enum(siteReadFailures).optional(),
+      })
+      .nullable()
+      .catch(null)
+  )
+  .max(20)
+  .transform((calls) => calls.filter((call) => call !== null));
+
 /** An operation's name: its results page's host and path (`hh.ru/search/vacancy`). */
 function siteOperationName(page: string) {
   return page.replace(/^https:\/\//u, "").split("?")[0] ?? page;
@@ -240,6 +280,110 @@ export function mergeSiteOperations(
   const page = `https://${one.host}${path}${keys.size > 0 ? `?${[...keys].join("&")}` : ""}`;
   return siteOperationSchema.safeParse({
     ...found,
+    name: siteOperationName(page),
+    page,
+  }).data;
+}
+
+// A part of an address's path that a `loose` page may hold where its template
+// has a word (`site_template_fit` in browser-vm/worker/worker.py, SITE_LOOSE_PART).
+const loosePart = /^[\p{L}\p{N}_.-]{1,60}$/u;
+
+/**
+ * How an address fits an operation's results page, as the worker decides it
+ * (`site_template_fit`): `exact` when its host and path are the template's,
+ * a placeholder standing for any one part; `loose` when the only parts that
+ * differ are words the template kept as they were, which one find cannot
+ * tell from the errand's own values (the city of /hotel/russia/kazan/). Its
+ * query may hold only the template's keys. Undefined otherwise.
+ */
+export function siteReadFit(operation: SiteOperation, address: string) {
+  const template = splitAddress(operation.page);
+  const url = URL.parse(address);
+  if (template === undefined || url?.protocol !== "https:") return undefined;
+  if (url.host !== template.host || url.username || url.password) {
+    return undefined;
+  }
+  // A placeholder left as it is (`%word%`) is no page of the site's.
+  if (/%(?:query|number|date|sort|flag|id|word)%/u.test(address)) {
+    return undefined;
+  }
+  const keys = new Set(
+    (template.query ?? "").split("&").map((pair) => pair.split("=")[0])
+  );
+  if ([...url.searchParams.keys()].some((key) => !keys.has(key))) {
+    return undefined;
+  }
+  const wanted = template.path.replace(/\/$/u, "").split("/");
+  const given = url.pathname.replace(/\/$/u, "").split("/");
+  if (wanted.length !== given.length) return undefined;
+  let fit: "exact" | "loose" = "exact";
+  for (const [index, part] of wanted.entries()) {
+    const value = decodeURIComponentSafe(given[index] ?? "");
+    const filled = placeholder.test(part);
+    if (!filled && decodeURIComponentSafe(part) === value) continue;
+    // A placeholder's value is one part of a path all the same: no slash.
+    if (part === "" || value === undefined || !loosePart.test(value)) {
+      return undefined;
+    }
+    if (!filled) fit = "loose";
+  }
+  return fit;
+}
+
+/**
+ * An address with only the query keys its operation's page has: a key the
+ * fill added (auto.ru's `sort` on the stand, 25.10) is left out rather than
+ * the read, since the page is the template's either way.
+ */
+export function withTemplateKeys(operation: SiteOperation, address: string) {
+  const template = splitAddress(operation.page);
+  const url = URL.parse(address);
+  if (template === undefined || url === null) return address;
+  const keys = new Set(
+    (template.query ?? "").split("&").map((pair) => pair.split("=")[0])
+  );
+  url.search = new URLSearchParams(
+    [...url.searchParams].filter(([key]) => keys.has(key))
+  ).toString();
+  return url.href;
+}
+
+function decodeURIComponentSafe(part: string) {
+  try {
+    return decodeURIComponent(part);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * An operation whose page read a `loose` address as broader: each word of
+ * its path the address held otherwise is a placeholder now
+ * (`/toyota/camry/` and `/kia/rio/` are `/%word%/%word%/`), as two finds
+ * would make it (`mergeSiteOperations`). Undefined when the schema refuses it.
+ */
+export function widenedSiteOperation(
+  operation: SiteOperation,
+  address: string
+): SiteOperation | undefined {
+  const template = splitAddress(operation.page);
+  const url = URL.parse(address);
+  if (template === undefined || url === null) return undefined;
+  const given = url.pathname.split("/");
+  const path = template.path
+    .split("/")
+    .map((part, index) =>
+      placeholder.test(part) ||
+      decodeURIComponentSafe(part) ===
+        decodeURIComponentSafe(given[index] ?? "")
+        ? part
+        : "%word%"
+    )
+    .join("/");
+  const page = `https://${template.host}${path}${template.query === undefined ? "" : `?${template.query}`}`;
+  return siteOperationSchema.safeParse({
+    ...operation,
     name: siteOperationName(page),
     page,
   }).data;
