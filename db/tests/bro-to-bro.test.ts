@@ -307,9 +307,12 @@ describe("bro links", () => {
     expect(await reportsOf(bro, petya)).toMatchObject([
       {
         kind: "link_ready",
-        payload: { peerName: "Савелий", linkId: theirs.id },
+        payload: { peerName: "Савелий", linkId: theirs.id, by: "peer" },
       },
     ]);
+    expect(await reportOf(bro, savely, "link_ready")).toMatchObject({
+      by: "self",
+    });
   });
 
   it("lets whoever opened an invite only take the yes to it, until they accept it", async () => {
@@ -1021,6 +1024,38 @@ describe("bro threads", () => {
     expect(await reportOf(bro, petya, "question")).toMatchObject({
       proposal: saturday,
     });
+  });
+
+  it("drops what still asks an owner about a thread once it closes, and names it past the envoy's greeting", async () => {
+    const bro = await network();
+    const { inviterLinkId } = await link(bro, savely, petya);
+    const threadId = await start(bro, savely, inviterLinkId);
+    const [lease] = await claim(bro);
+    if (!lease) throw new Error("The thread is due.");
+    await step(
+      bro,
+      threadId,
+      savely,
+      lease.leaseToken,
+      say("Привет! Бро Савелия на связи. Какой фильм Петя посоветует?")
+    );
+    await step(bro, threadId, petya, lease.leaseToken, {
+      kind: "asked_owner",
+      question: "Какой фильм посоветуешь Савелию?",
+      message: "Уточню и вернусь",
+    });
+    await bro.cancelBroThread(savely, threadId);
+    const reports = await bro.client.query<{ kind: string; status: string }>(
+      "SELECT kind, status FROM bro_reports WHERE thread_id = $1 ORDER BY kind",
+      [threadId]
+    );
+    expect(reports.rows).toEqual([
+      { kind: "cancelled", status: "pending" },
+      { kind: "question", status: "dropped" },
+    ]);
+    expect(
+      (await bro.readBroThreadForSide(threadId, petya.workspaceId))?.topic
+    ).toBe("Какой фильм Петя посоветует?");
   });
 
   it("stalls a thread after twelve envoy messages or three failed steps in a row", async () => {

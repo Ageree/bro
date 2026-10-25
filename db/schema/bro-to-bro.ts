@@ -128,7 +128,7 @@ export interface BroReportPayload {
   readonly text?: string | null;
   /** held: why the gate held the draft. */
   readonly reason?: string;
-  /** declined, cancelled: whose side closed the thread. */
+  /** declined, cancelled: whose side closed the thread; link_ready: who confirmed the link. */
   readonly by?: "self" | "peer";
   /** alert: what the peer's envoy tried to learn in one step. */
   readonly alerts?: readonly {

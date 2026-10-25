@@ -47,9 +47,23 @@ function rejected<const Reason extends string>(reason: Reason) {
   return { kind: "rejected", reason } as const;
 }
 
-/** What both sides see a thread is about: its first message that went out. */
+/**
+ * The greeting an envoy opens a thread with (`agent/lib/bro-to-bro/envoy.ts`):
+ * «Привет! Бро Ани на связи.» says nothing of what the thread is about.
+ */
+const greeting =
+  /^(?:привет|здравствуй(?:те)?)[!,.]?\s+бро\s+[\p{L}'-]+(?:\s+[\p{L}'-]+)?\s+на\s+связи[.!]?\s*/iu;
+
+/**
+ * What both sides see a thread is about: its first message that went out,
+ * the proposal's summary or the words past the envoy's greeting.
+ */
 function topicOf(message: BroEnvoyPackage) {
-  const words = (message.proposal?.summary ?? message.body)
+  const said = message.body.trim();
+  const words = (
+    message.proposal?.summary ??
+    (said.replace(greeting, "") || said)
+  )
     .replaceAll(/\s+/gu, " ")
     .trim();
   return words.length <= topicLength

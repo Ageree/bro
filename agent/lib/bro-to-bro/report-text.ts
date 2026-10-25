@@ -164,17 +164,17 @@ const stories: Record<
       `Ask the owner whether this is the person they invited, telling them how it was accepted${payload.telegramUsername ? " and the Telegram username" : ", and say plainly that, with no Telegram username, they should check with that person directly — in person or by phone — that it was them: whoever got the link could have accepted it under that name"}. ${plainYes} bro_network with action confirm_link and link ${payload.linkId ?? "unknown"}; on their no, bro_network with action remove and the same link.`,
     ];
   },
-  link_ready: ({ who }) => [
-    `The link with ${who}'s Bro is ready: both sides confirmed it.`,
-    "Tell the owner, and suggest a first errand in one line, such as arranging a dinner at the weekend; bro_talk start runs it when they ask. Nothing to answer.",
+  link_ready: ({ payload, who }) => [
+    `The link with ${who}'s Bro is ready: both sides confirmed it${payload.by === "self" ? ", the owner last, themselves" : ""}.`,
+    `${payload.by === "self" ? "If you already told the owner in this conversation that this link is ready, when they confirmed it, reply with only <eve-empty-delivery/>. Otherwise tell" : "Tell"} the owner, and suggest a first errand in one line, such as arranging a dinner at the weekend; bro_talk start runs it when they ask. Nothing to answer.`,
   ],
   question: ({ payload, thread, timeZone, who }) => [
     `While talking with ${who}'s Bro${topic(payload)}, I need the owner's answer to my question: ${quote(payload.text ?? "", 500)}.${payload.proposal ? ` Their Bro's latest proposal is ${proposalWords(payload.proposal, timeZone)}.` : ""}`,
     `Ask the owner this question in your own words${payload.proposal ? ", naming the time as in their Bro's latest proposal, on the owner's clock: my question and their Bro's words may give it on another clock" : ""}. Their answer, in their next message, goes to bro_talk with action answer, thread ${thread} and their words as text.`,
   ],
   held: ({ payload, thread, timeZone, who }) => [
-    `I wanted to tell ${who}'s Bro${topic(payload)} exactly this, but my check held it (${payload.reason ?? "unchecked"}): the text ${quote(payload.text ?? "", 700)}${payload.proposal ? `, with the proposal ${proposalWords(payload.proposal, timeZone)}` : ""}${heldActions.get(payload.action ?? "") ?? ""}. All of it goes together, or none of it.`,
-    `Ask the owner whether you may send exactly this, quoting the text in full${payload.proposal ? " and the proposal with its time and place" : ""}. ${plainYes} bro_talk approve_held with thread ${thread} and draft ${payload.draftId ?? "unknown"}; only this draft id lets it go. If they want other words: bro_talk answer with the thread and what to say instead, and this draft is dropped. If they call the whole errand off: bro_talk cancel.`,
+    `I wanted to tell ${who}'s Bro${topic(payload)} exactly this, but my own check held it on our side before it went out (${payload.reason ?? "unchecked"}), so ${who}'s Bro has not seen it: the text ${quote(payload.text ?? "", 700)}${payload.proposal ? `, with the proposal ${proposalWords(payload.proposal, timeZone)}` : ""}${heldActions.get(payload.action ?? "") ?? ""}. All of it goes together, or none of it.`,
+    `Ask the owner whether you may send exactly this, quoting the text in full${payload.proposal ? " and the proposal with its time and place" : ""}; it is you who waits for their yes, not their Bro. ${plainYes} bro_talk approve_held with thread ${thread} and draft ${payload.draftId ?? "unknown"}; only this draft id lets it go. If they want other words: bro_talk answer with the thread and what to say instead, and this draft is dropped. If they call the whole errand off: bro_talk cancel.`,
   ],
   agreed: ({ payload, thread, timeZone, who }) => [
     `${who}'s Bro and I agreed on ${proposalWords(payload.proposal, timeZone)}. It is preliminary: nothing is final until both owners say yes.`,

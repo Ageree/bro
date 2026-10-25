@@ -1,4 +1,4 @@
-import { and, desc, eq, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import * as z from "zod";
 import type {
   broClosedThreadStatuses,
@@ -9,6 +9,7 @@ import type {
 import type { AccessScope } from "@shared/identity/access-scope";
 import {
   broLinks,
+  broReports,
   broThreadSides,
   broThreads,
   type BroReportPayload,
@@ -75,7 +76,10 @@ export async function lockBroThreadSides(
 
 /**
  * Closes a thread for good: no envoy moves again and nothing waits for an
- * owner, so an unsent draft and an unanswered question go with it.
+ * owner, so an unsent draft and an unanswered question go with it, and so
+ * do the reports that would still ask an owner about them (a question, a
+ * held draft, an agreement to confirm) and have not gone out yet: one
+ * cancelled a minute after it started still asked the other owner.
  */
 export async function closeBroThread(
   transaction: Transaction,
@@ -100,6 +104,16 @@ export async function closeBroThread(
     .update(broThreadSides)
     .set({ waitingOwner: false, pendingQuestion: null, heldMessage: null })
     .where(eq(broThreadSides.threadId, threadId));
+  await transaction
+    .update(broReports)
+    .set({ status: "dropped", lastError: "thread closed" })
+    .where(
+      and(
+        eq(broReports.threadId, threadId),
+        eq(broReports.status, "pending"),
+        inArray(broReports.kind, ["question", "held", "agreed"])
+      )
+    );
 }
 
 /**
