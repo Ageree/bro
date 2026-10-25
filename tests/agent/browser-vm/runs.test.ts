@@ -1154,10 +1154,10 @@ describe("reading a VM run", () => {
 
     await client.readBrowserUseRun(runId);
 
-    const line = info.mock.calls.find(
-      ([label]) => label === "[browser-vm] run trace"
-    )?.[1];
-    expect(JSON.parse(String(line))).toMatchObject({
+    const line = String(
+      info.mock.calls.find(([label]) => label === "[browser-vm] run trace")?.[1]
+    );
+    expect(JSON.parse(line)).toMatchObject({
       runId,
       steps: 2,
       trace: [
@@ -1170,7 +1170,7 @@ describe("reading a VM run", () => {
         { actions: ["extract", "done"], host: null, seconds: 7.5 },
       ],
     });
-    expect(String(line)).not.toMatch(/tracking|Anna/u);
+    expect(line).not.toMatch(/tracking|Anna/u);
   });
 
   it("records nothing for a run still going, and never fails a read on the accounting", async () => {
