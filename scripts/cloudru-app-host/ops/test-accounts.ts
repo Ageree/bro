@@ -52,6 +52,12 @@ const testAccounts = [
     name: "Тест Вика",
     timeZone: "Europe/Moscow",
   },
+  {
+    firstName: "Гоша",
+    key: "gosha",
+    name: "Тест Гоша",
+    timeZone: "Europe/Moscow",
+  },
 ] as const;
 
 async function ensureAccount(account: (typeof testAccounts)[number]) {

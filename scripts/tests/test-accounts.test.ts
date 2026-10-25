@@ -91,6 +91,7 @@ describe("production's test accounts", () => {
       "anya",
       "boris",
       "vika",
+      "gosha",
     ]);
     for (const { link } of links)
       expect(new URL(link).pathname).toBe("/api/auth/telegram-login/open");
@@ -104,7 +105,7 @@ describe("production's test accounts", () => {
       printedSchema
         .parse(JSON.parse(second.printed))
         .accounts.map((account) => account.created)
-    ).toEqual([false, false, false]);
+    ).toEqual([false, false, false, false]);
 
     const accounts = await client.query<{
       email: string;
@@ -137,6 +138,12 @@ describe("production's test accounts", () => {
       {
         email: "bro-test-boris@telegram.local-vault.invalid",
         first_name: "Борис",
+        phone: null,
+        timezone: "Europe/Moscow",
+      },
+      {
+        email: "bro-test-gosha@telegram.local-vault.invalid",
+        first_name: "Гоша",
         phone: null,
         timezone: "Europe/Moscow",
       },

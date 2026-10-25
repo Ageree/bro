@@ -480,7 +480,7 @@ postgres:17-alpine`, Docker в облачной сессии есть; Google �
   `scripts/bench/latency.ts --cookie-file`. Правила выше в силе: поручения — только чтение,
   без брони и оплаты, тестовые следы убрать. Руками: ссылку с кнопки бота — в stdin
   `pnpm bench link`.
-- Тестовые аккаунты прода (25.10, Бро ↔ Бро): «Тест Аня» (Екатеринбург), «Тест Борис», «Тест Вика» — только
+- Тестовые аккаунты прода (25.10, Бро ↔ Бро): «Тест Аня» (Екатеринбург), «Тест Борис», «Тест Вика», «Тест Гоша» — только
   веб, без мессенджера и номера. Вход — `python3 scripts/cloudru-app-host/test-accounts.py bro-app-sel-2`
   (env как у `owner-login.py`), cookie каждого — `~/.bro-bench/test-accounts/<имя>.txt`. Что о них в базе —
   `test-accounts.py bro-app-sel-2 --state [--since ISO]`: через S3, журнал задачи deployd режет строку до 1000
