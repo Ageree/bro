@@ -27,7 +27,7 @@ import {
   prepareBrowserVmSession,
   touchBrowserVm,
 } from "./lifecycle";
-import { errandBrowser, fastBrowserPilot } from "./pilot";
+import { errandBrowser, errandEngine, fastBrowserPilot } from "./pilot";
 import { browserVmProxyLines, browserVmProxyPlace } from "./proxy";
 import { staticBrowserPool } from "@agent/lib/browser-pool/hosts";
 import {
@@ -330,7 +330,12 @@ export async function createBrowserVmRun(input: {
   const id = newBrowserVmRunId(workspaceId);
   const sessionId = input.sessionId ?? newBrowserVmSessionId(workspaceId);
   const task = `${input.task}\n\n${addressWallLine}`;
-  const fast = await fastBrowserPilot({ workspaceId });
+  const [fast, engine] = await Promise.all([
+    fastBrowserPilot({ workspaceId }),
+    // A retry past an anti-bot wall goes on browser-use, which solves captchas;
+    // the code engine has no solve_captcha and would stop at the same wall.
+    errandEngine({ workspaceId }, input.search && input.freshExit !== true),
+  ]);
   const browser = errandBrowser({ workspaceId });
   // Recorded before the worker is asked: a start whose answer is lost still
   // has a row to be found by, and the task outlives the VM. Until the
@@ -347,6 +352,7 @@ export async function createBrowserVmRun(input: {
   const accepted = await startRun(vm, {
     browser,
     captcha: browserVmCaptcha(),
+    engine,
     id,
     llm,
     maxSteps: runMaxSteps,

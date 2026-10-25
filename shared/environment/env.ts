@@ -351,6 +351,13 @@ export const env = createEnv({
         "BROWSER_HELIUM_WORKSPACES takes workspace ids or *, not emails"
       )
       .optional(),
+    // The pilot of the code engine: workspace ids or owners' emails, or `*`,
+    // whose errands that only search (`search` in `startBrowserVmRun`) run
+    // with the model writing code against the page's accessibility tree, the
+    // way Aside's agent does, rather than browser-use's one action a step
+    // (`run_code` in `browser-vm/worker/worker.py`). A root without the engine
+    // runs them on browser-use. Unset, nobody.
+    BROWSER_CODE_ENGINE_WORKSPACES: workspaceListSchema.optional(),
     // Who may get the sign-in link, where the person signs in to a site
     // themselves in a live view of their own cloud browser
     // (`agent/lib/login-handoff/`, docs/login-handoff.md). Unset or empty,

@@ -2272,7 +2272,8 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   Снимок памяти на 3 ГБ восстанавливается и в песочницу с большим `BROWSER_SANDBOX_MEMORY_MB`, гость остаётся
   3 ГБ до холодного старта. OOM виден в журнале гостя `GET /h/v1/sandboxes/<id>/log`
   токеном оператора (`boot.py token`), свободная память и оверлей — `GET /v1/health?machine=1` worker.
-- Helium вместо Chrome (25.10, владелец — сначала себе: `BROWSER_HELIUM_WORKSPACES`): тот же Chromium 156, что
+- Helium вместо Chrome (25.10, `BROWSER_HELIUM_WORKSPACES` и `BROWSER_ROOTFS_CANARY_WORKSPACES` в проде `*`, владелец —
+  сразу всем; откат — снять `BROWSER_HELIUM_WORKSPACES`, канарейку оставить): тот же Chromium 156, что
   Chrome корня, с встроенным uBlock Origin и без фоновых загрузок Google (свежий профиль за 3 минуты простоя — 0,4 МБ
   через прокси против 12 МБ у Chrome; Safe Browsing у Helium нет). Ставит его `provision.sh` (закреплён sha256), юнит
   `bro-chrome` запускает `bro-browser`: Helium, если в профиле лежит `bro-browser` с `helium`. Его пишет worker ≥
@@ -2289,6 +2290,20 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   поиска по почте переключил бы браузер и закрыл страницы всех сессий. Корень собирали в облачной сессии
   (`build_rootfs.sh` с прокси сессии в `chroot`: прямой TLS сессии подменяет шлюз со своим CA, его в корень нельзя);
   Python и 108 пакетов — по `*.dist-info` прежнего корня (3.11, `BRO_PYTHON_SETUP`).
+- Кодовый движок поручений (25.10, подход Aside без самого Aside: `BROWSER_CODE_ENGINE_WORKSPACES`, только старт
+  поиска — `search`): модель пишет JavaScript против API страницы, страница — дерево доступности со ссылками
+  (Playwright `aria_snapshot(mode="ai")` и `get_by_ref`), несколько шагов за один вызов (`run_code` в `worker.py`,
+  worker ≥ 2026-10-25.3). Код идёт в QuickJS отдельного процесса: QuickJS не зовёт Python при заданном лимите
+  времени, поэтому долгий блок кончает убийство процесса (`CodeSandbox`). Секрет модель видит лишь меткой
+  `secret(alias)`, значение подставляется только на его домене. Playwright и QuickJS есть лишь в корне
+  sandbox-20261025.1: на старом корне поручение идёт в browser-use (`code_engine_available`), и проверка
+  кандидата их не требует (`OPTIONAL_IMPORTS`). Стенд 25.10, hh.ru, одно поручение: код — 97 с, 15 вызовов,
+  1,67 ₽, кэш 86%; browser-use — 98 с, 15 шагов, 7,13 ₽, кэш 47%. Капчи, файлов, карт и кодов у движка нет —
+  такое поручение встаёт с `NEEDS`, а продолжение идёт уже в browser-use. Playwright при `connect_over_cdp` сам
+  ставит загрузки браузера в свою временную папку: движок возвращает их в `downloads/` сессии, иначе скачанное
+  мимо `run_downloads` пропадало бы. `PROHIBITED_DOMAINS` (архивы и кэши) движок держит сам (`code_prohibited`):
+  `prohibited_domains` есть лишь у сессии browser-use. Повтор после антибот-стены (`freshExit`) идёт в browser-use:
+  `solve_captcha` у движка нет.
 - Узкое место браузерного поручения — LLM шага и число шагов, не VM и профиль:
   Chrome до CDP — 0,2–0,8 с, профиль 178 МБ распаковывается за 0,35 с. Замеры,
   гипотезы и сравнение моделей — `docs/browser-speed.md`.
