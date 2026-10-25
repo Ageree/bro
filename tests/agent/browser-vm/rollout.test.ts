@@ -551,4 +551,18 @@ describe("rolling a published worker out to a workspace's VM", () => {
     expect(objectStorage).not.toHaveBeenCalled();
     expect(worker.updateBrowserVmWorkerCode).not.toHaveBeenCalled();
   });
+
+  // 24.10: the memory and tab fixes of the worker reached only the owner,
+  // the one workspace of the files pilot.
+  it("brings it to a pool sandbox in BROWSER_POOL_WORKER_WORKSPACES without the files pilot", async () => {
+    const rollout = await loadRollout({ BROWSER_POOL_WORKER_WORKSPACES: "*" });
+    const sandbox = vmRow({ hostId: "bro-host-1", sandboxState: "running" });
+
+    expect(
+      rollout.browserVmWorkerDue(sandbox, health(), now)?.version
+    ).toBeDefined();
+    expect(rollout.browserPoolWorkerRolloutEnabled(sandbox.workspaceId)).toBe(
+      true
+    );
+  });
 });

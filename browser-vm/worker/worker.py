@@ -88,7 +88,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-10-24.2"
+VERSION = "2026-10-25.1"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -106,6 +106,7 @@ CANDIDATE_IMPORTS = (
     ("browser_use.agent.message_manager.views", ("HistoryItem",)),
     ("browser_use.agent.views", ("AgentState",)),
     ("browser_use.utils", ("match_url_with_domain_pattern",)),
+    ("browser_use.browser.watchdogs.downloads_watchdog", ("_should_auto_download_network_response",)),
     ("httpx", ("AsyncClient", "Timeout")),
     ("cv2", ()),
     ("numpy", ()),
@@ -1158,6 +1159,100 @@ def stop_stray_processes():
     return len(stray)
 
 
+# --- Downloads -----------------------------------------------------------------------------------------
+
+# What a run downloads lands in downloads/ of its session's workspace (`BrowserSession(downloads_path=…)`), and
+# Bro sends those files to the person with the run's report. Which files are the run's own is told by the
+# folder before and after it, not by their times: a sandbox restored from a snapshot runs on its clock of then.
+DOWNLOADS = "downloads"
+PARTIAL_DOWNLOAD = ".crdownload"  # Chrome's name for a file it is still writing
+DOWNLOAD_WAIT_S = 90  # how long a finished run waits for a download still running
+DOWNLOAD_NAME = 100  # characters of a file name the agent reads
+DOWNLOADING = ("A download started and goes on in the background: {name}. A click on a download link reports a "
+               "timeout when the file takes longer than 15 seconds, and the file still downloads: do not click "
+               "the link again or open it in a new tab, use the wait action instead.")
+DOWNLOADED = ("Downloaded {name}. Bro sends it to the person with your report: do not open it, do not open "
+              "file:// pages and do not download it again. Name it in your result.")
+
+
+def download_snapshot(folder):
+    """The downloads folder's files: name -> (size, mtime in ns)."""
+    found = {}
+    with contextlib.suppress(OSError):
+        for path in folder.iterdir():
+            if path.name.startswith(".") or path.is_symlink() or not path.is_file():
+                continue
+            stat = path.stat()
+            found[path.name] = (stat.st_size, stat.st_mtime_ns)
+    return found
+
+
+def changed_downloads(before, after):
+    """The files of `after` new or rewritten since `before`, in name order."""
+    return sorted(name for name, state in after.items() if before.get(name) != state)
+
+
+def run_downloads(before, after):
+    """What a run downloaded: its finished files, as the paths Bro lists and reads them by."""
+    return [{"path": f"{DOWNLOADS}/{name}", "size": after[name][0]}
+            for name in changed_downloads(before, after)
+            if not name.endswith(PARTIAL_DOWNLOAD) and after[name][0] > 0]
+
+
+def download_label(name):
+    """A file name as the agent reads it: the site chose it, so it is quoted data of bounded length."""
+    clean = "".join(char if char.isprintable() else " " for char in name).strip()
+    return json.dumps(clean[:DOWNLOAD_NAME], ensure_ascii=False)
+
+
+class DownloadNotices:
+    """Lines telling the agent of its downloads, each once per state: a click on a link whose file takes longer
+    than 15 seconds fails in browser-use with a timeout while Chrome downloads on (24.10, Z-Library through the
+    residential proxy), and the agent took the download for broken."""
+
+    def __init__(self, folder, before):
+        self.folder, self.before, self.told = folder, before, {}
+
+    def notices(self):
+        now = download_snapshot(self.folder)
+        lines = []
+        for name in changed_downloads(self.before, now):
+            partial = name.endswith(PARTIAL_DOWNLOAD)
+            shown = name[:-len(PARTIAL_DOWNLOAD)] if partial else name
+            if self.told.get(shown) == partial or (partial and shown in self.told):
+                continue
+            self.told[shown] = partial
+            lines.append((DOWNLOADING if partial else DOWNLOADED).format(name=download_label(shown)))
+        return lines
+
+
+async def finished_downloads(folder, before, wait_s, stopped=lambda: False):
+    """The folder once the downloads a run started are over, waiting up to `wait_s` for those still running, or
+    until `stopped()` (a cancel: Bro waits on the run to end)."""
+    deadline = time.monotonic() + wait_s
+    now = download_snapshot(folder)
+    while time.monotonic() < deadline and not stopped() and any(name.endswith(PARTIAL_DOWNLOAD)
+                                                                for name in changed_downloads(before, now)):
+        await asyncio.sleep(1)
+        now = download_snapshot(folder)
+    return now
+
+
+def quiet_attachment_refetch():
+    """browser-use fetches again, from the page, every response that downloads as an attachment: Chrome already
+    saves it into the folder itself. The copy is a cross-origin fetch a CDN refuses ("No data received" and
+    "Failed to download" in the log, while Chrome's own file was fine), a second request to a one-time link, and
+    the whole file as a JSON array of numbers through the debugger — hundreds of MB in the guest for a 20 MB
+    book. Only a PDF the page shows (no attachment) is left to that fetch: Chrome saves none of it."""
+    import browser_use.browser.watchdogs.downloads_watchdog as downloads_watchdog
+
+    if getattr(downloads_watchdog, "_bro_quiet", False):
+        return
+    downloads_watchdog._should_auto_download_network_response = (
+        lambda *, is_pdf, is_download_attachment, **_: is_pdf and not is_download_attachment)
+    downloads_watchdog._bro_quiet = True
+
+
 def trail_line(summary, url, errors, clean):
     """A step's line of steps.jsonl: Bro's step summary (action names and element indexes, never what was
     typed), the page after the step without its query, and the step's errors, each with every secret's
@@ -1345,6 +1440,8 @@ class Run:
         self.pickers = None  # FilePickers of its tabs, while it runs
         self.work = None  # the task working the run, while it does: a cut-off or a cancel stops it
         self.unread_messages = []  # messages queued into this run the agent never read (set once terminal)
+        self.downloads = None  # the files it downloaded, [{"path": "downloads/…", "size"}], once it ended
+        self.downloads_before = None  # its session's downloads folder when it started (`download_snapshot`)
         self.outcome = None  # (status, result, error) the run came to, while it still lets go of the browser
         self.stored = None  # the status its record on disk has
         # Creation order, restart-independent and gapless: now_iso() only has 1-second resolution, so
@@ -1362,7 +1459,7 @@ class Run:
             "steps": self.steps[-50:], "stepCount": len(self.steps), "finalUrl": self.final_url,
             "finalTitle": self.final_title, "usage": self.usage, "traffic": self.traffic, "engine": self.engine,
             "jev": self.jev,
-            "unreadMessages": self.unread_messages,
+            "unreadMessages": self.unread_messages, "downloads": self.downloads,
         }
 
     def save(self, agent_state=None):
@@ -1386,7 +1483,7 @@ class Run:
                                ("startedAt", "started_at"), ("finishedAt", "finished_at"),
                                ("steps", "steps"), ("finalUrl", "final_url"), ("finalTitle", "final_title"),
                                ("usage", "usage"), ("traffic", "traffic"), ("engine", "engine"), ("jev", "jev"),
-                               ("unreadMessages", "unread_messages"), ("seq", "seq")]:
+                               ("unreadMessages", "unread_messages"), ("downloads", "downloads"), ("seq", "seq")]:
             if key in record:
                 setattr(run, attribute, record[key])
         run.stored = run.status
@@ -1785,10 +1882,11 @@ class Worker:
     async def browser_session(self, session, options):
         from browser_use import BrowserSession
 
+        quiet_attachment_refetch()
         tab = await self.ensure_tab(session)
         with contextlib.suppress(Exception):
             await cdp_command(await browser_socket(), "Target.activateTarget", {"targetId": tab})
-        downloads = session.workspace / "downloads"
+        downloads = session.workspace / DOWNLOADS
         downloads.mkdir(exist_ok=True)
         browser = BrowserSession(
             cdp_url=CDP_HTTP, keep_alive=True, downloads_path=str(downloads),
@@ -2202,6 +2300,7 @@ class Worker:
         site_errors = SiteErrors()
         run.pickers = pickers = FilePickers()
         trail = StepTrail(session.workspace / TRAIL / run.id, session.sensitive_data)
+        downloads = DownloadNotices(session.workspace / DOWNLOADS, run.downloads_before or {})
         with contextlib.suppress(Exception):
             await asyncio.to_thread(prune_trails, TRAIL_RUNS - 1)
         steps_before = 0  # run.steps when the current step started: a step whose output failed adds none
@@ -2227,6 +2326,9 @@ class Worker:
             # page shows (it may show nothing and move on).
             with contextlib.suppress(Exception):
                 for notice in site_errors.notices(session.sensitive_data):
+                    tell_agent(agent, notice)
+            with contextlib.suppress(Exception):
+                for notice in downloads.notices():
                     tell_agent(agent, notice)
             # Read right before the model's next call, so that call can act on them. The last step (only
             # `done` is left) and one about to be stopped leave them for the follow-up run instead.
@@ -2357,6 +2459,8 @@ class Worker:
         run.started_at = now_iso()
         # One run holds the browser at a time, so the proxy's bytes while it works are its own: Bro prices them.
         traffic_start = dict(self.forwarder.totals)
+        folder = session.workspace / DOWNLOADS
+        run.downloads_before = download_snapshot(folder)
         # The outcome is set only once the run has let go of the browser: until then a message still
         # joins it (and, if the agent never reads it, is recorded below as unread).
         status, result, error = "failed", None, "The run was interrupted."
@@ -2387,6 +2491,12 @@ class Worker:
             log.exception("run %s failed", run.id)
             status, error = "failed", f"{type(crash).__name__}: {crash}"[:2000]
         finally:
+            # A file still downloading when the agent finished is waited for, and the run's own files are
+            # recorded, before the run ends: its report is what takes them to the person.
+            with contextlib.suppress(Exception):
+                after = await finished_downloads(folder, run.downloads_before, DOWNLOAD_WAIT_S,
+                                                 lambda: run.cancel_requested)
+                run.downloads = run_downloads(run.downloads_before, after)
             run.outcome = status, result, error  # what a worker stopped during the screenshot records
             with contextlib.suppress(Exception):
                 report = session.workspace / "report"

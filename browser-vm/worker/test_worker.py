@@ -1382,6 +1382,39 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((trail / "002.jpg").read_bytes(), b"\xff\xd8small")
         self.assertNotIn("owner-pass", (trail / "steps.jsonl").read_text())
 
+    async def test_a_run_records_only_its_own_downloads_and_waits_for_one_still_running(self):
+        folder = worker.SESSIONS / worker.disk_name("s1") / worker.DOWNLOADS
+        folder.mkdir(parents=True)
+        (folder / "earlier.pdf").write_bytes(b"%PDF earlier errand")
+        seen = {}
+
+        async def download(agent, on_step_start):
+            # The click's download is still being written when the agent is done.
+            (folder / "Pride and Prejudice.epub.crdownload").write_bytes(b"PK\x03\x04part")
+            await on_step_start(agent)
+            seen["told"] = list(agent.state.message_manager_state.agent_history_items)
+
+            async def finish():
+                await asyncio.sleep(1.2)
+                (folder / "Pride and Prejudice.epub.crdownload").rename(folder / "Pride and Prejudice.epub")
+            seen["finishing"] = asyncio.create_task(finish())
+            return FakeHistory(True)
+
+        FakeAgent.script = download
+        await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Download the book."})
+        run = await self.settled("r1")
+        self.assertEqual(run.downloads, [{"path": "downloads/Pride and Prejudice.epub", "size": 8}])
+        self.assertEqual(self.on_disk("r1")["downloads"], run.downloads)
+        self.assertEqual(len(seen["told"]), 1)
+        self.assertIn('"Pride and Prejudice.epub"', seen["told"][0])
+        self.assertIn("goes on in the background", seen["told"][0])
+        status, body = await self.call("GET", "/v1/runs/r1")
+        self.assertEqual((status, body["downloads"]), (200, run.downloads))
+        # The next run in the session downloads nothing: neither file is its own.
+        FakeAgent.script = one_step
+        await self.worker.start_run({"id": "r2", "sessionId": "s1", "llm": LLM, "task": "Check the page."})
+        self.assertEqual((await self.settled("r2")).downloads, [])
+
     async def test_a_tab_the_agent_moves_into_is_listened_to_from_its_next_step(self):
         # A DeepSeek run on the checkout harness's shop opened the site in a new tab and ordered there: two of
         # its three refused orders were never seen while only the first tab was listened to.
