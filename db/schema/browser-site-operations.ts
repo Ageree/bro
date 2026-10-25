@@ -74,7 +74,7 @@ export const browserSiteOperations = pgTable(
     ),
     check(
       "browser_site_operations_last_failure_check",
-      sql`${table.lastFailure} IS NULL OR ${table.lastFailure} IN ('blocked', 'moved', 'no_data', 'empty', 'failed')`
+      sql`${table.lastFailure} IS NULL OR ${table.lastFailure} IN ('blocked', 'moved', 'no_data', 'empty', 'unanswered', 'failed')`
     ),
   ]
 );

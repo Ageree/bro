@@ -795,11 +795,15 @@ SITE_OP_S = 30
 SITE_LOOSE_PART = re.compile(r"[\w\-.]{1,60}")
 # The read Bro asks for itself, with no model (`/v1/op`): an in-page fetch of a results document, and how many
 # such reads go at once, each in a tab of its own.
-SITE_OP_FETCH_S = 15
+SITE_OP_FETCH_S = 10
 SITE_OP_DIRECT_AT_ONCE = 2
+# A direct read's page load (robots.txt, a document, an xhr page's start) and the whole read: inside the 45 s Bro
+# waits for its answer (`readBrowserVmSite`), since an answer it stopped waiting for still holds a slot here.
+SITE_OP_LOAD_S = 12
+SITE_OP_DIRECT_S = 38
 # How long a direct read waits for an xhr page's own request: well short of the minute and more the errand it saves
 # takes (ostrovok.ru's serp came in 6–17 s through the stand's exit, 25.10).
-SITE_OP_DIRECT_XHR_S = 25
+SITE_OP_DIRECT_XHR_S = 22
 # What a direct read hands back: at most this many cards, each with at most this many of its own fields beside its
 # name, price and link (`site_op_pick`): the cards go into Bro's own context, not a model's code.
 SITE_OP_PICKED = 60
@@ -813,9 +817,10 @@ SITE_OP_TELLING = re.compile(r"name|title|rating|score|review|address|city|area|
 # How a read of the site ended when it did not give its results (`SiteOpFailure.reason`): `blocked` — the site or
 # its anti-bot check turned the browser away (nothing about the operation); `moved` — the page answered from
 # another address or not at all (404, a redirect home); `no_data` — the page no longer holds its results where the
-# operation reads them, the site changed; `empty` — it holds no result for this page; `failed` — anything else
-# (the network, a timeout). Only `moved` and `no_data` on a page that fits the template exactly count against the
-# operation in Bro (`agent/lib/browser-vm/site-ops/health.ts`).
+# operation reads them, the site changed; `empty` — it holds no result for this page; `unanswered` — its results
+# name none of the words asked (`site_op_answers`); `failed` — anything else (the network, a timeout). Only `no_data`
+# on a page that fits the template exactly counts against the operation in Bro (`agent/lib/browser-vm/site-ops/
+# health.ts`): every other reason may be the fill's own address.
 SITE_BLOCKED = {401, 403, 407, 429, 451, 498, 503}
 SITE_GONE = {404, 410}
 SITE_HEAVY = ["*.png", "*.jpg", "*.jpeg", "*.gif", "*.webp", "*.avif", "*.svg", "*.ico", "*.woff", "*.woff2",
@@ -1094,18 +1099,25 @@ def site_template_fit(template, url):
     operations of ostrovok.ru, drom.ru and auto.ru read no other city or car than the one they were found on,
     while their pages for another one hold the same data."""
     want, have = urllib.parse.urlsplit(template), urllib.parse.urlsplit(url)
-    if have.scheme != "https" or (have.hostname or "").lower() != want.hostname:
+    try:
+        port = have.port
+    except ValueError:
+        return None
+    if have.scheme != "https" or port is not None or (have.hostname or "").lower() != want.hostname:
         return None
     wanted, given = want.path.rstrip("/").split("/"), have.path.rstrip("/").split("/")
     if len(wanted) != len(given):
         return None
     fit = "exact"
     for w, g in zip(wanted, given):
-        if w.startswith("%") and w.endswith("%") or urllib.parse.unquote(w) == urllib.parse.unquote(g):
+        if urllib.parse.unquote(w) == urllib.parse.unquote(g) and not (w.startswith("%") and w.endswith("%")):
             continue
+        # A placeholder's value is one part of a path all the same: no slash, no backslash, no placeholder left
+        # unfilled (`%word%` as it is).
         if w == "" or not SITE_LOOSE_PART.fullmatch(urllib.parse.unquote(g)):
             return None
-        fit = "loose"
+        if not (w.startswith("%") and w.endswith("%")):
+            fit = "loose"
     return fit
 
 
@@ -1501,9 +1513,10 @@ def site_state(operation, text):
     return states[0]
 
 
-async def site_op_document(page, operation, url):
-    """A document operation's results, the results page opened in `page` as far as its document only."""
-    response = await page.goto(url, wait_until="commit", timeout=CODE_CALL_S * 1000)
+async def site_op_document(page, operation, url, seconds=None):
+    """A document operation's results, the results page opened in `page` as far as its document only (in
+    `seconds`, CODE_CALL_S by default)."""
+    response = await page.goto(url, wait_until="commit", timeout=(seconds or CODE_CALL_S) * 1000)
     if response is None:
         raise site_status_failure(None, "the page")
     return site_document_state(operation, url, response.status, response.url, await response.text())
@@ -1533,7 +1546,7 @@ async def site_op_fetched(page, operation, url):
     parts = urllib.parse.urlsplit(url)
     origin = f"https://{parts.hostname}"
     if not (page.url or "").startswith(origin + "/"):
-        await page.goto(origin + "/robots.txt", wait_until="commit", timeout=SITE_OP_FETCH_S * 1000)
+        await page.goto(origin + "/robots.txt", wait_until="commit", timeout=SITE_OP_LOAD_S * 1000)
     answer = await asyncio.wait_for(page.evaluate(
         "async (u) => { const r = await fetch(u, {credentials: 'include'});"
         " return {status: r.status, url: r.url, text: await r.text()}; }", url),
@@ -1542,7 +1555,7 @@ async def site_op_fetched(page, operation, url):
                                    answer["text"])
 
 
-async def site_op_xhr(page, operation, url, seconds=SITE_OP_S):
+async def site_op_xhr(page, operation, url, seconds=SITE_OP_S, load_seconds=None):
     """An xhr operation's results: the results page opened in `page`, and of the page's requests to the
     operation's address the first whose answer holds the operation's list. Not the first answer from that
     address: a GraphQL site asks one address for its menu, its banners and its results alike (citilink.ru's
@@ -1578,7 +1591,7 @@ async def site_op_xhr(page, operation, url, seconds=SITE_OP_S):
     try:
         # The document's own status is not the answer: citilink.ru's page answered 429 on the stand and drew its
         # results all the same (25.10). Its address is: a page sent home never asks for this page's results.
-        response = await page.goto(url, wait_until="commit", timeout=CODE_CALL_S * 1000)
+        response = await page.goto(url, wait_until="commit", timeout=(load_seconds or CODE_CALL_S) * 1000)
         if response is not None and response.status in SITE_GONE:
             raise site_status_failure(response.status, "the page")
         if response is not None and not site_same_path(url, response.url):
@@ -1690,7 +1703,9 @@ def site_op_pick(cards, sort="site", price_min=None, price_max=None, limit=20):
                 continue
             fields.append((0 if SITE_OP_TELLING.search(key.rsplit(".", 1)[-1]) else 1, key.count("."), key, value))
         fields.sort(key=lambda field: field[:2])
-        picked.append({"name": card.get("name"), "price": card.get("price"), "link": card.get("link"),
+        name = card.get("name")
+        picked.append({"name": name[:SITE_OP_FIELD_CHARS] if isinstance(name, str) else name,
+                       "price": card.get("price"), "link": card.get("link"),
                        "more": {key: value for _, _, key, value in fields[:SITE_OP_FIELDS]}})
     return picked
 
@@ -6530,7 +6545,8 @@ async def site_op(request):
     videos left out, until its own request answers. Nothing is sent that the site's own page would not send, and
     nothing of it is kept. The answer is the picked cards (`site_op_pick`), or why there are none — `reason` as
     SiteOpFailure has it — always with 200: the request itself went through. Another errand's run may hold the
-    browser meanwhile: the read keeps to its tab, as a keep-alive visit does."""
+    browser meanwhile: the tab is a keep-alive visit's to it (`visit_tabs`), which its agent neither adopts nor
+    closes, and its downloads stay where the run looks for them."""
     global site_op_gate
     authorize(request)
     body = await request.json()
@@ -6540,63 +6556,37 @@ async def site_op(request):
     [operation] = known.values()
     url = body.get("url")
     fit = site_template_fit(operation["page"], url) if isinstance(url, str) else None
-    if fit is None or code_prohibited(url):
-        raise web.HTTPBadRequest(text="url must be a results page of the operation")
+    if fit is None or code_prohibited(url) or re.search(r"%(?:query|number|date|sort|flag|id|word)%", url):
+        raise web.HTTPBadRequest(text="url must be a results page of the operation, its placeholders filled in")
     sort = body.get("sort") if body.get("sort") in ("price_asc", "price_desc") else "site"
     bounds = [float(body[key]) if isinstance(body.get(key), (int, float)) and not isinstance(body.get(key), bool)
               else None for key in ("priceMin", "priceMax")]
     limit = body.get("limit") if isinstance(body.get("limit"), int) else 20
+    if not code_engine_available():  # a root before sandbox-20261025.1 has no Playwright
+        raise web.HTTPNotImplemented(text=json.dumps({"error": "this root cannot read a site directly"}),
+                                     content_type="application/json")
     if not await chrome_ready():
         raise web.HTTPServiceUnavailable(text=json.dumps({"error": "the browser is not up"}),
                                          content_type="application/json")
-    from playwright.async_api import async_playwright
-
     site_op_gate = site_op_gate or asyncio.Semaphore(SITE_OP_DIRECT_AT_ONCE)
     began = time.monotonic()
-    via, cards = None, None
+    holder = {"page": None, "via": None}
     async with site_op_gate:
-        pw = page = None
         try:
-            pw = await async_playwright().start()
-            browser = await pw.chromium.connect_over_cdp(CDP_HTTP)
-            page = await browser.contexts[0].new_page()
-            if operation["source"]["kind"] == "document":
-                try:
-                    data, via = await site_op_fetched(page, operation, url), "fetch"
-                except SiteOpFailure as failure:
-                    if failure.reason == "moved":
-                        raise
-                    data = None
-                except Exception:  # the fetch did not answer in its time (rabota.ru through the stand's exit)
-                    data = None
-                if data is None:
-                    # A page that gives its state only to a browser that drew it (or past its own check): the
-                    # document as the page opens it, once.
-                    data, via = await site_op_document(page, operation, url), "page"
-            else:
-                with contextlib.suppress(Exception):
-                    cdp = await page.context.new_cdp_session(page)
-                    await cdp.send("Network.enable")
-                    await cdp.send("Network.setBlockedURLs", {"urls": SITE_HEAVY})
-                data, via = await site_op_xhr(page, operation, url, SITE_OP_DIRECT_XHR_S), "page"
+            data = await asyncio.wait_for(site_op_direct(operation, url, holder), SITE_OP_DIRECT_S)
             cards = site_op_checked(operation, await asyncio.to_thread(site_cards, operation, data, url))
             if not site_op_answers(operation, url, cards):
-                cards = None
-                raise SiteOpFailure("no_data", "the site's results do not answer the words they were asked for")
+                raise SiteOpFailure("unanswered", "the site's results do not answer the words they were asked for")
         except SiteOpFailure as failure:
-            reason, detail = failure.reason, str(failure)
-            if reason not in ("blocked",) and page is not None and await code_wall(page):
+            cards, reason, detail = None, failure.reason, str(failure)
+            if reason not in ("blocked",) and holder["page"] is not None and await code_wall(holder["page"]):
                 reason = "blocked"
         except Exception as error:
-            reason, detail = "failed", f"{type(error).__name__}: {str(error)[:200]}"
+            cards, reason, detail = None, "failed", f"{type(error).__name__}: {str(error)[:200]}"
         finally:
-            with contextlib.suppress(Exception):
-                if page is not None:
-                    await page.close()
-            with contextlib.suppress(Exception):
-                if pw is not None:
-                    await pw.stop()
+            await site_op_close(holder)
     ms = round((time.monotonic() - began) * 1000)
+    via = holder["via"]
     if cards is None:
         log.info("site op %s: %s via %s, %s, %d ms", operation["name"], reason, via, fit, ms)
         return web.json_response({"ok": False, "reason": reason, "detail": detail[:300], "fit": fit, "ms": ms})
@@ -6604,6 +6594,58 @@ async def site_op(request):
     log.info("site op %s: %d cards (%d picked) via %s, %s, %d ms", operation["name"], len(cards), len(picked), via,
              fit, ms)
     return web.json_response({"ok": True, "count": len(cards), "cards": picked, "fit": fit, "via": via, "ms": ms})
+
+
+async def site_op_direct(operation, url, holder):
+    """The read of `site_op` in its own tab, kept in `holder` for the caller to close whatever happens."""
+    from playwright.async_api import async_playwright
+
+    holder["pw"] = await async_playwright().start()
+    browser = await holder["pw"].chromium.connect_over_cdp(CDP_HTTP)
+    live = worker.current if worker.current is not None and worker.current.status not in TERMINAL else None
+    session = worker.sessions.get(live.session_id) if live is not None else None
+    if session is not None:
+        # Playwright points the browser's downloads at a folder of its own when it connects: back to the folder of
+        # the run that may be downloading meanwhile, as the code engine does (`run_code`).
+        with contextlib.suppress(Exception):
+            cdp = await browser.new_browser_cdp_session()
+            await cdp.send("Browser.setDownloadBehavior", {"behavior": "allow", "eventsEnabled": True,
+                                                           "downloadPath": str(session.workspace / DOWNLOADS)})
+            await cdp.detach()
+    page = holder["page"] = await browser.contexts[0].new_page()
+    cdp = await page.context.new_cdp_session(page)
+    with contextlib.suppress(Exception):
+        holder["target"] = (await cdp.send("Target.getTargetInfo"))["targetInfo"]["targetId"]
+        worker.visit_tabs.add(holder["target"])
+    if operation["source"]["kind"] == "document":
+        try:
+            holder["via"] = "fetch"
+            return await site_op_fetched(page, operation, url)
+        except SiteOpFailure as failure:
+            if failure.reason == "moved":
+                raise
+        except Exception:  # the fetch did not answer in its time (rabota.ru through the stand's exit)
+            pass
+        # A page that gives its state only to a browser that drew it (or past its own check): the document as the
+        # page opens it, once.
+        holder["via"] = "page"
+        return await site_op_document(page, operation, url, SITE_OP_LOAD_S)
+    with contextlib.suppress(Exception):
+        await cdp.send("Network.enable")
+        await cdp.send("Network.setBlockedURLs", {"urls": SITE_HEAVY})
+    holder["via"] = "page"
+    return await site_op_xhr(page, operation, url, SITE_OP_DIRECT_XHR_S, SITE_OP_LOAD_S)
+
+
+async def site_op_close(holder):
+    with contextlib.suppress(Exception):
+        if holder.get("page") is not None:
+            await holder["page"].close()
+    if holder.get("target") is not None:
+        worker.visit_tabs.discard(holder["target"])
+    with contextlib.suppress(Exception):
+        if holder.get("pw") is not None:
+            await holder["pw"].stop()
 
 
 async def delete_tab(request):

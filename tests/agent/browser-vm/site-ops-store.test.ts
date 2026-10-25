@@ -115,10 +115,11 @@ describe("a workspace's site operations", { timeout: 30_000 }, () => {
       "SELECT name FROM browser_site_operations"
     );
     expect(rows.rows).toEqual([{ name: "hh.ru/search/resume" }]);
-    // One kept before (or under another name on the reviewed one's host)
-    // never reads in its place: the reviewer's words about the fields stay.
+    // Its row of health alone (no run found it), or a find under another
+    // name on the reviewed one's host, never reads in its place: the
+    // reviewer's words about the fields stay.
     await client.query(
-      "INSERT INTO browser_site_operations (workspace_id, name, host, operation, runs) VALUES ($1, $2, $3, $4, 99)",
+      "INSERT INTO browser_site_operations (workspace_id, name, host, operation, runs) VALUES ($1, $2, $3, $4, 0)",
       [alice.workspaceId, vacancies.name, "hh.ru", JSON.stringify(vacancies)]
     );
     const given = await run.siteOperationsFor(
@@ -211,10 +212,15 @@ describe("a workspace's site operations", { timeout: 30_000 }, () => {
           now
         )
       ).map((operation) => operation.name);
-    // A blocked page, an empty search or a loose page says nothing of it.
+    // Nothing but a page that no longer holds its results says anything of
+    // it: a blocked or slow page, an empty or unanswered search, a page that
+    // moved (a wrong city in the address) or a loose one may be the fill's.
     for (const [reason, fit] of [
       ["blocked", "exact"],
       ["empty", "exact"],
+      ["failed", "exact"],
+      ["moved", "exact"],
+      ["unanswered", "exact"],
       ["no_data", "loose"],
     ] as const) {
       // oxlint-disable-next-line eslint/no-await-in-loop -- Reads are noted in their order.
@@ -234,7 +240,7 @@ describe("a workspace's site operations", { timeout: 30_000 }, () => {
     await run.noteSiteOperationRead(alice.workspaceId, trains.name, {
       fit: "exact",
       ok: false,
-      reason: "moved",
+      reason: "no_data",
     });
     expect(await offered()).toEqual([]);
     // Six hours on, one read may try it again.
@@ -278,6 +284,60 @@ describe("a workspace's site operations", { timeout: 30_000 }, () => {
       "run-6"
     );
     expect(await failures()).toEqual([{ failures: 0 }]);
+  });
+
+  it("let a run's find of a reviewed operation's own page stand in for it once it stopped reading the site", async () => {
+    const { client, run } = await store("*");
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const [vacancies] = await run.siteOperationsFor(
+      alice.workspaceId,
+      "https://hh.ru"
+    );
+    // hh.ru moved its list: the same page, the vacancies elsewhere in it.
+    const moved = {
+      ...vacancies,
+      about: undefined,
+      items: ["searchResult", "vacancies"],
+    };
+    // Found while the reviewed one still reads: not kept.
+    await run.rememberSiteOperations(alice.workspaceId, [moved], "run-7");
+    const rows = async () =>
+      (
+        await client.query<{ failures: number; runs: number }>(
+          "SELECT failures, runs FROM browser_site_operations"
+        )
+      ).rows;
+    expect(await rows()).toEqual([]);
+    const broken = { fit: "exact", ok: false, reason: "no_data" } as const;
+    await run.noteSiteOperationRead(
+      alice.workspaceId,
+      vacancies?.name ?? "",
+      broken
+    );
+    await run.noteSiteOperationRead(
+      alice.workspaceId,
+      vacancies?.name ?? "",
+      broken
+    );
+    expect(
+      await run.siteOperationsFor(alice.workspaceId, "https://hh.ru")
+    ).toEqual([]);
+    // Once it is broken, a run's find of the page is the repair.
+    await run.rememberSiteOperations(alice.workspaceId, [moved], "run-8");
+    expect(await rows()).toEqual([{ failures: 0, runs: 1 }]);
+    const [given] = await run.siteOperationsFor(
+      alice.workspaceId,
+      "https://hh.ru"
+    );
+    expect(given?.items).toEqual(["searchResult", "vacancies"]);
+    // The reviewer's words named the old fields: they do not come with it.
+    expect(given?.about).toBeUndefined();
+    // Another workspace still reads hh.ru with the reviewed one.
+    const [bobs] = await run.siteOperationsFor(
+      bob.workspaceId,
+      "https://hh.ru"
+    );
+    expect(bobs?.items).toEqual(["vacancySearchResult", "vacancies"]);
   });
 
   it("let a workspace's own find stand in for a reviewed one that stopped reading its site", async () => {

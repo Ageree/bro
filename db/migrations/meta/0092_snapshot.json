@@ -1,5 +1,5 @@
 {
-  "id": "2663b071-8372-4513-8938-a8bdbe220d7b",
+  "id": "51aa3909-9e0b-4bda-8f4f-c9815b68e87d",
   "prevId": "94048cdd-eb05-48c9-b60e-a5e095d62952",
   "version": "7",
   "dialect": "postgresql",
@@ -3311,7 +3311,7 @@
         },
         "browser_site_operations_last_failure_check": {
           "name": "browser_site_operations_last_failure_check",
-          "value": "\"browser_site_operations\".\"last_failure\" IS NULL OR \"browser_site_operations\".\"last_failure\" IN ('blocked', 'moved', 'no_data', 'empty', 'failed')"
+          "value": "\"browser_site_operations\".\"last_failure\" IS NULL OR \"browser_site_operations\".\"last_failure\" IN ('blocked', 'moved', 'no_data', 'empty', 'unanswered', 'failed')"
         }
       },
       "isRLSEnabled": false

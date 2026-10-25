@@ -300,6 +300,11 @@ class SiteTrafficTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(worker.Run.load(run.public() | {"steps": []}).site_traffic, run.site_traffic)
 
 
+def test_tabs():
+    """The keep-alive tabs of the worker as a direct read sees them, its own once it registered it."""
+    return getattr(worker.worker, "visit_tabs", set())
+
+
 class Response:
     def __init__(self, url, text, status=200, method="GET"):
         self.url, self.status, self.request = url, status, types.SimpleNamespace(method=method)
@@ -317,6 +322,7 @@ class Page:
         self.documents, self.requests, self.url, self.closed = documents, list(requests), "about:blank", False
         self.statuses, self.landed, self.walled = statuses or {}, landed or {}, walled
         self.listeners, self.visited, self.fetched = [], [], []
+        self.target_seen = None
 
     def is_closed(self):
         return self.closed
@@ -335,6 +341,9 @@ class Page:
         class Cdp:
             async def send(self, method, params=None):
                 page.visited.append(method)
+                if method == "Target.getTargetInfo":
+                    page.target_seen = page.target_seen or set(test_tabs())
+                    return {"targetInfo": {"targetId": "T1"}}
 
         class Context:
             async def new_cdp_session(self, _page):
@@ -467,8 +476,11 @@ class FitAndPickTest(unittest.TestCase):
         self.assertEqual(fit("https://site.ru/city/%word%/", "https://site.ru/city/%D0%BA%D0%B0%D0%B7%D0%B0%D0%BD%D1%8C/"),
                          "exact")
         for url in ("https://auto.drom.ru/kia/rio/2020/", "https://auto.drom.ru/kia", "https://evil.ru/kia/rio/",
-                    "http://auto.drom.ru/kia/rio/", "https://auto.drom.ru/kia/a%20b%3Cc/"):
+                    "http://auto.drom.ru/kia/rio/", "https://auto.drom.ru/kia/a%20b%3Cc/", "https://auto.drom.ru:444/kia/rio/"):
             self.assertIsNone(fit("https://auto.drom.ru/toyota/camry/", url), url)
+        # A placeholder takes one part of a path: not a slash, not itself unfilled.
+        for url in ("https://site.ru/city/%word%/", "https://site.ru/city/a%2Fb/"):
+            self.assertIsNone(fit("https://site.ru/city/%word%/", url), url)
 
     def test_a_documents_state_is_read_whatever_its_status_but_never_from_another_address(self):
         operation = {"source": {"kind": "document", "state": {"tag": "template", "id": "HH-Lux-InitialState"}}}
@@ -549,9 +561,12 @@ class DirectOpTest(unittest.IsolatedAsyncioTestCase):
                 test.stopped = True
 
         key = bytes(32)
-        self.enterContext(mock.patch.object(worker, "worker", types.SimpleNamespace(
-            config={"environment": "stand", "key": key}, generation=0, accept_generation=lambda _gen: None)))
+        self.worker = types.SimpleNamespace(config={"environment": "stand", "key": key}, generation=0,
+                                            accept_generation=lambda _gen: None, current=None, sessions={},
+                                            visit_tabs=set())
+        self.enterContext(mock.patch.object(worker, "worker", self.worker))
         self.enterContext(mock.patch.object(worker, "chrome_ready", self.ready))
+        self.enterContext(mock.patch.object(worker, "code_engine_available", lambda: True))
         self.enterContext(mock.patch.dict(sys.modules, {"playwright.async_api": types.SimpleNamespace(
             async_playwright=Playwright)}))
         payload = worker.b64url(json.dumps({"env": "stand", "exp": int(time.time()) + 300, "gen": 0}).encode())
@@ -585,8 +600,14 @@ class DirectOpTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([card["name"] for card in answer["cards"]], ["Продакт-менеджер", "Ведущий продакт-менеджер"])
         self.assertEqual(answer["cards"][0]["more"]["company.visibleName"], "Unagrande Company")
         page = self.pages[0]
-        self.assertEqual((page.visited, page.fetched, page.closed), (["https://hh.ru/robots.txt"], [url], True))
+        self.assertEqual((page.visited[1:], page.fetched, page.closed), (["https://hh.ru/robots.txt"], [url], True))
         self.assertTrue(self.stopped)
+        # Its tab was a keep-alive visit's while it read, and is no more.
+        self.assertEqual(self.worker.visit_tabs, set())
+        # Results that name none of the words asked are no answer.
+        self.next_page = Page({url.replace("менеджер", "сварщик"): HH_DOCUMENT})
+        status, answer = await self.read(operation, url.replace("менеджер", "сварщик"))
+        self.assertEqual((answer["ok"], answer["reason"]), (False, "unanswered"))
 
     async def test_a_document_the_fetch_cannot_read_is_opened_and_a_site_that_moved_says_so(self):
         [operation] = await OpTest._hh_operation(None)
@@ -622,7 +643,8 @@ class DirectOpTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((answer["ok"], answer["fit"]), (True, "loose"))
         self.assertEqual([card["price"] for card in answer["cards"]], [3936, 4829, 4835])
         self.assertIn("Network.setBlockedURLs", self.pages[0].visited)
-        for bad in ("https://evil.ru/hotel/russia/sochi/", "https://ostrovok.ru/hotel/russia/", 5):
+        for bad in ("https://evil.ru/hotel/russia/sochi/", "https://ostrovok.ru/hotel/russia/", 5,
+                    "https://ostrovok.ru:8443/hotel/russia/sochi/", "https://ostrovok.ru/hotel/russia/sochi/?dates=%date%"):
             status, _ = await self.read(operation, bad)
             self.assertEqual(status, 400, bad)
         status, _ = await self.read({"name": "x"}, url)

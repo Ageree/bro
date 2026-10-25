@@ -67,7 +67,9 @@ export async function siteOperationsFor(
   const reviewed = new Set(
     knownSiteOperations.map((operation) => operation.name)
   );
-  const known = onSite.filter(usable);
+  const known = onSite
+    .filter(usable)
+    .map((operation) => standingIn(operation, health.get(operation.name)));
   const reviewedHosts = new Set(
     known.map((operation) => siteOperationHost(operation.page))
   );
@@ -83,6 +85,36 @@ export async function siteOperationsFor(
       : [];
   });
   return [...known, ...own].slice(0, operationsPerRun);
+}
+
+/**
+ * Whether a run's find of a reviewed operation's page is kept in its row
+ * (`rememberSiteOperations`): the reviewed one stopped reading the site for
+ * the workspace, or a find already stands in for it there.
+ */
+function repairs(
+  row: { readonly failures: number; readonly runs: number } | undefined
+) {
+  return row !== undefined && (row.runs > 0 || row.failures >= brokenAfter);
+}
+
+/**
+ * The operation a workspace reads a reviewed one's page with: the run's
+ * find kept in its row once the reviewed one stopped reading the site
+ * (`repairs`), the reviewer's words about the fields only while the find
+ * reads them where the reviewed one did; otherwise the reviewed one.
+ */
+function standingIn(
+  known: SiteOperation,
+  row: { readonly operation: unknown; readonly runs: number } | undefined
+): SiteOperation {
+  if (row === undefined || row.runs === 0) return known;
+  const find = siteOperationSchema.safeParse(row.operation).data;
+  if (find === undefined) return known;
+  const same =
+    JSON.stringify([find.items, find.fields]) ===
+    JSON.stringify([known.items, known.fields]);
+  return { ...find, about: same ? known.about : undefined };
 }
 
 /**
@@ -126,6 +158,7 @@ export async function noteSiteOperationRead(
       host: siteOperationHost(operation.page),
       name: operation.name,
       operation,
+      reviewed: knownSiteOperations.some(({ name: known }) => known === name),
     },
     outcome.ok
       ? { direct: outcome.direct, ok: true }
@@ -205,6 +238,7 @@ export async function rememberSiteOperations(
   const reviewed = new Set(
     knownSiteOperations.map((operation) => operation.name)
   );
+  const rows = await listBrowserSiteOperations(workspaceId);
   const operations = found.flatMap((record) => {
     const parsed = siteOperationSchema.safeParse(record);
     if (!parsed.success) {
@@ -213,18 +247,25 @@ export async function rememberSiteOperations(
       });
     }
     // A reviewed operation's page found again is the reviewed one's: it is
-    // not kept beside it.
-    if (!parsed.success || reviewed.has(parsed.data.name)) return [];
+    // not kept beside it — unless the reviewed one stopped reading the site
+    // for the workspace, or a find already stands in for it there: then
+    // the find is the repair, kept in its row (`standingIn`).
+    if (
+      !parsed.success ||
+      (reviewed.has(parsed.data.name) &&
+        !repairs(rows.find(({ name }) => name === parsed.data.name)))
+    ) {
+      return [];
+    }
     // Words about the fields are a reviewer's, never a run's: text a page
     // could have put there would go into the next errand's task.
     return [{ ...parsed.data, about: undefined }];
   });
   if (operations.length === 0) return;
-  const rows = await listBrowserSiteOperations(workspaceId);
   for (const operation of operations.slice(0, operationsPerRun)) {
     let kept: SiteOperation = operation;
     let runs = 1;
-    for (const row of rows) {
+    for (const row of reviewed.has(operation.name) ? [] : rows) {
       const parsed = siteOperationSchema.safeParse(row.operation);
       // A reviewed operation's row is its health, not a find to merge.
       if (
@@ -243,7 +284,7 @@ export async function rememberSiteOperations(
         break;
       }
     }
-    if (reviewed.has(kept.name)) continue;
+    if (reviewed.has(kept.name) && kept.name !== operation.name) continue;
     // oxlint-disable-next-line eslint/no-await-in-loop -- A run finds one or two.
     await saveBrowserSiteOperation(workspaceId, {
       host: siteOperationHost(kept.page),

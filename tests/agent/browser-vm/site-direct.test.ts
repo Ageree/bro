@@ -202,6 +202,13 @@ describe("Bro's own read of a site it has read before", () => {
       await readSiteDirectly(scope, { ...site, sessionId: "d" })
     ).toBeUndefined();
     expect(records.noteBrowserSiteOperationRead).not.toHaveBeenCalled();
+    // …and the site rests for a while: the next search there goes straight to
+    // the browser, with no fill and no read.
+    model.generateText.mockClear();
+    expect(
+      await readSiteDirectly(scope, { ...site, sessionId: "g" })
+    ).toBeUndefined();
+    expect(model.generateText).not.toHaveBeenCalled();
   });
 
   it("is only the pilot's, and widens a workspace's own find that read another city", async () => {

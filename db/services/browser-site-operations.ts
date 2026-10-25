@@ -77,18 +77,51 @@ export async function deleteBrowserSiteOperation(
  */
 export async function noteBrowserSiteOperationRead(
   workspaceId: string,
-  row: SiteOperationRow,
+  row: SiteOperationRow & {
+    /**
+     * A reviewed operation's health may need its row made; a find's row
+     * exists, and one a find replaced meanwhile is not made again.
+     */
+    readonly reviewed: boolean;
+  },
   outcome:
     | { readonly direct: boolean; readonly ok: true }
     | { readonly ok: false; readonly reason: string }
 ) {
   const now = new Date();
   const served = outcome.ok && outcome.direct ? 1 : 0;
+  if (!row.reviewed) {
+    await db
+      .update(browserSiteOperations)
+      .set(
+        outcome.ok
+          ? {
+              failedAt: null,
+              failures: 0,
+              lastFailure: null,
+              served: sql`${browserSiteOperations.served} + ${served}`,
+            }
+          : {
+              failedAt: now,
+              failures: sql`${browserSiteOperations.failures} + 1`,
+              lastFailure: outcome.reason,
+            }
+      )
+      .where(
+        and(
+          eq(browserSiteOperations.workspaceId, workspaceId),
+          eq(browserSiteOperations.name, row.name)
+        )
+      );
+    return;
+  }
   await db
     .insert(browserSiteOperations)
     .values({
-      ...row,
       failedAt: outcome.ok ? null : now,
+      host: row.host,
+      name: row.name,
+      operation: row.operation,
       failures: outcome.ok ? 0 : 1,
       lastFailure: outcome.ok ? null : outcome.reason,
       runs: 0,

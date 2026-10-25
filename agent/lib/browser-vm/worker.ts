@@ -736,8 +736,12 @@ export async function updateBrowserVmWorkerCode(
   );
 }
 
-/** How long a direct read of a site may take on the worker: its fetch, or its page and the page's request. */
-const siteReadTimeoutMs = 40_000;
+/**
+ * How long a direct read of a site may take on the worker: its fetch, or its
+ * page and the page's request — more than the worker's own 38 s for it
+ * (SITE_OP_DIRECT_S), so its answer is not cut off.
+ */
+const siteReadTimeoutMs = 45_000;
 
 const siteReadCardSchema = z.object({
   link: z.string().nullish(),

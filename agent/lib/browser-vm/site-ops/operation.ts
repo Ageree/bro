@@ -184,14 +184,16 @@ export const foundSiteOperationsSchema = z.array(z.json()).max(10);
  * (`SiteOpFailure` in browser-vm/worker/worker.py): `blocked` — the site
  * turned the browser away; `moved` — the page answered from another
  * address or not at all; `no_data` — the results are no longer where the
- * operation reads them; `empty` — none for this page; `failed` — anything
- * else (the network, a timeout).
+ * operation reads them; `empty` — none for this page; `unanswered` — its
+ * results name none of the words asked (`site_op_answers`); `failed` —
+ * anything else (the network, a timeout).
  */
 export const siteReadFailures = [
   "blocked",
   "moved",
   "no_data",
   "empty",
+  "unanswered",
   "failed",
 ] as const;
 
@@ -299,7 +301,11 @@ export function siteReadFit(operation: SiteOperation, address: string) {
   const template = splitAddress(operation.page);
   const url = URL.parse(address);
   if (template === undefined || url?.protocol !== "https:") return undefined;
-  if (url.hostname !== template.host || url.username || url.password) {
+  if (url.host !== template.host || url.username || url.password) {
+    return undefined;
+  }
+  // A placeholder left as it is (`%word%`) is no page of the site's.
+  if (/%(?:query|number|date|sort|flag|id|word)%/u.test(address)) {
     return undefined;
   }
   const keys = new Set(
@@ -314,12 +320,13 @@ export function siteReadFit(operation: SiteOperation, address: string) {
   let fit: "exact" | "loose" = "exact";
   for (const [index, part] of wanted.entries()) {
     const value = decodeURIComponentSafe(given[index] ?? "");
-    if (placeholder.test(part) || decodeURIComponentSafe(part) === value)
-      continue;
+    const filled = placeholder.test(part);
+    if (!filled && decodeURIComponentSafe(part) === value) continue;
+    // A placeholder's value is one part of a path all the same: no slash.
     if (part === "" || value === undefined || !loosePart.test(value)) {
       return undefined;
     }
-    fit = "loose";
+    if (!filled) fit = "loose";
   }
   return fit;
 }

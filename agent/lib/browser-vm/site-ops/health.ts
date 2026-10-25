@@ -8,15 +8,17 @@ import type { SiteReadFailure } from "./operation";
  * errand goes through the page, where the worker finds the operation anew
  * (`rememberSiteOperations`), which ends the failures or replaces it.
  *
- * Only a read whose page fitted the template exactly counts, and only
- * when the site itself answered otherwise than before (Pomerado's outcome
- * classes, docs: a challenge or a host problem «does not count against the
- * tool»): `blocked` is the site's anti-bot or the exit, `empty` a search
- * with nothing, `failed` a page slower than the read waits (ostrovok.ru's
- * serp took 6–17 s through the stand's exit, 25.10) or the network, and a
- * `loose` page may be the fill's own mistake. A site that moved its data
- * elsewhere is mended all the same: the errand the read gives way to finds
- * the operation anew, and the changed find replaces it.
+ * Only `no_data` counts, on a page that fitted the template exactly: the
+ * site answered from the very address asked and its results were not where
+ * the operation reads them. Nothing else tells the site from the address a
+ * model filled (Pomerado's outcome classes: a challenge or a host problem
+ * «does not count against the tool»): `moved` and `unanswered` may be a
+ * wrong city slug or loosely chosen words, `blocked` is the site's anti-bot
+ * or the exit, `empty` a search with nothing, `failed` a page slower than
+ * the read waits (ostrovok.ru's serp took 6–17 s through the stand's exit,
+ * 25.10), and a `loose` page is the fill's own guess. A site that moved its
+ * data elsewhere is mended all the same: the errand the read gives way to
+ * finds the operation anew, and the changed find replaces it.
  */
 export const brokenAfter = 2;
 
@@ -28,10 +30,7 @@ export const brokenAfter = 2;
 const retryBrokenAfterMs = 6 * 60 * 60_000;
 
 export function readCounts(reason: SiteReadFailure, fit: "exact" | "loose") {
-  return (
-    fit === "exact" &&
-    (reason === "moved" || reason === "no_data")
-  );
+  return fit === "exact" && reason === "no_data";
 }
 
 export function siteOperationUsable(
