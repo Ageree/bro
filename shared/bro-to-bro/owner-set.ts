@@ -70,22 +70,24 @@ export function samePlace(left: string, right: string) {
 
 /**
  * The time the owner set themself, when code found it in their words: their
- * exact start (`at`) or their window. Null when they named no time or code
- * did not find it in what they said.
+ * exact start (`at`) or their window, and the longest the meeting may
+ * run. Null when they named no time or code did not find it in what they
+ * said.
  */
 export function ownerTime(mandate: BroMandate | null) {
   if (!mandate?.ownerSaid?.time || !mandate.window) return null;
   return {
     exactStart: mandate.at ?? null,
     from: mandate.window.from,
+    longest: mandate.ownerSaid.longest ?? null,
     to: mandate.window.to,
   };
 }
 
 /**
  * Whether a proposal's time is the owner's own: their exact start, or
- * inside their window, and never past its end — an exact start's window is
- * as long as the meeting the errand set.
+ * inside their window, never past its end and never longer than the
+ * meeting may run («в 19 ровно на час» covers no 19:00–21:00).
  */
 export function ownerTimeCovers(
   time: ReturnType<typeof ownerTime>,
@@ -96,6 +98,8 @@ export function ownerTimeCovers(
   const end = Date.parse(proposal.end);
   if (!(end > start)) return false;
   if (end > Date.parse(time.to)) return false;
+  if (time.longest !== null && end - start > time.longest * 60_000)
+    return false;
   if (time.exactStart !== null) return start === Date.parse(time.exactStart);
   return Date.parse(time.from) <= start;
 }
@@ -142,6 +146,7 @@ export function ownerSetOf(mandate: BroMandate) {
     time: time && {
       end: time.to,
       exact: time.exactStart !== null,
+      longest: time.longest,
       start: time.exactStart ?? time.from,
     },
     place: said?.place ? place : null,

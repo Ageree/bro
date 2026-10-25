@@ -45,9 +45,9 @@ function clauses(text: string) {
     .filter((clause) => clause !== "");
 }
 
-/** A clause that says no: «не могу», «не в Пушкине», «занят», «нельзя». */
+/** A clause that says no: «не могу», «не в Пушкине», «занят», «нельзя», «вместо субботы». */
 function negated(clause: string) {
-  return /(?<!\p{L})(?:не|нет|ни|нельзя|никак|кроме|занят\p{L}*|на\s+работе|работаю|уезжаю|в\s+отъезде)(?!\p{L})/u.test(
+  return /(?<!\p{L})(?:не|нет|ни|нельзя|никак|кроме|вместо|занят\p{L}*|на\s+работе|работаю|уезжаю|в\s+отъезде)(?!\p{L})/u.test(
     clause
   );
 }
@@ -58,23 +58,26 @@ const doubt =
 
 /**
  * Someone else's words or a request to someone else: «Петя написал: …»,
- * «попроси его …», «пусть он купит», «он предлагает …».
+ * «попроси его …», «пусть он купит», «он предлагает …», «его вариант: …».
  */
 const othersWords =
-  /(?<!\p{L})(?:написал\p{L}*|пишет|сказал\p{L}*|говорит|просит|попроси\p{L}*|пусть|предлагает|предложил\p{L}*|спрашивает|спросил\p{L}*|ответил\p{L}*|хочет)(?!\p{L})/u;
+  /(?<!\p{L})(?:написал\p{L}*|пишет|сказал\p{L}*|говорит|просит|попроси\p{L}*|пусть|предлагает|предложил\p{L}*|предложени\p{L}*|вариант\p{L}*|ответ|ответил\p{L}*|мнени\p{L}*|словам|пересла\p{L}*|пересылаю|спрашивает|спросил\p{L}*|хочет)(?!\p{L})/u;
 
 /**
  * The clauses in which the owner says yes to something in their own words:
- * no quotes (someone else's words, pasted), no clause of someone else's
+ * nothing in quotes (someone else's words, pasted) — with `names`, the
+ * venue check's, a name of one or two words in quotes («Пушкин») stays,
+ * but never a quoted line after a colon — no clause of someone else's
  * speech or of a request to someone, none that says no or only weighs it.
+ * A quote left open takes the rest of the text with it.
  */
-function affirmed(text: string) {
-  // A name in quotes («Пушкин») stays; words in quotes are someone else's.
-  const own = text.replaceAll(
-    /[«"“„]([^»"”“]*)[»"”“]/gu,
-    (_quote, inner: string) =>
-      inner.trim().split(/\s+/u).length <= 2 ? inner : " "
-  );
+function affirmed(text: string, names = false) {
+  const own = text
+    .replaceAll(/:\s*[«"“„][^»"”“]*[»"”“]/gu, " ")
+    .replaceAll(/[«"“„]([^»"”“]*)[»"”“]/gu, (_quote, inner: string) =>
+      names && inner.trim().split(/\s+/u).length <= 2 ? inner : " "
+    )
+    .replace(/[«»"“”„].*$/su, " ");
   return clauses(own).filter(
     (clause) =>
       !negated(clause) && !othersWords.test(clause) && !doubt.test(clause)
@@ -286,7 +289,10 @@ export function namedTime(
   timeZone: string,
   now: number
 ) {
-  const said = affirmed(text);
+  // «в субботу вечером у меня футбол»: what they have on then, no time to meet.
+  const said = affirmed(text).filter(
+    (clause) => !/(?<!\p{L})у\s+меня(?!\p{L})/u.test(clause)
+  );
   if (time.at !== null) {
     const local = zonedIso(Date.parse(time.at), timeZone);
     // One day and one hour in the clause: «в субботу в 18, в воскресенье
@@ -335,6 +341,68 @@ export function namedTime(
   return true;
 }
 
+/** A length said as a count of hours or minutes, in minutes: «2 часа», «40 минут». */
+function minutesOf(count: string | undefined, unit: string | undefined) {
+  return (
+    Number((count ?? "").replace(",", ".")) *
+    ((unit ?? "").startsWith("мин") ? 1 : 60)
+  );
+}
+
+/**
+ * The length of a meeting the owner's words name, in minutes — «на час»,
+ * «на полчаса», «минут на 40», «ненадолго», «до 20» after the exact start
+ * — the shortest of any they name anywhere, or null when they name none: a
+ * length read too short means one more question, never a longer meeting.
+ */
+export function meetingLength(
+  text: string,
+  start: string | null,
+  timeZone: string
+) {
+  const lengths: number[] = [];
+  for (const match of text.matchAll(
+    /(?<!\p{L})(?:на|ровно|всего|только|максимум|больше|более|дольше)\s+(\d+(?:[.,]\d+)?)\s*(час|мин)/gu
+  ))
+    lengths.push(minutesOf(match[1], match[2]));
+  for (const match of text.matchAll(
+    /(?<!\p{L})(час|минут)\p{L}*\s+на\s+(\d+(?:[.,]\d+)?)/gu
+  ))
+    lengths.push(minutesOf(match[2], match[1]));
+  for (const match of text.matchAll(
+    /(?<![\d.:])(\d+)\s*мин(?:ут\p{L}*|\.)?(?!\p{L})/gu
+  ))
+    lengths.push(Number(match[1]));
+  if (
+    /(?<!\p{L})(?:(?:на|ровно|всего|только|максимум|больше|более|дольше)\s+час|часик|часок|часочек)(?!\p{L})/u.test(
+      text
+    )
+  )
+    lengths.push(60);
+  if (/(?<!\p{L})полтора\s+час/u.test(text)) lengths.push(90);
+  if (
+    /(?<!\p{L})(?:полчас\p{L}*|ненадолго|на\s+минутку|по-быстрому|по\s+быстрому)(?!\p{L})/u.test(
+      text
+    )
+  )
+    lengths.push(30);
+  if (start !== null) {
+    const local = zonedIso(Date.parse(start), timeZone);
+    const begins =
+      Number(local.slice(11, 13)) + Number(local.slice(14, 16)) / 60;
+    for (const match of text.matchAll(
+      /(?<!\p{L})до\s+([01]?\d|2[0-4])(?:[:.]([0-5]\d))?(?![\d:.])/gu
+    )) {
+      const ends = Number(match[1]) + Number(match[2] ?? 0) / 60;
+      // «в 7 вечера до 9»: the end is past the start.
+      const after = ends <= begins && ends + 12 > begins ? ends + 12 : ends;
+      lengths.push(Math.round((after - begins) * 60));
+    }
+  }
+  const named = lengths.filter((minutes) => minutes > 0);
+  return named.length > 0 ? Math.min(...named) : null;
+}
+
 /**
  * Whether a place reads as someone's home, address or workplace rather than
  * a venue anyone may walk into: a flat, an entrance, a floor, «у меня», «ко
@@ -357,7 +425,7 @@ export function homeLike(text: string) {
 export function namedPlace(text: string, place: string) {
   return (
     !homeLike(place) &&
-    affirmed(text).some((clause) =>
+    affirmed(text, true).some((clause) =>
       placeNamedIn(place, comparableWords(clause))
     )
   );
@@ -371,6 +439,14 @@ const foreignMoney =
 export function foreignCurrency(text: string) {
   return foreignMoney.test(text);
 }
+
+/**
+ * Money a text speaks of without a sum to read: a sign, a unit, «деньги»,
+ * «бюджет», a price, a bound on a sum, slang for one («косарь»,
+ * «пятихатка», «лям», «пара штук»).
+ */
+export const moneyWords =
+  /[₽$€£¥]|(?<!\p{L})(?:руб\p{L}*|тыс\p{L}*|тыщ\p{L}*|косар\p{L}*|деньг\p{L}*|денег|бюджет\p{L}*|сумм\p{L}*|млн\p{L}*|миллион\p{L}*|лям\p{L}*|штук\p{L}*|сотк\p{L}*|сотн\p{L}*|сотен|пятихат\p{L}*|полтос\p{L}*|полтинник\p{L}*|кус(?:ок|ка|ков)|копе\p{L}*|цен(?:а|у|ы|е|ой|ам|ами|ах)?|ценник\p{L}*|стоимост\p{L}*|стоит|стоят|стоил\p{L}*|дорого|дороже|дешево|дешевле|скидк\p{L}*|максимум|минимум|не\s+больше|не\s+более|не\s+дороже|в\s+пределах|налич\p{L}*|на\s+карт\p{L}*)(?!\p{L})/iu;
 
 /** A number with its scale: «3 000», «2,5 тыс.», «5к», «1 млн», and what follows it. */
 const amountPattern =
@@ -423,14 +499,24 @@ const secret =
 const moneyClause =
   /(?<!\p{L})(?:скин\p{L}*|скидыва\p{L}*|сбро\p{L}*|бюджет\p{L}*|сумм\p{L}*|стоит|стоят|стоимост\p{L}*|цен\p{L}*|плат\p{L}*|заплат\p{L}*|оплат\p{L}*|руб\p{L}*|деньг\p{L}*|денег|потрат\p{L}*|вложи\p{L}*|переве\p{L}*)(?!\p{L})|₽/u;
 
+/**
+ * Words right before a number that make it a sum in a clause about money,
+ * or with a scale: «по 3000», «бюджет — 5к», «не больше 3 тысяч».
+ */
+const sumLead =
+  /(?<!\p{L})(?:по|за|до|около|примерно|максимум|минимум|бюджет\p{L}*|сумм\p{L}*|стоимост\p{L}*|цен\p{L}*|стоит|стоят|скин\p{L}*|скидыва\p{L}*|сбро\p{L}*|заплат\p{L}*|оплат\p{L}*|потрат\p{L}*|переве\p{L}*|вложи\p{L}*|дам|дать|больше|меньше|более|дороже|дешевле|пределах)[\s:—–-]*$/u;
+
 /** What may follow a sum: its currency, or a word that joins it on («по 3000 с каждого», «на подарок»). */
 const afterSum =
   /^\s*(?:$|[,.;!?)—–-]|₽|руб\p{L}*|р\.|(?:на|с|со|за|каждо\p{L}*|человек\p{L}*|в|по|до|от|и|или|тогда|итого|всего)(?!\p{L}))/u;
 
 /**
- * The sums in roubles the owner's words name: a number with a rouble sign,
- * «руб», a scale («тыс», «к», «млн»), or in a clause about money («скинемся
- * по 3000») — not «3000 листов», not dollars, not a clock time or a date.
+ * The sums in roubles the owner's words name, each in a construction of
+ * money around it: a rouble sign or «руб» after it; a scale («тыс», «к»,
+ * «млн») in a clause about money; or, in such a clause or with a scale, a
+ * word of money right before it («скинемся по 3000», «бюджет 5к»). Not
+ * «3000 листов» nor «листов 3000, цену узнай», not dollars, not a clock
+ * time or a date, not «до 21».
  */
 export function namedSums(text: string) {
   if (secret.test(text)) return [];
@@ -441,9 +527,16 @@ export function namedSums(text: string) {
       const after = clause.slice(match.index + match[0].length);
       // «3000 листов», «три тысячи листов»: a count, not a sum.
       if (!afterSum.test(after)) return [];
-      const marked = /^\s*(?:₽|руб\p{L}*|р\.)/u.test(after);
       const value = amountOf(match);
-      return value > 0 && (marked || about) ? [value] : [];
+      const marked = /^\s*(?:₽|руб\p{L}*|р\.)/u.test(after);
+      const scale = match[3] !== undefined;
+      const lead = sumLead.test(clause.slice(0, match.index));
+      // «до 21», «по 2»: an hour or a count, unless money marks it.
+      if (!marked && !scale && value <= 24) return [];
+      return value > 0 &&
+        (marked || (lead && (scale || about)) || (scale && about))
+        ? [value]
+        : [];
     });
   });
 }
@@ -503,7 +596,6 @@ const objectStopWords = new Set([
   "каждому",
   "конечно",
   "обязательно",
-  "пополам",
   "послезавтра",
   "потом",
   "сначала",
@@ -525,22 +617,152 @@ function objectWords(text: string) {
   );
 }
 
+/** The case endings of a name: «Марии», «Петром» — never «Марина» of «Мария». */
+const nameEndings = new Set([
+  "",
+  "а",
+  "е",
+  "ей",
+  "ем",
+  "ею",
+  "и",
+  "й",
+  "ой",
+  "ом",
+  "ою",
+  "у",
+  "ы",
+  "ю",
+  "я",
+]);
+
+/** Whether a word is one of a name's own forms, in any case: «Савелия» of «савелий». */
+function nameForm(word: string, name: string) {
+  const stem = /[аяйьоеиыу]$/u.test(name) ? name.slice(0, -1) : name;
+  return (
+    word === name ||
+    (stem.length >= 2 &&
+      word.startsWith(stem) &&
+      nameEndings.has(word.slice(stem.length)))
+  );
+}
+
 /**
- * Whether a promise to pay is one the owner made: it shares a word naming
- * what they said they pay for («подарок» of «маме на подарок»).
+ * Words a promise may hold besides what it is for, which need no saying:
+ * whose it is, how it is said, when, and what joins them.
  */
-export function paymentCovered(text: string, paysFor: readonly string[]) {
-  const words = comparableWords(text);
-  return paysFor.some((said) =>
-    objectWords(said).some((word) =>
-      words.some((each) => each.startsWith(wordStem(word)))
-    )
+const promiseFiller = new Set([
+  "бро",
+  "весь",
+  "вечером",
+  "вместе",
+  "возьмет",
+  "возьму",
+  "вот",
+  "все",
+  "всю",
+  "вся",
+  "готов",
+  "готова",
+  "готовы",
+  "давай",
+  "давайте",
+  "для",
+  "днем",
+  "его",
+  "ему",
+  "еще",
+  "завтра",
+  "здравствуй",
+  "здравствуйте",
+  "или",
+  "конечно",
+  "может",
+  "можем",
+  "мой",
+  "мою",
+  "моя",
+  "наш",
+  "наша",
+  "нашу",
+  "ней",
+  "нее",
+  "нему",
+  "ним",
+  "них",
+  "ночью",
+  "обязательно",
+  "она",
+  "они",
+  "послезавтра",
+  "потом",
+  "предлагает",
+  "предлагаю",
+  "предложение",
+  "предложению",
+  "привет",
+  "сам",
+  "сама",
+  "сами",
+  "себе",
+  "себя",
+  "связи",
+  "сегодня",
+  "сможет",
+  "согласен",
+  "согласна",
+  "сразу",
+  "также",
+  "тоже",
+  "точно",
+  "утром",
+  "хочет",
+  "хочу",
+  "эта",
+  "эти",
+  "это",
+  "этот",
+  "эту",
+]);
+
+/** A word of paying, buying or chipping in, in any form: «оплатит», «скинется», «покупает». */
+const promiseVerb =
+  /^(?:за)?(?:плат|плач)|^о(?:плат|плач)|^(?:по)?куп|^скин|^скидыва|^сбро|^переве|^угощ|^угост|^влож|^бер[уеёи]|^обеща/u;
+
+/** A day or a month, in any case: «субботу», «октября». */
+const calendarWord =
+  /^(?:понедельник|вторник|сред[аыуеой]|четверг|пятниц|суббот|воскресень|выходн|январ|феврал|март|апрел|ма[йяе]$|июн|июл|август|сентябр|октябр|ноябр|декабр)/u;
+
+/**
+ * Whether a promise to pay is all one the owner made: every word that says
+ * what it is for, for whom or how much — all but its verb, the two
+ * people's names (`names`, in their own forms), words of when and of no
+ * object, and dates and times — is among the words of what they said they
+ * pay for. «Савелий оплатит торт и автомобиль» after «я куплю торт» is not:
+ * the car is nobody's word.
+ */
+export function paymentCovered(
+  text: string,
+  paysFor: readonly string[],
+  names: readonly string[]
+) {
+  if (paysFor.length === 0) return false;
+  const said = paysFor.flatMap((each) => comparableWords(each));
+  const people = names.flatMap((name) => comparableWords(name));
+  return comparableWords(withoutDates(text)).every(
+    (word) =>
+      (word.length <= 2 && !/\d/u.test(word)) ||
+      promiseFiller.has(word) ||
+      promiseVerb.test(word) ||
+      calendarWord.test(word) ||
+      people.some((person) => nameForm(word, person)) ||
+      said.some((each) => each.startsWith(wordStem(word)))
   );
 }
 
 /**
  * Whether the owner's words name every point of the errand: each point's
- * words but the names of the two people of the link (\`names\`: «Савелий —
+ * words but the names of the two people of the link (`names`: «Савелий —
  * мясо и угли» needs «мясо» and «угли») in one clause that says yes. A
  * point nobody said — «Маша — торт» from memory — fails all of them: the
  * name of anyone else is a word to find too.
@@ -551,17 +773,13 @@ export function namedItems(
   names: readonly string[]
 ) {
   const said = affirmed(text);
-  const people = names.flatMap((name) =>
-    comparableWords(name).filter((word) => word.length >= 3)
-  );
+  const people = names.flatMap((name) => comparableWords(name));
   return (
     !secret.test(text) &&
     items.length > 0 &&
     items.every((item) => {
       const named = comparableWords(item)
-        .filter(
-          (word) => !people.some((person) => word.startsWith(wordStem(person)))
-        )
+        .filter((word) => !people.some((person) => nameForm(word, person)))
         .join(" ");
       return said.some((clause) =>
         placeNamedIn(named, comparableWords(clause))

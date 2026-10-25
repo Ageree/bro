@@ -105,6 +105,13 @@ export const broMandateSchema = z.object({
       paysFor: z.array(z.string().trim().max(200)).max(10),
       /** Every point of `items` is in the owner's words. */
       items: z.boolean().optional(),
+      /**
+       * The longest the meeting may run without the owner confirming it, in
+       * minutes: the shortest of what their words name, the errand's length
+       * and, for an exact start, two hours. Absent, the owner's window alone
+       * bounds it.
+       */
+      longest: z.number().int().min(1).max(1440).optional(),
     })
     .nullish(),
 });

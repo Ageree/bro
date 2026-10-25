@@ -7,6 +7,7 @@ import {
   broProposalSchema,
   envoyActions,
 } from "@shared/bro-to-bro/contract";
+import type { ownerSetOf } from "@shared/bro-to-bro/owner-set";
 
 /**
  * Everything one envoy step sees (docs/bro-to-bro.md, «Посол: вход и
@@ -68,22 +69,7 @@ export interface EnvoyBrief {
    * find there stays context. Absent, the envoy is the first version's.
    */
   readonly v2?: {
-    readonly ownerSet: {
-      readonly time: {
-        readonly start: string;
-        readonly end: string;
-        readonly exact: boolean;
-      } | null;
-      readonly place: string | null;
-      readonly items: readonly string[] | null;
-      readonly amountRub: number | null;
-      /** Named for the errand, but not found in the owner's words: context. */
-      readonly unconfirmed: {
-        readonly place: string | null;
-        readonly items: readonly string[] | null;
-        readonly amountRub: number | null;
-      };
-    } | null;
+    readonly ownerSet: ReturnType<typeof ownerSetOf>;
   };
 }
 

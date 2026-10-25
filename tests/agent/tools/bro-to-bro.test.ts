@@ -630,7 +630,10 @@ describe("the second version's Bro ↔ Bro tools", () => {
 
   const saturday = "2026-10-31T19:00:00+03:00";
 
-  async function start(words: string, input: Readonly<Record<string, string>>) {
+  async function start(
+    words: string,
+    input: Readonly<Record<string, number | string>>
+  ) {
     const { call } = await turn("person-message", {
       messages: [person(words)],
     });
@@ -691,6 +694,31 @@ describe("the second version's Bro ↔ Bro tools", () => {
       );
       expect(question.mandate).toMatchObject({
         ownerSaid: { place: false, time: false },
+      });
+    })
+  );
+
+  it(
+    "let a meeting run no longer than the owner said, whatever length the model gave",
+    inContext(async () => {
+      const hour = await start(
+        "Договорись с братом об ужине в субботу в 19, ровно на час",
+        { at: saturday, durationMinutes: 120 }
+      );
+      expect(hour.mandate).toMatchObject({
+        durationMinutes: 60,
+        ownerSaid: { longest: 60, time: true },
+        window: { from: saturday, to: "2026-10-31T20:00:00+03:00" },
+      });
+
+      const unsaid = await start(
+        "Договорись с братом об ужине в субботу в 19",
+        { at: saturday, durationMinutes: 180 }
+      );
+      expect(unsaid.mandate).toMatchObject({
+        durationMinutes: 120,
+        ownerSaid: { longest: 120, time: true },
+        window: { to: "2026-10-31T21:00:00+03:00" },
       });
     })
   );

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   homeLike,
+  meetingLength,
   namedAmounts,
   namedItems,
   namedPlace,
@@ -82,6 +83,16 @@ describe("namedTime", () => {
         "10-31T17:00",
         "11-01T00:00"
       )
+    ).toBe(false);
+  });
+
+  it("takes no time from a quote, however short, nor one the owner has something on", () => {
+    expect(exact("Его вариант: «суббота 19:00»", "10-31T19:00")).toBe(false);
+    expect(exact("Боря: «в субботу в 19»", "10-31T19:00")).toBe(false);
+    expect(exact("«в субботу в 19", "10-31T19:00")).toBe(false);
+    expect(exact("давай вместо субботы в 19", "10-31T19:00")).toBe(false);
+    expect(
+      window("в субботу вечером у меня футбол", "10-31T17:00", "11-01T00:00")
     ).toBe(false);
   });
 
@@ -176,6 +187,14 @@ describe("namedAmounts", () => {
     expect(namedSums(ownerText(["по 3000 долларов"]))).toEqual([]);
     expect(namedSums(ownerText(["бюджет 5к"]))).toEqual([5000]);
     expect(namedSums(ownerText(["бюджет 5000, ему не говори"]))).toEqual([]);
+    expect(namedSums(ownerText(["На печать листов 3000, цену узнай"]))).toEqual(
+      []
+    );
+    expect(namedSums(ownerText(["по 3 тысячи с каждого"]))).toEqual([3000]);
+    expect(namedSums(ownerText(["давай до 21, скинемся по 3000"]))).toEqual([
+      3000,
+    ]);
+    expect(namedSums(ownerText(["Его ответ: «скинусь 3000 ₽»"]))).toEqual([]);
   });
 
   it("takes no clock time or date for a sum", () => {
@@ -201,6 +220,11 @@ describe("namedItems, of a third person", () => {
   it("finds a third person's name in the owner's words, never takes it for granted", () => {
     const said = ownerText(["я беру мясо и торт"]);
     expect(namedItems(said, ["Маша — торт"], ["Савелий", "Борис"])).toBe(false);
+    // Only the two people's own names go without saying, in any case.
+    expect(namedItems(said, ["Марии — торт"], ["Савелий", "Мария"])).toBe(true);
+    expect(namedItems(said, ["Марина — торт"], ["Савелий", "Мария"])).toBe(
+      false
+    );
   });
 });
 
@@ -228,17 +252,48 @@ describe("paymentsSaid", () => {
     "Борис думает, что я заплачу за всех",
     "я плачу",
     "торт я куплю",
+    "Его ответ: «оплачу торт»",
   ])("hears no promise of the owner's in: %s", (text) => {
     expect(paymentsSaid(ownerText([text]))).toEqual([]);
   });
 
-  it("covers a promise only of what the owner said they pay for", () => {
-    expect(paymentCovered("Савелий купит торт", ["торт"])).toBe(true);
-    expect(paymentCovered("Савелий оплатит весь праздник", ["торт"])).toBe(
-      false
-    );
+  it("covers a promise only when all of it is what the owner said they pay for", () => {
+    const names = ["Савелий", "Пётр"];
+    expect(paymentCovered("Савелий купит торт", ["торт"], names)).toBe(true);
     expect(
-      paymentCovered("Савелий оплатит маме квартиру", ["маме на подарок"])
-    ).toBe(false);
+      paymentCovered("Подарок маме купит Савелий", ["маме на подарок"], names)
+    ).toBe(true);
+    expect(
+      paymentCovered("Савелий оплатит торт в субботу", ["торт"], names)
+    ).toBe(true);
+    for (const [text, paysFor] of [
+      ["Савелий оплатит торт и автомобиль", ["торт"]],
+      ["Савелий оплатит весь праздник", ["торт"]],
+      ["Савелий оплатит маме квартиру", ["маме на подарок"]],
+      ["Савелий оплатит половину подарка", ["маме на подарок"]],
+      ["Савелий купит торт", []],
+    ] as const)
+      expect(paymentCovered(text, [...paysFor], names)).toBe(false);
+  });
+});
+
+describe("meetingLength", () => {
+  const start = "2026-10-31T19:00:00+03:00";
+
+  it.each([
+    ["в субботу в 19 ровно на час", 60],
+    ["кофе минут на 40", 40],
+    ["в 19 до 20:30", 90],
+    ["в 7 вечера до 9", 120],
+    ["на полчаса забегу", 30],
+    ["посидим часа на 3", 180],
+  ])("reads the length the owner named: %s", (text, minutes) => {
+    expect(meetingLength(ownerText([text]), start, moscow)).toBe(minutes);
+  });
+
+  it("names no length the owner did not say", () => {
+    expect(meetingLength(ownerText(["в субботу в 19"]), start, moscow)).toBe(
+      null
+    );
   });
 });

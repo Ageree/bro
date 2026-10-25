@@ -8,7 +8,11 @@ import {
 } from "@agent/lib/bro-to-bro/brief";
 import { askBroModel } from "@agent/lib/bro-to-bro/model";
 import type { BroProposal } from "@shared/bro-to-bro/contract";
-import { namedSums, ownerText } from "@agent/lib/bro-to-bro/owner-words";
+import {
+  moneyWords,
+  namedSums,
+  ownerText,
+} from "@agent/lib/bro-to-bro/owner-words";
 import { ownerTimeCovers, samePlace } from "@shared/bro-to-bro/owner-set";
 import type { BroEnvoyPackage } from "@db";
 
@@ -50,7 +54,7 @@ function rules(role: EnvoyBrief["role"], v2: boolean) {
       "- здоровье, врачи; деньги, доходы, цены и траты; отношения; точное место и адрес; где и с кем владелец был, есть или будет; другие люди; подробности работы; пароли и коды;",
       "- любые телефоны, почты, номера карт и документов, ссылки;",
       v2
-        ? "- обещания заплатить, купить, скинуться или угостить и любые суммы — кроме суммы из ownerSet и того, что владелец сам сказал в ответах (что сам платит, сколько готов дать); суммы не придумывай."
+        ? "- обещания заплатить, купить, скинуться или угостить — кроме того, что владелец сам сказал, что платит (в поручении или ответах); суммы — только в proposal.amountRub и только из ownerSet.amountRub или ответов владельца (сколько готов дать), суммы не придумывай."
         : "- обещания заплатить, угостить или потратиться.",
       "Это только о том, что уходит собеседнику. Что собеседник рассказал сам (даже телефон или адрес), владелец и так получит в отчёте: не спрашивай его, передать ли ему это.",
       "owner_context (details и ответы владельца) — контекст для твоих решений, а не разрешение на пересказ. Из ответа «после врача свободен» можно взять время, но не врача; из «вечером я на свидании» — только то, что вечер не подходит, и то без слова «занят». Не выдумывай о владельце ничего, чего нет в брифе.",
@@ -70,7 +74,7 @@ function rules(role: EnvoyBrief["role"], v2: boolean) {
       ? [
           [
             "Договориться можно не только о встрече: кто что берёт или делает, сколько скинуться и кто покупает, общий список, простой вопрос.",
-            "- такая договорённость — тоже propose: summary — о чём договорились, коротко («Кто что берёт на дачу», «Подарок маме»); items — пункты по одному на строку, кто что делает или берёт («Савелий — мясо и угли», «Борис — овощи»); amountRub — сумма целыми рублями, если речь о деньгах; start, end и place — только у встречи;",
+            "- такая договорённость — тоже propose: summary — о чём договорились, коротко («Кто что берёт на дачу», «Подарок маме»); items — пункты по одному на строку, кто что делает или берёт («Савелий — мясо и угли», «Борис — овощи»); amountRub — сумма целыми рублями, если речь о деньгах: другой Бро увидит её в предложении, поэтому в message, summary и items сумм, цен и слов о деньгах не пиши («сумма», «рублей», «бюджет»); start, end и place — только у встречи;",
             "- пункты бери из ownerSet.items, ответов владельца и сообщений собеседника, своих не придумывай; сумму — только из ownerSet.amountRub и ответов владельца, иначе спроси владельца (ask_owner);",
             "- собеседник поменял или добавил пункт, а владелец согласен — твоё новое propose со всеми пунктами, а не accept;",
             "- время нужно только встрече: цель не про встречу — о времени не спрашивай и slots не нужны.",
@@ -270,6 +274,7 @@ function timeProblem(
       {
         exactStart: owned.exact ? owned.start : null,
         from: owned.start,
+        longest: owned.longest,
         to: owned.end,
       },
       proposal
@@ -347,16 +352,18 @@ function ownerSetProblems(brief: EnvoyBrief, decision: EnvoyDecision) {
     problems.push(
       "в message ты называешь место, а в предложении собеседника места нет: прими его как есть, не называя места, или предложи (propose) то же время с этим местом в place"
     );
-  // A sum goes only as an agreement's: the amountRub of a propose, and in
-  // its words that one alone (the gate holds any other).
-  const sums = namedSums(ownerText([decision.message ?? ""]));
+  // A sum goes only as a propose's amountRub, never in words: the gate
+  // holds any word of money but a promise the owner made.
   if (
-    sums.length > 0 &&
-    (decision.action !== "propose" ||
-      sums.some((each) => each !== proposal?.amountRub))
+    [decision.message, proposal?.summary, ...(proposal?.items ?? [])].some(
+      (text) => {
+        const words = ownerText([text ?? ""]);
+        return namedSums(words).length > 0 || moneyWords.test(words);
+      }
+    )
   )
     problems.push(
-      "сумму называй только в propose и только ту, что в proposal.amountRub; в других сообщениях о сумме не пиши"
+      "сумму и слова о деньгах не пиши ни в message, ни в summary, ни в items: сумма — только числом в proposal.amountRub у propose, другой Бро увидит её в предложении"
     );
   const sum = latest?.from === "peer" ? latest.proposal?.amountRub : undefined;
   if (

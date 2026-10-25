@@ -8,6 +8,7 @@ import { runBroToBroSteps } from "@agent/lib/bro-to-bro/engine";
 import { recordBroInviteLinks } from "@agent/lib/bro-to-bro/exact-invite";
 import { broInviteMarker } from "@agent/lib/bro-to-bro/invite";
 import {
+  meetingLength,
   namedAmounts,
   namedItems,
   namedPlace,
@@ -834,6 +835,7 @@ function ownerNamed(
   names: readonly string[],
   time: {
     readonly at: string | null;
+    readonly longest: number | null;
     readonly window: { readonly from: string; readonly to: string };
   },
   timeZone: string,
@@ -841,6 +843,7 @@ function ownerNamed(
 ) {
   const text = ownerText(turn.said);
   const ownerSaid = {
+    ...(time.longest !== null && { longest: time.longest }),
     amount:
       input.amountRub !== undefined &&
       namedSums(text).includes(input.amountRub),
@@ -935,6 +938,22 @@ async function runTalk(turn: BroTurn, input: TalkInput, context: ToolContext) {
     const now = Date.now();
     const timeZone = await readWorkspaceTimeZone(scope);
     const at = turn.v2 ? input.at : undefined;
+    // The second version's longest meeting the owner need not confirm: the
+    // length their words name, no longer than the errand's; from an exact
+    // start they named no length for, two hours at most, whatever length
+    // the model gave.
+    const said = turn.v2
+      ? meetingLength(ownerText(turn.said), at ?? null, timeZone)
+      : null;
+    const duration = input.durationMinutes ?? null;
+    const longest =
+      said !== null
+        ? Math.min(said, duration ?? said)
+        : at === undefined
+          ? turn.v2
+            ? duration
+            : null
+          : Math.min(duration ?? 120, 120);
     const window =
       at === undefined
         ? (input.window ?? {
@@ -943,9 +962,7 @@ async function runTalk(turn: BroTurn, input: TalkInput, context: ToolContext) {
           })
         : {
             from: at,
-            // Two hours from the owner's start, whatever length the model
-            // gave: a longer meeting is the owner's to confirm.
-            to: zonedIso(Date.parse(at) + 120 * 60_000, timeZone),
+            to: zonedIso(Date.parse(at) + (longest ?? 120) * 60_000, timeZone),
           };
     if (
       Date.parse(window.to) <= Math.max(now, Date.parse(window.from)) ||
@@ -969,7 +986,7 @@ async function runTalk(turn: BroTurn, input: TalkInput, context: ToolContext) {
               name === null ? [] : [name]
             ),
           ],
-          { at: at ?? null, window },
+          { at: at ?? null, longest, window },
           timeZone,
           now
         )
@@ -978,7 +995,14 @@ async function runTalk(turn: BroTurn, input: TalkInput, context: ToolContext) {
       linkId: named.link.id,
       mandate: {
         details: input.details ?? null,
-        durationMinutes: input.durationMinutes ?? null,
+        // A meeting's length is a quarter of an hour at least; a shorter
+        // one the owner named stays theirs to confirm (longest).
+        durationMinutes:
+          longest !== null && duration !== null
+            ? Math.max(15, Math.min(duration, longest))
+            : said === null
+              ? duration
+              : Math.max(15, said),
         goal: input.goal,
         window,
         ...named2?.mandate,

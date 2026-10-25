@@ -489,6 +489,7 @@ describe("the second version's envoy", () => {
     time: {
       end: "2026-10-31T21:00:00+03:00",
       exact: true,
+      longest: 120,
       start: "2026-10-31T19:00:00+03:00",
     },
     unconfirmed: { amountRub: null, items: null, place: null },
@@ -630,6 +631,44 @@ describe("the second version's envoy", () => {
       decision: { action: "accept" },
       kind: "decided",
     });
+  });
+
+  it("keeps a sum out of its words: the proposal's amountRub carries it", async () => {
+    const gift = brief({
+      durationMinutes: null,
+      slots: { state: "not_granted" },
+      v2: {
+        ownerSet: {
+          amountRub: 3000,
+          items: null,
+          place: null,
+          time: null,
+          unconfirmed: { amountRub: null, items: null, place: null },
+        },
+      },
+    });
+    const proposal = { amountRub: 3000, summary: "Подарок маме" };
+    answers(
+      {
+        action: "propose",
+        message: "Привет! Бро Савелия на связи. Скинемся маме по 3000 ₽?",
+        outOfScope: [],
+        proposal,
+      },
+      {
+        action: "propose",
+        message: "Привет! Бро Савелия на связи. Скинемся маме на подарок?",
+        outOfScope: [],
+        proposal,
+      }
+    );
+    await expect(planEnvoyStep(gift, call)).resolves.toMatchObject({
+      decision: { action: "propose", proposal },
+      kind: "decided",
+    });
+    expect(
+      model.generate.mock.calls[1]?.[0].messages?.at(-1)?.content
+    ).toContain("сумму и слова о деньгах не пиши");
   });
 
   it("reads the second version's rules only on its own side", () => {

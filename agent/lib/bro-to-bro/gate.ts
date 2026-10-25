@@ -5,6 +5,7 @@ import { normalized, numberWords } from "@agent/lib/bro-to-bro/numbers";
 import {
   foreignCurrency,
   homeLike,
+  moneyWords,
   namedAmounts,
   paymentCovered,
 } from "@agent/lib/bro-to-bro/owner-words";
@@ -133,6 +134,13 @@ function numberFindings(text: string) {
 const paymentPattern =
   /(?<!\p{L})(?:заплат\p{L}*|заплач\p{L}*|куплю|купим|оплат\p{L}*|оплач\p{L}*|плачу|угощ\p{L}*|скинемся|скинусь|переведу|в долг)(?!\p{L})|за\s+(?:мой|свой|наш|его|её|ее)\s+сч[её]т/iu;
 
+/** Money as code finds it in any text: a currency sign, a sum with its unit, a word of roubles or of money. */
+const moneyPatterns: readonly RegExp[] = [
+  /[₽$€£¥]/u,
+  /\d\s*(?:тыс\p{L}*|тыщ\p{L}*|млн\p{L}*|млрд\p{L}*|сот(?:ен|ни|ня)|руб\p{L}*|р\.|rub|usd|eur|долл\p{L}*|бакс\p{L}*|евро|косар\p{L}*)(?!\p{L})|\d[kк](?![\p{L}\p{N}])/iu,
+  /(?<!\p{L})(?:руб(?:л\p{L}*|\.)?|долл(?:ар\p{L}*|\.)|бакс\p{L}*|евро|косар\p{L}*|тысяч\p{L}*|тыщ\p{L}*|деньг\p{L}*|денег)(?!\p{L})/iu,
+];
+
 const textPatterns: readonly (readonly [CodeFinding, RegExp])[] = [
   [
     "email",
@@ -152,15 +160,7 @@ const textPatterns: readonly (readonly [CodeFinding, RegExp])[] = [
     "link",
     /[a-z0-9-]{2,}\s*(?:\(dot\)|\[dot\]|\sdot\s|точка)\s*(?:ru|com|org|net|io|me|su|info|рф)(?![\p{L}\p{N}])/iu,
   ],
-  ["money", /[₽$€£¥]/u],
-  [
-    "money",
-    /\d\s*(?:тыс\p{L}*|тыщ\p{L}*|млн\p{L}*|млрд\p{L}*|сот(?:ен|ни|ня)|руб\p{L}*|р\.|rub|usd|eur|долл\p{L}*|бакс\p{L}*|евро|косар\p{L}*)(?!\p{L})|\d[kк](?![\p{L}\p{N}])/iu,
-  ],
-  [
-    "money",
-    /(?<!\p{L})(?:руб(?:л\p{L}*|\.)?|долл(?:ар\p{L}*|\.)|бакс\p{L}*|евро|косар\p{L}*|тысяч\p{L}*|тыщ\p{L}*|деньг\p{L}*|денег)(?!\p{L})/iu,
-  ],
+  ...moneyPatterns.map((pattern) => ["money", pattern] as const),
   ["money", paymentPattern],
   [
     "health",
@@ -230,58 +230,45 @@ const hourBeside =
 const wealthPattern =
   /(?<!\p{L})(?:зарплат\p{L}*|оклад\p{L}*|доход\p{L}*|зарабат\p{L}*|заработ\p{L}*|получает|получаю|получаешь|получал\p{L}*|долг(?:и|а|ов|ом|у|ах)?|в\s+долг|задолж\p{L}*|кредит\p{L}*|ипотек\p{L}*|займ\p{L}*|накоплен\p{L}*|сбережен\p{L}*|на\s+сч[её]ту|баланс\p{L}*|богат\p{L}*|бедн\p{L}*|нищ\p{L}*|миллионер\p{L}*|наследств\p{L}*|пенси\p{L}*|стипенди\p{L}*|алимент\p{L}*|ежемесячн\p{L}*|почасов\p{L}*|в\s+(?:месяц|день|год|неделю|час)|много\s+денег|нет\s+денег|денег\s+нет)(?!\p{L})/iu;
 
-/** A sum as written, its scale and currency with it: what explains the money words beside it. */
-const sumWithUnit =
-  /(?<![\d.,])(?:\d{1,3}(?:[\s\u00a0\u202f]\d{3})+|\d+)(?:[.,]\d{1,2})?(?!\d)\s*(?:тыс\p{L}*|тыщ\p{L}*|косар\p{L}*|к(?!\p{L})|k(?!\p{L})|млн\p{L}*|миллион\p{L}*)?\.?\s*(?:₽|руб\p{L}*|р\.)?/gu;
-
-/** Money a text speaks of besides the sums read in it: a sign, a unit, «деньги», a sum in words. */
-const moneyWordsPattern =
-  /[₽$€£¥]|(?<!\p{L})(?:руб\p{L}*|тыс\p{L}*|тыщ\p{L}*|косар\p{L}*|деньг\p{L}*|денег|бюджет\p{L}*|сумм\p{L}*|млн\p{L}*|миллион\p{L}*)(?!\p{L})/iu;
-
 /**
- * Whether the money a text speaks of fits the second version's one way for
- * it to go: as the sum of the agreement its packet proposes (\`amountRub\`),
- * one the owner named or approved — every sum of the text that very one,
- * and no word of money left once the sums are read (a sum in words,
- * «бюджет», «деньги»). Nothing of what someone earns, owes or keeps, no
- * other currency.
+ * Whether a text says no money but, at most, a promise to pay: no sum or
+ * number beside money, no sign, unit or word of money (slang and a bound
+ * on a sum among them), nothing of what someone earns, owes or keeps, no
+ * other currency. The second version's sum goes only as a proposal's
+ * `amountRub`, which code checks against the owner's own sums, and never in
+ * words: words of a sum may say whose money it is (docs/bro-to-bro.md, «Не
+ * только встречи»).
  */
-function moneyFits(
-  text: string,
-  v2: NonNullable<GateAllowance["v2Allowed"]>,
-  agreementSum: number | undefined
-) {
-  if (foreignCurrency(text) || wealthPattern.test(normalized(text)))
-    return false;
-  const unhoured = text.replaceAll(hourBeside, " ");
-  const sums = namedAmounts(unhoured);
-  if (
-    sums.length > 0 &&
-    (agreementSum === undefined ||
-      !v2.amountsRub.includes(agreementSum) ||
-      !sums.every((sum) => sum === agreementSum))
-  )
-    return false;
-  return !moneyWordsPattern.test(
-    normalized(unhoured).replaceAll(sumWithUnit, " ")
+function noMoney(text: string) {
+  const plain = normalized(text);
+  return (
+    !foreignCurrency(plain) &&
+    !wealthPattern.test(plain) &&
+    !moneyWords.test(plain) &&
+    !moneyPatterns.some(
+      (pattern) => pattern.test(text) || pattern.test(plain)
+    ) &&
+    namedAmounts(text.replaceAll(hourBeside, " ")).length === 0
   );
 }
 
 /**
- * Whether the money a text speaks of may go: it fits (\`moneyFits\`), a
- * promise to pay in it is one of what the owner said they pay for, and it
- * is a sum of the agreement or such a promise at all — «у него много
- * денег» is neither.
+ * Whether the money code found in a text may go, the second version's: the
+ * text says no money (`noMoney`), and each sentence of it that promises to
+ * pay promises only what the owner said they pay for (`paymentCovered`).
  */
-function moneyAllowed(
+function promiseAllowed(
   text: string,
-  v2: NonNullable<GateAllowance["v2Allowed"]>,
-  agreementSum: number | undefined
+  paysFor: readonly string[],
+  names: readonly string[]
 ) {
-  if (!moneyFits(text, v2, agreementSum)) return false;
-  const promise = paymentPattern.test(normalized(text));
-  if (promise && !paymentCovered(text, v2.paysFor)) return false;
-  return namedAmounts(text.replaceAll(hourBeside, " ")).length > 0 || promise;
+  return (
+    noMoney(text) &&
+    text
+      .split(/(?<!\d)[.!?]+|[.!?]+(?!\d)|[;\n]+/u)
+      .filter((sentence) => paymentPattern.test(normalized(sentence)))
+      .every((sentence) => paymentCovered(sentence, paysFor, names))
+  );
 }
 
 function codeReasons(packet: OutgoingPacket, allowed: GateAllowance) {
@@ -296,13 +283,15 @@ function codeReasons(packet: OutgoingPacket, allowed: GateAllowance) {
   const amount = packet.proposal?.amountRub;
   if (amount !== undefined) findings.add("money");
   const v2 = allowed.v2Allowed;
+  const names = [allowed.self.name, allowed.peer.name];
   if (
     v2 &&
     findings.has("money") &&
     (amount === undefined || v2.amountsRub.includes(amount)) &&
     found.every(
       (each) =>
-        !each.findings.has("money") || moneyAllowed(each.text, v2, amount)
+        !each.findings.has("money") ||
+        promiseAllowed(each.text, v2.paysFor, names)
     )
   )
     findings.delete("money");
@@ -492,8 +481,7 @@ function disclosed(
   allowed: Pick<
     GateAllowance,
     "peer" | "role" | "self" | "shareNotes" | "v2Allowed"
-  >,
-  agreementSum: number | undefined
+  >
 ) {
   const names = [allowed.self.name, allowed.peer.name];
   const v2 = allowed.v2Allowed;
@@ -513,8 +501,10 @@ function disclosed(
       return [];
     if (v2 && source !== null && !ownerCovers.has(source)) {
       // The second version's: a venue goes when code finds it among the
-      // side's venues and nothing of a home in it; money when every sum is
-      // the owner's own, and a promise to pay when their words said they pay.
+      // side's venues and nothing of a home in it, and a promise to pay
+      // when it says no money and all of it is what the owner said they
+      // pay for. Money itself never goes in words: the sum is the
+      // proposal's amountRub, which code checks.
       if (category === "venue")
         return !homeLike(text) &&
           textFindings(text).size === 0 &&
@@ -523,16 +513,8 @@ function disclosed(
           )
           ? []
           : held;
-      // A sum must be named for money, and a promise must be one the
-      // owner made, whatever words the checker quoted it in.
-      if (category === "money")
-        return moneyAllowed(text, v2, agreementSum) &&
-          namedAmounts(text.replaceAll(hourBeside, " ")).length > 0
-          ? []
-          : held;
       if (category === "payment")
-        return moneyFits(text, v2, agreementSum) &&
-          paymentCovered(text, v2.paysFor)
+        return noMoney(text) && paymentCovered(text, v2.paysFor, names)
           ? []
           : held;
     }
@@ -558,7 +540,7 @@ const checkerLinesV2 = {
   examples: [
     '- goal «договорись с Петей об ужине в субботу в 19 в «Пушкине»», allowed.venues ["Пушкин"], packet «Привет! Бро Савелия на связи. Савелий хочет поужинать с Петром в «Пушкине» в сб 24.10 в 19:00» → {"facts": [{"text": "сб 24.10 в 19:00", "category": "time", "covered": "goal"}, {"text": "в «Пушкине»", "category": "venue", "covered": "venue"}]};',
     '- allowed.venues ["ресторан «Пушкин»"], packet «Давай в субботу в 19:00 в «Пушкине»?» → {"facts": [{"text": "суббота в 19:00", "category": "time", "covered": "goal"}, {"text": "в «Пушкине»", "category": "venue", "covered": "venue"}]};',
-    '- goal «скинемся маме на подарок — договорись о сумме», packet «Савелий предлагает скинуться по 3000 ₽» → {"facts": [{"text": "скинуться по 3000 ₽", "category": "payment", "covered": "goal"}]};',
+    '- goal «скинемся маме на подарок — договорись, кто покупает», packet «Савелий предлагает скинуться маме на подарок» → {"facts": [{"text": "скинуться маме на подарок", "category": "payment", "covered": "goal"}]};',
     '- packet «Можем у Савелия дома, Тверская 26» → {"facts": [{"text": "дома, Тверская 26", "category": "address", "covered": null}]};',
   ],
 } as const;
@@ -624,10 +606,8 @@ function checkerPrompt(packet: OutgoingPacket, allowed: GateAllowance) {
         ? {
             summary: proposal.summary,
             place: proposal.place ?? null,
+            // The sum is code's to check (`codeReasons`), never the model's.
             ...(proposal.items && { items: proposal.items }),
-            ...(proposal.amountRub !== undefined && {
-              amountRub: proposal.amountRub,
-            }),
           }
         : null,
     },
@@ -681,11 +661,7 @@ export async function screenOutgoing(
   const disclosure = disclosureSchema.safeParse(answer);
   if (!disclosure.success)
     return { reasons: [{ by: "unchecked" }], verdict: "hold" };
-  const held = disclosed(
-    disclosure.data.facts,
-    input.allowed,
-    input.packet.proposal?.amountRub
-  );
+  const held = disclosed(disclosure.data.facts, input.allowed);
   if (held.length === 0) return { verdict: "pass" };
   return {
     reasons: held.map((text) => ({ by: "model" as const, text })),

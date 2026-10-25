@@ -297,6 +297,7 @@ describe("screenOutgoing, the second version's", () => {
     ownerTime: {
       exactStart: "2026-10-31T19:00:00+03:00",
       from: "2026-10-31T19:00:00+03:00",
+      longest: 120,
       to: "2026-10-31T21:00:00+03:00",
     },
     paysFor: [],
@@ -362,28 +363,36 @@ describe("screenOutgoing, the second version's", () => {
     expect(verdicts).toEqual(["hold", "hold", "hold"]);
   });
 
-  it("lets a sum go only as the agreement's own, named by the owner", async () => {
-    const sum = [{ category: "money", covered: "goal", text: "по 3000 ₽" }];
+  it("lets a sum go only as the proposal's amountRub the owner named, never in words", async () => {
     const gift = { amountRub: 3000, summary: "Подарок маме" };
     await expect(
-      verdict(
-        { body: "Скидываемся по 3000 ₽ маме на подарок?", proposal: gift },
-        sum
-      )
+      verdict({ body: "Скидываемся маме на подарок?", proposal: gift }, [])
     ).resolves.toEqual({ verdict: "pass" });
-    // Outside the agreement, of another sum, or in another currency: held.
-    for (const packet of [
-      { body: "Скидываемся по 3000 ₽ маме на подарок?" },
-      { body: "Скидываемся по 5000 ₽?", proposal: gift },
-      { body: "По 3000 долларов?", proposal: gift },
-      { body: "По 3000, а бюджет до пятидесяти тысяч", proposal: gift },
-      { body: "Бюджет до 50 000 ₽", proposal: gift },
-      { body: "Савелий получает 3000 рублей в месяц", proposal: gift },
+    // The sum is code's to check: the checker never sees it.
+    expect(
+      model.generate.mock.calls.at(-1)?.[0].messages?.[0]?.content
+    ).not.toContain("3000");
+    // In words — the agreement's own sum, a balance of the same sum, another
+    // currency, a budget — it is held whatever the proposal carries.
+    const sum = [{ category: "money", covered: "goal", text: "3000 рублей" }];
+    for (const body of [
+      "Скидываемся по 3000 ₽ маме на подарок?",
+      "На карте Савелия осталось 3000 рублей",
+      "Скидываемся по 5000 ₽?",
+      "По 3000 долларов?",
+      "По 3000, а бюджет до пятидесяти тысяч",
+      "Бюджет до 50 000 ₽",
+      "Савелий получает 3000 рублей в месяц",
     ])
       expect(
         // oxlint-disable-next-line eslint/no-await-in-loop -- One packet after another.
-        (await verdict(packet, sum)).verdict
+        (await verdict({ body, proposal: gift }, sum)).verdict
       ).toBe("hold");
+    await expect(
+      verdict({ body: "На карте осталось три тысячи" }, [
+        { category: "money", covered: "goal", text: "на карте осталось 3000" },
+      ])
+    ).resolves.toMatchObject({ verdict: "hold" });
   });
 
   it("lets a promise to pay go only of what the owner said they pay for", async () => {
@@ -404,11 +413,23 @@ describe("screenOutgoing, the second version's", () => {
         ownerPays(["маме на подарок"])
       )
     ).resolves.toEqual({ verdict: "pass" });
+    await expect(
+      verdict(
+        { body: "Привет! Бро Савелия на связи. Савелий оплатит торт" },
+        paymentFacts("Савелий оплатит торт"),
+        ownerPays(["торт"])
+      )
+    ).resolves.toEqual({ verdict: "pass" });
     /* oxlint-disable eslint/no-await-in-loop -- One promise after another. */
     for (const [text, paysFor] of [
+      ["Савелий оплатит торт и автомобиль", ["торт"]],
       ["Савелий оплатит маме квартиру", ["маме на подарок"]],
       ["Савелий завтра оплатит автомобиль", ["завтра торт"]],
       ["Пётр, мой владелец купит подарок", []],
+      ["Савелий оплатит половину подарка", ["маме на подарок"]],
+      ["Савелий оплатит подарок, но не больше пятихатки", ["маме на подарок"]],
+      ["Савелий оплатит подарок не дороже пары штук", ["маме на подарок"]],
+      ["Савелий оплатит подарок, хоть лям", ["маме на подарок"]],
     ] as const) {
       const { verdict: each } = await verdict(
         { body: text },
@@ -418,6 +439,17 @@ describe("screenOutgoing, the second version's", () => {
       expect(each).toBe("hold");
     }
     /* oxlint-enable eslint/no-await-in-loop */
+    // The checker quoting a part of the promise frees none of the rest.
+    await expect(
+      verdict(
+        { body: "Савелий оплатит торт и автомобиль" },
+        paymentFacts("Савелий оплатит торт"),
+        ownerPays(["торт"])
+      )
+    ).resolves.toMatchObject({
+      reasons: [{ by: "code", finding: "money" }],
+      verdict: "hold",
+    });
   });
 
   it("holds what someone has or earns, whatever sums the owner named", async () => {

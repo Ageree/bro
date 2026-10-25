@@ -83,6 +83,23 @@ describe("ownerSetCovers", () => {
     ).toBe(false);
   });
 
+  it("takes no meeting longer than the owner's words let it run", () => {
+    const hour: BroMandate = {
+      ...mandate,
+      ownerSaid: {
+        amount: false,
+        longest: 60,
+        paysFor: [],
+        place: true,
+        time: true,
+      },
+    };
+    expect(ownerSetCovers(hour, dinner, now)).toBe(false);
+    expect(
+      ownerSetCovers(hour, { ...dinner, end: "2026-10-31T20:00:00+03:00" }, now)
+    ).toBe(true);
+  });
+
   it("takes a time inside the owner's window", () => {
     const evening: BroMandate = {
       ...mandate,
