@@ -1719,7 +1719,8 @@ CODE_CARDS_SCROLL_S = 10  # how long cards() scrolls down for cards a page loads
 CODE_CARDS_CHARS = 60_000  # cards() goes to the model's code, not its context: printing is cut apart
 CODE_VISIT_PAGES = 8  # the pages one visit() reads, CODE_VISIT_AT_ONCE at a time, each in a tab of its own
 CODE_VISIT_AT_ONCE = 3  # a page of a heavy site holds ~200 MB of a 3 GB sandbox while it is open
-CODE_VISIT_PAGE_S = 25  # one page of a visit: its load and the expression
+CODE_VISIT_PAGE_S = 15  # one page of a visit: its load and the expression
+CODE_VISIT_LOAD_S = 8  # how long a visit waits for a page's document before it reads what has come
 CODE_BLOCK_S = 180  # one block of the model's code; past it the sandbox is killed
 CODE_LLM_S = 120
 CODE_SECRET = re.compile(r"\x00secret:([a-z0-9_]{1,40})\x00")
@@ -2142,7 +2143,11 @@ class CodeApi:
                 page = await self.context.new_page()
                 try:
                     async def load():
-                        await page.goto(url, wait_until="domcontentloaded", timeout=CODE_VISIT_PAGE_S * 1000)
+                        # Some shops' pages never finish their document through the residential proxy (citilink.ru,
+                        # 25.10: 75 s a visit): read whatever has come once the page has started.
+                        await page.goto(url, wait_until="commit", timeout=CODE_VISIT_PAGE_S * 1000)
+                        with contextlib.suppress(Exception):
+                            await page.wait_for_load_state("domcontentloaded", timeout=CODE_VISIT_LOAD_S * 1000)
                         if code_prohibited(page.url):
                             raise ValueError(f"{page.url} is not allowed for errands (an archive or a cache)")
                         # A shop's page may draw its content after its document: read once more a moment later.
@@ -2150,7 +2155,7 @@ class CodeApi:
                             if expression:
                                 value = await page.evaluate(str(expression))
                             else:
-                                value = code_cut(await page.locator("body").inner_text(timeout=10_000),
+                                value = code_cut(await page.locator("body").inner_text(timeout=3_000),
                                                  CODE_TEXT_CHARS // len(urls))
                             if value not in (None, "", [], {}) or not pause:
                                 return value

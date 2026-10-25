@@ -566,7 +566,8 @@ class FakePage:
         self.url = url
 
     async def wait_for_load_state(self, state, timeout):
-        pass
+        if self.url.endswith("/slow"):  # a shop's page whose document never ends through the proxy
+            raise TimeoutError(f"{state} after {timeout} ms")
 
     async def evaluate(self, expression, arg=None):
         if expression.startswith("() => [document.title"):  # code_wall's one look at the page
@@ -2588,6 +2589,8 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
                 const pages = visit(['https://shop.test/1', 'https://shop.test/2', 'https://shop.test/3',
                                      'https://shop.test/4'], 'document.title');
                 console.log(JSON.stringify(pages.map(p => [p.url, p.value.expression])));
+                const slow = visit(['https://shop.test/slow'], 'document.title');
+                console.log(JSON.stringify(slow.map(p => [p.url, p.value.expression])));
                 try { visit(['https://shop.test/5', 'https://web.archive.org/web/2024/https://shop.test/']); }
                 catch (e) { console.log('blocked', e.message); }"""})]),
             FakeAnswer([("done", {"result": "Нашёл.\nRESULT: чайники\nNEEDS: none"})]),
@@ -2599,6 +2602,7 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         printed = model.requests[2][-1]["content"]
         self.assertIn(json.dumps([[f"https://shop.test/{n}", "document.title"] for n in range(1, 5)], separators=(",", ":")),
                       printed)
+        self.assertIn('"https://shop.test/slow","document.title"', printed)  # read though its document never ended
         self.assertIn("blocked visit: ValueError: https://web.archive.org/", printed)
         self.assertEqual(max(self.chrome.open_while_read), 1 + worker.CODE_VISIT_AT_ONCE)  # the run's tab and three
         self.assertEqual(self.chrome.tabs, ["T1"])  # every page it read is closed
