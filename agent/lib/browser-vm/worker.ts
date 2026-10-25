@@ -846,8 +846,11 @@ export async function lookBrowserVmSite(
   );
 }
 
-/** The worker gives a look 20 s (`SITE_LOOK_S`); the rest is the call's way there and back. */
-const siteLookTimeoutMs = 26_000;
+/**
+ * The worker answers a look within 34 s at the very worst (`SITE_LOOK_S` and
+ * its slot and tab close); the rest is the call's way there and back.
+ */
+const siteLookTimeoutMs = 38_000;
 
 /** A blank tab of its own for a keep-alive visit; its target id comes back. */
 export async function openBrowserVmWorkerTab(vm: BrowserVmTarget) {

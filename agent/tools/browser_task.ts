@@ -4908,7 +4908,7 @@ async function runBrowserTask(
       if (read !== undefined) {
         return {
           note: siteReadNote(read),
-          outcome: `${String(read.cards.length)} of the site's ${String(read.count)} results for ${read.url}, read just now from its own data.`,
+          outcome: `${String(read.cards.length)} of the site's ${String(read.count)} results for ${read.url}, read just now from ${read.from === "data" ? "its own data" : "the page"}.`,
           results: read.cards,
           status: "found",
         };

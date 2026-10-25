@@ -124,7 +124,12 @@ describe("Bro's own read of a site it has read before", () => {
       sessionId: "s1",
       site: "https://hh.ru",
     });
-    expect(read).toEqual({ cards: vacancies.cards, count: 50, url });
+    expect(read).toEqual({
+      cards: vacancies.cards,
+      count: 50,
+      from: "data",
+      url,
+    });
     const [[workspace, asked] = []] =
       browser.readBrowserVmSiteDirectly.mock.calls;
     expect(workspace).toBe(scope.workspaceId);
@@ -143,8 +148,12 @@ describe("Bro's own read of a site it has read before", () => {
       expect.objectContaining({ name: "hh.ru/search/vacancy" }),
       { direct: true, ok: true }
     );
-    expect(siteReadNote({ cards: [], count: 0, url, ...read })).toContain(
-      "call browser_task start again"
+    expect(
+      siteReadNote({ cards: [], count: 0, from: "data", url, ...read })
+    ).toContain("call browser_task start again");
+    // A first look's cards are the page's own order, and the note says so.
+    expect(siteReadNote({ cards: [], count: 0, from: "page", url })).toContain(
+      "neither filtered nor sorted"
     );
     // A second start on the site in the session wants what the read did not give: the browser.
     expect(
@@ -343,7 +352,8 @@ describe("Bro's own read of a site it has read before", () => {
         },
       ],
       count: 36,
-      url: page,
+      from: "page",
+      url: new URL(page).href,
     });
     expect(browser.lookBrowserVmSiteDirectly).toHaveBeenCalledWith(
       scope.workspaceId,
@@ -353,5 +363,104 @@ describe("Bro's own read of a site it has read before", () => {
       scope.workspaceId,
       expect.objectContaining({ name: "citilink.ru/search/" })
     );
+  });
+
+  it("gives a site back when its look failed for no fault of its own, and rests the workspace only when the worker cannot look", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { readSiteDirectly } = await direct("*", "*");
+    // The worker's error class as the module just loaded holds it.
+    const { BrowserVmWorkerError } =
+      await import("@agent/lib/browser-vm/worker");
+    const site = {
+      errand: "Найди 5 вакансий сварщика",
+      note: undefined,
+      site: "https://www.rabota.ru",
+    };
+    const page = "https://www.rabota.ru/vacancy/?query=сварщик";
+    model.generateText.mockResolvedValue({
+      output: { query: "сварщик", url: page },
+    });
+    // The model failed to name a page: the site is looked at by the next errand.
+    model.generateText.mockRejectedValueOnce(new Error("timeout"));
+    expect(
+      await readSiteDirectly(scope, { ...site, sessionId: "t1" })
+    ).toBeUndefined();
+    expect(browser.lookBrowserVmSiteDirectly).not.toHaveBeenCalled();
+    // The page answered no list of results: not again for a while.
+    browser.lookBrowserVmSiteDirectly.mockResolvedValueOnce({
+      ms: 4000,
+      ok: false,
+      reason: "unanswered",
+    });
+    expect(
+      await readSiteDirectly(scope, { ...site, sessionId: "t2" })
+    ).toBeUndefined();
+    expect(browser.lookBrowserVmSiteDirectly).toHaveBeenCalledTimes(1);
+    expect(
+      await readSiteDirectly(scope, { ...site, sessionId: "t3" })
+    ).toBeUndefined();
+    expect(browser.lookBrowserVmSiteDirectly).toHaveBeenCalledTimes(1);
+    // A look that ran out of time rests that site, not the others.
+    model.generateText.mockResolvedValue({
+      output: {
+        query: "сварщик",
+        url: "https://zarplata.ru/vacancy?q=сварщик",
+      },
+    });
+    browser.lookBrowserVmSiteDirectly.mockRejectedValueOnce(
+      new Error("timeout")
+    );
+    expect(
+      await readSiteDirectly(scope, {
+        ...site,
+        sessionId: "t3a",
+        site: "https://zarplata.ru",
+      })
+    ).toBeUndefined();
+    model.generateText.mockClear();
+    expect(
+      await readSiteDirectly(scope, {
+        ...site,
+        sessionId: "t3b",
+        site: "https://zarplata.ru",
+      })
+    ).toBeUndefined();
+    expect(model.generateText).not.toHaveBeenCalled();
+    // No words to check a page against: no look at all.
+    model.generateText.mockResolvedValue({
+      output: { query: null, url: "https://www.superjob.ru/vacancy/search/" },
+    });
+    expect(
+      await readSiteDirectly(scope, {
+        ...site,
+        sessionId: "t4",
+        site: "https://www.superjob.ru",
+      })
+    ).toBeUndefined();
+    expect(browser.lookBrowserVmSiteDirectly).toHaveBeenCalledTimes(2);
+    // A worker that has no look rests every site of the workspace: the next
+    // errand does not pay for the model or the call again.
+    model.generateText.mockResolvedValue({
+      output: { query: "диван", url: "https://youla.ru/moskva?q=диван" },
+    });
+    browser.lookBrowserVmSiteDirectly.mockRejectedValueOnce(
+      new BrowserVmWorkerError(404, "/v1/look", "not found")
+    );
+    expect(
+      await readSiteDirectly(scope, {
+        ...site,
+        sessionId: "t5",
+        site: "https://youla.ru",
+      })
+    ).toBeUndefined();
+    model.generateText.mockClear();
+    expect(
+      await readSiteDirectly(scope, {
+        ...site,
+        sessionId: "t6",
+        site: "https://www.detmir.ru",
+      })
+    ).toBeUndefined();
+    expect(model.generateText).not.toHaveBeenCalled();
   });
 });

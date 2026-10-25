@@ -2949,16 +2949,13 @@ CODE_CARDS_JS = r"""(limit) => {
     }
   }
   if (!best) return [];
-  // A card's title: the longest of its links' words that name it (not its price) — a badge («Осталось мало») is
-  // shorter than the item's name —, else its first line of two words or more.
-  const words = (t) => (t.match(/[A-Za-zА-Яа-яЁё]{3,}/g) || []).length;
-  const wordy = (t) => words(t) >= 2 && !/₽|руб/.test(t) && t.length <= 160;
-  const naming = (t) => words(t) >= 1 && !/₽|руб/.test(t) && t.length <= 160;
+  // A card's title: the words of its link that name it (not its price), else its first such line. Only a hint:
+  // the card's text is what it says (the longest link instead named ozon.ru's items but ostrovok.ru's reviews).
+  const wordy = (t) => (t.match(/[A-Za-zА-Яа-яЁё]{3,}/g) || []).length >= 2 && !/₽|руб/.test(t) && t.length <= 160;
   return best.filter((el) => clean(el.innerText).length >= 15).slice(0, limit).map((el) => {
     const anchors = [...(el.matches('a[href]') ? [el] : []), ...el.querySelectorAll('a[href]')];
     const links = [...new Set(anchors.map((a) => a.href).filter((h) => /^https?:/.test(h)))].slice(0, 4);
-    const named = anchors.filter((a) => /^https?:/.test(a.href)).map((a) => clean(a.innerText)).filter(naming)
-      .sort((a, b) => b.length - a.length);
+    const named = anchors.filter((a) => /^https?:/.test(a.href)).map((a) => clean(a.innerText)).filter(wordy);
     const lines = (el.innerText || '').split('\n').map(clean).filter(wordy);
     const img = el.querySelector('img[src]');
     return {title: named[0] || lines[0] || '', text: clean(el.innerText).slice(0, 700), links,
@@ -6668,9 +6665,14 @@ async def site_op_close(holder):
 SITE_OP_CLOSE_S = 5
 
 
-# A first look at a site's results page (`/v1/look`): how long it may take in all — the errand waits behind a look
-# that finds nothing, so less than a direct read's —, how long its cards may take to draw, and how many go back.
+# A first look at a site's results page (`/v1/look`): how long it may take in all once it has its slot — the
+# errand waits behind a look that finds nothing, so less than a direct read's —, of that what is left for learning
+# the operation once the cards are in, how long a look waits for a slot, how long its cards may take to draw, and
+# how many go back. With the tab's close (SITE_OP_CLOSE_S twice) a look answers within 34 s at the very worst;
+# Bro waits 38 (`siteLookTimeoutMs`).
 SITE_LOOK_S = 20
+SITE_LOOK_LEARN_S = 5
+SITE_LOOK_GATE_S = 4
 SITE_LOOK_CARDS_S = 8
 SITE_LOOK_CARDS = 30
 SITE_LOOK_PRICE = re.compile(r"(\d[\d\s\u00a0\u202f]{0,10}(?:[.,]\d{1,2})?)\s?(?:₽|руб)")
@@ -6730,40 +6732,56 @@ async def site_look(request):
                                          content_type="application/json")
     site_op_gate = site_op_gate or asyncio.Semaphore(SITE_OP_DIRECT_AT_ONCE)
     began = time.monotonic()
+    try:
+        await asyncio.wait_for(site_op_gate.acquire(), SITE_LOOK_GATE_S)
+    except asyncio.TimeoutError:
+        log.info("site look %s: no slot in %ss", parts.hostname, SITE_LOOK_GATE_S)
+        return web.json_response({"ok": False, "reason": "failed", "ms": round((time.monotonic() - began) * 1000)})
     holder = {"page": None}
     recorder = SiteTraffic()
-    async with site_op_gate:
+    deadline = time.monotonic() + SITE_LOOK_S
+    try:
+        # The page gets what learning leaves; it stops drawing cards at its own deadline and keeps those it has.
+        until = deadline - SITE_LOOK_LEARN_S
+        cards = await asyncio.wait_for(site_look_page(url, holder, recorder, until), until - time.monotonic() + 1)
+        if len(cards) < 3:
+            raise SiteOpFailure("empty", "the page shows no list of results")
+        if not site_look_answers(words, cards):
+            raise SiteOpFailure("unanswered", "the page's results do not answer the words they were asked for")
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(recorder.settle(), max(0.1, min(3, deadline - time.monotonic() - 1.5)))
+        operations = await site_operations_found(recorder, site_look_report(cards), None,
+                                                 max(0.5, deadline - time.monotonic() - 0.5))
+    except SiteOpFailure as failure:
+        cards, operations, reason = None, [], failure.reason
+        if reason != "blocked" and holder["page"] is not None and await code_wall(holder["page"]):
+            reason = "blocked"
+    except Exception as error:
+        cards, operations, reason = None, [], "failed"
+        log.info("site look failed: %s", type(error).__name__)
+    finally:
+        landed = holder["page"].url if holder["page"] is not None and not holder["page"].is_closed() else url
         try:
-            cards = await asyncio.wait_for(site_look_page(url, holder, recorder), SITE_LOOK_S)
-            if len(cards) < 3:
-                raise SiteOpFailure("empty", "the page shows no list of results")
-            if not site_look_answers(words, cards):
-                raise SiteOpFailure("unanswered", "the page's results do not answer the words they were asked for")
-            await recorder.settle()
-            operations = await site_operations_found(recorder, site_look_report(cards), None, 4)
-        except SiteOpFailure as failure:
-            cards, operations, reason = None, [], failure.reason
-            if reason != "blocked" and holder["page"] is not None and await code_wall(holder["page"]):
-                reason = "blocked"
-        except Exception as error:
-            cards, operations, reason = None, [], "failed"
-            log.info("site look failed: %s", type(error).__name__)
-        finally:
-            landed = holder["page"].url if holder["page"] is not None and not holder["page"].is_closed() else url
             await site_op_close(holder)
+        finally:
+            site_op_gate.release()
     ms = round((time.monotonic() - began) * 1000)
     if cards is None:
         log.info("site look %s: %s, %d ms", parts.hostname, reason, ms)
         return web.json_response({"ok": False, "reason": reason, "ms": ms})
+    # Only a link on the page's own host, https: a card's first link can be an ad's, a tracker's or a seller's.
     picked = [{"title": card.get("title") or "", "text": card.get("text", "")[:SITE_OP_FIELD_CHARS * 3],
-               "link": (card.get("links") or [None])[0]} for card in cards[:SITE_LOOK_CARDS]]
+               "link": next((link for link in card.get("links") or []
+                             if link.startswith("https://") and same_host(link, landed)), None)}
+              for card in cards[:SITE_LOOK_CARDS]]
     log.info("site look %s: %d cards, %d operations, %d ms", parts.hostname, len(cards), len(operations), ms)
     return web.json_response({"ok": True, "cards": picked, "count": len(cards), "operations": operations,
                               "page": landed, "ms": ms})
 
 
-async def site_look_page(url, holder, recorder):
-    """The cards of a results page opened in a visit's tab (`site_op_direct`'s), its requests written down."""
+async def site_look_page(url, holder, recorder, until):
+    """The cards of a results page opened in a visit's tab (`site_op_direct`'s), its requests written down, by
+    `until` (monotonic): the cards drawn by then are the page's."""
     from playwright.async_api import async_playwright
 
     holder["pw"] = await async_playwright().start()
@@ -6782,7 +6800,8 @@ async def site_look_page(url, holder, recorder):
         holder["target"] = (await cdp.send("Target.getTargetInfo"))["targetInfo"]["targetId"]
         worker.visit_tabs.add(holder["target"])
     recorder.watch(page)
-    response = await page.goto(url, wait_until="domcontentloaded", timeout=SITE_OP_LOAD_S * 1000)
+    load = max(1.0, min(SITE_OP_LOAD_S, until - time.monotonic() - 1))
+    response = await page.goto(url, wait_until="domcontentloaded", timeout=load * 1000)
     status = response.status if response is not None else None
     if status in SITE_GONE:
         raise site_status_failure(status, "the page")
@@ -6790,10 +6809,21 @@ async def site_look_page(url, holder, recorder):
         raise SiteOpFailure("moved", "the page went to another site")
     began, best, last = time.monotonic(), [], None
     while True:
-        now = await page.evaluate(CODE_CARDS_JS, SITE_LOOK_CARDS)
+        try:
+            now = await page.evaluate(CODE_CARDS_JS, SITE_LOOK_CARDS)
+        except Exception as error:
+            # The page went on to another document (afisha.ru's own redirect after its first one, 25.10): read
+            # that one, if it is still the site's, until the deadline.
+            if "context was destroyed" not in str(error) or time.monotonic() >= until - 1.5:
+                raise
+            await asyncio.sleep(0.7)
+            if not same_host(page.url, url):
+                raise SiteOpFailure("moved", "the page went to another site") from None
+            continue
         mark = (len(now), now[0]["text"] if now else "")
         best = now if len(now) >= len(best) else best
-        if (mark == last and len(now) >= 5) or time.monotonic() - began >= SITE_LOOK_CARDS_S:
+        if ((mark == last and len(now) >= 5) or time.monotonic() - began >= SITE_LOOK_CARDS_S
+                or time.monotonic() >= until - 0.7):
             break
         last = mark
         await asyncio.sleep(0.7)

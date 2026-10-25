@@ -753,6 +753,18 @@ class LookTest(DirectSetup):
         self.assertEqual(len(closed), worker.SITE_OP_DIRECT_AT_ONCE + 1)
         self.assertEqual(self.worker.visit_tabs, set())
 
+    async def test_a_look_waits_for_a_slot_only_briefly(self):
+        from unittest import mock
+
+        self.enterContext(mock.patch.object(worker, "SITE_LOOK_GATE_S", 0.05))
+        worker.site_op_gate = asyncio.Semaphore(1)
+        await worker.site_op_gate.acquire()
+        try:
+            status, answer = await asyncio.wait_for(self.look("https://hh.ru/search/vacancy?text=x", "x"), 5)
+        finally:
+            worker.site_op_gate = None
+        self.assertEqual((status, answer["ok"], answer["reason"]), (200, False, "failed"))
+
 
 if __name__ == "__main__":
     unittest.main()
