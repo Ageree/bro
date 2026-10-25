@@ -51,7 +51,7 @@ const siteNotes: readonly {
   // generally known of the sites. Check them on a test account before relying on them.
   {
     hosts: ["wildberries.ru"],
-    note: "its search opens straight at https://www.wildberries.ru/catalog/0/search.aspx?search=<words>&sort=priceup (cheapest first). Each product is a card with its price, brand and name, rating and number of reviews: filter by rating in your own code.",
+    note: "its search opens straight at https://www.wildberries.ru/catalog/0/search.aspx?search=<words>&sort=priceup (cheapest first); for a price floor or ceiling add &priceU=<from>;<to> in kopecks (from 1500 ₽: &priceU=150000;100000000), or cheapest first is all below it. Each product is a card with its price, brand and name, rating and number of reviews: check the price and filter by rating in your own code, and if the cards still start below the floor, the parameter did not take: filter the price in your own code over all the cards cards() gives.",
   },
   {
     hosts: ["avito.ru"],
