@@ -723,6 +723,39 @@ describe("starting a run on a workspace's browser VM", () => {
     expect(await browsers({})).toEqual([undefined]);
   });
 
+  it("runs only a search in the code engine's pilot on the code engine", async () => {
+    worker.startBrowserVmWorkerRun.mockImplementation((_vm, input) =>
+      Promise.resolve({
+        id: input.id,
+        sessionId: input.sessionId ?? "",
+        status: "queued",
+      })
+    );
+    const engines = async (pilot: string, search: boolean) => {
+      vi.resetModules();
+      worker.startBrowserVmWorkerRun.mockClear();
+      const client = await importWithSettings(
+        { ...browserVmTestEnvironment, BROWSER_CODE_ENGINE_WORKSPACES: pilot },
+        async () => import("@agent/lib/browser-use/client")
+      );
+      await client.createBrowserUseRun({
+        profileId,
+        search,
+        task: composedTask,
+      });
+      return worker.startBrowserVmWorkerRun.mock.calls.map(
+        ([, input]) => input.engine
+      );
+    };
+
+    expect(await engines(workspaceId, true)).toEqual(["code"]);
+    expect(await engines("*", true)).toEqual(["code"]);
+    // An errand that signs in, stages or pays is not a search: browser-use.
+    expect(await engines(workspaceId, false)).toEqual([undefined]);
+    expect(await engines("personal:another", true)).toEqual([undefined]);
+    expect(await engines("", true)).toEqual([undefined]);
+  });
+
   it("gives the worker the 2Captcha key only when the deployment has one", async () => {
     worker.startBrowserVmWorkerRun.mockImplementation((_vm, input) =>
       Promise.resolve({

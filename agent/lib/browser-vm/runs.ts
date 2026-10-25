@@ -27,7 +27,7 @@ import {
   prepareBrowserVmSession,
   touchBrowserVm,
 } from "./lifecycle";
-import { errandBrowser, fastBrowserPilot } from "./pilot";
+import { errandBrowser, errandEngine, fastBrowserPilot } from "./pilot";
 import { browserVmProxyLines, browserVmProxyPlace } from "./proxy";
 import { staticBrowserPool } from "@agent/lib/browser-pool/hosts";
 import {
@@ -330,9 +330,10 @@ export async function createBrowserVmRun(input: {
   const id = newBrowserVmRunId(workspaceId);
   const sessionId = input.sessionId ?? newBrowserVmSessionId(workspaceId);
   const task = `${input.task}\n\n${addressWallLine}`;
-  const [fast, browser] = await Promise.all([
+  const [fast, browser, engine] = await Promise.all([
     fastBrowserPilot({ workspaceId }),
     errandBrowser({ workspaceId }),
+    errandEngine({ workspaceId }, input.search),
   ]);
   // Recorded before the worker is asked: a start whose answer is lost still
   // has a row to be found by, and the task outlives the VM. Until the
@@ -349,6 +350,7 @@ export async function createBrowserVmRun(input: {
   const accepted = await startRun(vm, {
     browser,
     captcha: browserVmCaptcha(),
+    engine,
     id,
     llm,
     maxSteps: runMaxSteps,
