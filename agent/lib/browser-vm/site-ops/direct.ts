@@ -134,7 +134,7 @@ const guessSchema = z.object({
 const guessInstructions = `You name a website's own search-results page for an errand. You get the errand, today's date, the site, and its note when there is one.
 Write the address of the site's results page that shows what the errand looks for, with its query, filters and sort written the way this site writes them in its own addresses — the page a person lands on after searching the site. Use only what you know of this site's addresses; when you do not know how it writes them, answer url null rather than guess.
 Answer url null as well when the errand is not a search for options: it asks for something to be booked, bought, sent or signed in to, or for a detail only one item's own page has.
-Answer JSON only: {"url": the address or null, "query": the words searched for, as the page should show them, or null}.`;
+Answer JSON only: {"url": the address or null, "query": the words of what is searched for — the item, the job, the make and model, the place —, as the results should name them, or null}.`;
 
 /**
  * The site's results page for an errand on a site Bro has no operation for,
@@ -407,18 +407,26 @@ async function lookSite(
     return undefined;
   });
   const url = onSite(input.site, guess?.url ?? null);
+  // The page is looked at only against its words: the worker checks that
+  // its cards name them, and a page with none to check is the browser's.
+  const words = guess?.query?.trim() ?? "";
   const guessMs = Date.now() - began;
-  if (url === undefined) {
+  if (url === undefined || words === "") {
     console.info("[site-api] left to the browser", {
       guessMs,
-      reason: guess?.url === null ? "no_page" : "address",
+      reason:
+        guess?.url === null
+          ? "no_page"
+          : url === undefined
+            ? "address"
+            : "no_words",
       workspaceId: scope.workspaceId,
     });
     return undefined;
   }
   const look = await lookBrowserVmSiteDirectly(scope.workspaceId, {
     url,
-    words: guess?.query ?? null,
+    words,
   }).catch((cause: unknown) => {
     console.warn("[site-api] the look did not go through", {
       name: cause instanceof Error ? cause.name : "unknown",

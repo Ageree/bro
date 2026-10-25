@@ -725,9 +725,33 @@ class LookTest(DirectSetup):
         self.next_page = Page({url: "<html></html>"})
         status, answer = await self.look(url, None)
         self.assertEqual((answer["ok"], answer["reason"]), (False, "empty"))
+        # Cards and no words to check them against, or a match or two by chance: not the results asked for.
+        for words in (None, "продакт", "Unagrande"):
+            self.next_page = Page({url: HH_DOCUMENT}, [Document(url, HH_DOCUMENT)])
+            self.next_page.cards = [self.card(vacancy) for vacancy in VACANCIES]
+            status, answer = await self.look(url, words)
+            self.assertEqual((answer["ok"], answer.get("reason")), (False, "unanswered") if words != "продакт"
+                             else (True, None), words)
         for bad in ("http://hh.ru/search", "https://hh.ru:8443/search", "https://web.archive.org/hh.ru", 5):
             status, _ = await self.look(bad, None)
             self.assertEqual(status, 400, bad)
+
+    async def test_a_tab_that_does_not_close_holds_no_slot(self):
+        from unittest import mock
+
+        url = "https://hh.ru/search/vacancy?text=менеджер&area=1"
+        self.enterContext(mock.patch.object(worker, "SITE_OP_CLOSE_S", 0.05))
+        closed = []
+        self.enterContext(mock.patch.object(worker, "close_tab", lambda target: closed.append(target) or asyncio.sleep(0)))
+        for _ in range(worker.SITE_OP_DIRECT_AT_ONCE + 1):
+            page = Page({url: HH_DOCUMENT}, [Document(url, HH_DOCUMENT)])
+            page.cards = [self.card(vacancy) for vacancy in VACANCIES]
+            page.close = lambda: asyncio.sleep(3600)
+            self.next_page = page
+            status, answer = await asyncio.wait_for(self.look(url, "менеджер"), 5)
+            self.assertEqual((status, answer["ok"]), (200, True))
+        self.assertEqual(len(closed), worker.SITE_OP_DIRECT_AT_ONCE + 1)
+        self.assertEqual(self.worker.visit_tabs, set())
 
 
 if __name__ == "__main__":

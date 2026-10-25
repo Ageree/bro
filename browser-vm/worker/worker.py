@@ -2949,12 +2949,16 @@ CODE_CARDS_JS = r"""(limit) => {
     }
   }
   if (!best) return [];
-  // A card's title: the words of its link that name it (not its price), else its first such line.
-  const wordy = (t) => (t.match(/[A-Za-zА-Яа-яЁё]{3,}/g) || []).length >= 2 && !/₽|руб/.test(t) && t.length <= 160;
+  // A card's title: the longest of its links' words that name it (not its price) — a badge («Осталось мало») is
+  // shorter than the item's name —, else its first line of two words or more.
+  const words = (t) => (t.match(/[A-Za-zА-Яа-яЁё]{3,}/g) || []).length;
+  const wordy = (t) => words(t) >= 2 && !/₽|руб/.test(t) && t.length <= 160;
+  const naming = (t) => words(t) >= 1 && !/₽|руб/.test(t) && t.length <= 160;
   return best.filter((el) => clean(el.innerText).length >= 15).slice(0, limit).map((el) => {
     const anchors = [...(el.matches('a[href]') ? [el] : []), ...el.querySelectorAll('a[href]')];
     const links = [...new Set(anchors.map((a) => a.href).filter((h) => /^https?:/.test(h)))].slice(0, 4);
-    const named = anchors.filter((a) => /^https?:/.test(a.href)).map((a) => clean(a.innerText)).filter(wordy);
+    const named = anchors.filter((a) => /^https?:/.test(a.href)).map((a) => clean(a.innerText)).filter(naming)
+      .sort((a, b) => b.length - a.length);
     const lines = (el.innerText || '').split('\n').map(clean).filter(wordy);
     const img = el.querySelector('img[src]');
     return {title: named[0] || lines[0] || '', text: clean(el.innerText).slice(0, 700), links,
@@ -6643,14 +6647,25 @@ async def site_op_direct(operation, url, holder):
 
 
 async def site_op_close(holder):
+    """A visit's tab closed and its Playwright stopped, each in a few seconds: a close that never came back held a
+    slot of the gate for good on the stand (25.10, afisha.ru's page navigating as the read failed), and every read
+    after it waited behind. Chrome closes the tab itself when Playwright does not."""
+    page, target = holder.get("page"), holder.get("target")
+    closed = False
     with contextlib.suppress(Exception):
-        if holder.get("page") is not None:
-            await holder["page"].close()
-    if holder.get("target") is not None:
-        worker.visit_tabs.discard(holder["target"])
+        if page is not None:
+            await asyncio.wait_for(page.close(), SITE_OP_CLOSE_S)
+            closed = True
+    if not closed and target is not None:
+        await close_tab(target)
+    if target is not None:
+        worker.visit_tabs.discard(target)
     with contextlib.suppress(Exception):
         if holder.get("pw") is not None:
-            await holder["pw"].stop()
+            await asyncio.wait_for(holder["pw"].stop(), SITE_OP_CLOSE_S)
+
+
+SITE_OP_CLOSE_S = 5
 
 
 # A first look at a site's results page (`/v1/look`): how long it may take in all — the errand waits behind a look
@@ -6673,9 +6688,18 @@ def site_look_report(cards):
 
 
 def site_look_answers(words, cards):
-    """Whether the cards name a stem of the words searched for (as `site_op_answers` does for an operation)."""
-    stems = {word[:4] for word in site_words(words or "").split() if len(word) >= 4 and not word.isdigit()}
-    return not stems or any(any(stem in site_words(card.get("text")) for stem in stems) for card in cards[:10])
+    """Whether the page's cards answer the words searched for: half of the first ten name a stem of them. Stricter
+    than an operation's check (`site_op_answers`) — a model guessed this page, and a site that drops a key it does
+    not take shows its usual list with a match or two by chance (zarplata.ru's `query=водитель` on the stand, 25.10:
+    accountants first) —, and no words is no answer: a page that cannot be checked against the errand (aviasales.ru's
+    route pages, no results at all) is not looked at. Stems from three letters: «Kia Rio»."""
+    stems = {word[:4] for word in site_words(words or "").split() if len(word) >= 3 and not word.isdigit()}
+    first = cards[:10]
+    if not stems or not first:
+        return False
+    naming = sum(1 for card in first if any(stem in site_words(f"{card.get('title')} {card.get('text')}")
+                                            for stem in stems))
+    return naming * 2 >= len(first)
 
 
 async def site_look(request):
