@@ -21,14 +21,24 @@ const failed = z.object({ kind: z.literal("failed"), reason: z.string() });
  * own record, so a second booking is never made while one is on, whatever
  * happened to an earlier call.
  */
-const activeRideSource = String.raw`
-  const activeRide = async (seen = () => {}) => {
+export const activeOrderSource = String.raw`
+  const activeOrder = async (seen = () => {}) => {
     const launch = await session.post("/3.0/launch", { id: session.userId });
     if (launch.wall || launch.error) throw Object.assign(new Error("launch"), { wall: launch.wall });
     seen(launch);
     const orderId = (launch.orders || []).find((o) => typeof o.orderid === "string")?.orderid;
     if (!orderId) return null;
     const t = await session.post("/3.0/taxiontheway", { orderid: orderId, format_currency: true, id: session.userId, show_text: true });
+    return { orderId, t };
+  };
+`;
+
+const activeRideSource = String.raw`
+  ${activeOrderSource}
+  const activeRide = async (seen = () => {}) => {
+    const found = await activeOrder(seen);
+    if (!found) return null;
+    const { orderId, t } = found;
     const route = (t.request?.route || []).map((point) => point.short_text || point.fullname || null);
     const d = t.driver || {};
     const car = [d.color, d.car_model || d.model, d.plates || d.car_number].filter((x) => typeof x === "string" && x).join(" ");

@@ -7,6 +7,7 @@ import {
 } from "@agent/lib/yandex/go/booking";
 import { goCardVerifyOperation } from "@agent/lib/yandex/go/card";
 import type { JsonValue } from "@agent/lib/yandex/operations";
+import { goWatchOperation } from "@agent/lib/yandex/go/watch";
 import { type FakeResponse, dataOf, fixture, overlap, runInPage } from "./page";
 
 const userId = "0123456789abcdef0123456789abcdef";
@@ -587,5 +588,53 @@ describe("go.ride and go.cancel", () => {
     expect(
       dataOf(await runInPage(goCancelOperation.run, {}, none.page))
     ).toEqual({ kind: "no_ride" });
+  });
+});
+
+describe("go.watch", () => {
+  const watch = async (order: JsonValue, orderId = "active-order") => {
+    const { page } = await goPage({
+      "/3.0/launch": { body: activeLaunch },
+      "/3.0/taxiontheway": { body: order },
+    });
+    return dataOf(await runInPage(goWatchOperation.run, { orderId }, page));
+  };
+
+  it("reads the minutes to the car from the answer's text", async () => {
+    expect(
+      await watch({ ...activeOrder, status_title: "Приедет через 4 мин" })
+    ).toMatchObject({ car: "белый Kia Rio А001АА77", etaSeconds: 240 });
+  });
+
+  it("takes seconds from a field that says seconds, before any text", async () => {
+    expect(
+      await watch({
+        ...activeOrder,
+        driver: { ...activeOrder.driver, eta_seconds: 95 },
+        status_title: "Приедет через 4 мин",
+      })
+    ).toMatchObject({ etaSeconds: 95 });
+  });
+
+  it("does not take the trip's minutes for the car's", async () => {
+    expect(
+      await watch({
+        ...activeOrder,
+        status: "transporting",
+        status_title: "Едем, 12 мин в пути",
+      })
+    ).toMatchObject({ etaSeconds: null, status: "transporting" });
+  });
+
+  it("names the answer's fields, never its values, when it has no time", async () => {
+    const answer = z
+      .object({ etaSeconds: z.null(), fields: z.array(z.string()) })
+      .parse(await watch(activeOrder));
+    expect(answer.fields).toContain("driver.plates");
+    expect(answer.fields).not.toContain("А001АА77");
+  });
+
+  it("answers gone for an order Yandex does not list", async () => {
+    expect(await watch(activeOrder, "another-order")).toEqual({ kind: "gone" });
   });
 });

@@ -7,6 +7,7 @@ import type { YandexPurchase } from "@db/schema/yandex-purchases";
 import type * as contacts from "@db/services/contacts";
 import type { readOwnContacts } from "@agent/lib/browser-use/facts";
 import type * as purchases from "@db/services/yandex-purchases";
+import type * as taxiWatches from "@db/services/taxi-watches";
 import type * as afisha from "@agent/lib/yandex/afisha/checkout";
 import type * as eda from "@agent/lib/yandex/eda/checkout";
 import type * as lavka from "@agent/lib/yandex/lavka/checkout";
@@ -14,6 +15,7 @@ import type {
   afishaPurchasePilot,
   goOwnRidePilot,
   goPassengerPilot,
+  goWatchPilot,
   yandexPurchasePilot,
 } from "@agent/lib/yandex/pilot";
 import type { makeLoginHandoff } from "@agent/lib/login-handoff/make";
@@ -36,6 +38,8 @@ const services = vi.hoisted(() => ({
   ownContacts: vi.fn<typeof readOwnContacts>(),
   ownRidePilot: vi.fn<typeof goOwnRidePilot>(),
   passengerPilot: vi.fn<typeof goPassengerPilot>(),
+  startWatch: vi.fn<typeof taxiWatches.startTaxiWatch>(),
+  watchPilot: vi.fn<typeof goWatchPilot>(),
   pilot: vi.fn<typeof yandexPurchasePilot>(),
   prepare: vi.fn<typeof lavka.prepareLavkaPurchase>(),
   run: vi.fn<typeof runYandexOperation>(),
@@ -49,6 +53,9 @@ vi.mock("@db/services/yandex-purchases", () => ({
   createYandexPurchase: services.create,
   readYandexPurchase: services.read,
   settleYandexPurchase: services.settle,
+}));
+vi.mock("@db/services/taxi-watches", () => ({
+  startTaxiWatch: services.startWatch,
 }));
 vi.mock("@db/services/contacts", () => ({
   contactsPilot: services.contactsPilot,
@@ -77,6 +84,7 @@ vi.mock("@agent/lib/yandex/pilot", () => ({
   afishaPurchasePilot: services.afishaPilot,
   goOwnRidePilot: services.ownRidePilot,
   goPassengerPilot: services.passengerPilot,
+  goWatchPilot: services.watchPilot,
   yandexPurchasePilot: services.pilot,
 }));
 vi.mock("@agent/lib/yandex/afisha/checkout", async (original) => ({
@@ -279,6 +287,7 @@ beforeEach(() => {
   services.pilot.mockReturnValue(true);
   services.ownContacts.mockResolvedValue({ emails: [], phones: [] });
   services.ownRidePilot.mockReturnValue(false);
+  services.watchPilot.mockReturnValue(false);
   services.judge.mockResolvedValue({ output: { matches: false } });
   services.read.mockResolvedValue(row());
   services.claim.mockResolvedValue({
@@ -1252,6 +1261,36 @@ describe("the person's own Yandex Go ride", () => {
     );
     expect(JSON.stringify(result)).not.toContain("passenger");
     expect(JSON.stringify(result)).toContain("their Yandex Go app");
+  });
+
+  it("follows a booked ride in the pilot and says so", async () => {
+    services.ownRidePilot.mockReturnValue(true);
+    services.watchPilot.mockReturnValue(true);
+    services.run.mockResolvedValue(answer(booked));
+    const tool = await resolve([
+      { role: "user", content: "Вызови мне такси до Гвидона" },
+    ]);
+    const result = await tool?.execute(ride, callContext());
+    expect(services.startWatch).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        forPassenger: false,
+        orderId: "new-order",
+        workspaceId: scope.workspaceId,
+      }),
+      expect.any(Date)
+    );
+    expect(JSON.stringify(result)).toContain("Bro watches the ride");
+  });
+
+  it("does not promise to follow a ride outside the watch pilot", async () => {
+    services.ownRidePilot.mockReturnValue(true);
+    services.run.mockResolvedValue(answer(booked));
+    const tool = await resolve([
+      { role: "user", content: "Вызови мне такси до Гвидона" },
+    ]);
+    const result = await tool?.execute(ride, callContext());
+    expect(services.startWatch).not.toHaveBeenCalled();
+    expect(JSON.stringify(result)).toContain("Nothing watches the ride");
   });
 
   it("goes as before outside the pilot", async () => {

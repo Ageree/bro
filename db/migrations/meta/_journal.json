@@ -624,6 +624,13 @@
       "when": 1792919262294,
       "tag": "0088_capability_tips",
       "breakpoints": true
+    },
+    {
+      "idx": 89,
+      "version": "7",
+      "when": 1792927055947,
+      "tag": "0089_taxi_watches",
+      "breakpoints": true
     }
   ]
 }
