@@ -90,7 +90,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-10-25.7"
+VERSION = "2026-10-25.8"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -148,6 +148,11 @@ PROHIBITED_DOMAINS = [
     "webcache.googleusercontent.com", "*.translate.goog", "yandexwebcache.net", "*.yandexwebcache.net",
 ]
 TERMINAL = {"completed", "failed", "cancelled"}
+# The end of a run is told to Bro (`notify`, BROWSER_FAST_DELIVERY_WORKSPACES) with this many tries, each given this
+# long. The address is Bro's own, https.
+NOTIFY_URL = re.compile(r"https://[^\s]{1,300}")
+NOTIFY_TRIES = 3
+NOTIFY_TRY_S = 6
 # Bro starts its follow-up in the same session right after a cancel: the cancel answers once the agent's
 # step has ended, so that start is not refused as busy, but a step that hangs does not hold the answer.
 CANCEL_WAIT_S = 20
@@ -1477,6 +1482,7 @@ class Run:
         self.downloads_before = None  # its session's downloads folder when it started (`download_snapshot`)
         self.outcome = None  # (status, result, error) the run came to, while it still lets go of the browser
         self.stored = None  # the status its record on disk has
+        self.notify = None  # where the end of the run is told to Bro (`notify_ended`); not kept past a restart
         # Creation order, restart-independent and gapless: now_iso() only has 1-second resolution, so
         # two runs dispatched within the same second (a follow-up right after settle, a retried start
         # after a lost create-answer) tie on created_at/started_at, and the run id is a random UUID
@@ -2290,6 +2296,7 @@ class Worker:
         self.restarting = False  # new code is in place and the worker exits: no run starts
         self.profile_walk = (float("-inf"), None)  # (monotonic time, MB) of the last walk of the profile
         self.run_seq = 0  # next Run.seq to hand out; resumed past every seq load_runs() found on disk
+        self.tasks = set()  # background tasks, kept so they are not collected before they end
         self.load_runs()
         self.load_tabs()
         for session in self.sessions.values():
@@ -3380,6 +3387,40 @@ class Worker:
                 log.exception("run %s: its end was not written", run.id)
             if self.current is run:
                 self.current = None
+            if run.notify and run.status in TERMINAL:
+                self.spawn(self.notify_ended(run))
+
+    def spawn(self, coroutine):
+        """A task of the worker's own, kept until it ends so that nothing collects it half done."""
+        task = asyncio.ensure_future(coroutine)
+        self.tasks.add(task)
+        task.add_done_callback(self.tasks.discard)
+        return task
+
+    async def notify_ended(self, run):
+        """Tell Bro the run has ended, so that it settles and reports at once instead of at its next look
+        (`notify`, BROWSER_FAST_DELIVERY_WORKSPACES). The call carries no secret and no result: it names the run and
+        is signed with the worker's key, and what Bro does is read the run from this worker as it would have
+        anyway. So there is no timestamp to age out (a sandbox's clock lags after a restore), and a replay
+        costs a look. Tried a few times; the word is a hint, and Bro's own look at the run is the fallback."""
+        url = run.notify
+        if not url or self.config is None:
+            return
+        signature = hmac.new(self.config["key"], f"run-ended.{run.id}".encode(), hashlib.sha256).hexdigest()
+        for attempt in range(NOTIFY_TRIES):
+            try:
+                async with aiohttp.ClientSession() as http:
+                    async with http.post(url, json={"runId": run.id, "status": run.status},
+                                         headers={"x-bro-signature": signature},
+                                         timeout=aiohttp.ClientTimeout(total=NOTIFY_TRY_S)) as response:
+                        if response.status < 300:
+                            return
+                        log.warning("run %s: Bro answered %s to the word that it ended", run.id, response.status)
+                        if response.status < 500:
+                            return  # a refusal does not change by asking again
+            except Exception as error:
+                log.warning("run %s: the word that it ended did not reach Bro (%s)", run.id, type(error).__name__)
+            await asyncio.sleep(0.5 * (attempt + 1))
 
     async def bounded(self, run, work, limit):
         """Work a run for at most `limit` seconds, or until a cancel cuts it off (`cut_off`). A cut-off run
@@ -3479,6 +3520,10 @@ class Worker:
             run = Run(run_id, session_id, task)
             run.seq, self.run_seq = self.run_seq, self.run_seq + 1
             run.engine = body.get("engine") if body.get("engine") in ("agent", "jev-then-agent", "code") else "agent"
+            notify = body.get("notify")
+            url = notify.get("url") if isinstance(notify, dict) else None
+            if isinstance(url, str) and NOTIFY_URL.fullmatch(url):
+                run.notify = url
             self.begin(run, session)
             return run, True
 

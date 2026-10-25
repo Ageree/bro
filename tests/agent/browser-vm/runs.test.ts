@@ -766,6 +766,57 @@ describe("starting a run on a workspace's browser VM", () => {
     expect(await (await pilot("personal:another"))(true)).toEqual([undefined]);
   });
 
+  it("asks the worker to say when a run ended only in the fast delivery pilot", async () => {
+    worker.startBrowserVmWorkerRun.mockImplementation((_vm, input) =>
+      Promise.resolve({
+        id: input.id,
+        sessionId: input.sessionId ?? "",
+        status: "queued",
+      })
+    );
+    const started = async (settings: Record<string, string>) => {
+      vi.resetModules();
+      const client = await importWithSettings(
+        {
+          ...browserVmTestEnvironment,
+          BROWSER_CODE_ENGINE_WORKSPACES: workspaceId,
+          ...settings,
+        },
+        async () => import("@agent/lib/browser-use/client")
+      );
+      worker.startBrowserVmWorkerRun.mockClear();
+      await client.createBrowserUseRun({
+        findsOnly: true,
+        profileId,
+        search: false,
+        task: composedTask,
+      });
+      return worker.startBrowserVmWorkerRun.mock.calls.map(
+        ([, input]) => input.notify
+      )[0];
+    };
+
+    // The word names Bro's own https address, under the prefix that reaches eve.
+    expect(
+      await started({ BROWSER_FAST_DELIVERY_WORKSPACES: workspaceId })
+    ).toEqual({ url: "https://example.com/eve/v1/browser-run-ended" });
+    expect(await started({ BROWSER_FAST_DELIVERY_WORKSPACES: "*" })).toEqual({
+      url: "https://example.com/eve/v1/browser-run-ended",
+    });
+    // Out of the pilot the worker's body is as before.
+    expect(
+      await started({ BROWSER_FAST_DELIVERY_WORKSPACES: "personal:another" })
+    ).toBeUndefined();
+    expect(await started({})).toBeUndefined();
+    // A run on browser-use has its end told too.
+    expect(
+      await started({
+        BROWSER_CODE_ENGINE_WORKSPACES: "personal:another",
+        BROWSER_FAST_DELIVERY_WORKSPACES: workspaceId,
+      })
+    ).toEqual({ url: "https://example.com/eve/v1/browser-run-ended" });
+  });
+
   it("gives the worker the 2Captcha key only when the deployment has one", async () => {
     worker.startBrowserVmWorkerRun.mockImplementation((_vm, input) =>
       Promise.resolve({
