@@ -114,7 +114,11 @@ export const broToBroRouter = createTRPCRouter({
   confirm: enabledProcedure
     .input(linkInput)
     .mutation(async ({ ctx, input }) => {
-      const confirmed = await confirmBroLink(ctx.scope, input.linkId);
+      const confirmed = await confirmBroLink(
+        ctx.scope,
+        input.linkId,
+        "cabinet"
+      );
       if (confirmed.kind === "none") throw linkGone();
       if (confirmed.kind === "not_inviter") {
         throw new TRPCError({

@@ -292,6 +292,26 @@ describe("planEnvoyStep", () => {
     ).toContain("собеседник уже предложил это время");
   });
 
+  it("lets the peer's own time go back with a place the owner named", async () => {
+    answers({
+      action: "propose",
+      message: "Суббота в 19:00 подходит — давай в «Даблби»?",
+      outOfScope: [],
+      proposal: {
+        ...peerProposal.proposal,
+        place: "«Даблби» на Чистых прудах",
+      },
+    });
+
+    const step = await planEnvoyStep(
+      brief({ role: "responder", transcript: [peerProposal] }),
+      call
+    );
+
+    expect(step.decision.action).toBe("propose");
+    expect(model.generate).toHaveBeenCalledOnce();
+  });
+
   it("falls back to asking the owner after a second time outside the candidates", async () => {
     const outside = {
       action: "propose",

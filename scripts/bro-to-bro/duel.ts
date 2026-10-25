@@ -534,6 +534,52 @@ const refusal: Scenario = {
   title: "отказ в закрытом: спросивший не поднимает тревогу о себе и закрывает",
 };
 
+const place: Scenario = {
+  initiator: {
+    mandate: null,
+    owner: petr,
+    script: [
+      {
+        action: "propose",
+        proposal: {
+          end: "2026-10-24T13:00:00+03:00",
+          start: "2026-10-24T12:00:00+03:00",
+          summary: "Кофе",
+        },
+        text: "Привет! Бро Петра на связи. Пётр зовёт Савелия на кофе в субботу в 12:00 — подойдёт?",
+      },
+      { action: "message", text: "Отлично, договорились!" },
+    ],
+    shareNotes: null,
+    slots: { state: "not_granted" },
+  },
+  judge(run) {
+    const problems: string[] = [];
+    const own = run.entries.filter((entry) => entry.side === "responder");
+    if (own.some((entry) => entry.action === "accept"))
+      problems.push("принял предложение без места, а место написал словами");
+    if (
+      !own.some(
+        (entry) =>
+          entry.action === "propose" &&
+          /даблби/iu.test(entry.proposal?.place ?? "")
+      )
+    )
+      problems.push("не предложил то же время с местом");
+    return problems;
+  },
+  name: "place",
+  responder: {
+    mandate: null,
+    owner: saveliy,
+    ownerAnswers: ["Подходит, только давай в «Даблби» на Чистых прудах"],
+    shareNotes: "Можно говорить, что я люблю кофейню «Даблби» на Чистых прудах",
+    slots: known(slot("24T10:00", "24T15:00")),
+  },
+  title:
+    "владелец добавил место к чужому предложению: новое propose, а не accept со словами",
+};
+
 const scenarios = [
   dinner,
   question,
@@ -543,6 +589,7 @@ const scenarios = [
   doctor,
   reply,
   refusal,
+  place,
 ];
 
 const maximumSteps = 14;

@@ -61,6 +61,7 @@ function rules(role: EnvoyBrief["role"]) {
       "- предлагаешь время — это action propose, не message. Встреча конкретная: start — начало, end — start плюс длительность встречи (durationMinutes из brief, иначе час), оба внутри одного варианта; время выбирай по цели (ужин — вечер). summary — что за встреча, без даты и времени («Ужин»): время — только в start и end. В тексте называй одно-два конкретных времени по-человечески («в сб 24.10 в 19:00»), не в ISO и не окна целиком;",
       "- время в словах собеседника — по его часам, а пояс у него может быть другой: время его предложения бери из proposal.when в transcript (оно по поясу владельца, owner.timeZone), не из его текста. Владельцу в ownerQuestion называй время так же — по when;",
       "- не описывай свою занятость и не объясняй, почему другое время не подходит: просто предложи подходящее;",
+      "- accept — согласие на предложение собеседника как оно есть. Владелец хочет к нему что-то добавить или поменять (место, время) — это твоё новое propose с этим, а не accept со словами в message;",
       "- собеседник предложил (propose) время внутри твоего варианта — accept, в acceptProposalId — id его предложения из transcript. Не внутри — сразу propose своё, ближайшее подходящее. Собеседник лишь написал, когда свободен, и это есть в твоих вариантах — propose это время сам;",
       "- предложение собеседника кончается позже horizon из brief — не принимай и не отклоняй его сам и своё время взамен не предлагай: спроси владельца (ask_owner), а после его ответа сделай, как он сказал;",
       "- slots.state не known (нет права календаря или варианты недоступны), а цель — встреча: пока владелец не назвал время в ответах, о времени не договаривайся, спроси его (ask_owner); назвал — предлагай и принимай только время из его ответа (предложение со временем код покажет владельцу перед отправкой); владелец уже согласился на время собеседника — accept, второй раз не спрашивай. Цель не про время встречи (вопрос, просьба) — slots не нужны, владельца об этом не спрашивай;",
@@ -241,13 +242,15 @@ function decisionProblems(brief: EnvoyBrief, decision: EnvoyDecision) {
     if (problem) problems.push(problem);
     const latest = latestProposal(brief.transcript);
     // The peer's own time is accepted, not offered back, while it may be:
-    // a longer meeting at the same start is a new offer.
+    // a longer meeting at the same start, or one at a place the peer's did
+    // not name, is a new offer.
     if (
       latest?.from === "peer" &&
       latest.proposal &&
       decision.proposal?.start !== undefined &&
       Date.parse(decision.proposal.start) ===
         Date.parse(latest.proposal.start ?? "") &&
+      (decision.proposal.place ?? null) === (latest.proposal.place ?? null) &&
       timeProblem(brief, latest.proposal, { peerAt: latest.at }) === undefined
     )
       problems.push(

@@ -164,9 +164,9 @@ const stories: Record<
       `Ask the owner whether this is the person they invited, telling them how it was accepted${payload.telegramUsername ? " and the Telegram username" : ", and say plainly that, with no Telegram username, they should check with that person directly — in person or by phone — that it was them: whoever got the link could have accepted it under that name"}. ${plainYes} bro_network with action confirm_link and link ${payload.linkId ?? "unknown"}; on their no, bro_network with action remove and the same link.`,
     ];
   },
-  link_ready: ({ payload, who }) => [
-    `The link with ${who}'s Bro is ready: both sides confirmed it${payload.by === "self" ? ", the owner last, themselves" : ""}.`,
-    `${payload.by === "self" ? "If you already told the owner in this conversation that this link is ready, when they confirmed it, reply with only <eve-empty-delivery/>. Otherwise tell" : "Tell"} the owner, and suggest a first errand in one line, such as arranging a dinner at the weekend; bro_talk start runs it when they ask. Nothing to answer.`,
+  link_ready: ({ who }) => [
+    `The link with ${who}'s Bro is ready: both sides confirmed it.`,
+    "Tell the owner, and suggest a first errand in one line, such as arranging a dinner at the weekend; bro_talk start runs it when they ask. Nothing to answer.",
   ],
   question: ({ payload, thread, timeZone, who }) => [
     `While talking with ${who}'s Bro${topic(payload)}, I need the owner's answer to my question: ${quote(payload.text ?? "", 500)}.${payload.proposal ? ` Their Bro's latest proposal is ${proposalWords(payload.proposal, timeZone)}.` : ""}`,
@@ -177,8 +177,8 @@ const stories: Record<
     `Ask the owner whether you may send exactly this, quoting the text in full${payload.proposal ? " and the proposal with its time and place" : ""}; it is you who waits for their yes, not their Bro. ${plainYes} bro_talk approve_held with thread ${thread} and draft ${payload.draftId ?? "unknown"}; only this draft id lets it go. If they want other words: bro_talk answer with the thread and what to say instead, and this draft is dropped. If they call the whole errand off: bro_talk cancel.`,
   ],
   agreed: ({ payload, thread, timeZone, who }) => [
-    `${who}'s Bro and I agreed on ${proposalWords(payload.proposal, timeZone)}. It is preliminary: nothing is final until both owners say yes.`,
-    `Ask the owner to confirm it. ${plainYes} bro_talk confirm with thread ${thread} and proposal ${payload.proposalId ?? "unknown"}. On their no: bro_talk decline with the thread.`,
+    `${who}'s Bro and I agreed on ${proposalWords(payload.proposal, timeZone)}.${payload.text ? ` Their Bro wrote with its yes: ${quote(payload.text, 500)}.` : ""} It is preliminary: nothing is final until both owners say yes.`,
+    `Ask the owner to confirm it${payload.text ? ", telling them what their Bro wrote with its yes, as its words: the owner confirms the proposal, and only what is in it goes into the calendar" : ""}. ${plainYes} bro_talk confirm with thread ${thread} and proposal ${payload.proposalId ?? "unknown"}. On their no: bro_talk decline with the thread.`,
   ],
   confirmed: ({ payload, timeZone, who }) => {
     const [calendar, ask] = calendarStory(payload);

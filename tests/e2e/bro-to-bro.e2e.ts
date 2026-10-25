@@ -354,7 +354,11 @@ async function deliver(
     let done: string | undefined;
     /* oxlint-disable eslint/no-await-in-loop -- Owners answer their reports one by one, in order. */
     if (row.kind === "invite_accepted" && payload.linkId) {
-      const confirmed = await links.confirmBroLink(owner.scope, payload.linkId);
+      const confirmed = await links.confirmBroLink(
+        owner.scope,
+        payload.linkId,
+        "chat"
+      );
       done = `bro_network confirm_link → ${confirmed.kind}`;
     }
     if (row.kind === "question" && threadId) {

@@ -481,6 +481,9 @@ export async function recordEnvoyStep(
             {
               proposalId: latestProposal.id,
               proposal: latestProposal.proposal ?? undefined,
+              // The words the peer's yes came with: what the owner who
+              // proposed has not seen yet (a place named with the yes).
+              text: side === step.side ? undefined : sent?.message.body.trim(),
             },
             `agreed:${latestProposal.id}`
           )

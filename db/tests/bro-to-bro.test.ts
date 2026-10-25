@@ -158,7 +158,7 @@ async function link(
     (row) => row.status === "pending"
   );
   if (!own) throw new Error("The inviter has no pending link.");
-  await bro.confirmBroLink(inviter, own.id);
+  await bro.confirmBroLink(inviter, own.id, "cabinet");
   return { inviterLinkId: own.id, inviteeLinkId: accepted.linkId };
 }
 
@@ -292,10 +292,10 @@ describe("bro links", () => {
     ).toEqual({ kind: "refused", reason: "link_pending" });
     expect(await bro.broToBroStanding(petya.workspaceId)).toBe("off");
 
-    expect(await bro.confirmBroLink(petya, theirs.id)).toEqual({
+    expect(await bro.confirmBroLink(petya, theirs.id, "cabinet")).toEqual({
       kind: "not_inviter",
     });
-    expect(await bro.confirmBroLink(savely, own.id)).toEqual({
+    expect(await bro.confirmBroLink(savely, own.id, "cabinet")).toEqual({
       kind: "confirmed",
     });
     expect(await bro.broToBroStanding(petya.workspaceId)).toBe("on");
@@ -307,12 +307,27 @@ describe("bro links", () => {
     expect(await reportsOf(bro, petya)).toMatchObject([
       {
         kind: "link_ready",
-        payload: { peerName: "Савелий", linkId: theirs.id, by: "peer" },
+        payload: { peerName: "Савелий", linkId: theirs.id },
       },
     ]);
-    expect(await reportOf(bro, savely, "link_ready")).toMatchObject({
-      by: "self",
+  });
+
+  it("tells only the person invited that the link is ready when the inviter confirmed it in the chat", async () => {
+    const bro = await network();
+    const now = new Date();
+    await bro.openBroInvite(await invite(bro, savely, null, now), petya, now);
+    await bro.acceptOpenedBroInvite(petya, "web", now);
+    const [own] = await bro.listBroLinks(savely);
+    if (!own) throw new Error("The inviter has a pending link.");
+    expect(await bro.confirmBroLink(savely, own.id, "chat")).toEqual({
+      kind: "confirmed",
     });
+    expect((await reportsOf(bro, savely)).map((row) => row.kind)).toEqual([
+      "invite_accepted",
+    ]);
+    expect((await reportsOf(bro, petya)).map((row) => row.kind)).toEqual([
+      "link_ready",
+    ]);
   });
 
   it("lets whoever opened an invite only take the yes to it, until they accept it", async () => {
@@ -1056,6 +1071,36 @@ describe("bro threads", () => {
     expect(
       (await bro.readBroThreadForSide(threadId, petya.workspaceId))?.topic
     ).toBe("Какой фильм Петя посоветует?");
+  });
+
+  it("tells the owner who proposed what the other side's yes came with", async () => {
+    const bro = await network();
+    const { inviterLinkId } = await link(bro, savely, petya);
+    const threadId = await start(bro, savely, inviterLinkId);
+    const [lease] = await claim(bro);
+    if (!lease) throw new Error("The thread is due.");
+    const proposed = await step(bro, threadId, savely, lease.leaseToken, {
+      kind: "sent",
+      message: {
+        action: "propose",
+        body: "Ужин в субботу?",
+        proposal: saturday,
+      },
+    });
+    const proposalId =
+      proposed.kind === "recorded" ? (proposed.messageId ?? "") : "";
+    await step(bro, threadId, petya, lease.leaseToken, {
+      kind: "sent",
+      message: {
+        action: "accept",
+        body: "Подходит, давай в «Даблби»",
+        acceptsMessageId: proposalId,
+      },
+    });
+    expect(await reportOf(bro, savely, "agreed")).toMatchObject({
+      text: "Подходит, давай в «Даблби»",
+    });
+    expect((await reportOf(bro, petya, "agreed"))?.text).toBeUndefined();
   });
 
   it("stalls a thread after twelve envoy messages or three failed steps in a row", async () => {

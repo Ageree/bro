@@ -65,7 +65,7 @@ async function leasedThread(tag: string) {
   if (accepted.kind !== "accepted") throw new Error("Not accepted.");
   const [own] = await links.listBroLinks(savely);
   if (!own) throw new Error("No link.");
-  await links.confirmBroLink(savely, own.id);
+  await links.confirmBroLink(savely, own.id, "cabinet");
   const started = await threads.startBroThread(savely, {
     linkId: own.id,
     mandate: {
