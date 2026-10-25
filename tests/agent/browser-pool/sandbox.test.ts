@@ -1016,6 +1016,40 @@ describe("bringing a pool workspace's sandbox up", { timeout: 60_000 }, () => {
     );
   });
 
+  it("waits off the host, its set whole, while the host lacks the root it is to start on", async () => {
+    // A canary workspace on a host without the canary root: it waits as on a
+    // full host, never starting elsewhere or falling back from its set.
+    const pool = await loadPool();
+    await seedHost(pool, 1);
+    await seedAlice(pool, {
+      generation: 3,
+      sandboxState: "parked",
+      snapshotChunks: 5,
+      snapshotGeneration: 3,
+      snapshotKey: `sets/${aliceSandbox}/3/`,
+    });
+    hostClient.startBrowserSandbox.mockImplementationOnce(
+      hostErrorBody(409, {
+        error: "rootfs version is not on this host",
+        rootfsVersion: "2026-10-25.1",
+      })
+    );
+
+    const outcome = await pool.lifecycle.ensureBrowserVm(
+      alice.workspaceId,
+      now
+    );
+
+    expect(outcome).toMatchObject({ retryAfterMs: 60_000 });
+    expect(await pool.vms.readBrowserVm(alice.workspaceId)).toMatchObject({
+      hostId: null,
+      sandboxState: "parked",
+      snapshotChunks: 5,
+      snapshotKey: `sets/${aliceSandbox}/3/`,
+    });
+    expect(hostClient.startBrowserSandbox).toHaveBeenCalledOnce();
+  });
+
   it("goes past a set the host finds not older than the start", async () => {
     const pool = await loadPool();
     await seedHost(pool, 1);

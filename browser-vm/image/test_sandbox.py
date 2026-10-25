@@ -36,7 +36,7 @@ def unit_text(name):
 class UnitParseTest(unittest.TestCase):
     def test_chrome_runs_with_the_vm_units_command_line_user_and_environment(self):
         unit = load_init().parse_unit(unit_text("bro-chrome"))
-        vm_line = next(line for line in PROVISION.splitlines() if line.startswith("ExecStart=/usr/bin/google-chrome"))
+        vm_line = next(line for line in PROVISION.splitlines() if line.startswith("ExecStart=/usr/local/bin/bro-browser"))
         self.assertEqual(unit["start"], vm_line.removeprefix("ExecStart=").split(" "))
         self.assertIn("--proxy-bypass-list=<-loopback>", unit["start"])
         self.assertEqual(unit["user"], "bro")

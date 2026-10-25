@@ -212,6 +212,11 @@ const tuningSchema = z.object({
 });
 
 const runInputSchema = z.object({
+  /**
+   * The browser of the run (`errandBrowser`): the worker restarts into it
+   * when the profile ran the other one. A worker before 2026-10-25.2 ignores it.
+   */
+  browser: z.enum(["chrome", "helium"]).optional(),
   /** A slider puzzle the worker cannot place goes to 2Captcha with this key. */
   captcha: z.object({ twoCaptchaKey: z.string().min(1) }).optional(),
   engine: z.enum(["agent", "jev-then-agent"]).optional(),

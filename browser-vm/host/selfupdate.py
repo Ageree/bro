@@ -104,27 +104,28 @@ def unpack(archive, target):
     return match.group(1) if match else None
 
 
-async def download(http, url, expected, target, max_bytes):
-    """Stream the bundle to `target`, refusing more than `max_bytes`, and check its hash."""
+async def download(http, url, expected, target, max_bytes, what="bundle", total_s=600):
+    """Stream the bundle (or another artifact, `what`: a sandbox root) to `target`, refusing more than
+    `max_bytes`, and check its hash."""
     import aiohttp
 
     digest, size = hashlib.sha256(), 0
     try:
-        async with http.get(URL(url, encoded=True), timeout=aiohttp.ClientTimeout(total=600, sock_read=60),
+        async with http.get(URL(url, encoded=True), timeout=aiohttp.ClientTimeout(total=total_s, sock_read=60),
                             allow_redirects=False) as response:
             if response.status != 200:
-                raise UpdateRefused(502, f"the bundle URL answered {response.status}")
+                raise UpdateRefused(502, f"the {what} URL answered {response.status}")
             if (response.content_length or 0) > max_bytes:
-                raise UpdateRefused(413, "the bundle is larger than the limit")
+                raise UpdateRefused(413, f"the {what} is larger than the limit")
             with open(target, "wb") as file:
                 async for block in response.content.iter_chunked(1 << 20):
                     size += len(block)
                     if size > max_bytes:
-                        raise UpdateRefused(413, "the bundle is larger than the limit")
+                        raise UpdateRefused(413, f"the {what} is larger than the limit")
                     digest.update(block)
                     file.write(block)
     except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as error:
-        raise UpdateRefused(502, f"the bundle could not be downloaded: {type(error).__name__}") from None
+        raise UpdateRefused(502, f"the {what} could not be downloaded: {type(error).__name__}") from None
     if digest.hexdigest() != expected:
         raise UpdateRefused(422, "sha256 of the download does not match")
     return size

@@ -287,6 +287,13 @@ class FakeRunner:
                 for child in Path(argv[-1]).iterdir():
                     shutil.rmtree(child) if child.is_dir() else child.unlink()
             return 0, ""
+        if tool == "tar":  # `tar --numeric-owner -I zstd -xpf <archive> -C <dir>` of a fake zstd frame
+            data = Path(argv[argv.index("-xpf") + 1]).read_bytes()
+            if not data.startswith(b"ZSTD"):
+                return 2, "tar: not a zstd archive"
+            with tarfile.open(fileobj=io.BytesIO(data[4:])) as tar:
+                tar.extractall(argv[argv.index("-C") + 1], filter="tar")
+            return 0, ""
         if tool == "firecracker":
             return 0, FIRECRACKER_VERSION + "\n"
         if tool == "debugfs":
@@ -1581,6 +1588,73 @@ class FirecrackerTest(HostTest):
             self.assertEqual(host.image_ids["v1"], firecracker.image_id("v1"))
         self.assertNotEqual(host.image_ids["v1"], firecracker.image_id("v1"))
 
+    async def test_another_root_gets_its_image_before_it_is_done(self):
+        host, runner, client = await self.host(update_schemes=("http", "https"))
+        raw = io.BytesIO()
+        with tarfile.open(fileobj=raw, mode="w") as tar:
+            data = f"root:x:0:0::/root:/bin/bash\nbro:x:{os.getuid()}:{os.getgid()}::/home/bro:/bin/bash\n".encode()
+            info = tarfile.TarInfo("etc/passwd")
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+        archive = b"ZSTD" + raw.getvalue()
+        app = web.Application()
+        app.router.add_get("/v2.tar.zst", lambda request: web.Response(body=archive))
+        server = TestServer(app)
+        await server.start_server()
+        self.addAsyncCleanup(server.close)
+        body = {"version": "v2", "url": str(server.make_url("/v2.tar.zst")), "sha256": hashlib.sha256(archive).hexdigest()}
+        response = await client.post("/v1/admin/rootfs", json=body,
+                                     headers={"Authorization": f"Bearer {token(scope='update')}"})
+        self.assertEqual(response.status, 202, await response.text())
+        await host.rootfs_task
+        image = Path(host.config.root) / "rootfs" / "v2.ext4"
+        self.assertEqual(json.loads(firecracker.image_meta(image).read_text()), {"id": firecracker.image_id("v2")})
+        self.assertEqual(host.rootfs_status()["state"], "done")
+        status, record = await self.call(client, "POST", "/v1/sandboxes", request(rootfsVersion="v2"))
+        self.assertEqual(status, 201, record)
+        self.assertEqual(host.sandboxes["ws-abc"]["rootfsVersion"], "v2")
+
+    async def test_another_root_is_hidden_until_its_image_is_built_and_gone_when_the_image_fails(self):
+        host, _runner, client = await self.host(update_schemes=("http", "https"))
+        raw = io.BytesIO()
+        with tarfile.open(fileobj=raw, mode="w") as tar:
+            info = tarfile.TarInfo("etc/passwd")
+            info.size = 5
+            tar.addfile(info, io.BytesIO(b"root\n"))
+        archive = b"ZSTD" + raw.getvalue()
+        app = web.Application()
+        app.router.add_get("/v2.tar.zst", lambda request: web.Response(body=archive))
+        server = TestServer(app)
+        await server.start_server()
+        self.addAsyncCleanup(server.close)
+        body = {"version": "v2", "url": str(server.make_url("/v2.tar.zst")), "sha256": hashlib.sha256(archive).hexdigest()}
+        imaging, failed = asyncio.Event(), asyncio.Event()
+
+        async def ensure_image(version):
+            imaging.set()
+            await failed.wait()
+            raise RuntimeError("mkfs.ext4 ran out of space")
+
+        async def install():
+            return (await client.post("/v1/admin/rootfs", json=body,
+                                      headers={"Authorization": f"Bearer {token(scope='update')}"})).status
+
+        root = Path(host.config.root) / "rootfs" / "v2"
+        with mock.patch.object(host, "ensure_image", ensure_image):
+            self.assertEqual(await install(), 202)
+            await asyncio.wait_for(imaging.wait(), 5)
+            # Unpacked under its name, but nothing starts on it, lists it or takes it as present yet.
+            self.assertTrue(root.is_dir())
+            self.assertNotIn("v2", (await self.call(client, "GET", "/v1/capacity"))[1]["rootfsVersions"])
+            status, answer = await self.call(client, "POST", "/v1/sandboxes", request(rootfsVersion="v2"))
+            self.assertEqual((status, answer["error"]), (409, "rootfs version is not on this host"))
+            self.assertEqual(await install(), 409)
+            failed.set()
+            await host.rootfs_task
+        self.assertEqual(host.rootfs_status()["state"], "failed")
+        self.assertFalse(root.exists())
+        self.assertNotIn("v2", (await self.call(client, "GET", "/v1/capacity"))[1]["rootfsVersions"])
+
     async def test_a_start_from_a_cold_set_puts_the_profile_in_the_image(self):
         await self.parked_vm()
         host, _runner, client = await self.host("b")
@@ -2227,9 +2301,91 @@ class UpdateTest(HostTest):
         self.assertEqual((status, answer["error"]), (409, "an update is already running"))
         await host.update_task
 
+    # Another root -------------------------------------------------------------------------------------
+
+    def root_archive(self, files=None):
+        """A sandbox root as build_rootfs.sh packs it, in the fake zstd frame of FakeRunner."""
+        raw = io.BytesIO()
+        with tarfile.open(fileobj=raw, mode="w") as tar:
+            for name, data in (files or {"etc/passwd": b"root:x:0:0::/root:/bin/bash\n",
+                                         "opt/helium/helium": b"helium"}).items():
+                info = tarfile.TarInfo(name)
+                info.size, info.mode = len(data), 0o755
+                tar.addfile(info, io.BytesIO(data))
+        return b"ZSTD" + raw.getvalue()
+
+    async def install(self, client, body, scope="update"):
+        response = await client.post("/v1/admin/rootfs", json=body,
+                                     headers={"Authorization": f"Bearer {token(scope=scope)}"})
+        return response.status, await response.json()
+
+    async def rootfs_versions(self, client):
+        return (await self.call(client, "GET", "/v1/capacity"))[1]["rootfsVersions"]
+
+    async def test_another_root_is_fetched_checked_and_listed_only_once_it_is_whole(self):
+        host, runner, client, _opt = await self.updater()
+        body = {"version": "v2", **self.offer(self.root_archive(), "v2.tar.zst")}
+        # Bro's own token cannot add a root: a root is code that every later sandbox runs.
+        self.assertEqual((await self.call(client, "POST", "/v1/admin/rootfs", body))[0], 401)
+        status, answer = await self.install(client, body)
+        self.assertEqual((status, answer), (202, {"version": "v2", "state": "downloading"}))
+        await host.rootfs_task
+        root = Path(host.config.root) / "rootfs"
+        self.assertEqual((root / "v2" / "opt" / "helium" / "helium").read_bytes(), b"helium")
+        self.assertEqual(sorted(p.name for p in root.iterdir()), ["v1", "v2"])  # no archive, no .partial left
+        self.assertEqual(await self.rootfs_versions(client), ["v1", "v2"])
+        unpack = next(argv for argv, _log in runner.calls if Path(argv[0]).name == "tar")
+        self.assertEqual(unpack[:5], ["tar", "--numeric-owner", "-I", "zstd", "-xpf"])
+        status, answer = await self.operator_call(client, "GET", "/v1/admin/rootfs", token(scope="update"))
+        self.assertEqual((status, answer["installing"], answer["rootfs"]["state"]), (200, False, "done"))
+        # A root the host has is not fetched again.
+        self.served.clear()
+        self.assertEqual(await self.install(client, body), (200, {"version": "v2", "state": "present"}))
+
+    async def test_a_root_that_does_not_match_its_hash_is_not_listed(self):
+        host, _runner, client, _opt = await self.updater()
+        body = {"version": "v2", **self.offer(self.root_archive(), "v2.tar.zst")}
+        self.served["v2.tar.zst"] = self.root_archive({"etc/passwd": b"someone else's root\n"})
+        self.assertEqual((await self.install(client, body))[0], 202)
+        await host.rootfs_task
+        self.assertEqual(await self.rootfs_versions(client), ["v1"])
+        self.assertEqual(sorted(p.name for p in (Path(host.config.root) / "rootfs").iterdir()), ["v1"])
+        status, answer = await self.operator_call(client, "GET", "/v1/admin/rootfs", token(scope="update"))
+        self.assertEqual((answer["rootfs"]["state"], answer["rootfs"]["error"]),
+                         ("failed", "sha256 of the download does not match"))
+
+    async def test_root_requests_are_checked_before_anything_is_downloaded(self):
+        host, _runner, client, _opt = await self.updater()
+        good = {"version": "v2", **self.offer(self.root_archive(), "v2.tar.zst")}
+        for body in ({**good, "version": "../v2"}, {**good, "version": ""}, {**good, "sha256": "x"},
+                     {**good, "url": "ftp://example.com/v2"}):
+            status, _answer = await self.install(client, body)
+            self.assertEqual(status, 400, body)
+        self.assertIsNone(host.rootfs_task)
+        gate, download = asyncio.Event(), selfupdate.download
+
+        async def held(*args, **kwargs):
+            await gate.wait()
+            return await download(*args, **kwargs)
+
+        with mock.patch.object(hostd.selfupdate, "download", held):
+            # One install at a time, and no update under it: the update's wait for quiet would refuse every
+            # start and park on the host for as long as the install takes.
+            self.assertEqual((await self.install(client, good))[0], 202)
+            status, answer = await self.install(client, {**good, "version": "v3"})
+            self.assertEqual(status, 409, answer)
+            status, answer = await self.operator_call(client, "POST", "/v1/admin/update", token(scope="update"),
+                                                      self.offer(b"bundle"))
+            self.assertEqual((status, answer["error"]), (409, "a root is being installed"))
+            self.assertFalse(host.updating or host.draining or host.busy())
+            gate.set()
+            await host.rootfs_task
+        self.assertEqual(host.rootfs_status()["state"], "done")
+
     # The operator's key ---------------------------------------------------------------------------------
 
-    OPERATOR_ROUTES = (("POST", "/v1/admin/update"), ("GET", "/v1/admin/update"), ("GET", "/v1/sandboxes/ws-abc/log"))
+    OPERATOR_ROUTES = (("POST", "/v1/admin/update"), ("GET", "/v1/admin/update"), ("GET", "/v1/sandboxes/ws-abc/log"),
+                       ("POST", "/v1/admin/rootfs"), ("GET", "/v1/admin/rootfs"))
 
     async def operator_call(self, client, method, path, bearer, body=None):
         response = await client.request(method, path, json=body or {}, headers={"Authorization": f"Bearer {bearer}"})

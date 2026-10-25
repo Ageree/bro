@@ -267,16 +267,12 @@ export async function startBrowserSandbox(
     readonly workspaceId: string;
   }
 ) {
-  const rootfs = env.BROWSER_SANDBOX_ROOTFS;
-  if (rootfs === undefined) {
-    throw new Error("BROWSER_SANDBOX_ROOTFS is not configured.");
-  }
   const { from, workspaceId } = input;
+  const root = sandboxRoot(workspaceId);
   const fresh = {
     generation: input.generation,
     id: browserSandboxId(workspaceId),
     memoryMb: env.BROWSER_SANDBOX_MEMORY_MB,
-    rootfsVersion: rootfs.version,
     workerKey: browserVmKey(workspaceId).toString("hex"),
     workspace: workspaceId,
   };
@@ -295,10 +291,35 @@ export async function startBrowserSandbox(
         };
   return sandboxSchema.parse(
     await request(host, "POST", "/v1/sandboxes", {
-      body,
+      body: { ...body, rootfsVersion: root.version },
       timeoutMs: startTimeoutMs,
     })
   );
+}
+
+/**
+ * The root a workspace's sandbox starts on: the canary root
+ * (BROWSER_SANDBOX_ROOTFS_CANARY) for the workspaces of
+ * BROWSER_ROOTFS_CANARY_WORKSPACES, everyone's (BROWSER_SANDBOX_ROOTFS)
+ * otherwise. A host without the canary root answers 409, and the sandbox
+ * waits for room as on a full host (`startRefused`): it never falls back to
+ * everyone's root, whose older Chrome must not open a profile a newer one
+ * has written (the canary's Chromium 156 against 154 on 25.10). A snapshot
+ * taken on the other root restores as a cold start from its profile
+ * (`hostd` checks the root of a snapshot).
+ */
+function sandboxRoot(workspaceId: string) {
+  const rootfs = env.BROWSER_SANDBOX_ROOTFS;
+  if (rootfs === undefined) {
+    throw new Error("BROWSER_SANDBOX_ROOTFS is not configured.");
+  }
+  const canary = env.BROWSER_SANDBOX_ROOTFS_CANARY;
+  const listed = env.BROWSER_ROOTFS_CANARY_WORKSPACES ?? [];
+  const onCanary =
+    canary !== undefined &&
+    canary.version !== rootfs.version &&
+    (listed.includes("*") || listed.includes(workspaceId));
+  return onCanary ? canary : rootfs;
 }
 
 /** The workspace's sandbox on the host, or undefined when it has none. */

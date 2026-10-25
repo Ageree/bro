@@ -61,6 +61,9 @@ Routes (all but /v1/health need a token; those marked * one with scope "update",
   GET    /v1/sandboxes/<id>/log *       the end of the sandbox's runtime.log
   GET    /v1/admin/update *             the full status of the last update
   POST   /v1/admin/update *             {url, sha256}: new host code from a bundle, then a hostd restart
+  GET    /v1/admin/rootfs *             the status of the last root install
+  POST   /v1/admin/rootfs *             {version, url, sha256}: one more sandbox root (and its image), after the
+                                         answer; sandboxes start on it once /v1/capacity lists it
 """
 
 import asyncio
@@ -88,7 +91,7 @@ import network
 import selfupdate
 import sets
 
-VERSION = "2026-10-09.2"
+VERSION = "2026-10-25.1"
 MAX_TOKEN_LIFETIME_S = 900
 RUNTIMES = ("runc", "runsc", "firecracker")
 SANDBOX_ID = re.compile(r"[a-z0-9-]{1,63}")
@@ -210,6 +213,9 @@ class Config:
     update_quiet_poll_s: float = 0.5
     # How long hostd goes on refusing starts and parks after it has asked systemd to restart it.
     update_restart_grace_s: float = 300
+    # Another sandbox root on a host that runs (POST /v1/admin/rootfs): its archive's limit and download time.
+    rootfs_max_bytes: int = 4 * 1024**3
+    rootfs_download_s: float = 3600
     bash: str = "bash"
     systemctl: str = "systemctl"
     # What sandbox memory limits may add up to; 0 = MemTotal less `reserve_mb`.
@@ -667,6 +673,8 @@ class Host:
         self.prebuild = None
         self.updating = False
         self.update_task = None
+        self.rootfs_task = None  # POST /v1/admin/rootfs, while it fetches, unpacks or images a root
+        self.rootfs_imaging = set()  # a root installed on a microVM host that has no image yet: not listed
         # An update is about to restart hostd: new starts and parks are refused (503), those running finish.
         self.draining = False
         self.inflight = 0  # starts, parks and deletes in progress: what an update waits for
@@ -742,6 +750,10 @@ class Host:
         return status_of(code, output) == "running"
 
     async def close(self):
+        if self.rootfs_task is not None:
+            self.rootfs_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self.rootfs_task
         if self.prebuild is not None:
             self.prebuild.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -770,9 +782,13 @@ class Host:
             self.inflight -= 1
 
     def busy(self):
-        """Whether any sandbox is half way through a start, restore or park."""
-        return self.inflight > 0 or any(r["state"] in ("starting", "restoring", "parking")
-                                        for r in self.sandboxes.values())
+        """Whether any sandbox is half way through a start, restore or park: what an update waits for before it
+        restarts hostd. A root being installed refuses the update instead (`update`)."""
+        return self.inflight > 0 or any(
+            r["state"] in ("starting", "restoring", "parking") for r in self.sandboxes.values())
+
+    def installing_rootfs(self):
+        return self.rootfs_task is not None and not self.rootfs_task.done()
 
     def live(self):
         return {r["id"]: r for r in self.sandboxes.values() if r.get("slot") is not None and r["state"] != "parked"}
@@ -1027,7 +1043,7 @@ class Host:
             if existing is not None and generation < existing["generation"]:
                 raise Refused(409, "stale generation", generation=existing["generation"])
             rootfs = self.config.rootfs / version
-            if not rootfs.is_dir():
+            if not rootfs.is_dir() or version in self.rootfs_imaging:
                 raise Refused(409, "rootfs version is not on this host", rootfsVersion=version)
             self.admit(sandbox_id, memory)
             with self.counted():
@@ -2030,6 +2046,10 @@ class Host:
             url, digest = selfupdate.valid_request(body, self.config.update_schemes)
             if self.updating:
                 raise selfupdate.UpdateRefused(409, "an update is already running")
+            # Refused, not waited for: an install takes up to an hour, and the update's wait for quiet refuses
+            # every start and park on the host meanwhile.
+            if self.installing_rootfs():
+                raise selfupdate.UpdateRefused(409, "a root is being installed")
             self.updating = True
             try:
                 version = await selfupdate.prepare(self.http, self.config, url, digest)
@@ -2079,6 +2099,98 @@ class Host:
                 return False
             await asyncio.sleep(self.config.update_quiet_poll_s)
         return True
+
+    # Roots ------------------------------------------------------------------------------------------
+
+    def rootfs_status_path(self):
+        return Path(self.config.root) / "rootfs.json"
+
+    def write_rootfs_status(self, **fields):
+        path = self.rootfs_status_path()
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(json.dumps({"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), **fields}))
+        temporary.replace(path)
+
+    def rootfs_status(self):
+        with contextlib.suppress(OSError, ValueError):
+            return json.loads(self.rootfs_status_path().read_text())
+        return None
+
+    async def install_rootfs(self, body):
+        """POST /v1/admin/rootfs: one more sandbox root on a host that runs. A static host gets a root from
+        provision.sh only, when it is installed; a second root lets some workspaces start on a new build
+        (BROWSER_SANDBOX_ROOTFS_CANARY) while everyone else stays on the one they have. Checked before the
+        answer; fetched, checked against its SHA-256 and unpacked as provision.sh's `rootfs` stage does after
+        it, then given its image on a microVM host. The root is listed (/v1/capacity) only once it is whole.
+        A root this host has already is not fetched again."""
+        if not isinstance(body, dict):
+            raise Refused(400, "body must be an object")
+        version = body.get("version")
+        if not isinstance(version, str) or not ROOTFS_VERSION.fullmatch(version):
+            raise Refused(400, "version must be a rootfs version")
+        try:
+            url, digest = selfupdate.valid_request(body, self.config.update_schemes)
+        except selfupdate.UpdateRefused as refusal:
+            raise Refused(refusal.status, refusal.error) from None
+        if (self.config.rootfs / version).is_dir() and version not in self.rootfs_imaging:
+            return 200, {"version": version, "state": "present"}
+        if self.installing_rootfs():
+            raise Refused(409, "a root is already being installed", rootfs=self.rootfs_status())
+        if self.updating or self.draining:
+            raise Refused(503, "an update is about to restart hostd")
+        self.write_rootfs_status(state="downloading", version=version, sha256=digest)
+        self.rootfs_task = asyncio.ensure_future(self.fetch_rootfs(version, url, digest))
+        return 202, {"version": version, "state": "downloading"}
+
+    async def fetch_rootfs(self, version, url, digest):
+        config = self.config
+        archive = config.rootfs / f".{version}.tar.zst"
+        partial = config.rootfs / f".{version}.partial"  # hidden: only finished versions are listed
+        try:
+            config.rootfs.mkdir(parents=True, exist_ok=True)
+            await selfupdate.download(self.http, url, digest, archive, config.rootfs_max_bytes, what="root",
+                                      total_s=config.rootfs_download_s)
+            self.write_rootfs_status(state="unpacking", version=version, sha256=digest)
+            await asyncio.to_thread(remove, partial)
+            partial.mkdir(parents=True)
+            # The root's own uids and gids, not the host's accounts of the same names (provision.sh).
+            code, output = await self.runner.run(
+                ["tar", "--numeric-owner", "-I", "zstd", "-xpf", str(archive), "-C", str(partial)], timeout=1800)
+            if code != 0:
+                raise RuntimeError(f"the root did not unpack: {output[-200:]}")
+            await asyncio.to_thread(remove, archive)
+            # On disk before it takes its name, and the name on disk before it is reported (provision.sh).
+            await asyncio.to_thread(os.sync)
+            if self.microvm:
+                # Its image is built from the path it has for good; until then no start, no capacity and no
+                # repeated install sees it (a hostd restarted meanwhile builds the image at its start).
+                self.rootfs_imaging.add(version)
+            await asyncio.to_thread(partial.rename, config.rootfs / version)
+            await asyncio.to_thread(os.sync)
+            if self.microvm:
+                self.write_rootfs_status(state="imaging", version=version, sha256=digest)
+                try:
+                    await self.ensure_image(version)
+                except Exception:
+                    await asyncio.to_thread(remove, config.rootfs / version)
+                    raise
+                finally:
+                    self.rootfs_imaging.discard(version)
+            self.write_rootfs_status(state="done", version=version, sha256=digest)
+            log.info("rootfs %s installed", version)
+        except asyncio.CancelledError:  # hostd stops: the next try takes the hidden tree again
+            archive.unlink(missing_ok=True)  # up to rootfs_max_bytes, of a version that may never be tried again
+            self.write_rootfs_status(state="failed", version=version, sha256=digest, error="hostd stopped")
+            raise
+        except Exception as error:
+            if isinstance(error, selfupdate.UpdateRefused):
+                reason = error.error
+            else:
+                reason = f"{type(error).__name__}: {error}"[:500]
+            log.error("rootfs %s was not installed: %s", version, reason)
+            await asyncio.to_thread(remove, archive)
+            await asyncio.to_thread(remove, partial)
+            self.write_rootfs_status(state="failed", version=version, sha256=digest, error=reason)
 
     # Delete -----------------------------------------------------------------------------------------
 
@@ -2139,8 +2251,10 @@ class Host:
             root_disk = shutil.disk_usage(self.config.root)
             disk = {"totalMb": root_disk.total // 2**20, "freeMb": root_disk.free // 2**20}
         # A rootfs still unpacking is a hidden `.<version>.partial`: the pattern leaves it out.
+        # One still getting its image (`fetch_rootfs`) is left out too.
         versions = sorted(p.name for p in self.config.rootfs.glob("*")
-                          if p.is_dir() and ROOTFS_VERSION.fullmatch(p.name)) if self.config.rootfs.exists() else []
+                          if p.is_dir() and ROOTFS_VERSION.fullmatch(p.name) and p.name not in self.rootfs_imaging
+                          ) if self.config.rootfs.exists() else []
         memory = meminfo()
         if memory is not None:
             memory["committed"] = sum(self.footprint_mb(r["memoryMb"]) for r in live if r["state"] != "failed")
@@ -2258,6 +2372,19 @@ async def update_host(request):
     return web.json_response(body, status=status)
 
 
+async def install_rootfs(request):
+    authorize(request, scope="update")
+    status, body = await request.app[HOST].install_rootfs(await body_of(request))
+    return web.json_response(body, status=status)
+
+
+async def rootfs_status(request):
+    """The last root install, whole: the operator's."""
+    authorize(request, scope="update")
+    host = request.app[HOST]
+    return web.json_response({"installing": host.installing_rootfs(), "rootfs": host.rootfs_status()})
+
+
 async def update_status(request):
     """The whole status of the last update (error text, bundle hash, the version running): the operator's."""
     authorize(request, scope="update")
@@ -2292,6 +2419,8 @@ def application(host):
         web.get("/v1/sandboxes/{sandbox_id}/log", sandbox_log),
         web.post("/v1/admin/update", update_host),
         web.get("/v1/admin/update", update_status),
+        web.post("/v1/admin/rootfs", install_rootfs),
+        web.get("/v1/admin/rootfs", rootfs_status),
     ])
     return app
 
