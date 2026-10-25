@@ -2121,6 +2121,18 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   его на владеющий HTML-узел. Для проверки origin поля worker ищет ближайшего
   владельца в том же `target_id` и сверяет `Page.getFrameTree.securityOrigin`;
   URL верхней страницы не доказывает принадлежность поля сайту.
+- Скачанное браузером (25.10): Chrome пула кладёт файл в `downloads/` папки сессии, и до 25.10 он туда и
+  пропадал — отчёт брал лишь `report/`. Теперь worker (≥ 2026-10-25.1) пишет в запуск `downloads` — файлы
+  этого запуска по снимку папки до и после (не по времени: часы песочницы из снимка отстают), ждёт
+  `.crdownload` до 90 с, а settle копирует их в `browser_download_artifacts` (`agent/lib/browser-use/downloads.ts`:
+  до 20 МиБ, тип по байтам — PDF, EPUB, FB2, MOBI, DjVu, офис, текст, картинки, ZIP; программа — нет) и даёт
+  ходу-отчёту строки `![имя](/artifacts/<id>)` для `send_message`: Telegram шлёт документ, веб — ссылку.
+  Z-Library 24.10: строки `[DownloadsWatchdog] No data received` и `Failed to download` — не обрыв, а второй,
+  CORS-`fetch` того же вложения, которым browser-use дублирует загрузку самого Chrome (стенд
+  `test_downloads.py`, `BRO_DOWNLOADS_CHROME`: файл при этом скачан). Worker этот повтор выключил
+  (`quiet_attachment_refetch`: он же тянул весь файл массивом чисел через CDP). Настоящая беда — загрузка
+  дольше 15 с: клик browser-use отвечает «timed out», хотя Chrome качает дальше, и агент считал загрузку
+  сломанной; теперь `DownloadNotices` говорит ему, что файл качается и что он скачан.
 - Файл на сайт worker (≥ 2026-10-20.1) кладёт как человек (`FilePickers` в `worker.py`): Chrome
   пула оконный (Xvfb), и клик по «Загрузить» открывал системный диалог, которому никто не ответит,
   а поле, которое сайт создаёт лишь на клике, давало «No file upload element». Окно выбора каждой вкладки

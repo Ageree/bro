@@ -145,6 +145,19 @@ const runSummarySchema = z.object({
    */
   unreadMessages: z.array(z.string()).optional(),
   usage: z.record(z.string(), z.json()).nullable(),
+  /**
+   * The files the run itself downloaded into its session's `downloads/`,
+   * told by the folder before and after it, once it has ended. Absent from
+   * a worker older than the field, null while the run goes on.
+   */
+  downloads: z
+    .array(
+      z.object({
+        path: z.string().min(1),
+        size: z.number().int().nonnegative(),
+      })
+    )
+    .nullish(),
 });
 
 const runSchema = runSummarySchema.extend({ steps: z.array(stepSchema) });

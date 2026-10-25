@@ -1,3 +1,4 @@
+import type * as browserUseDownloads from "@agent/lib/browser-use/downloads";
 import type { Session } from "eve/channels";
 import type { ScheduleToFn } from "eve/schedules";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -56,6 +57,7 @@ const row: BrowserRunRow = {
 };
 
 interface RunSummary {
+  downloads?: { path: string; size: number }[];
   error: string | null;
   id: string;
   idle?: { host: string | null };
@@ -312,6 +314,15 @@ vi.mock("@agent/lib/browser-use/host", async (importOriginal) => ({
 vi.mock("@agent/lib/browser-use/images", () => ({
   captureBrowserRunImages,
 }));
+const captureBrowserRunDownloads = vi.hoisted(() =>
+  vi.fn<typeof browserUseDownloads.captureBrowserRunDownloads>(() =>
+    Promise.resolve([])
+  )
+);
+vi.mock("@agent/lib/browser-use/downloads", () => ({
+  captureBrowserRunDownloads,
+  maximumBrowserDownloadBytes: 20 * 1024 * 1024,
+}));
 // The vault's side of a sign-up with Bro's own mailbox; the decision itself
 // is the real one.
 const settleSignUpLogin = vi.hoisted(() =>
@@ -366,6 +377,7 @@ beforeEach(() => {
     .mockResolvedValueOnce({ ...row, completedAt: new Date() })
     .mockResolvedValue(undefined);
   captureBrowserRunImages.mockResolvedValue([]);
+  captureBrowserRunDownloads.mockResolvedValue([]);
 });
 
 type ChannelSend = ReturnType<ScheduleToFn>["send"];
@@ -809,6 +821,60 @@ describe("settling a browser run", () => {
     );
     expect(prompt).toContain(`- ${photoId}: xiaomi band 9`);
     expect(prompt).toContain("never paste the /artifacts/ path as a bare link");
+  });
+
+  it("hands the coordinator the files the run downloaded, and the ones it does not send", async () => {
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const bookId = "6c1f4d0e-5a7b-4c2d-9e8f-0a1b2c3d4e5f";
+    captureBrowserRunDownloads.mockResolvedValue([
+      {
+        id: bookId,
+        kind: "ready",
+        label: "Pride and Prejudice.epub",
+        mediaType: "application/epub+zip",
+        size: 1_258_291,
+      },
+      { kind: "refused", label: "setup.exe", reason: "type" },
+    ]);
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    const prompt = send.mock.calls[0]?.[0];
+    expect(prompt).toContain(
+      `- ![Pride and Prejudice.epub](/artifacts/${bookId}) — application/epub+zip, 1.2 MB`
+    );
+    expect(prompt).toContain("never say one was sent otherwise");
+    expect(prompt).toContain(
+      "- setup.exe: not a document, book, picture or ZIP archive"
+    );
+  });
+
+  it("says the site handed over no file when an errand for one ended without it", async () => {
+    const { settleBrowserRun } =
+      await import("@agent/lib/browser-use/completion");
+    const task = "Скачай книгу Pride and Prejudice в epub с z-library.sk";
+    claimBrowserRunCompletion
+      .mockReset()
+      .mockResolvedValueOnce({ ...row, completedAt: new Date(), task })
+      .mockResolvedValue(undefined);
+    readBrowserUseRun.mockResolvedValue({
+      downloads: [],
+      error: null,
+      id: runId,
+      result: "RESULT: скачал книгу\nNEEDS: none",
+      sessionId: "session-1",
+      status: "completed",
+      task,
+    });
+    const { send, to } = delivery();
+
+    await settleBrowserRun({ to }, runId);
+
+    expect(send.mock.calls[0]?.[0]).toContain(
+      "The run downloaded no file. If the person wanted one, the site did not hand it over"
+    );
   });
 
   it("still reports the errand when its pictures could not be kept", async () => {

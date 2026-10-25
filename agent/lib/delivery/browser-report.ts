@@ -24,6 +24,10 @@ export const browserReportFraming =
 /** How the report's list of the images the run saved opens. */
 export const reportImagesHeading = "Images this run saved, ready to send.";
 
+/** How the report's list of the files the run downloaded opens. */
+export const reportDownloadsHeading =
+  "Files this run downloaded, ready to send.";
+
 /**
  * The run whose report a turn's opening message is, or nothing for any other
  * message: a scheduled result, a person's message.
