@@ -59,7 +59,11 @@ import { browserExitSearch } from "@agent/lib/browser-use/errors";
 import { usesBrowserVm } from "@agent/lib/browser-vm/backend";
 import { browserVmProfileId, isBrowserVmId } from "@agent/lib/browser-vm/ids";
 import { keepBrowserVmForErrand } from "@agent/lib/browser-vm/idle";
-import { errandSearches, flashSearchPilot } from "@agent/lib/browser-use/flash";
+import {
+  errandFindsOnly,
+  errandSearches,
+  flashSearchPilot,
+} from "@agent/lib/browser-use/flash";
 import { stagesErrand, stagingLead } from "@agent/lib/browser-use/staging";
 import {
   browserSecretAliases,
@@ -4978,16 +4982,19 @@ async function runBrowserTask(
           // Only an errand that searches runs in flash mode: nothing allowed in
           // the person's name, nothing to stage, nothing bound. A queued one is
           // decided again from its row when it starts (`flash.ts`).
-          const search = await errandSearches(scope, {
+          const errandKind = {
             bindings: secrets.bindings,
             paymentAllowed: allowPayment,
             staged: staging !== undefined,
             submits: consent !== undefined,
-          });
+          };
+          const search = await errandSearches(scope, errandKind);
           try {
             if (placeholder) paymentDispatch.sent = true;
             const run = await createBrowserUseRun({
               customProxy: customProxy(),
+              // The code engine takes it with a sign-in too (`errandEngine`).
+              findsOnly: errandFindsOnly(errandKind),
               inTurn: true,
               maxCostUsd: env.BROWSER_USE_MAX_COST_USD,
               model: env.BROWSER_USE_MODEL,

@@ -723,7 +723,7 @@ describe("starting a run on a workspace's browser VM", () => {
     expect(await browsers({})).toEqual([undefined]);
   });
 
-  it("runs only a search in the code engine's pilot on the code engine", async () => {
+  it("runs only an errand that finds things in the code engine's pilot on the code engine", async () => {
     worker.startBrowserVmWorkerRun.mockImplementation((_vm, input) =>
       Promise.resolve({
         id: input.id,
@@ -740,12 +740,13 @@ describe("starting a run on a workspace's browser VM", () => {
         },
         async () => import("@agent/lib/browser-use/client")
       );
-      return async (search: boolean, freshExit = false) => {
+      return async (findsOnly: boolean, freshExit = false) => {
         worker.startBrowserVmWorkerRun.mockClear();
         await client.createBrowserUseRun({
+          findsOnly,
           freshExit,
           profileId,
-          search,
+          search: false,
           task: composedTask,
         });
         return worker.startBrowserVmWorkerRun.mock.calls.map(
@@ -756,7 +757,8 @@ describe("starting a run on a workspace's browser VM", () => {
 
     const listed = await pilot(workspaceId);
     expect(await listed(true)).toEqual(["code"]);
-    // An errand that signs in, stages or pays is not a search: browser-use.
+    // An errand that submits, stages or pays: browser-use. One that signs in
+    // with the person's phone still finds only, with flash mode off (`search`).
     expect(await listed(false)).toEqual([undefined]);
     // A retry past an anti-bot wall: browser-use, which solves the captcha.
     expect(await listed(true, true)).toEqual([undefined]);

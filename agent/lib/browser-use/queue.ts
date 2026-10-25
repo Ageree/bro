@@ -411,14 +411,16 @@ async function createQueuedRun(
       site: row.site ?? undefined,
     }
   );
+  const modes = await storedErrandSearches(row, task, secrets.bindings);
   return createRunInSession(
     {
       customProxy: customProxy(),
+      findsOnly: modes.findsOnly,
       maxCostUsd: env.BROWSER_USE_MAX_COST_USD,
       model: env.BROWSER_USE_MODEL,
       profileId: row.profileId ?? undefined,
       proxyCountryCode: env.BROWSER_USE_PROXY_COUNTRY,
-      search: await storedErrandSearches(row, task, secrets.bindings),
+      search: modes.search,
       secretBindings: secrets.bindings,
       sessionId: row.sessionId ?? undefined,
       task: `${task}\n\n${reference}`,
