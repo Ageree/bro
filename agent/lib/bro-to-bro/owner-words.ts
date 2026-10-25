@@ -577,7 +577,7 @@ export function sumsIn(text: string) {
 
 /** The owner's own word of paying, buying or chipping in, said of themself. */
 const paysPattern =
-  /(?<!\p{L})(?:скинемся|скинусь|скидываемся|сброшусь|сбросимся|заплачу|заплатим|оплачу|оплатим|плачу|платим|куплю|купим|покупаю|покупаем|переведу|переведем|угощаю|угощу|угостим|вложусь|вложимся|подарим|беру\s+на\s+себя|за\s+мой\s+сч[её]т|(?:могу|готов\p{L}*)\s+(?:дать|скинуть|перевести|вложить|потратить|заплатить|оплатить|купить))(?!\p{L})/u;
+  /(?<!\p{L})(?:скинемся|скинусь|скидываемся|сброшусь|сбросимся|заплачу|заплатим|оплачу|оплатим|плачу|платим|куплю|купим|покупаю|покупаем|переведу|переведем|угощаю|угощу|угостим|вложусь|вложимся|подарим|закажу|закажем|беру\s+на\s+себя|за\s+мой\s+сч[её]т|(?:могу|готов\p{L}*)\s+(?:дать|скинуть|перевести|вложить|потратить|заплатить|оплатить|купить))(?!\p{L})/u;
 
 /**
  * Words of paying, buying for someone or chipping in, and «за мой счёт»: a
@@ -719,6 +719,8 @@ const payVerb = new RegExp(
     verbForms("перев", ["ел", "ела", "ели", "ести"]),
     verbForms("перевод", secondConjugation),
     verbForms("подар", secondConjugation),
+    verbForms("заказ", ["ал", "ала", "али", "ать", "ывает", "ывают"]),
+    verbForms("закаж", ["у", "ет", "ут", "ем", "ешь", "ете", "и", "ите"]),
     verbForms("влож", [
       ...secondConjugation,
       ...reflexiveSecond,
@@ -758,7 +760,7 @@ const payVerb = new RegExp(
 
 /** Words that only say how a promise is made: «берёт на себя», «возьмёт», «обещает». */
 const promiseHow =
-  /^(?:бер(?:ет|ут|у|ем|ешь|ете)|возьм(?:ет|ут|у|ем|ешь|ете)|обеща(?:ет|ют|ем|ю|л|ла|ли|ть|ешь|ете))$/u;
+  /^(?:бер(?:ет|ут|у|ем|ешь|ете)|возьм(?:ет|ут|у|ем|ешь|ете)|взя(?:ть|л|ла|ли)|обеща(?:ет|ют|ем|ю|л|ла|ли|ть|ешь|ете))$/u;
 
 /** The parts of a clause a promise is read in: «я куплю торт, Борис купит машину» is two. */
 function promiseParts(clause: string) {
@@ -768,13 +770,16 @@ function promiseParts(clause: string) {
     .filter((part) => part !== "");
 }
 
-/** «за ним», «на нём», «с него»: whose a cost is, said without a verb. */
+/**
+ * «за ним», «на нём», «с него»: whose a cost is, said without a verb — not
+ * «с тебя» of «кто что возьмёт с тебя?», which asks what the other one brings.
+ */
 const onSomeone =
-  /(?<!\p{L})(?:за\s+(?:ним|ней|ними|мной|нами|тобой|вами)|на\s+(?:нем|нём|ней|них|мне|нас|тебе|вас)|с\s+(?:него|нее|неё|них|меня|нас|тебя|вас))(?!\p{L})/iu;
+  /(?<!\p{L})(?:за\s+(?:ним|ней|ними|мной|нами|тобой|вами)|на\s+(?:нем|нём|ней|них|мне|нас|тебе|вас)|с\s+(?:него|нее|неё|них|меня|нас))(?!\p{L})/iu;
 
 /** «берёт на себя», «возьмёт на себя»: a promise, whatever it takes on. */
 const takesOn =
-  /(?<!\p{L})(?:бер[её]\p{L}*|беру|взял\p{L}*|возьм\p{L}*)\s+на\s+себя(?!\p{L})/iu;
+  /(?<!\p{L})(?:(?:бер[её]\p{L}*|беру|взя\p{L}*|возьм\p{L}*)(?:\s+\p{L}+){0,2}\s+на\s+себя|покупк\p{L}*(?:\s+\p{L}+)?\s+(?:бер[её]\p{L}*|беру|взя\p{L}*|возьм\p{L}*)|(?:бер[её]\p{L}*|беру|взя\p{L}*|возьм\p{L}*)\s+(?:на\s+себя\s+)?покупк\p{L}*)(?!\p{L})/iu;
 
 /**
  * Whether a part of a text promises to pay: a word of paying as a verb
@@ -815,10 +820,10 @@ export function paysTogether(part: string) {
 
 /**
  * What the owner's words say they pay for, buy or chip in on: each promise
- * of a clause of their own that says yes (`affirmed`), read as a packet's is
- * (`readPromises`), with their word of paying («скинемся маме на подарок»,
- * «торт я куплю», «я плачу»; «скинемся вчетвером, я, Аня и Вика, на
- * юбилей маме» is one, whom with and for what). A promise of the
+ * of a clause of their own that says yes (`affirmed`, `ownPromises`), with their
+ * word of paying («скинемся маме на подарок», «торт я куплю», «я плачу»;
+ * «скинемся вчетвером, я, Аня и Вика, на юбилей маме» is one, whom with and
+ * for what). A promise of the
  * owner's goes only when all of it is in one of these (`paymentCovered`):
  * «я плачу» covers «Савелий заплатит» and no more. Empty when they said
  * nothing of it.
@@ -826,10 +831,44 @@ export function paysTogether(part: string) {
 export function paymentsSaid(text: string) {
   if (secret.test(text)) return [];
   return affirmed(text)
-    .flatMap((clause) => readPromises(clause, []).promises)
-    .filter((promise) => paysPattern.test(promise))
+    .flatMap((clause) => saidPromises(clause, "own"))
     .map((promise) => promise.slice(0, 200))
     .slice(0, 10);
+}
+
+/** What a part of the owner's words starts with when it says for what or how much: «на юбилей», «по 3000». */
+const purposeStart = /^(?:на|по|для|к|ко|в|во|за|с|со|от|до)$/u;
+
+/**
+ * The promises a clause of the owner's words makes — their own (`own`:
+ * their word of paying, `paysPattern`) or someone else's (any other word of
+ * paying) — each part with it, and with it, when a part that says for what
+ * or how much follows («на юбилей маме бориса по 3000»), the short parts
+ * between them that list whom with («я», «аня», «вика и борис»). Nothing
+ * else joins it: not what they give others («борис — овощи»), not what
+ * follows without saying for what («автомобиль стоит в гараже»). Less,
+ * never more, than they said.
+ */
+function saidPromises(clause: string, whose: "other" | "own") {
+  const promises: string[][] = [];
+  let between: string[] = [];
+  let open = false;
+  for (const part of clause.split(/[,;]/u).map((each) => each.trim())) {
+    const words = comparableWords(part);
+    if (words.length === 0) continue;
+    const own = paysPattern.test(words.join(" "));
+    if (whose === "own" ? own : !own && promising(part)) {
+      promises.push([part]);
+      between = [];
+      open = true;
+    } else if (open && purposeStart.test(words[0] ?? "")) {
+      promises.at(-1)?.push(...between, part);
+      between = [];
+    } else if (open && words.length <= 3 && !/[—–]|\s-\s/u.test(part))
+      between.push(part);
+    else open = false;
+  }
+  return promises.map((promise) => promise.join(" "));
 }
 
 /**
@@ -846,8 +885,7 @@ export function peerPaysSaid(text: string) {
       (clause) =>
         !negated(clause) && !reportedWords.test(clause) && !doubt.test(clause)
     )
-    .flatMap((clause) => readPromises(clause, []).promises)
-    .filter((promise) => !paysPattern.test(promise))
+    .flatMap((clause) => saidPromises(clause, "other"))
     .map((promise) => promise.slice(0, 200))
     .slice(0, 10);
 }
@@ -1036,6 +1074,10 @@ function payerForm(
 ) {
   return (
     comparableWords(names.payer).includes(word) ||
+    // «он», «она», «мы» as who pays: the payer's words cover it whoever it
+    // is; a promise of the other one that points so is not theirs to make
+    // (`peerPaymentCovered` holds it).
+    /^(?:он|она|мы)$/u.test(word) ||
     // «ты», «вы»: the other one, whom the packet is written to.
     (names.together === true &&
       (comparableWords(names.other).includes(word) ||
@@ -1161,13 +1203,17 @@ function readPromises(text: string, names: readonly string[]) {
       words.length > 0 &&
       words.length <= 4 &&
       words.some((word) => goesOn.test(word)) &&
-      !words.some((word) => isName(word)) &&
+      !agrees(words) &&
       !promising(sentence, people)
     ) {
+      // «И шубу.», «Савелий тоже.»: what or who joins the promise before.
       promises.at(-1)?.push(sentence);
       continue;
     }
     const read = promises.length;
+    // A part joins only a promise of its own sentence; the next sentence
+    // goes on with one only as «И шубу.» does, above.
+    const joins = () => promises.length > read;
     let asking = false;
     const asked: string[] = [];
     const besides: string[] = [];
@@ -1189,14 +1235,22 @@ function readPromises(text: string, names: readonly string[]) {
           if (promising(part, people)) asked.push(part);
           continue;
         }
-        if (!agrees(own)) besides.push(...own);
+        // «Пётр — за»: a bare name and what only says they agree, over a dash.
+        const named = comparableWords(before.join(" "));
+        const agreed =
+          agrees(own) ||
+          (before.length === 1 &&
+            named.length > 0 &&
+            named.every((word) => isName(word)) &&
+            agreeing.test(own.join(" ")));
+        if (!agreed) besides.push(...own);
         if (promising(part, people)) {
           promises.push([...before, part]);
           before = [];
-        } else if (agrees(own)) before = [];
+        } else if (agreed) before = [];
         else if (own.length > 0 && own.every((word) => isName(word)))
           before = [part];
-        else if (promises.length > 0) promises.at(-1)?.push(part);
+        else if (joins()) promises.at(-1)?.push(part);
         else before.push(part);
       }
     }
