@@ -2496,6 +2496,7 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
                 goto('t1', 'https://shop.test/login');
                 console.log(snapshot('t1'));
                 fill('t1', 'e1', secret('login_password'));
+                try { goto('t1', 'https://web.archive.org/web/2024/https://shop.test/'); } catch (e) { console.log('blocked', e.message); }
                 const other = openTab('https://evil.test/');
                 try { fill(other, 'e1', secret('login_password')); } catch (e) { console.log('refused', e.message); }
                 globalThis.kept = 41;"""})]),
@@ -2514,6 +2515,9 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         first = model.requests[1][-1]["content"]
         self.assertIn('button "Sign in" [ref=e2]', first)
         self.assertIn("refused fill: ValueError: secret 'login_password' is not for evil.test", first)
+        # An archive answers with a stale copy of the site: not a page an errand reads (PROHIBITED_DOMAINS).
+        self.assertIn("blocked goto: ValueError: https://web.archive.org/web/2024/https://shop.test/ is not allowed", first)
+        self.assertEqual(shop.url, "https://shop.test/login")
         self.assertEqual(model.requests[2][-1]["content"], "42 https://shop.test/login")
         self.assertEqual([step["goal"] for step in run.steps], ["sign in", "check", "done"])
         self.assertEqual({key: run.usage[key] for key in ("total_prompt_tokens", "total_prompt_cached_tokens")},
@@ -2525,6 +2529,21 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         playwright.browser_cdp.send.assert_awaited_once_with("Browser.setDownloadBehavior", {
             "behavior": "allow", "downloadPath": str(self.worker.sessions["s1"].workspace / worker.DOWNLOADS),
             "eventsEnabled": True})
+
+    def test_the_code_engine_needs_playwright_with_ai_snapshots(self):
+        found = types.SimpleNamespace()
+        with mock.patch.object(worker.importlib.util, "find_spec", lambda name: found):
+            for version, available in (("1.64.1", True), ("1.70.0", True), ("1.52.0", False), ("2.0", True)):
+                with mock.patch.object(worker.importlib.metadata, "version", lambda name: version):
+                    self.assertEqual(worker.code_engine_available(), available, version)
+        with mock.patch.object(worker.importlib.util, "find_spec", lambda name: None if name == "quickjs" else found):
+            self.assertFalse(worker.code_engine_available())
+
+    def test_prohibited_sites_are_matched_as_browser_use_matches_them(self):
+        for url, prohibited in (("https://web.archive.org/web/x", True), ("https://archive.org/", True),
+                                ("https://archive.ph/abc", True), ("https://notarchive.org/", False),
+                                ("https://hh.ru/search", False), ("https://x.translate.goog/", True)):
+            self.assertEqual(worker.code_prohibited(url), prohibited, url)
 
     async def test_a_code_run_on_a_root_without_the_engine_runs_on_browser_use(self):
         self.enterContext(mock.patch.object(worker, "code_engine_available", lambda: False))

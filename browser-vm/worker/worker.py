@@ -69,6 +69,7 @@ import contextlib
 import functools
 import hashlib
 import hmac
+import importlib.metadata
 import importlib.util
 import ipaddress
 import json
@@ -1827,8 +1828,25 @@ CODE_METHODS = frozenset({"tabs", "open_tab", "goto", "snapshot", "click", "fill
 
 
 def code_engine_available():
-    """Whether this root has what the code engine needs (sandbox-20261025.1 on): Playwright's client, QuickJS."""
-    return all(importlib.util.find_spec(name) is not None for name in ("playwright", "quickjs", "openai"))
+    """Whether this root has what the code engine needs (sandbox-20261025.1 on): QuickJS and Playwright's client
+    from 1.64, whose `aria_snapshot(mode="ai")` and `get_by_ref` the API stands on."""
+    if any(importlib.util.find_spec(name) is None for name in ("playwright", "quickjs", "openai")):
+        return False
+    with contextlib.suppress(Exception):
+        major, minor = importlib.metadata.version("playwright").split(".")[:2]
+        return (int(major), int(minor)) >= (1, 64)
+    return False
+
+
+def code_prohibited(url):
+    """Whether the address is on PROHIBITED_DOMAINS, as browser-use's `prohibited_domains` reads it: archives and
+    caches answer with a stale copy of a site (`*.archive.org` is archive.org itself too)."""
+    host = (urllib.parse.urlsplit(str(url)).hostname or "").lower().rstrip(".")
+    for pattern in PROHIBITED_DOMAINS:
+        domain = pattern.removeprefix("*.")
+        if host == domain or (pattern.startswith("*.") and host.endswith("." + domain)):
+            return True
+    return False
 
 
 def code_cut(text, limit):
@@ -1869,12 +1887,22 @@ class CodeApi:
             self.ids[page], self.pages[tab] = tab, page
         return self.ids[page]
 
-    def page(self, tab):
+    def page(self, tab, leaving=False):
+        """The tab's page. One on a prohibited site (a link or a popup took it there) is read and acted on by
+        nothing but a `goto` that leaves it."""
         page = self.pages.get(str(tab))
         if page is None or page.is_closed():
             raise ValueError(f"no open tab {tab!r}: tabs() lists them")
+        if not leaving and code_prohibited(page.url):
+            raise ValueError(f"{page.url} is not allowed for errands (an archive or a cache); goto() another page")
         self.last = page
         return page
+
+    @staticmethod
+    def allowed(url):
+        if code_prohibited(url):
+            raise ValueError(f"{url} is not allowed for errands (an archive or a cache): use the site itself")
+        return str(url)
 
     def unsecret(self, page, text):
         """The values behind `secret(alias)`, typed only on the site each was given for."""
@@ -1896,6 +1924,7 @@ class CodeApi:
                 for tab, page in self.pages.items() if not page.is_closed()]
 
     async def open_tab(self, url):
+        url = self.allowed(url)
         page = await self.context.new_page()
         tab = self.register(page)
         self.last = page
@@ -1903,8 +1932,8 @@ class CodeApi:
         return tab
 
     async def goto(self, tab, url):
-        page = self.page(tab)
-        await page.goto(str(url), wait_until="domcontentloaded", timeout=CODE_CALL_S * 1000)
+        page = self.page(tab, leaving=True)
+        await page.goto(self.allowed(url), wait_until="domcontentloaded", timeout=CODE_CALL_S * 1000)
         return {"url": page.url, "title": await page.title()}
 
     async def snapshot(self, tab):
@@ -1949,7 +1978,7 @@ class CodeApi:
         return True
 
     async def back(self, tab):
-        page = self.page(tab)
+        page = self.page(tab, leaving=True)
         await page.go_back(wait_until="domcontentloaded", timeout=CODE_CALL_S * 1000)
         return {"url": page.url}
 
@@ -1974,17 +2003,19 @@ class CodeApi:
         return True
 
     async def close_tab(self, tab):
-        page = self.page(tab)
+        page = self.page(tab, leaving=True)
         self.last = None
         await page.close()
         return True
 
     async def settle(self, tab):
-        """After a click or a key: a navigation it started has its document before the next call."""
-        page = self.page(tab)
+        """After a click or a key: a navigation it started has its document before the next call, and one that
+        reached a prohibited site says so."""
+        page = self.page(tab, leaving=True)
         with contextlib.suppress(Exception):
             await page.wait_for_load_state("domcontentloaded", timeout=8_000)
         await asyncio.sleep(0.3)
+        self.page(tab)
 
 
 class CodeSandbox:
@@ -2852,9 +2883,9 @@ class Worker:
         deadline = time.monotonic() + int(session.options.get("timeoutSeconds") or 1500)
         usage = {"total_prompt_tokens": 0, "total_prompt_cached_tokens": 0, "total_completion_tokens": 0}
         final = None
-        sandbox = api = browser = context = None
-        pw = await async_playwright().start()
+        sandbox = api = browser = context = pw = None
         try:
+            pw = await async_playwright().start()
             browser = await pw.chromium.connect_over_cdp(CDP_HTTP)
             context = browser.contexts[0]
             # Playwright points the browser's downloads at a temporary folder of its own when it connects: back to
