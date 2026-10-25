@@ -1714,6 +1714,8 @@ CODE_TEXT_CHARS = 12_000
 CODE_OUTPUT_CHARS = 16_000
 CODE_CALL_S = 45  # one API call: a page load, a click and what it starts
 CODE_CARDS = 80  # the cards one cards() call returns, the page's first ones
+CODE_CARDS_WAIT_S = 5  # a list that is still drawing: how long cards() waits for its first three cards
+CODE_CARDS_SCROLL_S = 10  # how long cards() scrolls down for cards a page loads as it is scrolled
 CODE_CARDS_CHARS = 60_000  # cards() goes to the model's code, not its context: printing is cut apart
 CODE_VISIT_PAGES = 8  # the pages one visit() reads, CODE_VISIT_AT_ONCE at a time, each in a tab of its own
 CODE_VISIT_AT_ONCE = 3  # a page of a heavy site holds ~200 MB of a 3 GB sandbox while it is open
@@ -1955,7 +1957,7 @@ CODE_CARDS_JS = r"""(limit) => {
     }
   }
   if (!best) return [];
-  return best.slice(0, limit).map((el) => {
+  return best.filter((el) => clean(el.innerText).length >= 15).slice(0, limit).map((el) => {
     const links = [...new Set([...(el.matches('a[href]') ? [el] : []), ...el.querySelectorAll('a[href]')]
       .map((a) => a.href).filter((h) => /^https?:/.test(h)))].slice(0, 4);
     const img = el.querySelector('img[src]');
@@ -2084,8 +2086,36 @@ class CodeApi:
         return value if len(encoded) <= CODE_TEXT_CHARS else code_cut(encoded, CODE_TEXT_CHARS)
 
     async def cards(self, tab, limit=CODE_CARDS):
+        """The page's cards once its list stopped growing: it waits for a list that is still drawing and
+        scrolls down while more cards come (tutu.ru showed 3 trains right after its page loaded, 11 five
+        seconds later, the rest only on scrolling), then scrolls back to the top."""
         page = self.page(tab)
-        found = await page.evaluate(CODE_CARDS_JS, max(1, min(int(limit), CODE_CARDS)))
+        limit = max(1, min(int(limit), CODE_CARDS))
+        # A list still drawing first shows other repeated things (a menu's three items on tutu.ru): the page's
+        # requests quieting down, then the same cards twice in a row, is a list that is there.
+        with contextlib.suppress(Exception):
+            await page.wait_for_load_state("networkidle", timeout=CODE_CARDS_WAIT_S * 1000)
+
+        def mark(cards):
+            return len(cards), cards[0]["text"] if cards else ""
+
+        found = await page.evaluate(CODE_CARDS_JS, limit)
+        settle = time.monotonic()
+        while time.monotonic() - settle < CODE_CARDS_WAIT_S:
+            await asyncio.sleep(1)
+            again = await page.evaluate(CODE_CARDS_JS, limit)
+            if len(again) >= 3 and mark(again) == mark(found):
+                break
+            found = again
+        started, idle = time.monotonic(), 0
+        while len(found) < limit and idle < 2 and time.monotonic() - started < CODE_CARDS_SCROLL_S:
+            await page.evaluate("window.scrollTo(0, document.documentElement.scrollHeight)")
+            await asyncio.sleep(1.2)
+            more = await page.evaluate(CODE_CARDS_JS, limit)
+            idle = idle + 1 if len(more) <= len(found) else 0
+            found = more if len(more) >= len(found) else found
+        with contextlib.suppress(Exception):
+            await page.evaluate("window.scrollTo(0, 0)")
         encoded = json.dumps(found, ensure_ascii=False)
         while len(encoded) > CODE_CARDS_CHARS and len(found) > 1:
             found = found[:len(found) * 3 // 4]
