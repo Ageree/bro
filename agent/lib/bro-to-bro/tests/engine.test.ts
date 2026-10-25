@@ -100,7 +100,7 @@ async function thread() {
   await links.setBroLinkLabel(petya, accepted.linkId, "старший");
   const [own] = await links.listBroLinks(savely);
   if (!own) throw new Error("Savely has no link.");
-  await links.confirmBroLink(savely, own.id);
+  await links.confirmBroLink(savely, own.id, "cabinet");
   const started = await threads.startBroThread(savely, {
     linkId: own.id,
     mandate,

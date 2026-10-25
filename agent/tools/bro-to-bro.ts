@@ -401,7 +401,7 @@ function networkTool(turn: BroTurn) {
             people: [link.peerName, link.label],
           },
           async () => {
-            const confirmed = await confirmBroLink(scope, link.id);
+            const confirmed = await confirmBroLink(scope, link.id, "chat");
             if (confirmed.kind === "confirmed") wakeEngine();
             return {
               done: confirmed.kind === "confirmed",
@@ -702,7 +702,7 @@ function talkTool(turn: BroTurn) {
           wakeEngine();
           return {
             done: true,
-            note: "Tell the owner in one line that you have their answer and go on with the talk. Never say their words went to the other person as they are: they are your context, only what the errand needs goes on, and nothing private without their yes on the exact words.",
+            note: "Tell the owner in one line that you have their answer and go on with the talk. Do not say you passed it (no «передал»): nothing has gone to the other person yet, their words are your context, only what the errand needs goes on, and nothing private without their yes on the exact words.",
           };
         }
         return {

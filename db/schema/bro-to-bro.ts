@@ -124,11 +124,11 @@ export interface BroReportPayload {
   readonly proposal?: BroProposal;
   /** confirmed: what became of the meeting in this owner's own calendar. */
   readonly calendar?: Exclude<BroCalendarState, "pending">;
-  /** question, held, answered, declined: the words concerned. */
+  /** question, held, answered, declined; agreed: the words the peer's yes came with. */
   readonly text?: string | null;
   /** held: why the gate held the draft. */
   readonly reason?: string;
-  /** declined, cancelled: whose side closed the thread; link_ready: who confirmed the link. */
+  /** declined, cancelled: whose side closed the thread. */
   readonly by?: "self" | "peer";
   /** alert: what the peer's envoy tried to learn in one step. */
   readonly alerts?: readonly {

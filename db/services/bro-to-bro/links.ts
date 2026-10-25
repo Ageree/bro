@@ -109,6 +109,7 @@ export async function findBroLink(scope: AccessScope, query: string) {
 export async function confirmBroLink(
   scope: AccessScope,
   linkId: string,
+  from: "cabinet" | "chat",
   now = new Date()
 ) {
   if (!z.uuid().safeParse(linkId).success) return { kind: "none" } as const;
@@ -153,8 +154,13 @@ export async function confirmBroLink(
       transaction,
       rows.map((row) => row.workspaceId)
     );
+    // An inviter who confirmed in the chat heard it there already
+    // (`bro_network confirm_link`); the cabinet tells nobody in a chat.
+    const told = rows.filter(
+      (row) => !(from === "chat" && row.workspaceId === scope.workspaceId)
+    );
     await Promise.all(
-      rows.map((row) =>
+      told.map((row) =>
         enqueueBroReport(transaction, {
           workspaceId: row.workspaceId,
           userId: row.userId,
@@ -164,7 +170,6 @@ export async function confirmBroLink(
             peerName: people.get(row.peerWorkspaceId)?.name ?? null,
             peerLabel: row.peerLabel,
             linkId: row.id,
-            by: row.workspaceId === scope.workspaceId ? "self" : "peer",
           },
           target: null,
           dedupeKey: `bro:link:${row.id}:ready`,

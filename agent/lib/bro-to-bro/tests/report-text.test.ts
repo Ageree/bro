@@ -65,18 +65,6 @@ describe("the text of a Bro ↔ Bro report's turn", () => {
     );
   });
 
-  it("lets the inviter's own Bro stay quiet on a link they confirmed in this very chat", () => {
-    const ready = (by: "peer" | "self") =>
-      broReportMessage(
-        { kind: "link_ready", payload: { ...peer, by }, threadId: null },
-        "Europe/Moscow"
-      );
-    expect(ready("self")).toContain(
-      "If you already told the owner in this conversation that this link is ready"
-    );
-    expect(ready("peer")).not.toContain("this link is ready");
-  });
-
   it("gives a question about the other side's proposal its time on the owner's own clock", () => {
     const question = broReportMessage(
       {
@@ -97,6 +85,25 @@ describe("the text of a Bro ↔ Bro report's turn", () => {
     );
     expect(question).toContain("сб 31.10, 21:00–23:00");
     expect(question).toContain("on the owner's clock");
+  });
+
+  it("quotes what the other Bro's yes came with beside the agreed proposal", () => {
+    const agreed = broReportMessage(
+      {
+        kind: "agreed",
+        payload: {
+          ...peer,
+          proposal: { summary: "Кофе" },
+          proposalId,
+          text: "Подходит, давай в «Даблби»",
+        },
+        threadId,
+      },
+      "Europe/Moscow"
+    );
+    expect(agreed).toContain(
+      'Their Bro wrote with its yes: «Подходит, давай в "Даблби"»'
+    );
   });
 
   it("tells the owner what became of the confirmed meeting in their calendar, never asking to add it", () => {
