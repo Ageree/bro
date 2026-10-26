@@ -34,6 +34,14 @@ import {
 import { withApprovalCard } from "@shared/chat/approval-card";
 import { capabilityTipContext } from "@agent/lib/capability-tips";
 import { crossChannelRecap } from "@agent/lib/conversation/recap";
+import {
+  asksForPhoneButton,
+  contactAsked,
+  contactButtonMarkup,
+  contactButtonPrompt,
+  showContactButton,
+  telegramContact,
+} from "@agent/lib/contact-share/telegram";
 import { firstContactContext, ownerTelegram } from "@agent/lib/first-contact";
 import { telegramMediaTurn } from "@agent/lib/inbound-media/telegram";
 import {
@@ -48,12 +56,14 @@ import {
   locationButtonPrompt,
   locationButtonResultSchema,
   locationArrived,
+  rememberKeyboardShown,
   rememberLocationAsked,
   takeKeyboardRemoval,
   takeLocationAsked,
   telegramLocation,
 } from "@agent/lib/location/telegram";
 import { locationPilot } from "@db/services/location";
+import { patchUserProfile, readUserProfile } from "@db/services/user-profile";
 import { pdfByteCap } from "@agent/lib/inbound-media/media-type";
 import {
   prepareAttachmentDelivery,
@@ -310,6 +320,20 @@ export default telegramChannel({
           text: locationButtonPrompt,
         });
         rememberLocationAsked(context.telegram.chatId);
+        return;
+      }
+
+      // The refusal that wants the person's own phone (`browser_task`): the
+      // contact button goes under Bro's question, so a tap replaces typing.
+      if (
+        asksForPhoneButton(event.result) &&
+        showContactButton(context.telegram.chatId, event.turnId)
+      ) {
+        await context.telegram.post({
+          reply_markup: contactButtonMarkup,
+          text: contactButtonPrompt,
+        });
+        rememberKeyboardShown(context.telegram.chatId);
         return;
       }
 
@@ -571,6 +595,66 @@ export default telegramChannel({
         context: turnContext,
         message: inboundTurn(message.text || message.caption, [
           { kind: "note", text: marker },
+        ]).message,
+      };
+    }
+    // A contact card: the person's own number (the button's answer) is saved
+    // as their phone for forms; anyone else's is words about a third person.
+    const contact = telegramContact(message, from.id);
+    if (contact) {
+      locationArrived(message.chat.id);
+      noteInbound(context.telegram.chatId, message.raw, receivedAt);
+      if (contact.kind === "own") {
+        // The button's answer, or a card sent while no number is saved,
+        // becomes the phone for forms; a card sent unasked beside a saved
+        // number never replaces what the person chose.
+        const saved = (await readUserProfile(scope)).phone;
+        const replaces = saved !== null && saved !== contact.phone;
+        if (replaces && !contactAsked(message.chat.id)) {
+          return {
+            auth: sessionAuth,
+            context: [
+              ...(await firstContactContext(scope)),
+              `Человек прислал карточку со своим номером ${contact.phone}, но для форм уже сохранён другой. Ничего не менялось: спроси одной строкой, заменить ли номер.`,
+            ],
+            message: inboundTurn("", [
+              { kind: "note", text: "[прислал свою карточку контакта]" },
+            ]).message,
+          };
+        }
+        try {
+          await patchUserProfile(scope, { phone: contact.phone });
+        } catch (error) {
+          console.warn("[telegram] shared phone was not saved", {
+            name: error instanceof Error ? error.name : "error",
+          });
+          await context.telegram.sendMessage(
+            "Не получилось сохранить номер. Напишите его сообщением, пожалуйста."
+          );
+          return null;
+        }
+        return {
+          auth: sessionAuth,
+          context: [
+            ...(await firstContactContext(scope)),
+            "Человек поделился своим номером кнопкой Telegram (номер проверен самим Telegram), и он сохранён как телефон для форм. Если поручение ждало номер, вызови browser_task снова; если ему нужно «да» человека, спроси его одной строкой. Иначе коротко подтверди, что запомнил.",
+          ],
+          message: inboundTurn("", [
+            { kind: "note", text: "[поделился своим номером]" },
+          ]).message,
+        };
+      }
+      // Someone else's card is data about a third person, not words the
+      // person typed: the number and name go as a context line, so no form
+      // reads the number as the person's own.
+      return {
+        auth: sessionAuth,
+        context: [
+          ...(await firstContactContext(scope)),
+          `Человек прислал карточку контакта${contact.name ? ` «${contact.name}»` : ""} с номером ${contact.phone}. Это номер другого человека, не его собственный.`,
+        ],
+        message: inboundTurn("", [
+          { kind: "note", text: "[прислал контакт другого человека]" },
         ]).message,
       };
     }

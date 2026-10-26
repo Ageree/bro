@@ -128,6 +128,7 @@ import {
   wholeRubles,
 } from "@shared/spending/limit";
 import { putsOwnPhoneInForms } from "@agent/lib/browser-use/own-phone-words";
+import { phoneButtonMarker } from "@agent/lib/contact-share/telegram";
 import type { AccessScope } from "@shared/identity/access-scope";
 import {
   browserRunFacts,
@@ -3505,8 +3506,7 @@ async function codeFromMail(
  * on a button the site kept locked. Bro asks once, before the run starts or
  * is given the person's details, and keeps the answer for every later errand.
  */
-const phoneNeededRefusal =
-  "Nothing was started: this errand types the user's details into a site's form, and the user's own phone number is not saved anywhere, so the run would have none to type. Ask the user once, in one short line, for the phone number to put in forms («Какой номер телефона указать? Запомню на будущее»). When they send it, save it as `phone` with the Personal Info update tool (when it is their own), and call browser_task again at once.";
+const phoneNeededRefusal = `${phoneButtonMarker} Nothing was started: this errand types the user's details into a site's form, and the user's own phone number is not saved anywhere, so the run would have none to type. Ask the user once, in one short line, for the phone number to put in forms («Какой номер телефона указать? Запомню на будущее»). In a Telegram chat a «Поделиться номером» button is shown under your message by itself: the number it sends is saved for you, so you may add that it can be used. When they type the number instead, save it as \`phone\` with the Personal Info update tool (when it is their own). Then call browser_task again at once.`;
 
 /** Whether the run is about to get the person's details and has no phone of theirs to type. */
 async function ownPhoneMissing(scope: AccessScope, words: readonly string[]) {
