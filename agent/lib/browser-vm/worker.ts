@@ -762,7 +762,7 @@ const siteReadSchema = z.discriminatedUnion("ok", [
     fit: z.enum(["exact", "loose"]),
     ms: z.number().nonnegative(),
     /**
-     * Only a worker from 2026-10-26.7 sends it: the search went to a category
+     * Only a worker from 2026-10-27.1 sends it: the search went to a category
      * of the site's own, and these cards are that page's, in the site's order,
      * not the operation's data.
      */
@@ -860,11 +860,11 @@ export async function lookBrowserVmSite(
 
 /**
  * The worker answers a look within 34 s at the very worst (`SITE_LOOK_S` and
- * its slot and tab close), a search through the site's box within 40 s
- * (`SITE_SEARCH_S`); the rest is the call's way there and back.
+ * its slot and tab close), a search through the site's box within 45 s
+ * (`SITE_SEARCH_S`, 26 s: 4 + 26 + 5 + 10 = 45); the rest is the call's way there and back.
  */
 const siteLookTimeoutMs = 38_000;
-const siteSearchTimeoutMs = 44_000;
+const siteSearchTimeoutMs = 52_000;
 
 /**
  * One result's own page read (`site_item` in browser-vm/worker/worker.py):

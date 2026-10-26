@@ -976,6 +976,22 @@ class LookTest(DirectSetup):
         self.assertNotIn("менеджер", json.dumps(operation, ensure_ascii=False))
         self.assertEqual((page.closed, self.worker.visit_tabs), (True, set()))
 
+    async def test_an_operation_whose_page_has_no_place_for_words_is_not_learned(self):
+        # zoozavr.ru: the results page is /search/results/<id of this one search>/.
+        url = "https://hh.ru/search/results/48151623/"
+        page = Page({url: HH_DOCUMENT}, [Document(url, HH_DOCUMENT)])
+        page.cards = [self.card(vacancy) for vacancy in VACANCIES]
+        self.next_page = page
+        status, answer = await self.look(url, "менеджер продукта")
+        self.assertEqual((answer["ok"], answer["count"], answer["operations"]), (True, 4, []))
+        for page, words, placed in (("https://hh.ru/search/vacancy?text=%query%", "менеджер", True),
+                                    ("https://tutu.ru/poezda/%word%/%word%/", "москва", True),
+                                    ("https://ostrovok.ru/hotel/russia/kazan/", "казань", True),
+                                    ("https://superjob.ru/vakansii/voditel/", "водитель", True),
+                                    ("https://zoozavr.ru/search/results/%id%/", "корм", False),
+                                    ("https://hoff.ru/nsk/catalog/gostinaya/", "кровать", False)):
+            self.assertEqual(worker.site_words_placed({"page": page}, words), placed, page)
+
     async def test_a_page_that_is_not_the_sites_results_for_the_words_gives_nothing(self):
         url = "https://hh.ru/search/vacancy?text=сварщик"
         self.next_page = Page({url: HH_DOCUMENT}, [Document(url, HH_DOCUMENT)])
@@ -1709,6 +1725,7 @@ class SearchChromeTest(unittest.IsolatedAsyncioTestCase):
         self.browser = await self.playwright.chromium.launch(executable_path=chrome, args=["--no-sandbox"])
         self.context = await self.browser.new_context()
         self.logins, self.typed, self.sent = [], [], []
+        self.delays = {}
 
         async def serve(route):
             parts = urllib.parse.urlsplit(route.request.url)
@@ -1725,6 +1742,8 @@ class SearchChromeTest(unittest.IsolatedAsyncioTestCase):
                 body = {"shop.example": self.HOME, "hidden.example": self.HIDDEN, "flats.example": self.FORM,
                         "route.example": self.ROUTE, "aspx.example": self.PAGE_FORM,
                         }.get(parts.hostname, "<html><main>404</main></html>")
+            if parts.path == "/" and parts.hostname in self.delays:
+                await asyncio.sleep(self.delays[parts.hostname])
             await route.fulfill(status=200, content_type="text/html; charset=utf-8", body=body)
 
         await self.context.route("**/*", serve)
@@ -1767,6 +1786,22 @@ class SearchChromeTest(unittest.IsolatedAsyncioTestCase):
                 await self.search("route.example", "сапсан")
         self.assertEqual(raised.exception.reason, "no_box")
         self.assertEqual(self.sent, [])
+
+    async def test_a_home_page_slow_over_a_slow_exit_still_gives_results(self):
+        # hoff.ru, pleer.ru, 366.ru on the prod exit (26.10): a home that took longer than the old nine seconds cut
+        # the whole search at 19 s. The home's wait is a deadline of the phase now, and the rest follows.
+        self.delays["shop.example"] = 11
+        cards, holder = await self.search("shop.example", "чайник")
+        self.assertTrue(worker.site_look_answers("чайник", cards))
+        self.assertGreaterEqual(holder["ms"]["home"], 10000)
+
+    async def test_a_search_cut_at_its_deadline_names_the_phase_it_was_in(self):
+        self.delays["shop.example"] = 30
+        holder = {}
+        with self.assertRaises(asyncio.TimeoutError):
+            await asyncio.wait_for(
+                worker.site_search_on(self.page, "https://shop.example/", "чайник", holder, time.monotonic() + 60), 3)
+        self.assertEqual(holder["phase"], "home")
 
     async def test_a_whole_pages_form_gets_no_click_but_a_search_button(self):
         cards, holder = await self.search("aspx.example", "чайник")
@@ -1884,23 +1919,30 @@ class CategoryLandingChromeTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_direct_read_sent_to_a_category_gets_its_cards(self):
         url, landed = await self.moved("ноутбук")
-        cards = await worker.site_op_landed({"page": self.page}, self.OPERATION, url, landed)
+        cards = await worker.site_op_landed({"page": self.page}, self.OPERATION, url, landed, time.monotonic() + 30)
         self.assertEqual(len(cards), 12)
         rows = worker.site_page_cards(cards, landed)
         self.assertEqual(rows[0]["link"], "https://shop.example/item/0")
         self.assertTrue(rows[0]["price"].endswith("1000 ₽"))
 
+    async def test_a_read_with_too_little_of_its_time_left_does_not_open_the_category(self):
+        # Bro waits 45 s for /v1/op: the category's cards come within the read's own SITE_OP_DIRECT_S.
+        url, landed = await self.moved("ноутбук")
+        self.assertIsNone(await worker.site_op_landed({"page": self.page}, self.OPERATION, url, landed,
+                                                      time.monotonic() + 1))
+        self.assertNotEqual(urllib.parse.urlsplit(self.page.url).path, urllib.parse.urlsplit(landed).path)
+
     async def test_a_category_that_names_nothing_of_the_search_is_not_its_answer(self):
         url, landed = await self.moved("кастрюля")
-        self.assertIsNone(await worker.site_op_landed({"page": self.page}, self.OPERATION, url, landed))
+        self.assertIsNone(await worker.site_op_landed({"page": self.page}, self.OPERATION, url, landed, time.monotonic() + 30))
 
     async def test_a_search_sent_to_one_items_page_is_not_a_list(self):
         url, landed = await self.moved("ноутбук x1")
-        self.assertIsNone(await worker.site_op_landed({"page": self.page}, self.OPERATION, url, landed))
+        self.assertIsNone(await worker.site_op_landed({"page": self.page}, self.OPERATION, url, landed, time.monotonic() + 30))
 
     async def test_a_search_sent_to_the_front_page_is_not_a_list(self):
         url, landed = await self.moved("ничего")
-        self.assertIsNone(await worker.site_op_landed({"page": self.page}, self.OPERATION, url, landed))
+        self.assertIsNone(await worker.site_op_landed({"page": self.page}, self.OPERATION, url, landed, time.monotonic() + 30))
 
     async def test_a_search_through_the_box_that_ends_on_a_category_gives_its_cards(self):
         holder = {}

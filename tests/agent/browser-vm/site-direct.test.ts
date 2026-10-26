@@ -951,3 +951,23 @@ describe("Bro's own read of a site it has read before", () => {
     expect(model.generateText).not.toHaveBeenCalled();
   });
 });
+
+describe("carriesWords", () => {
+  it("drops a page whose only place is a search's id, and keeps every reviewed and found page", async () => {
+    const { carriesWords } =
+      await import("@agent/lib/browser-vm/site-ops/direct");
+    expect(
+      carriesWords({ page: "https://zoozavr.ru/search/results/%id%/" })
+    ).toBe(false);
+    for (const page of [
+      "https://hh.ru/search/vacancy?text=%query%",
+      "https://ostrovok.ru/hotel/russia/kazan/",
+      "https://www.tutu.ru/poezda/%word%/%word%/",
+      "https://www.wildberries.ru/catalog/%id%/search.aspx?search=%query%",
+      "https://hoff.ru/nsk/catalog/gostinaya/divany/",
+    ])
+      expect(carriesWords({ page })).toBe(true);
+    for (const { page } of knownSiteOperations)
+      expect(carriesWords({ page })).toBe(true);
+  });
+});

@@ -93,7 +93,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-10-26.7"
+VERSION = "2026-10-27.1"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -802,8 +802,10 @@ SITE_OP_DIRECT_AT_ONCE = 2
 # waits for its answer (`readBrowserVmSite`), since an answer it stopped waiting for still holds a slot here.
 SITE_OP_LOAD_S = 12
 SITE_OP_DIRECT_S = 38
-# A search the site sent to a category of its own (`site_op_landed`): how long its cards are given to draw.
+# A search the site sent to a category of its own (`site_op_landed`): how long its cards are given to draw, and the
+# least of the read's own time (SITE_OP_DIRECT_S) that must be left for it — Bro's 45 s still hold.
 SITE_OP_LANDED_S = 8
+SITE_OP_LANDED_MIN_S = 3
 # How long a page the site answered with its own check (401, 403, 429…) is given to pass it and reload itself
 # (`site_goto`): a script's check passes in a second or two; a captcha never does, and costs a read this much.
 SITE_CHECK_S = 8
@@ -8803,7 +8805,7 @@ async def site_op(request):
                 reason = "blocked"
             # A search the site sent to its category answers with the category's cards.
             if reason == "moved":
-                shown = await site_op_landed(holder, operation, url, landed)
+                shown = await site_op_landed(holder, operation, url, landed, began + SITE_OP_DIRECT_S)
                 if shown is not None:
                     category = site_page_cards(shown, landed)
         except Exception as error:
@@ -8931,22 +8933,22 @@ def site_category_landing(url, landed):
             and got.path.strip("/") != "")
 
 
-async def site_op_landed(holder, operation, url, landed):
+async def site_op_landed(holder, operation, url, landed, deadline):
     """The cards of the category a search was sent to, for a document or xhr operation whose page answered from
     another address (`moved`): read from the tab, when the site's own page there is a list that names the words asked
     (`site_look_answers`, as a look's). None otherwise — a front page, another site, an item's own page, a list that
     names nothing of the search — and the read goes on as `moved`, which does not count against the operation. The
-    cards are the page's, in its order, not the operation's data."""
+    cards are the page's, in its order, not the operation's data. Within the read's own `deadline` (monotonic)."""
     page = holder.get("page")
     if page is None or page.is_closed() or not site_category_landing(url, landed):
         return None
     words = " ".join(sorted(site_query_words(operation, url)))
-    if not words:
+    until = min(time.monotonic() + SITE_OP_LANDED_S, deadline)
+    if not words or until - time.monotonic() < SITE_OP_LANDED_MIN_S:
         return None
     try:
-        until = time.monotonic() + SITE_OP_LANDED_S
         if urllib.parse.urldefrag(page.url)[0] != urllib.parse.urldefrag(landed)[0]:
-            await page.goto(landed, wait_until="domcontentloaded", timeout=SITE_OP_LANDED_S * 1000)
+            await page.goto(landed, wait_until="domcontentloaded", timeout=(until - time.monotonic()) * 1000)
         if not site_same_place(url, page.url) or await page.evaluate(SITE_PRODUCT_PAGE_JS):
             return None
         best, last = [], None
@@ -8982,7 +8984,7 @@ def site_page_cards(cards, landed):
 # errand waits behind a look that finds nothing, so less than a direct read's —, of that what is left for learning
 # the operation once the cards are in, how long a look waits for a slot, how long its cards may take to draw, and
 # how many go back. With the tab's close (SITE_OP_CLOSE_S twice) a look answers within 34 s at the very worst;
-# Bro waits 38 (`siteLookTimeoutMs`).
+# Bro waits 38 (`siteLookTimeoutMs`). A search through the site's box has its own sum, below (SITE_SEARCH_S).
 SITE_LOOK_S = 20
 SITE_LOOK_LEARN_S = 5
 SITE_LOOK_GATE_S = 4
@@ -9002,6 +9004,25 @@ def site_look_report(cards):
         items.append({"name": (card.get("title") or "")[:200], "price": price.group(0) if price else "",
                       "url": (card.get("links") or [""])[0]})
     return "ITEMS: " + json.dumps(items, ensure_ascii=False)
+
+
+SITE_TRANSLIT = dict(zip("абвгдезийклмнопрстуфыэ", "abvgdezyiklmnoprstufye"),
+                        ж="zh", х="kh", ц="ts", ч="ch", ш="sh", щ="sch", ю="yu", я="ya", ё="e", ъ="", ь="")
+
+
+def site_words_placed(operation, words):
+    """Whether a search's words have a place in the operation learned from it (a look's, with words): a `%query%`
+    or `%word%` in its page's template, or — a latin word a template keeps as it is (/toyota/camry/, superjob.ru's
+    transliterated /vakansii/voditel) — a literal part of its path naming a stem of them or its transliteration. The
+    page of zoozavr.ru (26.10) is /search/results/%id%/: the id the site gave that one search, which another
+    search's words cannot be written in, and Bro's fill failed on it every time."""
+    page = operation.get("page") or ""
+    if "%query%" in page or "%word%" in page:
+        return True
+    stems = {word[:4] for word in site_words(words or "").split() if len(word) >= 3 and not word.isdigit()}
+    stems |= {"".join(SITE_TRANSLIT.get(letter, letter) for letter in stem)[:3] for stem in stems}
+    path = urllib.parse.unquote(urllib.parse.urlsplit(page).path).lower()
+    return any(stem and stem in path for stem in stems)
 
 
 def site_look_answers(words, cards):
@@ -9069,7 +9090,12 @@ async def site_look(request):
         until = deadline - SITE_LOOK_LEARN_S
         drawn = (site_search_page(home, words.strip(), holder, recorder, until) if search
                  else site_look_page(url, holder, recorder, until))
-        cards = await asyncio.wait_for(drawn, until - time.monotonic() + 1)
+        try:
+            cards = await asyncio.wait_for(drawn, until - time.monotonic() + 1)
+        except asyncio.TimeoutError:
+            # Cut at the deadline: the journal says in which phase (never the words or an address).
+            log.info("site look %s: out of time in %s", parts.hostname, holder.get("phase") or "start")
+            raise
         if len(cards) < 3:
             raise SiteOpFailure("empty", "the page shows no list of results")
         if not site_look_answers(words, cards):
@@ -9081,15 +9107,17 @@ async def site_look(request):
         # A search the site sent to a category of its own answers with the category's cards, but its page is the
         # word's alone: an operation learned there would read this category for every other search.
         category = search and site_search_category(words, holder["page"].url)
-        operations = [] if category else await site_operations_found(
+        operations = [] if category else [operation for operation in await site_operations_found(
             recorder, site_look_report(cards), None, max(0.5, deadline - time.monotonic() - 0.5))
+            if site_words_placed(operation, words)]
         # No data of the site's holds the cards: their rows, learned from the cards' own structure (a look's report
         # is made of the cards' titles, which mislead: a train's station, a section's heading, an old price).
         left = deadline - time.monotonic() - 0.5
         if not operations and not category and left >= SITE_ROWS_MIN_S and not holder["page"].is_closed():
             page = holder["page"]
-            operations = await site_rows_operations(page_evaluator(page), page.url, None,
-                                                    recorder_document(recorder, page.url), None, left)
+            operations = [operation for operation in await site_rows_operations(
+                page_evaluator(page), page.url, None, recorder_document(recorder, page.url), None, left)
+                if site_words_placed(operation, words)]
     except SiteOpFailure as failure:
         cards, operations, reason = None, [], failure.reason
         if reason != "blocked" and holder["page"] is not None and await code_wall(holder["page"]):
@@ -9172,9 +9200,14 @@ async def site_look_page(url, holder, recorder, until):
 # its header (SITE_SEARCH_SETTLE_S); the box, past at most SITE_SEARCH_TOGGLES search buttons that open it; the words
 # keyed at SITE_SEARCH_KEY_MS a key; the page that answers Enter (or the form's own button) within SITE_SEARCH_SUBMIT_S;
 # its cards as a look reads them.
-SITE_SEARCH_S = 18  # past it the operation's learning (SITE_LOOK_LEARN_S), the slot and the tab's close: Bro waits 44 s
+# The sum of a search, worst case: the slot (SITE_LOOK_GATE_S, 4 s) + SITE_SEARCH_S (26) + the operation's learning
+# (SITE_LOOK_LEARN_S, 5) + the tab and the browser's close (SITE_OP_CLOSE_S twice, 10) = 45 s; Bro waits 52
+# (`siteSearchTimeoutMs`). The phases share SITE_SEARCH_S by deadline, not by a cut of the whole search at 18 s: a home
+# page that takes 14 s over a slow exit (hoff.ru, pleer.ru, 366.ru on the prod exit, 26.10: all three `failed` at
+# 19.0 s) leaves the box, the words and the results the rest. What is doomed still ends at once (a check, no box).
+SITE_SEARCH_S = 26
 SITE_SEARCH_WORDS = 120  # the words a search types at most
-SITE_SEARCH_HOME_S = 9
+SITE_SEARCH_HOME_S = 14
 SITE_SEARCH_SETTLE_S = 1.2
 SITE_SEARCH_TOGGLES = 2
 SITE_SEARCH_TOGGLE_S = 1.0
@@ -9554,8 +9587,11 @@ async def site_search_on(page, home, words, holder, until):
         phases[name] = round((now - mark) * 1000)
         mark = now
 
+    # The phase in progress, for a search cut at its deadline to name (`site_look`).
+    holder["phase"] = "home"
     await site_search_home(page, home, until)
     lap("home")
+    holder["phase"] = "box"
     # The cards the home page already shows (a carousel of offers): the results are another list.
     before = await site_search_eval(page, CODE_CARDS_JS, SITE_LOOK_CARDS) or []
     homely = {card["text"] for card in before}
@@ -9566,12 +9602,15 @@ async def site_search_on(page, home, words, holder, until):
             raise SiteOpFailure("blocked", "the home page is a check or a refusal of this browser")
         raise SiteOpFailure("no_box", "the home page shows no search box")
     left = page.url
+    holder["phase"] = "type"
     await site_search_type(page, words)
     lap("type")
+    holder["phase"] = "results"
     holder["sent"] = await site_search_send(page, left, until)
     if not site_same_place(home, page.url):
         raise SiteOpFailure("moved", "the search went to another site")
     lap("results")
+    holder["phase"] = "cards"
     cards = await site_search_cards(page, home, homely, until)
     lap("cards")
     return cards

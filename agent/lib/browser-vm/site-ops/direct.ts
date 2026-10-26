@@ -328,6 +328,19 @@ const restMs = 10 * 60_000;
 /** Until when, by workspace and the errand's site host (`*` for every host): an operation may read a subdomain of it. */
 const resting = new Map<string, number>();
 
+/**
+ * Whether a search's words have a place in the operation's page: a
+ * `%query%` or `%word%` in its address. A page whose only placeholder is an
+ * id (zoozavr.ru `/search/results/%id%/`, the id the site gave one search)
+ * cannot carry another search's words: the fill would only fail, and the
+ * site would never get its first look through the site's own box.
+ */
+export function carriesWords(operation: { readonly page: string }) {
+  return (
+    /%(?:query|word)%/.test(operation.page) || !operation.page.includes("%id%")
+  );
+}
+
 function hostOf(address: string) {
   return URL.parse(address)?.hostname.replace(/^www\./u, "") ?? "";
 }
@@ -426,7 +439,9 @@ async function readSite(
     });
     return undefined;
   }
-  const operations = await siteOperationsFor(scope.workspaceId, input.site);
+  const operations = (
+    await siteOperationsFor(scope.workspaceId, input.site)
+  ).filter(carriesWords);
   if (operations.length === 0) {
     if (siteColdPilot(scope)) return lookSite(scope, input, began);
     console.info("[site-api] left to the browser", {
