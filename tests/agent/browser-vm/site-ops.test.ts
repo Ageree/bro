@@ -5,6 +5,7 @@ import {
   type SiteOperation,
   siteOperationOnSite,
   siteOperationSchema,
+  siteOperationWorker,
   siteReadFit,
   widenedSiteOperation,
 } from "@agent/lib/browser-vm/site-ops/operation";
@@ -105,12 +106,12 @@ describe("a site's operation as Bro keeps it", () => {
         ...kazan,
         page: "https://ostrovok.ru/hotel/russia/kazan/?f12345=%flag%",
       },
-      // Another host of the same last two labels is not the site.
+      // A host beside the site's, not under it: another site's API.
       {
         ...kazan,
         source: {
           ...kazan.source,
-          url: "https://api.ostrovok.ru/hotel/search/v2/site/serp",
+          url: "https://api.notostrovok.ru/hotel/search/v2/site/serp",
         },
       },
     ];
@@ -140,6 +141,165 @@ describe("a site's operation as Bro keeps it", () => {
       page: "https://ostrovok.ru/u/ivan/",
     };
     expect(siteOperationSchema.safeParse(plain).success).toBe(true);
+  });
+
+  it("reads a document's state where its scripts keep it and data split into tables, with no value in a step", () => {
+    // What the worker found on the stand (26.10): ozon.ru's grid in an
+    // element's data-state, its name atom told by its id; tutu.ru's trains on
+    // its own API host, joined from two tables; kassir.ru's Nuxt payload;
+    // litres.ru's Next.js flight; 2gis.ru's assigned state, a table's values.
+    const ozon = {
+      fields: {
+        link: { path: ["action", "link"] },
+        name: ["mainState", { with: ["id", "name"] }, "textDS", "text"],
+        price: [
+          "mainState",
+          { with: ["type", "priceV2"] },
+          "priceV2",
+          "price",
+          0,
+          "text",
+        ],
+      },
+      items: ["items"],
+      name: "www.ozon.ru/search/",
+      page: "https://www.ozon.ru/search/?text=%query%&deny_category_prediction=%flag%",
+      seen: { items: 12, matched: 3, of: 3 },
+      source: {
+        kind: "document",
+        state: { attribute: "data-state", idPrefix: "state-tileGridDesktop-" },
+      },
+    };
+    const tutu = {
+      fields: {
+        cents: true,
+        link: "page",
+        name: [
+          "routeIds",
+          0,
+          { at: [0, "dictionary", "common", "routes"] },
+          "voyageNumber",
+          { at: [0, "dictionary", "train", "voyages"] },
+          "numberForPassengers",
+        ],
+        price: ["offerVariants", "*", "price", "value", "amount"],
+      },
+      items: [0, "offers", "actual", "*"],
+      name: "www.tutu.ru/poezda/%word%/%word%/",
+      page: "https://www.tutu.ru/poezda/%word%/%word%/?date=%date%",
+      seen: { items: 41, matched: 3, of: 3 },
+      source: {
+        kind: "xhr",
+        method: "POST",
+        url: "https://offers-api.tutu.ru/railway/offers",
+      },
+    };
+    const accepted = [
+      ozon,
+      tutu,
+      {
+        ...ozon,
+        items: ["pinia", "search.store", "searchResultItems"],
+        source: {
+          kind: "document",
+          state: { decode: "devalue", id: "__NUXT_DATA__", tag: "script" },
+        },
+      },
+      {
+        ...ozon,
+        items: [{ deep: "searchData" }, "data"],
+        source: { kind: "document", state: { flight: "next" } },
+      },
+      {
+        ...ozon,
+        items: [
+          "widgetStates",
+          { prefix: "tileGrid-" },
+          { json: true },
+          "items",
+        ],
+        source: {
+          kind: "document",
+          state: { assignment: "_cianConfig.frontend-serp" },
+        },
+      },
+      {
+        ...ozon,
+        fields: {
+          link: {
+            parts: [["id"]],
+            query: [],
+            template: "/catalog/{0}/detail.aspx",
+          },
+          name: ["name"],
+        },
+        items: ["state", "$sproducts-list", "productsList"],
+      },
+    ];
+    for (const operation of accepted) {
+      expect(siteOperationSchema.safeParse(operation).success).toBe(true);
+    }
+    const refused = [
+      // A step's word that is a value: an id, a key's start with its digits.
+      {
+        ...ozon,
+        fields: { name: ["mainState", { with: ["id", "3669724a"] }] },
+      },
+      {
+        ...ozon,
+        items: ["widgetStates", { prefix: "tileGrid-3669724-" }, "items"],
+      },
+      { ...ozon, items: ["widgetStates", { prefix: "tileGrid" }, "items"] },
+      { ...ozon, fields: { name: ["mainState", { with: ["sku", "name"] }] } },
+      // A table's id looked up, not the table; a join or "*" inside the items.
+      {
+        ...tutu,
+        fields: {
+          ...tutu.fields,
+          name: ["routeIds", 0, { at: ["routes", "r12345678"] }],
+        },
+      },
+      { ...tutu, items: [0, "offers", "*", "actual"] },
+      { ...tutu, items: [0, { at: ["offers"] }] },
+      {
+        ...tutu,
+        fields: {
+          ...tutu.fields,
+          name: [
+            "a",
+            { at: ["t"] },
+            "b",
+            { at: ["t"] },
+            "c",
+            { at: ["t"] },
+            "d",
+            { at: ["t"] },
+          ],
+        },
+      },
+      { ...tutu, fields: { ...tutu.fields, cents: false } },
+      // A minifier's local, an attribute that is no data-*, a page's file name of another kind.
+      { ...ozon, source: { kind: "document", state: { assignment: "i" } } },
+      {
+        ...ozon,
+        source: { kind: "document", state: { attribute: "onclick", index: 0 } },
+      },
+      {
+        ...ozon,
+        name: "www.ozon.ru/search/ivan.petrov",
+        page: "https://www.ozon.ru/search/ivan.petrov",
+      },
+    ];
+    for (const record of refused) {
+      expect(siteOperationSchema.safeParse(record).success).toBe(false);
+    }
+    // Only a worker from 26.10 reads such a state, step or price in kopecks.
+    for (const operation of accepted) {
+      expect(siteOperationWorker(siteOperationSchema.parse(operation))).toBe(
+        "2026-10-26.1"
+      );
+    }
+    expect(siteOperationWorker(kazan)).toBeUndefined();
   });
 
   it("is the site's on its own host and the site's subdomains, never a neighbour's", () => {

@@ -35,6 +35,8 @@ import {
   fastDeliveryPilot,
 } from "./pilot";
 import { browserVmProxyLines, browserVmProxyPlace } from "./proxy";
+import { browserVmWorkerAtLeast } from "./rollout";
+import { siteOperationWorker } from "./site-ops/operation";
 import {
   errandSite,
   rememberSiteOperations,
@@ -53,6 +55,7 @@ import {
   lookBrowserVmSite,
   openBrowserVmWorkerTab,
   readBrowserVmSite,
+  readBrowserVmWorkerHealth,
   readBrowserVmWorkerRun,
   readBrowserVmWorkerSession,
   releaseBrowserVmWorkerSession,
@@ -725,7 +728,17 @@ export async function readBrowserVmSiteDirectly(
   workspaceId: string,
   input: Parameters<typeof readBrowserVmSite>[1]
 ) {
-  return onSiteReadVm(workspaceId, async (vm) => readBrowserVmSite(vm, input));
+  const needed = siteOperationWorker(input.operation);
+  return onSiteReadVm(workspaceId, async (vm) => {
+    // A worker older than the operation needs is not asked: it would answer
+    // `no_data`, and that counts against the operation (`health.ts`). The
+    // errand's start rolls the new worker out (`rollout.ts`).
+    if (needed !== undefined) {
+      const health = await readBrowserVmWorkerHealth(vm);
+      if (!browserVmWorkerAtLeast(health.worker, needed)) return null;
+    }
+    return readBrowserVmSite(vm, input);
+  });
 }
 
 /**

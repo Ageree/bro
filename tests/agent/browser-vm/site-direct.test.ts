@@ -191,8 +191,15 @@ describe("Bro's own read of a site it has read before", () => {
     expect(
       await readSiteDirectly(scope, { ...site, sessionId: "b" })
     ).toBeUndefined();
-    // The site no longer holds its results there: counted against the operation.
+    // The sandbox's worker is older than the operation needs: nothing is read
+    // and nothing counts against the operation.
     filled("https://hh.ru/search/vacancy?text=x");
+    browser.readBrowserVmSiteDirectly.mockResolvedValue(null);
+    expect(
+      await readSiteDirectly(scope, { ...site, sessionId: "w" })
+    ).toBeUndefined();
+    expect(records.noteBrowserSiteOperationRead).not.toHaveBeenCalled();
+    // The site no longer holds its results there: counted against the operation.
     browser.readBrowserVmSiteDirectly.mockResolvedValue({
       fit: "exact",
       ms: 900,
@@ -470,7 +477,7 @@ describe("Bro's own read of a site it has read before", () => {
     // A worker that has no look rests every site of the workspace: the next
     // errand does not pay for the model or the call again.
     model.generateText.mockResolvedValue({
-      output: { query: "диван", url: "https://youla.ru/moskva?q=диван" },
+      output: { query: "диван", url: "https://www.avito.ru/moskva?q=диван" },
     });
     browser.lookBrowserVmSiteDirectly.mockRejectedValueOnce(
       new BrowserVmWorkerError(404, "/v1/look", "not found")
@@ -479,7 +486,7 @@ describe("Bro's own read of a site it has read before", () => {
       await readSiteDirectly(scope, {
         ...site,
         sessionId: "t5",
-        site: "https://youla.ru",
+        site: "https://www.avito.ru",
       })
     ).toBeUndefined();
     model.generateText.mockClear();

@@ -2444,10 +2444,23 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   (`/hotel/russia/kazan/`, `/toyota/camry/`), такие страницы worker читает как `loose` (`site_template_fit`), а
   удачное быстрое чтение расширяет шаблон до `%word%` (`widenedSiteOperation`). GraphQL отвечает на один адрес и
   меню, и выдачей (citilink.ru `/graphql/`): op() берёт ответ, где есть список. Выдача, где нет ни одной основы слов
-  запроса, — `no_data` (`site_op_answers`, `InputNotApplied` Pomerado). Операции нашлись у 8 из ~20 открывшихся
-  сайтов (hh, ostrovok, citilink, rabota, zarplata, drom, auto.ru, letu); у tutu (словарь), ozon (JSON строкой в
-  JSON), kassir (`__NUXT_DATA__`), litres и labirint (HTML без JSON) — нет. У Pomerado самолечение, запись трафика
-  и HTTP-версии только в их облаке, в открытом коде — контракты (`hosted-features.ts`, `docs/how-it-works.md`).
+  запроса, — `no_data` (`site_op_answers`, `InputNotApplied` Pomerado). 25.10 операции нашлись у 8 из ~20
+  открывшихся сайтов (hh, ostrovok, citilink, rabota, zarplata, drom, auto.ru, letu). У Pomerado операция — код
+  модели, самолечение, запись трафика и HTTP-версии только в их облаке; в открытом коде — `runtime/html.ts`
+  (состояние по id, присваиванию, атрибуту) и `readRows` по селекторам.
+- Сайты без чистого JSON-запроса (26.10, worker 2026-10-26.1, корпус 26 сайтов на стенде): состояние документа ищется
+  и в присваиваниях скриптов (`window.X = …`, `JSON.parse("…")`, `%7B…`: 2gis, cian), в data-атрибутах (ozon:
+  элемент по началу id, `idPrefix`), в потоке Next.js (`self.__next_f`: litres, kupibilet) и в Nuxt 3
+  (`__NUXT_DATA__`, devalue: kassir, chitai) — `embedded_states`. Шаги пути: `{json}` (JSON строкой: ozon
+  entrypoint), `{prefix}` (ключ с id в хвосте), `{with}` (атом по своему id: имя ozon то на 2-м, то на 3-м месте),
+  `{deep}` (поток Next.js), `"*"` (значения таблицы-словаря), `{at}` (соединение по id: поезд tutu в трёх таблицах от
+  предложения), `cents` (копейки tutu, WB, youla) — `site_values`. `SiteTraffic` пишет и API на поддомене сайта
+  (offers-api.tutu.ru, api.litres.ru, api-gw.youla.ru), и `text/plain` (поиск WB). Вживую на стенде новые запросы
+  читаются за 2–9 с у 11 сайтов. Старый worker такую операцию не читает и ответил бы `no_data` (засчиталось бы против
+  неё): Бро не даёт её прямому чтению на worker старше `siteOperationWorker`. H4 (код-извлекатель от модели в
+  QuickJS, как Pomerado) прошёл 6/6 за 0,05–0,3 ₽, но все его сайты закрылись без модели — не выкатывали
+  (прототип и отчёт стенда — в истории сессии). HTML без данных (labirint, petrovich, kinopoisk) — строки по
+  селекторам, отдельным PR.
 - Отчёт сразу после `done` (`BROWSER_FAST_DELIVERY_WORKSPACES`, id или `*`; с 25.10 в проде `*`; откат — снять флаг): Bro узнавал о конце
   запуска опросом — тик `browser-runs` живёт 45 с из 60, так что отчёт приходил через 3–19 с после конца запуска.
   Теперь старт запуска несёт `notify.url` (`/eve/v1/browser-run-ended`, `agent/channels/browser-run-ended.ts`), а worker (≥ 2026-10-25.8)
