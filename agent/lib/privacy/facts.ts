@@ -105,6 +105,7 @@ export function dataProcessors(
     broToBro = false,
     decisionModel = false,
     location = false,
+    partnerLinks = false,
     phone = false,
     yclients = false,
   }: {
@@ -119,6 +120,8 @@ export function dataProcessors(
      */
     readonly decisionModel?: boolean;
     readonly location?: boolean;
+    /** Links to travel brands go out as partner links (`partnerLinksPilot`). */
+    readonly partnerLinks?: boolean;
     readonly phone?: boolean;
     /** The workspace books salons through YClients (`yclientsPilot`). */
     readonly yclients?: boolean;
@@ -222,6 +225,11 @@ export function dataProcessors(
     ...(yclients
       ? [
           "Запись в салоны, студии и клиники, которые принимают её через YClients, Бро делает через API YClients: свободное время он смотрит без ваших данных, а при записи салон получает ваши имя, телефон и почту — как с формы записи на его сайте.",
+        ]
+      : []),
+    ...(partnerLinks
+      ? [
+          "Ссылки на страницы Островка, Яндекс Путешествий и Авиасейлс Бро отправляет партнёрскими: адрес страницы уходит в Travelpayouts, без имени и контактов, а бронирование по такой ссылке приносит владельцу Бро комиссию и ничего не стоит вам.",
         ]
       : []),
     ...(yooKassaConfigured()

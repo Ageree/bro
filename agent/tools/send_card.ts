@@ -6,6 +6,7 @@ import { keepCardPhotos, photosResult } from "@agent/lib/cards/photos/keep";
 import { sendCardToolName } from "@agent/lib/cards/sent";
 import { sendCardButton } from "@agent/lib/cards/telegram";
 import { markTurnDelivered } from "@agent/lib/delivery/holds";
+import { cardWithPartnerLinks } from "@agent/lib/partner-links/rewrite";
 import {
   cardsPerTurn,
   cardsThisTurn,
@@ -101,7 +102,10 @@ export default defineDynamic({
             const pick = pickRefusal(checked.card, opener, context.messages);
             if (pick) return pick;
             const id = newCardId();
-            const photos = await keepCardPhotos(id, checked.card);
+            const photos = await keepCardPhotos(
+              id,
+              await cardWithPartnerLinks(checked.card, scope)
+            );
             const { card } = photos;
             if (!card) {
               return {

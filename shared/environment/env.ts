@@ -1381,6 +1381,16 @@ export const env = createEnv({
     YCLIENTS_TOKEN: pastedKeySchema.optional(),
     // The pilot of `yclients`: workspace ids or `*`. Unset, nobody.
     YCLIENTS_WORKSPACES: workspaceListSchema.optional(),
+    // Travelpayouts partner links (`agent/lib/partner-links/`): the API token
+    // (Profile → API token), the owner's partner id (marker) and the id of
+    // the project the links count for (trs, the Telegram bot's). With all
+    // three and the pilot below, the links Bro sends to the travel brands
+    // the project is subscribed to go out as the owner's partner links.
+    TRAVELPAYOUTS_TOKEN: pastedKeySchema.optional(),
+    TRAVELPAYOUTS_MARKER: z.coerce.number().int().positive().optional(),
+    TRAVELPAYOUTS_TRS: z.coerce.number().int().positive().optional(),
+    // The pilot of the partner links: workspace ids or `*`. Unset, nobody.
+    PARTNER_LINKS_WORKSPACES: workspaceListSchema.optional(),
     // The pilot of the model router: workspace ids or owners' emails, or `*`
     // for every workspace, whose task agent works on the model its job's kind
     // is routed to (`agent/lib/model/router/task.ts`). Unset, it works on

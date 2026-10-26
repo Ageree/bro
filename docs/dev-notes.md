@@ -406,6 +406,15 @@ postgres:17-alpine`, Docker в облачной сессии есть; Google �
   `POST /eve/v1/dev/schedules/bro-to-bro`): отчёты нитки идут в чат, где вызвали `bro_talk start`, остальные — в
   мессенджер, а без мессенджера — в последний веб-чат (`webConversationId`). Сервисы `db/` из скрипта — `node
 --experimental-transform-types`: strip-only падает на свойствах-параметрах конструктора.
+- Партнёрские ссылки Travelpayouts (26.10, пилот `PARTNER_LINKS_WORKSPACES`; `TRAVELPAYOUTS_TOKEN`, `_MARKER`,
+  `_TRS` лежат в `prod.json`): ссылки Бро на ostrovok.ru, travel.yandex.ru и aviasales.ru в `send_message` и
+  карточках уходят короткими партнёрскими (`agent/lib/partner-links/`, `POST /links/v1/create`), любой отказ —
+  ссылка как есть. trs 591523 — проект бота (Островок и Яндекс Путешествия к нему 26.10 не подключены: «trs is not
+  subscribed for brand»), 590799 — проект сайта; marker 795252 (число в скрипте Drive — trs, не marker). До выката
+  всем владелец решает о маркировке рекламы (erid в ссылках появится после данных по закону о рекламе в кабинете TP).
+- API Островка (Affiliate API v3, docs-api.ostrovok.ru) — бронь внутри Бро, ссылок на сайт в ответах нет. Договор —
+  через ostrovok.ru/affiliate; тестовый ключ ищет по всем отелям, а бронирует лишь тестовый (hid 8526976), боевой —
+  после сертификации (14–30 дней, видео «поиск → бронь → отмена»). Ключ `KEY_ID:API_KEY` ждём в `OSTROVOK_API_KEY`.
 
 ## Процесс
 
