@@ -230,10 +230,10 @@ function lookedRecently(workspaceId: string, site: string, now: number) {
 const servedForMs = 10 * 60_000;
 
 /**
- * The last direct read of a site, by session and host: a second start there
- * wants what the read did not give — the next page of the same search when
- * the errand asks for more and the site has pages (`inputs.page`), the
- * site's own pages in the browser otherwise.
+ * The last direct read of a site, by session and host: a second start of
+ * the same search wants what the read did not give — its next page when the
+ * site has pages (`inputs.page`), the site's own pages in the browser
+ * otherwise; another search is read afresh.
  */
 interface ServedRead {
   /** What the search asked of the site, its inputs already in `search`. */
@@ -425,19 +425,6 @@ async function readSite(
     return undefined;
   }
   const operations = await siteOperationsFor(scope.workspaceId, input.site);
-  // A second start after a read wants more than it gave: a next page of the
-  // same search, or the site's own pages.
-  if (
-    previous !== undefined &&
-    !operations.some(({ inputs }) => inputs?.page !== undefined)
-  ) {
-    console.info("[site-api] left to the browser", {
-      host,
-      reason: "served",
-      workspaceId: scope.workspaceId,
-    });
-    return undefined;
-  }
   if (operations.length === 0) {
     if (siteColdPilot(scope)) return lookSite(scope, input, began);
     console.info("[site-api] left to the browser", {
@@ -496,34 +483,43 @@ async function readSite(
     sort: fill?.sort ?? "site",
   };
   let personSort = first.sort;
-  if (previous !== undefined) {
-    // More of the same search is its next page, whatever words the fill
-    // gave the search this time («электрический чайник» for «чайники» on
-    // the owner's Ozon, 26.10) while they share one; new words, a new bound
-    // or another order are a new search, and anything else is the site's
-    // pages.
-    if (
-      fill?.more !== true ||
-      operation.inputs?.page === undefined ||
-      previous.operation !== operation.name ||
-      !sameSearch(operation, previous, url, first)
-    ) {
-      console.info("[site-api] left to the browser", {
-        fillMs,
-        host,
-        more: fill?.more ?? null,
-        reason: "served",
-        workspaceId: scope.workspaceId,
-      });
-      return undefined;
-    }
-    search = previous.search;
-    first = previous.ask;
-    personSort = previous.sort;
+  // A second start on the same search wants more than the read gave: its
+  // next page, whatever words the fill gave the search this time
+  // («электрический чайник» for «чайники» on the owner's Ozon, 26.10) while
+  // they share one, and whether or not the fill took it for «more» — Bro
+  // writes «the next ones by price, skip the first twenty» (26.10, `more`
+  // false); the browser when the site has no pages. New words, a new bound
+  // or another order are a new search, read afresh; «more» of something
+  // else is the site's own pages.
+  const continued =
+    previous !== undefined &&
+    previous.operation === operation.name &&
+    sameSearch(operation, previous, url, first)
+      ? previous
+      : undefined;
+  if (
+    previous !== undefined &&
+    (continued === undefined
+      ? fill?.more === true
+      : operation.inputs?.page === undefined)
+  ) {
+    console.info("[site-api] left to the browser", {
+      fillMs,
+      host,
+      more: fill?.more ?? null,
+      reason: "served",
+      workspaceId: scope.workspaceId,
+    });
+    return undefined;
+  }
+  if (continued !== undefined) {
+    search = continued.search;
+    first = continued.ask;
+    personSort = continued.sort;
   }
   const ask: SiteAsk = {
     ...first,
-    page: previous === undefined ? 0 : previous.page + 1,
+    page: continued === undefined ? 0 : continued.page + 1,
   };
   // The inputs the address holds: the search's own sort is left out when
   // its cheapest named nothing searched (below).
@@ -625,7 +621,7 @@ async function readSite(
     order = "picked";
   }
   if (ask.page > 0) {
-    const shown = new Set(previous?.links);
+    const shown = new Set(continued?.links);
     cards = cards.filter(({ link }) => !link || !shown.has(link));
     if (cards.length === 0) {
       console.info("[site-api] left to the browser", {
@@ -650,7 +646,7 @@ async function readSite(
     ask: searchAsk,
     at: Date.now(),
     links: [
-      ...(ask.page > 0 ? (previous?.links ?? []) : []),
+      ...(ask.page > 0 ? (continued?.links ?? []) : []),
       ...cards.flatMap(({ link }) => (link ? [link] : [])),
     ],
     operation: operation.name,
