@@ -404,9 +404,12 @@ async function readSite(
     // that holds the errand's words.
     console.info("[site-api] left to the browser", {
       chose: fill?.operation ?? null,
+      errandChars: input.errand.length,
       fillMs,
       filled: filled !== undefined,
       host,
+      more: fill?.more ?? null,
+      sort: fill?.sort ?? null,
       offered: operations.map(({ name }) => name),
       reason:
         operation === undefined
