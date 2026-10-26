@@ -21,6 +21,30 @@ const geist = Geist({
   variable: "--font-geist",
 });
 
+// Travelpayouts Drive confirms the site by reading this snippet from the raw
+// HTML of every page. The tag sits in the document head so the check sees it
+// in the HTML the server sends. `nowprocket` is an empty string so React
+// emits the attribute.
+const travelpayoutsDrive = `
+  (function () {
+      var script = document.createElement("script");
+      script.async = 1;
+      script.setAttribute("data-cmp-ab","2");
+      script.src = 'https://emrldtp.cc/NTkwNzk5.js?t=590799';
+      document.head.appendChild(script);
+  })();
+`;
+
+const travelpayoutsDriveAttributes = {
+  nowprocket: "",
+  "data-noptimize": "1",
+  "data-cfasync": "false",
+  "data-wpfc-render": "false",
+  "seraph-accel-crit": "1",
+  "data-no-defer": "1",
+  "data-cmp-ab": "2",
+};
+
 export const metadata: Metadata = {
   metadataBase: new URL(applicationOrigin()),
   title: {
@@ -46,6 +70,9 @@ export default async function RootLayout({ children }: LayoutProps<"/">) {
 
   return (
     <html className={`${serif.variable} ${geist.variable}`} lang="ru">
+      <head>
+        <script {...travelpayoutsDriveAttributes}>{travelpayoutsDrive}</script>
+      </head>
       <body data-brand="bro" data-workspace-id={workspaceId}>
         {children}
       </body>
