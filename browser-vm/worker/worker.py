@@ -93,7 +93,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-10-26.1"
+VERSION = "2026-10-26.2"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -802,6 +802,9 @@ SITE_OP_DIRECT_AT_ONCE = 2
 # waits for its answer (`readBrowserVmSite`), since an answer it stopped waiting for still holds a slot here.
 SITE_OP_LOAD_S = 12
 SITE_OP_DIRECT_S = 38
+# How long a page the site answered with its own check (401, 403, 429…) is given to pass it and reload itself
+# (`site_goto`): a script's check passes in a second or two; a captcha never does, and costs a read this much.
+SITE_CHECK_S = 8
 # How long a direct read waits for an xhr page's own request: well short of the minute and more the errand it saves
 # takes (ostrovok.ru's serp came in 6–17 s through the stand's exit, 25.10).
 SITE_OP_DIRECT_XHR_S = 22
@@ -2239,6 +2242,34 @@ async def site_operations_found(recorder, report, secrets=None, seconds=SITE_OPS
         return []
 
 
+async def run_rows_operations(session, recorder, report, seconds):
+    """At a run's end with no data of the site's behind its report: the rows of its last page, learned from the
+    report's options in the session's tab (`site_rows_operations`), in what is left of the find's `seconds`. Never
+    raises: the run's outcome waits on it."""
+    began = time.monotonic()
+    items = reported_items(report)
+    if len(items) < 2 or not session.tab or seconds < SITE_ROWS_MIN_S:
+        return []
+    try:
+        target = next((t for t in await page_targets() if t["id"] == session.tab), None)
+        url = (target or {}).get("url") or ""
+        # The page is one of the site's whose requests the run wrote down, not a page it never recorded, and a list
+        # of results, not a cart or an order a follow-up went on to.
+        if target is None or not url.startswith("https://") or SITE_ROWS_NOT_RESULTS.search(
+                urllib.parse.urlsplit(url).path) or not any(same_host(entry["url"], url) for entry in recorder.entries):
+            return []
+        # The report's options of this site only: the page's own scripts can read what a call hands it.
+        items = [item for item in items if not item["url"] or site_same_place(url, item["url"])]
+        left = seconds - (time.monotonic() - began)
+        if len(items) < 2 or left < SITE_ROWS_MIN_S:
+            return []
+        return await site_rows_operations(cdp_evaluator(target["webSocketDebuggerUrl"], left), url, items,
+                                          recorder_document(recorder, url), session.sensitive_data, left)
+    except Exception as error:
+        log.info("site rows at a run's end: %s", type(error).__name__)
+        return []
+
+
 def json_fields(fields):
     """An operation's fields as JSON: every path's steps as an operation writes them (`site_path_json`)."""
     out = {}
@@ -2405,9 +2436,11 @@ def site_operations(options):
         with contextlib.suppress(Exception):
             source = operation["source"]
             if not (isinstance(operation["name"], str) and operation["page"].startswith("https://")
-                    and isinstance(operation["items"], list) and source["kind"] in ("xhr", "document")):
+                    and isinstance(operation["items"], list) and source["kind"] in ("xhr", "document", "html")):
                 continue
             if source["kind"] == "xhr" and not str(source.get("url", "")).startswith("https://"):
+                continue
+            if source["kind"] == "html" and not site_rows_source_ok(operation):
                 continue
             known[operation["name"]] = operation
     return known
@@ -2462,10 +2495,39 @@ def site_state(operation, text):
     return state
 
 
+async def site_goto(page, url, seconds):
+    """`page` opened at `url` as far as its document (in `seconds`), past the site's own check: a site that answers a
+    browser it does not know yet with a check page (401, 403, 429…) and a script that reloads the page once it has
+    run gives that reload's answer, within SITE_CHECK_S. ozon.ru answered the owner's browser 403 so (26.10) until an
+    errand's run had drawn a page of it, and its document read the next time with no wait. A check that does not
+    reload by itself (a captcha, or one that sends the page to another host) leaves the first answer, its status
+    telling why."""
+    passed = asyncio.get_running_loop().create_future()
+
+    def answered(response):
+        with contextlib.suppress(Exception):
+            if (not passed.done() and response.request.is_navigation_request() and response.frame == page.main_frame
+                    and response.status not in SITE_BLOCKED and not 300 <= response.status < 400
+                    and site_same_place(url, response.url)):
+                passed.set_result(response)
+
+    page.on("response", answered)
+    try:
+        response = await page.goto(url, wait_until="commit", timeout=seconds * 1000)
+        if response is None or response.status not in SITE_BLOCKED:
+            return response
+        try:
+            return await asyncio.wait_for(asyncio.shield(passed), SITE_CHECK_S)
+        except asyncio.TimeoutError:
+            return response
+    finally:
+        page.remove_listener("response", answered)
+
+
 async def site_op_document(page, operation, url, seconds=None):
     """A document operation's results, the results page opened in `page` as far as its document only (in
-    `seconds`, CODE_CALL_S by default)."""
-    response = await page.goto(url, wait_until="commit", timeout=(seconds or CODE_CALL_S) * 1000)
+    `seconds`, CODE_CALL_S by default), past the site's own check (`site_goto`)."""
+    response = await site_goto(page, url, seconds or CODE_CALL_S)
     if response is None:
         raise site_status_failure(None, "the page")
     return site_document_state(operation, url, response.status, response.url, await response.text())
@@ -2495,7 +2557,7 @@ async def site_op_fetched(page, operation, url):
     parts = urllib.parse.urlsplit(url)
     origin = f"https://{parts.hostname}"
     if not (page.url or "").startswith(origin + "/"):
-        await page.goto(origin + "/robots.txt", wait_until="commit", timeout=SITE_OP_LOAD_S * 1000)
+        await site_goto(page, origin + "/robots.txt", SITE_OP_LOAD_S)
     # A site that sent the tab to its city's own host (`site_same_place`) is asked there: a fetch the site would
     # redirect across hosts is refused by the browser (CORS), and the page would have to be drawn instead.
     here = urllib.parse.urlsplit(page.url or "")
@@ -2581,6 +2643,400 @@ def site_op_checked(operation, cards):
         if len(named) * 2 < len(cards) or (len(cards) > 3 and len(set(named)) == 1):
             raise SiteOpFailure("no_data", "the site's data no longer has the results' names where it had them")
     return cards
+
+
+# --- A site's results as rows of its HTML ---------------------------------------------------------------------
+# Some sites carry their results in no JSON the finder reads: labirint.ru, petrovich.ru, cian.ru, 2gis.ru, tutu.ru,
+# kupibilet.ru draw them as HTML, from a document or from data on another host (26.10). Their rows are stable, though:
+# Pomerado's `readRows(rows, {field: selector})` reads such a page with no model. A look (from the cards' structure) or
+# a run's end (from its report's options) learns the rows' selector and each field's selector inside a row on the page
+# itself (SITE_ROWS_LEARN_JS), and an operation of `source: {kind: "html", render, rows, cells, twins?}` reads them
+# back (SITE_ROWS_READ_JS) as a list of `{name, price, link, text}`: its `items` are [] and its fields the paths
+# `["name"]`, `["price"]`, `{"path": ["link"]}` (or "page"), so `site_cards` and all after it read it as any other.
+# `render: false` when the document as fetched already has the rows: a tab on the site fetches it and parses it with
+# DOMParser, never drawn, its text never leaving the page; `render: true` when only the drawn page has them (wb.ru,
+# tutu.ru, kupibilet.ru): the page opened with its pictures and fonts left out, its rows read once shown. A selector is
+# the site's own words only (`site_selector_ok`): Bro's schema refuses anything else (`htmlSourceSchema` in
+# agent/lib/browser-vm/site-ops/operation.ts).
+SITE_ROWS_LEARN_MS = 2500  # how long learning a page's rows may take in the page
+SITE_ROWS_SHARE = 0.5  # a fetched document reads like the drawn page: this share of its first names among the page's
+SITE_ROWS_DRAWN_S = 14  # how long a drawn page's rows are waited for once it has its document
+SITE_ROWS_POLL_S = 0.4
+SITE_ROWS_BLOCKED_S = 3  # how long a page whose document the site refused is given to draw rows all the same
+SITE_ROWS_EVALUATE_S = 10  # one learning or reading in a run's tab, through CDP
+SITE_ROWS_MIN_S = 1  # what is left of a budget below which no learning starts
+# Attributes whose value a site writes as its own word for a role: test hooks, component names, schema.org. Any other
+# attribute is named by its presence only. A cell reads a row's text, or one of these attributes.
+SITE_ROW_ROLE_ATTRS = frozenset({
+    "data-testid", "data-test-id", "data-test", "data-qa", "data-qa-id", "data-marker", "data-e2e", "data-cy",
+    "data-auto", "data-zone-name", "data-widget", "data-ti", "data-name", "data-mark", "data-slot", "data-component",
+    "data-role", "data-block", "itemprop", "itemtype", "role"})
+SITE_ROW_CELL_ATTRS = frozenset({"href", "title", "aria-label", "alt", "content"})
+SITE_ROW_CELL_DATA = re.compile(r"data-[a-z][a-z-]{1,30}")
+SITE_ROW_ATTR = (r'\[(?:[a-z][a-z-]{1,40}|[a-z][a-z-]{1,40}="(?:[A-Za-z][A-Za-z_-]{1,39}|https?://schema\.org/'
+                 r'[A-Za-z]{1,40})"|href\*="/[a-z-]{2,24}/")\]')
+SITE_ROW_SIMPLE = rf"(?::scope|[a-z][a-z0-9]{{0,15}})(?:\.[A-Za-z][A-Za-z0-9_-]{{1,59}})*(?:{SITE_ROW_ATTR})*"
+SITE_ROW_SIMPLE_RE = re.compile(SITE_ROW_SIMPLE)
+SITE_ROW_HAS = re.compile(rf"(?P<head>{SITE_ROW_SIMPLE}):has\(> (?P<inner>{SITE_ROW_SIMPLE}(?: > {SITE_ROW_SIMPLE}){{0,3}})\)")
+
+
+def site_class_ok(name):
+    """A class a site wrote by hand (`product-card__name`, `tile-root`), not one its build generated: no token with a
+    digit but a short number after a word (`col-6`) or `h1`–`h6`, no camelCase part of four letters or more without a
+    vowel (styled-components' `knfjIn`), no token of two one-letter parts or more (`iNXzHE`). The learner also leaves
+    out a page's families of short generated classes (tutu.ru's `eibe`, `dube`, `elbe`), which a selector alone does
+    not show."""
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{1,59}", name or ""):
+        return False
+    tokens = [token for token in re.split(r"[-_]+", name) if token]
+    if not tokens:
+        return False
+    for index, token in enumerate(tokens):
+        if re.search(r"\d", token) and not (re.fullmatch(r"\d{1,2}", token) and index > 0) \
+                and not re.fullmatch(r"h[1-6]", token):
+            return False
+        parts = re.split(r"(?=[A-Z])", token)
+        if sum(1 for part in parts if len(part) == 1) >= 2 and token != token.upper():
+            return False
+        if any(len(re.sub(r"\d", "", part)) >= 4 and not re.search(r"[aeiouy]", part, re.I) for part in parts):
+            return False
+    return True
+
+
+def site_row_part_ok(part):
+    if not SITE_ROW_SIMPLE_RE.fullmatch(part):
+        return False
+    for name in re.findall(r"\.([A-Za-z][A-Za-z0-9_-]*)", re.sub(r"\[[^\]]*\]", "", part)):
+        if not site_class_ok(name):
+            return False
+    for name, value in re.findall(r'\[([a-z-]+)="([^"]*)"\]', part):
+        if name not in SITE_ROW_ROLE_ATTRS or not (value.startswith("http") or site_class_ok(value)):
+            return False
+    return True
+
+
+def site_selector_ok(selector):
+    """Whether a selector is the site's own words, never a value: compounds joined by ' ' or ' > ', at most six; a
+    compound is a tag (or `:scope`, first only), hand-written classes (`site_class_ok`), attributes and at most one
+    `:has(> …)`. An attribute is named by its presence, or with a value only as a role attribute (SITE_ROW_ROLE_ATTRS)
+    whose value is a latin code word, or as a link's `href*="/word/"`. No other quote, no digit run, no letter of
+    another alphabet: an errand's value cannot be written in it (its latin words the operation's own check drops,
+    `site_rows_clean`)."""
+    if not isinstance(selector, str) or len(selector) > 200 or selector != selector.strip():
+        return False
+    tokens = re.split(r" (?![^()]*\))", selector)
+    parts = [token for token in tokens if token != ">"]
+    if (not 1 <= len(parts) <= 6 or "" in tokens or tokens[0] == ">" or tokens[-1] == ">"
+            or any(a == ">" and b == ">" for a, b in zip(tokens, tokens[1:]))):
+        return False
+    for index, part in enumerate(parts):
+        has = SITE_ROW_HAS.fullmatch(part)
+        pieces = [has.group("head"), *has.group("inner").split(" > ")] if has else [part]
+        if not all(site_row_part_ok(piece) for piece in pieces):
+            return False
+        if any(piece.startswith(":scope") for piece in pieces[1:]) or (index > 0 and part.startswith(":scope")):
+            return False
+    return True
+
+
+def site_rows_source_ok(operation):
+    """Whether an html operation is one a worker reads: its rows' and cells' selectors the site's words, a cell a
+    text or one of SITE_ROW_CELL_ATTRS (or a data- attribute), its items [] and its fields the cells' own paths."""
+    source = operation.get("source") or {}
+    cells = source.get("cells")
+    if not (isinstance(source.get("render"), bool) and site_selector_ok(source.get("rows"))
+            and isinstance(cells, dict) and isinstance(cells.get("name"), dict) and set(cells) <= {"name", "price", "link"}
+            and source.get("twins") in (None, True) and operation.get("items") == []):
+        return False
+    for cell in cells.values():
+        attribute = cell.get("attribute") if isinstance(cell, dict) else None
+        if not (isinstance(cell, dict) and set(cell) <= {"selector", "attribute"} and site_selector_ok(cell.get("selector"))
+                and (attribute is None or attribute in SITE_ROW_CELL_ATTRS
+                     or (isinstance(attribute, str) and SITE_ROW_CELL_DATA.fullmatch(attribute)))):
+            return False
+    fields = operation.get("fields") or {}
+    return (fields.get("name") == ["name"] and fields.get("price") in (None, ["price"])
+            and fields.get("link") in (None, "page", {"path": ["link"]}))
+
+
+def site_rows_words(source):
+    """The latin words of an html operation's selectors and attributes, in lower case."""
+    text = " ".join([source["rows"]] + [f"{cell['selector']} {cell.get('attribute') or ''}"
+                                        for cell in source["cells"].values()])
+    return set(re.findall(r"[a-z0-9]+", text.lower()))
+
+
+def site_rows_clean(operation, page_url, secrets=None):
+    """The operation, or None when it names anything but the site's words: a selector out of the grammar, or a word
+    of the errand (`errand_words`: its query's words, its path's placeholder parts) or of a secret in a selector,
+    as a word of its own or inside one (`div.brand-bosch` for «bosch»)."""
+    if not site_rows_source_ok(operation):
+        return None
+    words = site_rows_words(operation["source"])
+    selectors = json.dumps(operation["source"], ensure_ascii=False).lower()
+    errand = {word for word in errand_words(page_url) if re.fullmatch(r"[a-z0-9]+", word)}
+    if errand & words or any(len(word) >= 4 and word in selectors for word in errand):
+        return None
+    values = [str(value).lower() for value in flat_secret_values(secrets) if len(str(value)) >= 3]
+    if any(value in selectors for value in values):
+        return None
+    return operation
+
+
+# A page past the results — a cart, a checkout, an order, an account —, where a run's end learns no rows.
+SITE_ROWS_NOT_RESULTS = re.compile(r"cart|basket|korzina|checkout|order|payment|pay/|account|profile|lk/|personal|"
+                                   r"login|auth|signin", re.I)
+
+
+def reported_items(text):
+    """The options a report names on its ITEMS line as it writes them: name, price, link (`reported_options`)."""
+    for line in (text or "").splitlines():
+        if not line.startswith("ITEMS:"):
+            continue
+        try:
+            items = json.loads(line[6:].strip() or "[]")
+        except ValueError:
+            return []
+        return [{key: str(item.get(key) or "")[:300] for key in ("name", "price", "url")}
+                for item in items if isinstance(item, dict) and not item.get("fee")][:20]
+    return []
+
+
+def page_evaluator(page):
+    """A Playwright page's `evaluate` as the rows' learning and reading call it."""
+    return lambda expression, argument=None: page.evaluate(expression, argument)
+
+
+def cdp_evaluator(websocket_url, seconds=SITE_ROWS_EVALUATE_S):
+    """A tab's own evaluation through CDP (a run's last tab, which no Playwright holds): the function called with its
+    argument as JSON, its value returned, an exception raised."""
+    async def evaluate(expression, argument=None):
+        result = await cdp_command(websocket_url, "Runtime.evaluate", {
+            "expression": f"({expression})({json.dumps(argument, ensure_ascii=False)})",
+            "returnByValue": True, "awaitPromise": True}, timeout=seconds)
+        if result.get("exceptionDetails"):
+            raise RuntimeError(str(result["exceptionDetails"].get("text") or "the page's script failed")[:200])
+        return (result.get("result") or {}).get("value")
+    return evaluate
+
+
+async def site_rows_read(evaluate, rows, cells, html=None, url=None, keep=False, kept=False, twins=False, least=3):
+    """The rows the selectors read: at least `least` of them (a replay's one), or none."""
+    return await evaluate(SITE_ROWS_READ_JS, {"rows": rows, "cells": cells, "html": html, "url": url,
+                                              "limit": SITE_OP_ARRAY, "keep": keep, "kept": kept, "twins": twins,
+                                              "least": least})
+
+
+async def site_rows_settle(evaluate, learned, html, url):
+    """Which of the learned candidates read the page, and whether its fetched document already has the rows: the first
+    rows selector and fields that read the same names in the fetched document as in the drawn page (render false), else
+    those that read the drawn page (render true). The fetched document is parsed once, in the page."""
+    rows = [row["sel"] for row in learned.get("rows") or []]
+    twins = {row["sel"] for row in learned.get("rows") or [] if row.get("twins")}
+    cells = {role: [{key: value for key, value in cell.items() if key in ("selector", "attribute") and value}
+                    for cell in (learned.get("fields") or {}).get(role) or []] for role in ("name", "price", "link")}
+    drawn = None
+    for selector in rows:
+        drawn = await site_rows_read(evaluate, [selector], cells, None, url, twins=selector in twins)
+        if drawn["rows"] is not None and "name" in drawn["cells"]:
+            break
+    if drawn is None or drawn["rows"] is None or "name" not in drawn["cells"]:
+        return None
+    if html:
+        parsed = False
+        for selector in rows:
+            fetched = await site_rows_read(evaluate, [selector], cells, None if parsed else html, url, keep=not parsed,
+                                           kept=parsed, twins=selector in twins)
+            parsed = True
+            if fetched["rows"] is None or "name" not in fetched["cells"]:
+                continue
+            same = await site_rows_read(evaluate, fetched["rows"], {k: [v] for k, v in fetched["cells"].items()}, None,
+                                        url, twins=selector in twins)
+            shown = {site_words(item.get("name")) for item in same["items"] if item.get("name")}
+            names = [site_words(item.get("name")) for item in fetched["items"][:10] if item.get("name")]
+            if len(names) >= 3 and sum(1 for name in names if name in shown) >= SITE_ROWS_SHARE * len(names):
+                return {"render": False, "rows": fetched["rows"], "cells": fetched["cells"], "count": fetched["count"],
+                        "twins": selector in twins}
+    return {"render": True, "rows": drawn["rows"], "cells": drawn["cells"], "count": drawn["count"],
+            "twins": drawn["rows"] in twins}
+
+
+def site_rows_operation(url, learned, settled, secrets=None):
+    """The operation of a learned and settled page in an operation's shape, or None (`site_rows_clean`)."""
+    if not settled or "name" not in settled["cells"]:
+        return None
+    page = site_template(url)
+    cells = {role: settled["cells"][role] for role in ("name", "price", "link") if role in settled["cells"]}
+    fields = {role: [role] for role in ("name", "price") if role in cells}
+    fields["link"] = {"path": ["link"]} if "link" in cells else "page"
+    source = {"kind": "html", "render": settled["render"], "rows": settled["rows"], "cells": cells}
+    if settled.get("twins"):
+        source["twins"] = True
+    operation = {"name": page.split("?")[0].removeprefix("https://")[:120], "page": page, "source": source,
+                 "items": [], "fields": fields,
+                 "seen": {"items": settled["count"], "matched": learned.get("matched", 0), "of": learned.get("of", 0)}}
+    return site_rows_clean(operation, url, secrets)
+
+
+async def site_rows_operations(evaluate, url, items=None, document=None, secrets=None, seconds=SITE_OPS_FIND_S):
+    """The html operation of a results page open in a tab (`evaluate` reaches it): its rows learned from a run's
+    report's options (`items`, `reported_items`) or, with none (a look), from its cards' structure, settled against
+    the document the page came with (`document`, the recorder's), in `seconds` at most. Never raises: a page it cannot
+    learn gives none."""
+    began = time.monotonic()
+    try:
+        learned = await asyncio.wait_for(evaluate(SITE_ROWS_LEARN_JS, {
+            "options": items or [], "base": url, "ms": min(SITE_ROWS_LEARN_MS, int(seconds * 500))}), seconds)
+        if not isinstance(learned, dict) or learned.get("error") or not learned.get("rows"):
+            log.info("site rows %s: none learned (%s)", urllib.parse.urlsplit(url).hostname,
+                     (learned or {}).get("error") if isinstance(learned, dict) else "no answer")
+            return []
+        settled = await asyncio.wait_for(site_rows_settle(evaluate, learned, document, url),
+                                         max(0.5, seconds - (time.monotonic() - began)))
+        operation = site_rows_operation(url, learned, settled, secrets)
+    except Exception as error:
+        log.info("site rows %s: %s", urllib.parse.urlsplit(url).hostname, type(error).__name__)
+        return []
+    finally:
+        # The parsed document settling kept in the page goes: a page's global for as long as the tab lives otherwise.
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(evaluate("() => { delete globalThis.__broRowsDoc; }"), 2)
+    log.info("site rows %s: %s, %d ms", urllib.parse.urlsplit(url).hostname,
+             "render" if operation and operation["source"]["render"] else "fetch" if operation else "none",
+             round((time.monotonic() - began) * 1000))
+    return [operation] if operation else []
+
+
+def recorder_document(recorder, url):
+    """The document a recorder held of the page `url` (the same path), the last one: what a fetch of it returns."""
+    path = urllib.parse.urlsplit(url or "").path.rstrip("/")
+    documents = [text for entry, text in recorder.bodies
+                 if entry["type"] == "document" and urllib.parse.urlsplit(entry["url"]).path.rstrip("/") == path]
+    return documents[-1] if documents else None
+
+
+def site_rows_data(answer):
+    """A read's rows as the operation's data. A row its name does not name is no card (an ad or a banner in the
+    list): more of them than cards is an operation that no longer reads the page."""
+    items = answer.get("items") or []
+    if answer.get("rows") is None or (answer.get("nameless") or 0) > len(items):
+        raise SiteOpFailure("no_data", "the page no longer has its rows where the operation reads them")
+    return [{key: value for key, value in item.items() if value is not None} for item in items]
+
+
+async def site_op_rows_fetched(page, operation, url):
+    """An html operation's rows from its results document fetched by a tab on the site (its robots.txt first, as
+    `site_op_fetched`) and parsed in the page: the document never drawn, its text never leaving the page."""
+    parts = urllib.parse.urlsplit(url)
+    origin = f"https://{parts.hostname}"
+    if not (page.url or "").startswith(origin + "/"):
+        await site_goto(page, origin + "/robots.txt", SITE_OP_LOAD_S)
+    here = urllib.parse.urlsplit(page.url or "")
+    if here.hostname and here.hostname != parts.hostname and site_same_place(url, page.url):
+        url = urllib.parse.urlunsplit(("https", here.hostname, parts.path, parts.query, ""))
+    source = operation["source"]
+    answer = await asyncio.wait_for(page.evaluate(SITE_ROWS_FETCH_JS, {
+        "url": url, "rows": source["rows"], "cells": source["cells"], "limit": SITE_OP_ARRAY,
+        "twins": bool(source.get("twins")), "least": 1}), SITE_OP_FETCH_S)
+    if answer["status"] in SITE_GONE:
+        raise site_status_failure(answer["status"], "the page")
+    if not site_same_path(url, answer["landed"]):
+        raise SiteOpFailure("moved", "the page answered from another address: open it instead")
+    if answer["rows"] is None:
+        if answer["status"] != 200:
+            raise site_status_failure(answer["status"], "the page")
+        raise SiteOpFailure("no_data", "the page no longer has its rows where the operation reads them")
+    return site_rows_data(answer)
+
+
+async def site_op_rows_drawn(page, operation, url, seconds=SITE_ROWS_DRAWN_S, load_seconds=None, goto=True):
+    """An html operation's rows from its results page drawn in `page`: read once shown, the same count twice in a row
+    (or what is shown at `seconds`). The caller leaves the page's pictures and fonts out where it may."""
+    source = operation["source"]
+    response = None
+    if goto:
+        response = await site_goto(page, url, load_seconds or CODE_CALL_S)
+        if response is not None and response.status in SITE_GONE:
+            raise site_status_failure(response.status, "the page")
+        if response is not None and not site_same_path(url, response.url):
+            raise SiteOpFailure("moved", "the page answered from another address: open it instead")
+    began = time.monotonic()
+    deadline, last, answer, steady = began + seconds, None, None, 0
+    while time.monotonic() < deadline:
+        # A page the site turned away (its document's 401, 403…) that shows no rows soon shows none.
+        if (response is not None and response.status in SITE_BLOCKED and time.monotonic() - began > SITE_ROWS_BLOCKED_S
+                and (answer is None or answer["rows"] is None)):
+            break
+        with contextlib.suppress(Exception):
+            answer = await site_rows_read(page_evaluator(page), source["rows"], source["cells"], None, url,
+                                          twins=bool(source.get("twins")), least=1)
+            named = sum(1 for item in answer["items"] if item.get("name"))
+            if answer["rows"] is not None and named >= 1:
+                # The same rows twice in a row are the page's; one or two of them, three times (a page still drawing
+                # shows its first row before the rest).
+                steady = steady + 1 if last == (answer["count"], named) else 0
+                if steady >= (1 if named >= 3 else 2):
+                    break
+                last = (answer["count"], named)
+        await asyncio.sleep(SITE_ROWS_POLL_S)
+    if answer is None or answer["rows"] is None:
+        status = response.status if response is not None else None
+        if status in SITE_BLOCKED:
+            raise site_status_failure(status, "the page")
+        # A page that shows no list of results at all is a search with none (no count against the operation); one
+        # that shows a list the selectors miss is a site that changed.
+        cards = []
+        with contextlib.suppress(Exception):
+            cards = await page.evaluate(CODE_CARDS_JS, 10)
+        if len(cards) < 3:
+            raise SiteOpFailure("empty", "the page shows no results")
+        raise SiteOpFailure("no_data", "the page drew no rows where the operation reads them")
+    if not site_same_path(url, page.url):
+        raise SiteOpFailure("moved", "the page went to another address: open it instead")
+    return site_rows_data(answer)
+
+
+async def site_op_rows(page, operation, url, holder=None, load_seconds=None, block=None):
+    """An html operation's rows (`site_op_direct` and op() alike): its fetched document when it reads one, and the page
+    drawn when the fetch gives none — a 401 to a fetch the page itself passes (petrovich.ru), a redirect the browser
+    refuses to a fetch (kinopoisk.ru), a document without the rows (ozon.ru's other categories) —, as a document
+    operation falls back to its page. `block` leaves the drawn page's pictures and fonts out."""
+    holder = holder if holder is not None else {}
+    if not operation["source"]["render"]:
+        try:
+            holder["via"] = "fetch"
+            return await site_op_rows_fetched(page, operation, url)
+        except SiteOpFailure as failure:
+            if failure.reason == "moved":
+                raise
+        except Exception:  # the fetch did not answer in its time
+            pass
+    holder["via"] = "page"
+    if block is not None:
+        await block()
+    return await site_op_rows_drawn(page, operation, url, SITE_ROWS_DRAWN_S, load_seconds)
+
+
+async def site_op_rows_document(page, operation, url, seconds=None):
+    """op()'s read of an html operation in the model's own tab: the results page opened, its rows read from the
+    document as it came (render false) or as drawn (render true, or a document without them)."""
+    source = operation["source"]
+    if not source["render"]:
+        response = await site_goto(page, url, seconds or CODE_CALL_S)
+        if response is None:
+            raise site_status_failure(None, "the page")
+        if response.status in SITE_GONE:
+            raise site_status_failure(response.status, "the page")
+        if not site_same_path(url, response.url):
+            raise SiteOpFailure("moved", "the page answered from another address: open it instead")
+        answer = await site_rows_read(page_evaluator(page), source["rows"], source["cells"], await response.text(),
+                                      url, twins=bool(source.get("twins")), least=1)
+        if answer["rows"] is not None:
+            return site_rows_data(answer)
+        if response.status in SITE_BLOCKED:
+            raise site_status_failure(response.status, "the page")
+        return await site_op_rows_drawn(page, operation, url, SITE_ROWS_DRAWN_S, goto=False)
+    return await site_op_rows_drawn(page, operation, url, SITE_ROWS_DRAWN_S, seconds)
 
 
 # The query keys a site writes its search's words in (`site_query_words`): not a filter's (`type_group=hotel`,
@@ -3924,6 +4380,605 @@ CODE_CARDS_JS = r"""(limit) => {
 }"""
 
 
+# A site's results as rows of its HTML (Pomerado's `readRows`), for a site whose data is in no JSON the operations
+# finder reads (labirint.ru, petrovich.ru, cian.ru, 2gis.ru, tutu.ru on the stand, 26.10): the shared helpers
+# (`SITE_ROWS_LIB`), the learning of a page's rows and fields from its cards (`SITE_ROWS_LEARN_JS`) and the reading of
+# them (`SITE_ROWS_READ_JS`, also over a fetched document a DOMParser parses, never drawn). A text is read without the
+# page's layout, so a row reads the same drawn and fetched. See `site_rows_operations` and `site_op_rows`.
+SITE_ROWS_LIB = r"""const clean = (s) => String(s == null ? '' : s).replace(/[\s\u00a0\u202f\u200b\u2009\u2060]+/g, ' ').trim();
+const SKIP = new Set(['script', 'style', 'template', 'noscript', 'svg', 'iframe']);
+const textOf = (el, max = 4000) => {
+  const parts = [];
+  let length = 0;
+  const walk = (node) => {
+    for (const child of node.childNodes) {
+      if (length > max) return;
+      if (child.nodeType === 3) { parts.push(child.data); length += child.data.length; }
+      else if (child.nodeType === 1 && !SKIP.has(child.localName)) walk(child);
+    }
+  };
+  if (el.nodeType === 1 && SKIP.has(el.localName)) return '';
+  walk(el);
+  return clean(parts.join(' ')).slice(0, max);
+};
+const words = (s) => clean(s).toLowerCase().replace(/ё/g, 'е').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+const amounts = (s) => {
+  const out = [];
+  for (const m of String(s || '').matchAll(/\d[\d \u00a0\u202f\u2009]*(?:[.,]\d{1,2})?/g)) {
+    const v = parseFloat(m[0].replace(/[ \u00a0\u202f\u2009]/g, '').replace(',', '.'));
+    if (v >= 10) out.push(v);
+  }
+  return out;
+};
+const PRICE = /\d[\d \u00a0\u202f\u2009]{0,12}(?:[.,]\d{1,2})?\s?(?:₽|руб|р\.|RUB)|(?:₽|руб\.?)\s?\d/i;
+const linkKey = (href, base) => {
+  try {
+    const u = new URL(href, base);
+    if (!/^https?:$/.test(u.protocol)) return null;
+    return u.hostname.replace(/^www\./, '') + (u.pathname.replace(/\/+$/, '') || '/');
+  } catch (e) { return null; }
+};
+// A class a site wrote by hand (`product-card__name`, `price-current`, `tile-root`), not one a build generated: no
+// token with a digit but a short number after a word (`col-6`, `h2`), no token of four letters or more without a
+// vowel (`mhcs`, `lfcs`), no camelCase segment of four letters without one or two one-letter segments (styled-
+// components' `knfjIn`, `iNXzHE`), nothing behind a leading underscore (2gis's `_zjunba`), and none of a page's
+// families of short generated classes (`GENERATED`, filled by the learner: tutu's `eibe`, `dube`, `elbe`…).
+const GENERATED = new Set();
+const VOWEL = /[aeiouy]/i;
+const stableClass = (c) => {
+  if (!/^[A-Za-z][A-Za-z0-9_-]{1,59}$/.test(c) || GENERATED.has(c)) return false;
+  const tokens = c.split(/[-_]+/).filter(Boolean);
+  if (!tokens.length) return false;
+  for (const [i, t] of tokens.entries()) {
+    if (/\d/.test(t) && !(/^\d{1,2}$/.test(t) && i > 0) && !/^h[1-6]$/.test(t)) return false;
+    const segments = t.split(/(?=[A-Z])/);
+    if (segments.filter((s) => s.length === 1).length >= 2 && t !== t.toUpperCase()) return false;
+    for (const s of segments) if (s.replace(/\d/g, '').length >= 4 && !VOWEL.test(s)) return false;
+  }
+  return true;
+};
+// The page's own words that are the errand's (its path's parts, its query's values): a link's path word that is one
+// of them is not a hook (`/moscow/` of 2gis's `/moscow/firm/…` for a search in Moscow).
+const PAGE_WORDS = new Set();
+const pathWords = (href, base) => {
+  try {
+    return new URL(href, base).pathname.split('/').filter((s) => /^[a-z-]{2,24}$/.test(s) && !PAGE_WORDS.has(s));
+  } catch (e) { return []; }
+};
+// Attributes whose value a site writes as its own word for a role (test hooks, component names, schema.org): kept with
+// their value, a latin code word (`offer-card`, `CardComponent`, `product-title`), never a person's text.
+const ROLE_ATTRS = ['data-testid', 'data-test-id', 'data-test', 'data-qa', 'data-qa-id', 'data-marker', 'data-e2e',
+  'data-cy', 'data-auto', 'data-zone-name', 'data-widget', 'data-ti', 'data-name', 'data-mark', 'data-slot',
+  'data-component', 'data-role', 'data-block', 'itemprop', 'itemtype', 'role'];
+const roleValue = (name, value) => name === 'itemtype'
+  ? /^https?:\/\/schema\.org\/[A-Za-z]{1,40}$/.test(value)
+  : /^[A-Za-z][A-Za-z_-]{1,39}$/.test(value) && stableClass(value);
+// An attribute a selector may name by its presence alone: a word of latin letters and hyphens, not one the page
+// sets as it draws (a style, a lazy loader's status, an event handler).
+const NOT_PRESENCE = new Set(['class', 'style', 'tabindex', 'loading', 'decoding', 'width', 'height', 'draggable',
+  'fetchpriority', 'sizes', 'srcset', 'crossorigin', 'referrerpolicy', 'target', 'rel', 'id']);
+const presenceName = (name) => /^[a-z][a-z-]{1,40}$/.test(name) && !NOT_PRESENCE.has(name) && !name.startsWith('on')
+  && !/(?:^|-)(?:ll|lazy|loaded|status|state|watched|visible|active|inited|init|ready|hover|focus|src|need|pass|recom|qv)(?:-|$)/.test(name);
+const esc = (v) => v.replace(/["\\]/g, '');
+const ROW_WORD = /card|item|product|offer|result|snippet|tile|serp|listing|good|ticket|trip|vacanc|hotel|event/i;
+// The compounds that name every one of `els` (same tag): [{sel, rank}] — a role attribute with its value (0), a link
+// by a word of its path (1.2), a data- attribute's presence (0.9 when it names an item, 1.5 else), a hand-written
+// class (0.8 when it names a card, 2 else), several (2.5), another attribute's presence (3), the tag (9).
+const compounds = (els, base) => {
+  const tag = els[0].localName;
+  if (!/^[a-z][a-z0-9]{0,15}$/.test(tag) || els.some((e) => e.localName !== tag)) return [];
+  const out = [];
+  for (const a of ROLE_ATTRS) {
+    const v = els[0].getAttribute(a);
+    if (v !== null && roleValue(a, v) && els.every((e) => e.getAttribute(a) === v)) out.push({sel: `${tag}[${a}="${esc(v)}"]`, rank: 0});
+  }
+  if (tag === 'a' && els.every((e) => e.hasAttribute('href'))) {
+    const shared = pathWords(els[0].getAttribute('href'), base)
+      .filter((w) => els.every((e) => pathWords(e.getAttribute('href'), base).includes(w)));
+    for (const w of shared.slice(0, 2)) out.push({sel: `a[href*="/${w}/"]`, rank: 1.2});
+  }
+  for (const {name} of els[0].attributes) {
+    if (ROLE_ATTRS.includes(name) || !presenceName(name) || !els.every((e) => e.hasAttribute(name))) continue;
+    out.push({sel: `${tag}[${name}]`, rank: name.startsWith('data-') ? (/id$|code|sku|product|item|card|offer/.test(name) ? 0.9 : 1.5) : 3});
+  }
+  const common = [...els[0].classList].filter((c) => stableClass(c) && els.every((e) => e.classList.contains(c)));
+  for (const c of common.slice(0, 6)) out.push({sel: `${tag}.${c}`, rank: ROW_WORD.test(c) ? 0.8 : 2});
+  if (common.length > 1) out.push({sel: `${tag}.${common.slice(0, 3).join('.')}`, rank: 2.5});
+  out.push({sel: tag, rank: 9});
+  return out;
+};
+// A field of a row as the operation names it: {selector, attribute?}; `:scope` is the row itself.
+const cell = (row, field) => {
+  if (!field) return null;
+  let el;
+  try { el = field.selector === ':scope' ? row : row.querySelector(field.selector); } catch (e) { return null; }
+  if (!el) return null;
+  if (field.attribute) {
+    const v = el.getAttribute(field.attribute);
+    return v == null ? null : clean(v);
+  }
+  return textOf(el, 600) || null;
+};
+"""
+
+SITE_ROWS_LEARN = r"""(arg) => {
+/*LIB*/
+  const began = performance.now();
+  const base = arg.base || location.href;
+  const hostOf = (u) => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch (e) { return ''; } };
+  const budget = arg.ms || 2500;
+  const late = () => performance.now() - began > budget;
+  // An option's link that is the results page itself (tutu's, kupibilet's: their cards have none) names no card.
+  const pageLink = linkKey(base, base);
+  const options = (arg.options || []).map((o) => ({name: words(o.name), price: amounts(o.price),
+    key: o.url && linkKey(o.url, base) !== pageLink ? linkKey(o.url, base) : null})).filter((o) => o.name || o.key);
+
+  // The errand's words in the page's address, and the page's families of generated short classes (lib.js).
+  try {
+    const u = new URL(base);
+    for (const part of [...u.pathname.split('/'), ...[...u.searchParams.values()]]) {
+      for (const w of decodeURIComponent(part).toLowerCase().split(/[^a-z-]+/)) if (w) PAGE_WORDS.add(w);
+    }
+  } catch (e) {}
+  {
+    const all = new Set(), families = new Map();
+    for (const el of document.querySelectorAll('[class]')) for (const c of el.classList) all.add(c);
+    for (const c of all) {
+      const bare = c.replace(/\d$/, '');
+      if (!/^[a-z]{2,6}$/.test(bare)) continue;
+      const key = bare.slice(-2) + ':' + bare.length;
+      if (!families.has(key)) families.set(key, []);
+      families.get(key).push(c);
+    }
+    for (const list of families.values()) if (list.length >= 4) for (const c of list) GENERATED.add(c);
+  }
+
+  // 1. The page's groups of cards, as CODE_CARDS_JS finds them: of every element's children that share a tag and
+  // classes, the groups of three or more shown ones with text. With the report's options, the group that holds
+  // most of them; without, the one that covers the most of the page.
+  const shape = (el) => el.localName + '.' + [...el.classList].filter((c) => !/\d{3,}/.test(c)).sort().join('.');
+  const seen = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+  const groups = [];
+  for (const parent of document.body.querySelectorAll('*')) {
+    if (parent.children.length < 3) continue;
+    const by = new Map();
+    for (const child of parent.children) {
+      const key = shape(child);
+      if (!by.has(key)) by.set(key, []);
+      by.get(key).push(child);
+    }
+    for (const els of by.values()) {
+      if (els.length < 3) continue;
+      const shown = els.filter(seen);
+      const texts = shown.map((el) => clean(el.innerText)).filter((t) => t.length >= 15 && t.length <= 3000);
+      if (texts.length < 3) continue;
+      const digits = texts.filter((t) => /\d/.test(t)).length / texts.length;
+      const linked = shown.filter((el) => el.matches('a[href]') || el.querySelector('a[href]')).length / shown.length;
+      const covered = texts.reduce((sum, t) => sum + Math.min(t.length, 600), 0);
+      groups.push({parent, els, shown: shown.filter((el) => clean(el.innerText).length >= 15),
+                   score: covered * (0.5 + digits) * (0.5 + linked)});
+    }
+  }
+  if (!groups.length) return {error: 'no group of cards', ms: Math.round(performance.now() - began)};
+  const anchorsOf = (row) => [...(row.matches('a[href]') ? [row] : []), ...row.querySelectorAll('a[href]')];
+  // The card of an option: the one with its link (or a link under it: kinopoisk's /film/301/sr/1/ for /film/301/),
+  // else the one whose text holds its name; each card is one option's at most.
+  const linkOf = (a, key) => { const k = linkKey(a.getAttribute('href'), base); return k === key ? 2 : k && k.startsWith(key + '/') ? 1 : 0; };
+  const optionRows = (rows) => {
+    const used = new Set(), pairs = [];
+    for (const [oi, o] of options.entries()) {
+      let row = null;
+      if (o.key) {
+        for (const level of [2, 1]) {
+          row = rows.find((r) => !used.has(r) && anchorsOf(r).some((a) => linkOf(a, o.key) === level)) || null;
+          if (row) break;
+        }
+      }
+      if (!row && o.name && o.name.length >= 5) row = rows.find((r) => !used.has(r) && words(textOf(r)).includes(o.name)) || null;
+      // last, a card by its price alone (a model's own words for a flight name no cell of it: kupibilet)
+      if (!row && o.price.length) row = rows.find((r) => !used.has(r) && amounts(textOf(r)).some((v) => o.price.some((p) => Math.abs(v - p) < 0.51))) || null;
+      if (row) { used.add(row); pairs.push([oi, row]); }
+    }
+    return pairs;
+  };
+  let group = groups.reduce((a, b) => (b.score > a.score ? b : a));
+  // A few cards that are each a list of results (kinopoisk's sections «Скорее всего, вы ищете», «Похожие
+  // результаты (131)»): the list inside them, when it holds more cards.
+  if (group.shown.length < 6) {
+    const inner = groups.filter((g) => g !== group && group.shown.some((card) => card.contains(g.parent)));
+    if (inner.length) {
+      const best = inner.reduce((a, b) => (b.score > a.score ? b : a));
+      if (best.shown.length > group.shown.length) group = best;
+    }
+  }
+  let via = 'structure';
+  if (options.length) {
+    // a run's report names its options: the group that holds most of them, or no operation at all
+    const scored = groups.map((g) => ({g, matched: optionRows(g.shown).length}));
+    const top = scored.reduce((a, b) => (b.matched > a.matched || (b.matched === a.matched && b.g.score > a.g.score) ? b : a));
+    if (top.matched < Math.min(2, options.length)) return {error: 'the report names no card of the page', ms: Math.round(performance.now() - began)};
+    group = top.g;
+    via = 'options';
+  }
+  // 2. The rows' selector: one that names the group's cards (all, or seven in ten of them: an ad among them), and
+  // nothing but elements like them under parents like theirs, none inside another. Stable hooks first (compounds'
+  // ranks); an ancestor's hook as a scope when the card's alone names other things too. A card with no hook of its
+  // own is looked into: its only child that holds its text (cian's `article[data-name="CardComponent"]` in a bare
+  // div). Last, a card by the link it holds: `div:has(> div > a[href*="/firm/"])` (2gis, no hand-written class).
+  const uniq = (list) => { const s = new Set(); return list.filter((x) => { const k = x.sel || `${x.selector}|${x.attribute || ''}`; if (s.has(k)) return false; s.add(k); return true; }); };
+  const rowsFor = (G) => {
+    const pshape = shape(G[0].parentElement);
+    const validRows = (sel) => {
+      let M;
+      try { M = [...document.querySelectorAll(sel)]; } catch (e) { return null; }
+      if (M.length > 3000 || M.length < 3) return null;
+      const set = new Set(M);
+      const covered = G.filter((e) => set.has(e)).length;
+      if (covered < Math.max(3, Math.ceil(G.length * 0.7))) return null;
+      // a card's twin under a parent of another kind (kupibilet's mobile copy of each ticket, hidden by its CSS) is
+      // let in, one per card at most: a drawn page reads only the shown rows, a fetched one drops repeated rows
+      let twins = 0;
+      const tag = G[0].localName;
+      const grand = new Set(G.map((g) => g.parentElement && g.parentElement.parentElement));
+      for (const m of M) {
+        const p = m.parentElement;
+        if (!p || m.localName !== tag) return null;
+        if (shape(p) !== pshape) {
+          if (!grand.has(p.parentElement)) return null;  // a twin is a card's cousin
+          twins++;
+        }
+        for (let a = p; a; a = a.parentElement) if (set.has(a)) return null;
+      }
+      if (twins > covered || M.length - twins < covered) return null;
+      return {n: M.length - twins, partial: covered < G.length, twins: twins > 0};
+    };
+    const out = [];
+    const push = (sel, rank) => { const v = validRows(sel); if (v) out.push({sel, rank: rank + (v.partial ? 1.5 : 0) + (v.twins ? 2 : 0), n: v.n, twins: v.twins}); };
+    const majority = G.length >= 4 ? [G, G.slice(1), G.slice(0, -1)] : [G];
+    const own = uniq(majority.flatMap((part) => compounds(part, base)));
+    for (const c of own) push(c.sel, c.rank);
+    let anc = G[0].parentElement;
+    for (let depth = 0; anc && anc !== document.body && depth < 5 && !late(); depth++, anc = anc.parentElement) {
+      const scopes = compounds([anc], base).filter((c) => c.rank < 9).slice(0, 4);
+      for (const s of scopes) for (const c of own.filter((c) => c.rank < 9 || out.length === 0).slice(0, 6)) {
+        push(depth === 0 ? `${s.sel} > ${c.sel}` : `${s.sel} ${c.sel}`, s.rank + c.rank + 1 + depth * 0.5);
+      }
+    }
+    if (!out.length) {
+      // a card by its link: the path of tags from the card to a link whose address has a word every card's has
+      const tag = G[0].localName;
+      const paths = new Map();
+      for (const row of G) {
+        for (const a of row.querySelectorAll('a[href]')) {
+          const route = [];
+          for (let at = a.parentElement; at && at !== row; at = at.parentElement) route.unshift(at.localName);
+          if (route.length > 3) continue;
+          for (const w of pathWords(a.getAttribute('href'), base)) {
+            const key = [...route, `a[href*="/${w}/"]`].join(' > ');
+            if (!paths.has(key)) paths.set(key, new Set());
+            paths.get(key).add(row);
+          }
+        }
+      }
+      for (const [key, rows] of [...paths].sort((a, b) => b[1].size - a[1].size).slice(0, 4)) {
+        if (rows.size >= Math.ceil(G.length * 0.7)) push(`${tag}:has(> ${key})`, 4);
+      }
+    }
+    return uniq(out.sort((a, b) => a.rank - b.rank || a.sel.length - b.sel.length)).slice(0, 6);
+  };
+  let G = group.shown;
+  let rows = rowsFor(G);
+  for (let depth = 0, H = G; !rows.length && depth < 4 && !late(); depth++) {
+    const next = H.map((e) => {
+      const whole = textOf(e).length;
+      const kids = [...e.children].filter((k) => textOf(k).length >= 0.8 * whole);
+      return kids.length === 1 ? kids[0] : null;
+    }).filter(Boolean);
+    if (next.length < Math.max(3, Math.ceil(H.length * 0.7))) break;
+    H = next;
+    rows = rowsFor(H);
+    if (rows.length) G = H;
+  }
+  if (rows.length) {
+    // the cards are what the chosen selector names among the group's (an ad it leaves out is not a card)
+    const named = new Set(document.querySelectorAll(rows[0].sel));
+    G = G.filter((e) => named.has(e));
+  }
+
+  // 3. Each field's selector inside a row, first match: the element's own hook, an ancestor's hook and its tag, the
+  // path of tags from the row; `:scope` for the row itself.
+  const relSels = (row, x) => {
+    if (x === row) return [{sel: ':scope', rank: 0}];
+    const out = [];
+    const firstIs = (sel) => { try { return row.querySelector(sel) === x; } catch (e) { return false; } };
+    const xc = compounds([x], base);
+    for (const c of xc) if (c.rank < 9 && firstIs(c.sel)) out.push(c);
+    let a = x.parentElement;
+    for (let d = 0; a && a !== row && d < 4; d++, a = a.parentElement) {
+      for (const ac of compounds([a], base).filter((c) => c.rank < 9).slice(0, 3)) for (const c of xc.slice(-3)) {
+        const sel = `${ac.sel} ${c.sel}`;
+        if (firstIs(sel)) out.push({sel, rank: ac.rank + c.rank * 0.3 + 1 + d * 0.3});
+      }
+    }
+    if (firstIs(x.localName)) out.push({sel: x.localName, rank: 7});
+    const path = [];
+    for (let at = x; at && at !== row; at = at.parentElement) path.unshift(at.localName);
+    if (path.length <= 8) {
+      const sel = ':scope > ' + path.join(' > ');
+      if (firstIs(sel)) out.push({sel, rank: 8 + path.length * 0.1});
+    }
+    return out;
+  };
+  const NAME_ATTRS = ['title', 'aria-label', 'alt', 'data-name', 'data-title', 'content'];
+  const fields = {name: [], price: [], link: []};
+  let matched = 0;
+  if (via === 'options') {
+    const tally = {name: new Map(), price: new Map(), link: new Map()};
+    const add = (role, row, x, attribute, oi, extra = 0) => {
+      for (const c of relSels(row, x)) {
+        const key = c.sel + '|' + (attribute || '');
+        let t = tally[role].get(key);
+        if (!t) tally[role].set(key, t = {selector: c.sel, attribute: attribute || undefined, rank: 99, opts: new Set()});
+        t.rank = Math.min(t.rank, c.rank + (attribute ? 0.5 : 0) + extra);
+        t.opts.add(oi);
+      }
+    };
+    for (const [oi, row] of optionRows(G)) {
+      const o = options[oi];
+      if (late()) break;
+      matched++;
+      const all = [row, ...row.querySelectorAll('*')].filter((x) => !SKIP.has(x.localName)).slice(0, 1500);
+      if (o.name) {
+        const texts = new Map(all.map((x) => [x, words(textOf(x, 500))]));
+        let named = all.filter((x) => texts.get(x) === o.name);
+        if (!named.length && o.name.length >= 5) {
+          named = all.filter((x) => { const t = texts.get(x); return t.startsWith(o.name) && t.length <= o.name.length + 30; });
+        }
+        // Every element that holds just those words, the innermost and its wrappers (tutu's train-name-badge around
+        // its spans): the agreement across options and the hooks' ranks choose among them.
+        for (const x of named) add('name', row, x, null, oi, [...x.children].some((ch) => texts.get(ch) === texts.get(x)) ? 0.3 : 0);
+        for (const x of all) for (const a of NAME_ATTRS) {
+          const v = x.getAttribute(a);
+          if (v && words(v) === o.name) add('name', row, x, a, oi);
+        }
+      }
+      if (o.price.length) {
+        for (const x of all) {
+          const t = textOf(x, 120);
+          if (t.length > 40 || !/\d/.test(t)) continue;
+          const found = amounts(t);
+          if (found.some((v) => o.price.some((p) => Math.abs(v - p) < 0.51))) add('price', row, x, null, oi, found.length > 1 ? 2 : 0);
+        }
+        for (const x of all) for (const {name, value} of x.attributes) {
+          if (!/price|cost|amount|^content$/.test(name) || !presenceName(name) && name !== 'content') continue;
+          if (amounts(value).some((v) => o.price.some((p) => Math.abs(v - p) < 0.51))) add('price', row, x, name, oi);
+        }
+      }
+      if (o.key) for (const level of [2, 1]) {
+        let linked = anchorsOf(row).filter((a) => linkOf(a, o.key) === level);
+        // under the option's link, the one that names it (kinopoisk's film title, not its «актеры» link)
+        const naming = linked.filter((a) => o.name && words(textOf(a)).includes(o.name));
+        if (level === 1 && naming.length) linked = naming;
+        for (const a of linked) add('link', row, a, 'href', oi);
+        if (linked.length) break;
+      }
+    }
+    for (const role of ['name', 'price', 'link']) {
+      // a price's cell is the one that holds that sum alone in most rows (not the old price beside it, not a rating)
+      const single = (t) => { const v = G.slice(0, 30).map((r) => cell(r, t)).filter(Boolean); return v.length ? v.filter((x) => amounts(x).length <= 1).length / v.length : 0; };
+      const list = [...tally[role].values()].filter((t) => t.opts.size >= Math.min(2, matched));
+      if (role === 'price') for (const t of list) t.single = single(t) >= 0.8 ? 1 : 0;
+      fields[role] = list
+        .sort((a, b) => b.opts.size - a.opts.size || (b.single || 0) - (a.single || 0) || a.rank - b.rank || a.selector.length - b.selector.length)
+        .slice(0, 5).map((t) => ({selector: t.selector, attribute: t.attribute, rank: t.rank, agreed: t.opts.size}));
+    }
+  }
+
+  // 4. Without a report (a look), or for a field it does not name: the row's structure. Every text and attribute of
+  // the first rows' elements, read in all the rows: a name is present in most, differs from row to row, has words,
+  // and is not a price (a heading, a `title`/`name` hook, a large font, a link's text weigh in); a price is a sum in
+  // most rows, the current one (not struck out, the least); a link is one of the site's that differs by row.
+  const fontOf = (x) => { try { return parseFloat(getComputedStyle(x).fontSize) || 14; } catch (e) { return 14; } };
+  const struck = (x) => {
+    if (x.closest && x.closest('del, s, strike')) return true;
+    try { if ((getComputedStyle(x).textDecorationLine || '').includes('line-through')) return true; } catch (e) {}
+    return /(?:^|[-_])(?:old|crossed|strike|before|was)(?:[-_]|$)/i.test(x.className && typeof x.className === 'string' ? x.className : '');
+  };
+  const structure = () => {
+    const keys = new Map();
+    for (const row of G.slice(0, 4)) {
+      if (late()) break;
+      for (const x of [row, ...row.querySelectorAll('*')].slice(0, 500)) {
+        if (SKIP.has(x.localName)) continue;
+        const attrs = [];
+        const ownText = [...x.childNodes].some((n) => n.nodeType === 3 && /[\p{L}\p{N}]/u.test(n.data));
+        // an element with a hook of its own reads as a cell too, when its text is short (tutu's train-name-badge)
+        const hooked = !ownText && x !== row && x.attributes.length && compounds([x], base).some((c) => c.rank < 2)
+          && textOf(x, 200).length > 0 && textOf(x, 200).length <= 150;
+        if (ownText || hooked) attrs.push(null);
+        for (const a of NAME_ATTRS) if (x.hasAttribute(a) && /\p{L}{3}/u.test(x.getAttribute(a) || '')) attrs.push(a);
+        for (const {name} of x.attributes) if (/price/.test(name) && presenceName(name) && /\d/.test(x.getAttribute(name))) attrs.push(name);
+        if (x.localName === 'a' && x.hasAttribute('href')) attrs.push('href');
+        if (!attrs.length) continue;
+        const sels = relSels(row, x).sort((a, b) => a.rank - b.rank);
+        // the three best ways to name it: the best one in this row may hit another element in the next
+        for (const sel of sels.slice(0, 3)) for (const attribute of attrs) {
+          const key = sel.sel + '|' + (attribute || '');
+          if (!keys.has(key)) keys.set(key, {selector: sel.sel, attribute: attribute || undefined, rank: sel.rank, el: x, row});
+        }
+      }
+    }
+    const pageKey = linkKey(base, base);
+    const stats = [];
+    for (const k of keys.values()) {
+      const values = G.map((r) => cell(r, k)).filter((v) => v);
+      if (!values.length) continue;
+      const presence = values.length / G.length;
+      const distinct = new Set(values).size / values.length;
+      const wordy = values.filter((v) => (v.match(/\p{L}{3,}/gu) || []).length >= 2 || /\p{L}{6,}/u.test(v)).length / values.length;
+      const priced = values.filter((v) => PRICE.test(v) || (k.attribute && /price/.test(k.attribute) && amounts(v).length)).length / values.length;
+      const length = values.reduce((s, v) => s + v.length, 0) / values.length;
+      stats.push({k, values, presence, distinct, wordy, priced, length});
+    }
+    const found = {};
+    // link first: the card's own link is one of the site's that differs by card, and the card links it most (its
+    // picture and its name both: labirint's /books/…, not the series' /series/…)
+    const sameSite = (v) => { try { const h = new URL(v, base).hostname.replace(/^www\./, ''); const p = hostOf(base); return h === p || h.endsWith('.' + p) || p.endsWith('.' + h); } catch (e) { return false; } };
+    const links = stats.filter((s) => s.k.attribute === 'href' && s.presence >= 0.6 && s.distinct >= 0.7)
+      .filter((s) => s.values.every((v) => { const key = linkKey(v, base); return key && key !== pageKey && !/^javascript:/i.test(v); }))
+      .map((s) => {
+        const same = s.values.filter(sameSite).length / s.values.length;
+        const repeated = G.slice(0, 6).map((r) => { const v = cell(r, s.k); return v ? anchorsOf(r).filter((a) => a.getAttribute('href') === v).length : 0; });
+        const most = repeated.reduce((a, b) => a + b, 0) / repeated.length;
+        return {s, most, score: s.presence * s.distinct * same * (1 + Math.min(2, most) / 2) / (1 + s.k.rank / 10)};
+      }).sort((a, b) => b.score - a.score);
+    let mainLink = null;
+    // name: present in most cards, differs by card, has letters, not a price; the text (or title) of the card's own
+    // link weighs most, then a hook that says title/name, a heading, a large font; a count with its noun («924
+    // отзыва», «4,8 · 280 оценок») and a mostly digit value (a rating) are not names
+    const hint = (k) => /title|name|caption|head/i.test(k.selector.replace(/\[href\*="[^"]*"\]/g, '')) ? 1 : 0;
+    const counted = (v) => /^[\d.,·()+%\-\s]*\d[\d.,·()+%\-]*\s+\p{L}+\.?(?:\s+[\d.,·]+)?$/u.test(v) || /^[\p{L}\s]+:?\s*[\d\s.,·()/]+$/u.test(v);
+    const onLink = (k) => {
+      if (!mainLink) return 0;
+      const sample = G.slice(0, 6);
+      return sample.filter((r) => {
+        let el;
+        try { el = k.selector === ':scope' ? r : r.querySelector(k.selector); } catch (e) { return false; }
+        const a = el && el.closest('a[href]');
+        return a && r.contains(a) && a.getAttribute('href') === cell(r, mainLink);
+      }).length / sample.length;
+    };
+    // differs by card: not a label every card repeats («Ещё фото», «Купить»); a search for one title lists many
+    // cards of the same name (chitai-gorod.ru's «Мастер и Маргарита»), so it is not much more than that
+    const nameScores = () => stats.filter((s) => s.k.attribute !== 'href' && s.presence >= 0.6 && s.distinct >= 0.15
+        && new Set(s.values).size >= 2
+        && s.values.filter((v) => /\p{L}/u.test(v)).length >= 0.8 * s.values.length
+        && s.priced < 0.3 && s.length >= 2 && s.length <= 250)
+      .map((s) => {
+        const heading = /^h[1-6]$/.test(s.k.el.localName) ? 1 : 0;
+        const font = Math.max(0.8, Math.min(1.6, fontOf(s.k.el) / 14));
+        const countish = s.values.filter(counted).length / s.values.length;
+        const digits = s.values.reduce((sum, v) => sum + (v.match(/\d/g) || []).length / v.length, 0) / s.values.length;
+        const score = s.presence * Math.min(1, 0.4 + s.distinct) * (0.5 + 0.5 * s.wordy) * (1 + 1.5 * onLink(s.k)) * (1 + 0.5 * heading)
+          * (1 + hint(s.k)) * font * (countish >= 0.5 ? 0.3 : 1) * (1 - 0.6 * digits)
+          * (s.length > 150 ? 0.6 : 1) * (s.length < 5 && !hint(s.k) ? 0.5 : 1) * (s.k.attribute && s.k.attribute !== 'data-name' ? 0.8 : 1) / (1 + s.k.rank / 10);
+        return {s, score};
+      }).sort((a, b) => b.score - a.score);
+    // the card's link is the one its name sits in, when one of the candidates is (kinopoisk's /film/…/sr/1/ around
+    // the title, not the /film/…/cast/ beside it), else the one the card links most
+    let names = nameScores();
+    if (names.length && links.length) {
+      const holder = (r) => { let el; try { el = names[0].s.k.selector === ':scope' ? r : r.querySelector(names[0].s.k.selector); } catch (e) { return null; } const a = el && el.closest('a[href]'); return a && r.contains(a) ? a.getAttribute('href') : null; };
+      const sample = G.slice(0, 6);
+      // only among the links the cards repeat as much as the most repeated one: a name that sits in a link the card
+      // gives once (labirint's series) does not make it the card's link
+      const top = Math.max(...links.map((l) => l.most));
+      const around = links.filter((l) => l.most >= top - 0.5 && sample.filter((r) => { const h = holder(r); return h && h === cell(r, l.s.k); }).length >= Math.ceil(sample.length * 0.6));
+      if (around.length) links.splice(0, links.length, ...around, ...links.filter((l) => !around.includes(l)));
+    }
+    mainLink = links.length ? links[0].s.k : null;
+    found.link = links.slice(0, 5).map(({s}) => ({selector: s.k.selector, attribute: 'href', rank: s.k.rank}));
+    names = nameScores();
+    found.name = names.slice(0, 5).map(({s, score}) => ({selector: s.k.selector, attribute: s.k.attribute, rank: s.k.rank, score: +score.toFixed(3)}));
+    // price
+    const prices = stats.filter((s) => s.presence >= 0.5 && s.priced >= 0.7 && s.length <= 40)
+      .map((s) => {
+        const first = s.values.map((v) => Math.min(...(amounts(v).length ? amounts(v) : [Infinity])));
+        const median = first.sort((a, b) => a - b)[Math.floor(first.length / 2)];
+        return {s, median, struck: struck(s.k.el), single: s.values.every((v) => amounts(v).length <= 1)};
+      });
+    const most = Math.max(0, ...prices.map((p) => p.s.presence));
+    found.price = prices.filter((p) => p.s.presence >= most - 0.15)
+      .sort((a, b) => (a.struck - b.struck) || (b.single - a.single) || (a.median - b.median) || (a.s.k.rank - b.s.k.rank))
+      .slice(0, 5).map((p) => ({selector: p.s.k.selector, attribute: p.s.k.attribute, rank: p.s.k.rank}));
+    return found;
+  };
+  const shaped = (via === 'structure' || !fields.name.length || !fields.price.length || !fields.link.length) ? structure() : null;
+  for (const role of ['name', 'price', 'link']) if (!fields[role].length && shaped) fields[role] = shaped[role];
+
+  const pick = (role) => fields[role][0];
+  const sample = G.slice(0, 5).map((r) => ({name: cell(r, pick('name')), price: cell(r, pick('price')),
+    link: cell(r, pick('link')), text: textOf(r, 120)}));
+  return {ms: Math.round(performance.now() - began), via, matched, of: options.length, cards: G.length,
+          shape: shape(G[0]).slice(0, 120), rows, fields, sample};
+}"""
+
+SITE_ROWS_READ = r"""(arg) => {
+/*LIB*/
+  // A results page's rows read by an operation's selectors: the drawn page itself (only its shown rows), or (with
+  // `html`) a fetched document parsed and never drawn. With several candidates (learning, `settle`), the first rows
+  // selector that names three rows or more and, for each field, the first candidate most rows have; with one each (a
+  // replay), those. A row read the same as one before it (a hidden twin in a fetched document) is dropped.
+  const began = performance.now();
+  const base = arg.url || location.href;
+  let doc = document;
+  if (arg.html != null) {
+    doc = new DOMParser().parseFromString(arg.html, 'text/html');
+    if (arg.keep) globalThis.__broRowsDoc = doc;  // learning reads one fetched document several times
+  } else if (arg.kept && globalThis.__broRowsDoc) doc = globalThis.__broRowsDoc;
+  const drawn = doc === document;
+  const shown = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+  const list = (v) => (Array.isArray(v) ? v : v ? [v] : []);
+  const out = {rows: null, cells: {}, items: [], count: 0, twins: 0, parseMs: Math.round(performance.now() - began)};
+  for (const sel of list(arg.rows)) {
+    let M;
+    try { M = [...doc.querySelectorAll(sel)]; } catch (e) { continue; }
+    if (drawn) M = M.filter(shown);
+    const least = arg.least || 3;  // a replay takes a narrow search's one or two rows; learning wants three
+    if (M.length < least) continue;
+    // a page that keeps a hidden twin of each card (kupibilet's mobile copy): the rows are those its name names, at
+    // least four in ten of them (the shown copies)
+    const all = M;
+    for (const field of list((arg.cells || {}).name)) {
+      const R = arg.twins ? all.filter((r) => cell(r, field)) : all;
+      if (R.length < Math.max(least, arg.twins ? Math.ceil(all.length * 0.4) : least)) continue;
+      const present = R.slice(0, 30).map((r) => cell(r, field)).filter((v) => v).length;
+      if (present >= Math.ceil(Math.min(30, R.length) * 0.6)) { out.cells.name = field; M = R; break; }
+    }
+    out.twins = all.length - M.length;
+    out.rows = sel;
+    const rows = M.slice(0, Math.min(M.length, arg.limit || 3000));
+    for (const role of ['price', 'link']) {
+      for (const field of list((arg.cells || {})[role])) {
+        const values = rows.slice(0, 30).map((r) => cell(r, field));
+        const present = values.filter((v) => v).length;
+        if (present >= Math.max(1, Math.ceil(values.length * 0.6))) { out.cells[role] = field; break; }
+      }
+    }
+    const seen = new Set();
+    for (const row of rows) {
+      const item = {};
+      const name = cell(row, out.cells.name), price = cell(row, out.cells.price), link = cell(row, out.cells.link);
+      // a row the name does not name is not a card (an ad or a banner inside the list, cian's «Циан-помощник»)
+      if (name == null && out.cells.name) { out.nameless = (out.nameless || 0) + 1; continue; }
+      if (name != null) item.name = name.slice(0, 300);
+      if (price != null) item.price = price.slice(0, 80);
+      if (link != null) { try { item.link = new URL(link, base).href; } catch (e) {} }
+      item.text = textOf(row, 160);
+      const key = `${item.name}|${item.price}|${item.link}`;
+      if (arg.twins && seen.has(key)) { out.repeated = (out.repeated || 0) + 1; continue; }
+      seen.add(key);
+      out.items.push(item);
+    }
+    out.count = out.items.length;
+    break;
+  }
+  out.ms = Math.round(performance.now() - began);
+  return out;
+}"""
+
+SITE_ROWS_FETCH = r"""async (arg) => {
+  const r = await fetch(arg.url, {credentials: 'include'});
+  const html = await r.text();
+  const read = (READ);
+  return {status: r.status, landed: r.url, size: html.length, ...read({...arg, html})};
+}"""
+
+SITE_ROWS_LEARN_JS = SITE_ROWS_LEARN.replace("/*LIB*/", SITE_ROWS_LIB)
+SITE_ROWS_READ_JS = SITE_ROWS_READ.replace("/*LIB*/", SITE_ROWS_LIB)
+SITE_ROWS_FETCH_JS = SITE_ROWS_FETCH.replace("(READ)", "(" + SITE_ROWS_READ_JS + ")")
+
+
 class CodeApi:
     """The functions the model's code calls, against Playwright over CDP. Tabs are named t1, t2… for the model;
     `last` is the page it touched last, which the session keeps."""
@@ -4137,7 +5192,7 @@ class CodeApi:
         """A known operation of the site (`siteOps`, the task names them): the results page `url` opened in the
         tab touched last, and its results read from the site's own data rather than from the page — the data
         of the page's own request (`xhr`), or the state its document carries (`document`), read as soon as the
-        document has come, before the page has drawn anything. The cards come in the data's order, all of them
+        document has come, before the page has drawn anything —, or from the rows of its HTML (`html`). The cards come in the data's order, all of them
         (up to SITE_OP_ARRAY), each with its name, price and link where the operation knows them and `more`,
         the item's own fields. Nothing is sent that the page would not send itself. How each call went is
         written down for Bro (`SiteTraffic.op_calls`): an operation that stopped reading its site is not
@@ -4158,7 +5213,8 @@ class CodeApi:
         began = time.monotonic()
         call = {"name": operation["name"], "fit": fit}
         try:
-            read = site_op_document if operation["source"]["kind"] == "document" else site_op_xhr
+            read = {"document": site_op_document, "html": site_op_rows_document}.get(operation["source"]["kind"],
+                                                                                    site_op_xhr)
             data = await read(page, operation, url)
             cards = site_op_checked(operation, await asyncio.to_thread(site_cards, operation, data, url))
         except SiteOpFailure as failure:
@@ -5378,8 +6434,12 @@ class Worker:
             if recorder is not None:
                 with contextlib.suppress(Exception):
                     await recorder.settle()
+                    began = time.monotonic()
                     operations = (await site_operations_found(recorder, result, session.sensitive_data)
                                   if status == "completed" else [])
+                    if status == "completed" and not operations:
+                        operations = await run_rows_operations(session, recorder, result,
+                                                               SITE_OPS_FIND_S - (time.monotonic() - began))
                     run.site_traffic = {"requests": recorder.public(session.sensitive_data),
                                         "operations": operations, "opCalls": recorder.op_calls[:20]}
                     log.info("run %s: %d of the site's requests, %d operations behind its report", run.id,
@@ -7355,7 +8415,10 @@ async def session_message(request):
     # run forgot the session's own, and the follow-up would run unrouted, its hidden reasoning back on.
     run, _ = await worker.start_run({"id": body.get("runId") or f"{session.id[:40]}-{uuid.uuid4().hex[:12]}",
                                      "sessionId": session.id, "task": text, "llm": llm,
-                                     **{k: v for k, v in session.options.items() if v is not None},
+                                     # A follow-up may go on to a cart or an order: it records no site's
+                                     # requests (`siteTraffic`) a find's run would.
+                                     **{k: v for k, v in session.options.items()
+                                        if v is not None and k != "siteTraffic"},
                                      **({"tuning": body["tuning"]} if "tuning" in body else {})})
     return web.json_response({"sessionId": session.id, "status": "started", "runId": run.id})
 
@@ -7583,6 +8646,13 @@ async def site_op_direct(operation, url, holder):
     with contextlib.suppress(Exception):
         holder["target"] = (await cdp.send("Target.getTargetInfo"))["targetInfo"]["targetId"]
         worker.visit_tabs.add(holder["target"])
+    if operation["source"]["kind"] == "html":
+        async def block():
+            with contextlib.suppress(Exception):
+                await cdp.send("Network.enable")
+                await cdp.send("Network.setBlockedURLs", {"urls": SITE_HEAVY})
+
+        return await site_op_rows(page, operation, url, holder, SITE_OP_LOAD_S, block)
     if operation["source"]["kind"] == "document":
         try:
             holder["via"] = "fetch"
@@ -7714,6 +8784,13 @@ async def site_look(request):
             await asyncio.wait_for(recorder.settle(), max(0.1, min(3, deadline - time.monotonic() - 1.5)))
         operations = await site_operations_found(recorder, site_look_report(cards), None,
                                                  max(0.5, deadline - time.monotonic() - 0.5))
+        # No data of the site's holds the cards: their rows, learned from the cards' own structure (a look's report
+        # is made of the cards' titles, which mislead: a train's station, a section's heading, an old price).
+        left = deadline - time.monotonic() - 0.5
+        if not operations and left >= SITE_ROWS_MIN_S and not holder["page"].is_closed():
+            page = holder["page"]
+            operations = await site_rows_operations(page_evaluator(page), page.url, None,
+                                                    recorder_document(recorder, page.url), None, left)
     except SiteOpFailure as failure:
         cards, operations, reason = None, [], failure.reason
         if reason != "blocked" and holder["page"] is not None and await code_wall(holder["page"]):
