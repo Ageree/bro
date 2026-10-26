@@ -1373,5 +1373,69 @@ class RowsChromeTest(unittest.IsolatedAsyncioTestCase):
                          [("022А Ночной экспресс", "от 6 047 ₽"), ("016А Арктика", "от 2 664 ₽")])
 
 
+class SiteCheckChromeTest(unittest.IsolatedAsyncioTestCase):
+    """A site behind a check of its own, in a real Chromium (no network): a browser without its cookie gets 403 and
+    a script that sets the cookie and reloads the page, as ozon.ru answered the owner's browser (26.10) until an
+    errand had drawn its page. Set BRO_SITE_ROWS_CHROME as for RowsChromeTest; CI skips it."""
+
+    URL = "https://hh.example/search/vacancy?text=x"
+    OPERATION = {"name": "hh.example/search/vacancy", "page": "https://hh.example/search/vacancy?text=%query%",
+                 "source": {"kind": "document", "state": {"tag": "template", "id": "HH-Lux-InitialState"}},
+                 "items": ["vacancySearchResult", "vacancies"]}
+    CHECK = ("<html><body>Проверяем браузер<script>setTimeout(() => {document.cookie = 'passed=1; path=/';"
+             " location.reload()}, 300)</script></body></html>")
+
+    async def asyncSetUp(self):
+        import os
+
+        chrome = os.environ.get("BRO_SITE_ROWS_CHROME")
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError:
+            async_playwright = None
+        if not chrome or async_playwright is None:
+            self.skipTest("set BRO_SITE_ROWS_CHROME to a Chromium binary, with Playwright installed")
+        self.playwright = await async_playwright().start()
+        self.browser = await self.playwright.chromium.launch(executable_path=chrome, args=["--no-sandbox"])
+        self.context = await self.browser.new_context()
+        self.passes = True  # whether the check page's script passes it (a captcha does not)
+        self.asked = []
+
+        async def serve(route):
+            url, cookie = route.request.url, route.request.headers.get("cookie") or ""
+            self.asked.append((url.removeprefix("https://hh.example"), "passed=1" in cookie))
+            if "passed=1" not in cookie:
+                body = self.CHECK if self.passes else "<html><body>Решите капчу</body></html>"
+                return await route.fulfill(status=403, content_type="text/html; charset=utf-8", body=body)
+            if url.endswith("/robots.txt"):
+                return await route.fulfill(status=200, content_type="text/plain", body="User-agent: *")
+            await route.fulfill(status=200, content_type="text/html; charset=utf-8", body=HH_DOCUMENT)
+
+        await self.context.route("**/*", serve)
+        self.page = await self.context.new_page()
+
+    async def asyncTearDown(self):
+        await self.browser.close()
+        await self.playwright.stop()
+
+    async def test_a_fetch_waits_for_the_sites_check_on_its_robots_page_and_reads_with_its_cookie(self):
+        self.assertEqual(await worker.site_op_fetched(self.page, self.OPERATION, self.URL), STATE)
+        self.assertEqual(self.asked, [("/robots.txt", False), ("/robots.txt", True),
+                                      ("/search/vacancy?text=x", True)])
+
+    async def test_a_results_page_opened_waits_for_the_sites_check_to_reload_it(self):
+        self.assertEqual(await worker.site_op_document(self.page, self.OPERATION, self.URL, 10), STATE)
+        self.assertEqual(self.asked, [("/search/vacancy?text=x", False), ("/search/vacancy?text=x", True)])
+
+    async def test_a_check_that_never_passes_is_blocked_after_its_wait(self):
+        self.passes = False
+        began = time.monotonic()
+        with unittest.mock.patch.object(worker, "SITE_CHECK_S", 1):
+            with self.assertRaises(worker.SiteOpFailure) as raised:
+                await worker.site_op_document(self.page, self.OPERATION, self.URL, 10)
+        self.assertEqual(raised.exception.reason, "blocked")
+        self.assertLess(time.monotonic() - began, 5)
+
+
 if __name__ == "__main__":
     unittest.main()

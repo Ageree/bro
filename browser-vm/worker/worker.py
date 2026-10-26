@@ -802,6 +802,9 @@ SITE_OP_DIRECT_AT_ONCE = 2
 # waits for its answer (`readBrowserVmSite`), since an answer it stopped waiting for still holds a slot here.
 SITE_OP_LOAD_S = 12
 SITE_OP_DIRECT_S = 38
+# How long a page the site answered with its own check (401, 403, 429…) is given to pass it and reload itself
+# (`site_goto`): a script's check passes in a second or two; a captcha never does, and costs a read this much.
+SITE_CHECK_S = 8
 # How long a direct read waits for an xhr page's own request: well short of the minute and more the errand it saves
 # takes (ostrovok.ru's serp came in 6–17 s through the stand's exit, 25.10).
 SITE_OP_DIRECT_XHR_S = 22
@@ -2492,10 +2495,39 @@ def site_state(operation, text):
     return state
 
 
+async def site_goto(page, url, seconds):
+    """`page` opened at `url` as far as its document (in `seconds`), past the site's own check: a site that answers a
+    browser it does not know yet with a check page (401, 403, 429…) and a script that reloads the page once it has
+    run gives that reload's answer, within SITE_CHECK_S. ozon.ru answered the owner's browser 403 so (26.10) until an
+    errand's run had drawn a page of it, and its document read the next time with no wait. A check that does not
+    reload by itself (a captcha, or one that sends the page to another host) leaves the first answer, its status
+    telling why."""
+    passed = asyncio.get_running_loop().create_future()
+
+    def answered(response):
+        with contextlib.suppress(Exception):
+            if (not passed.done() and response.request.is_navigation_request() and response.frame == page.main_frame
+                    and response.status not in SITE_BLOCKED and not 300 <= response.status < 400
+                    and site_same_place(url, response.url)):
+                passed.set_result(response)
+
+    page.on("response", answered)
+    try:
+        response = await page.goto(url, wait_until="commit", timeout=seconds * 1000)
+        if response is None or response.status not in SITE_BLOCKED:
+            return response
+        try:
+            return await asyncio.wait_for(asyncio.shield(passed), SITE_CHECK_S)
+        except asyncio.TimeoutError:
+            return response
+    finally:
+        page.remove_listener("response", answered)
+
+
 async def site_op_document(page, operation, url, seconds=None):
     """A document operation's results, the results page opened in `page` as far as its document only (in
-    `seconds`, CODE_CALL_S by default)."""
-    response = await page.goto(url, wait_until="commit", timeout=(seconds or CODE_CALL_S) * 1000)
+    `seconds`, CODE_CALL_S by default), past the site's own check (`site_goto`)."""
+    response = await site_goto(page, url, seconds or CODE_CALL_S)
     if response is None:
         raise site_status_failure(None, "the page")
     return site_document_state(operation, url, response.status, response.url, await response.text())
@@ -2525,7 +2557,7 @@ async def site_op_fetched(page, operation, url):
     parts = urllib.parse.urlsplit(url)
     origin = f"https://{parts.hostname}"
     if not (page.url or "").startswith(origin + "/"):
-        await page.goto(origin + "/robots.txt", wait_until="commit", timeout=SITE_OP_LOAD_S * 1000)
+        await site_goto(page, origin + "/robots.txt", SITE_OP_LOAD_S)
     # A site that sent the tab to its city's own host (`site_same_place`) is asked there: a fetch the site would
     # redirect across hosts is refused by the browser (CORS), and the page would have to be drawn instead.
     here = urllib.parse.urlsplit(page.url or "")
@@ -2898,7 +2930,7 @@ async def site_op_rows_fetched(page, operation, url):
     parts = urllib.parse.urlsplit(url)
     origin = f"https://{parts.hostname}"
     if not (page.url or "").startswith(origin + "/"):
-        await page.goto(origin + "/robots.txt", wait_until="commit", timeout=SITE_OP_LOAD_S * 1000)
+        await site_goto(page, origin + "/robots.txt", SITE_OP_LOAD_S)
     here = urllib.parse.urlsplit(page.url or "")
     if here.hostname and here.hostname != parts.hostname and site_same_place(url, page.url):
         url = urllib.parse.urlunsplit(("https", here.hostname, parts.path, parts.query, ""))
@@ -2923,7 +2955,7 @@ async def site_op_rows_drawn(page, operation, url, seconds=SITE_ROWS_DRAWN_S, lo
     source = operation["source"]
     response = None
     if goto:
-        response = await page.goto(url, wait_until="commit", timeout=(load_seconds or CODE_CALL_S) * 1000)
+        response = await site_goto(page, url, load_seconds or CODE_CALL_S)
         if response is not None and response.status in SITE_GONE:
             raise site_status_failure(response.status, "the page")
         if response is not None and not site_same_path(url, response.url):
@@ -2990,7 +3022,7 @@ async def site_op_rows_document(page, operation, url, seconds=None):
     document as it came (render false) or as drawn (render true, or a document without them)."""
     source = operation["source"]
     if not source["render"]:
-        response = await page.goto(url, wait_until="commit", timeout=(seconds or CODE_CALL_S) * 1000)
+        response = await site_goto(page, url, seconds or CODE_CALL_S)
         if response is None:
             raise site_status_failure(None, "the page")
         if response.status in SITE_GONE:
