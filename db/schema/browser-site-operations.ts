@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  boolean,
   check,
   integer,
   jsonb,
@@ -16,9 +17,13 @@ import { workspaces } from "./workspaces";
  * options it reported (`site_operations` in browser-vm/worker/worker.py):
  * the results page as a template, where its data comes from, and where the
  * options are in it — `SiteOperation` (`agent/lib/browser-use/site-ops/`),
- * never a value, a cookie, a header or a body. Only the workspace's own
- * errands get it back: a page a run saw signed in stays with the person.
- * One row per workspace and operation; a run that finds it again counts.
+ * never a value, a cookie, a header or a body. The workspace's own errands
+ * get it back; another workspace gets it only once runs of two workspaces
+ * found it apart, on the very host its errand names
+ * (`listSharedBrowserSiteOperations`): a page one person alone sees — a
+ * signed-in cabinet, a company's own subdomain — is never found the same by
+ * another. One row per workspace and operation; a run that finds it again
+ * counts.
  */
 export const browserSiteOperations = pgTable(
   "browser_site_operations",
@@ -48,6 +53,13 @@ export const browserSiteOperations = pgTable(
     lastFailure: text("last_failure"),
     /** How many of Bro's own reads it answered, with no run (`direct.ts`). */
     served: integer("served").notNull().default(0),
+    /**
+     * The workspace got it from another's (or from a reviewed one): its row
+     * began with a read of it, or with a run that read it through op(). Such
+     * a row never counts as a find of its own toward sharing it, however
+     * often its runs find it again.
+     */
+    adopted: boolean("adopted").notNull().default(false),
     createdAt: timestamp("created_at", {
       mode: "date",
       precision: 3,

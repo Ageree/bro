@@ -879,9 +879,11 @@ describe("starting a run on a workspace's browser VM", () => {
 
     await client.readBrowserUseRun(runId);
 
+    // Its own find: the run read no op() of it.
     expect(siteOperationRecords.saveBrowserSiteOperation).toHaveBeenCalledWith(
       workspaceId,
       {
+        adopted: false,
         host: "www.tutu.ru",
         name: operation.name,
         operation,
