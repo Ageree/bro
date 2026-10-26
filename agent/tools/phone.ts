@@ -308,13 +308,14 @@ async function placeCall(
     // GPT-Live first; when it throws, nothing reached the carrier, and ElevenLabs places the same call. The
     // path to OpenAI (a US proxy) drops out for minutes at a time (26.10: three calls in 30 minutes fell to an
     // ElevenLabs account without credits), so a second try comes before the fallback.
+    const { sipId } = number;
     const tryLive = async (
       attempt: number
     ): Promise<Awaited<ReturnType<typeof placeLiveCall>> | null> => {
       try {
         return await placeLiveCall({
           callId: started.id,
-          sipId: number.sipId,
+          sipId,
           publicNumber: number.number,
           target,
           task: input.task,
