@@ -761,6 +761,12 @@ const siteReadSchema = z.discriminatedUnion("ok", [
     count: z.number().int().nonnegative(),
     fit: z.enum(["exact", "loose"]),
     ms: z.number().nonnegative(),
+    /**
+     * Only a worker from 2026-10-26.7 sends it: the search went to a category
+     * of the site's own, and these cards are that page's, in the site's order,
+     * not the operation's data.
+     */
+    landed: z.string().optional(),
     ok: z.literal(true),
     via: z.enum(["fetch", "page"]),
   }),

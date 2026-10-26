@@ -139,6 +139,33 @@ afterEach(() => {
 });
 
 describe("Bro's own read of a site it has read before", () => {
+  it("answers with the cards of the category the site sent the search to, and does not count the read", async () => {
+    const { readSiteDirectly } = await direct();
+    const url = "https://hh.ru/search/vacancy?text=%D0%BF%D1%80%D0%BE";
+    filled(url);
+    browser.readBrowserVmSiteDirectly.mockResolvedValue({
+      ...vacancies,
+      landed: "https://hh.ru/catalog/managers/",
+      via: "page",
+    });
+    const read = await readSiteDirectly(scope, {
+      errand,
+      note: undefined,
+      sessionId: "s1",
+      site: "https://hh.ru",
+    });
+    expect(read).toEqual({
+      cards: vacancies.cards,
+      count: 50,
+      from: "page",
+      more: false,
+      order: "page",
+      page: 0,
+      url: "https://hh.ru/catalog/managers/",
+    });
+    expect(records.noteBrowserSiteOperationRead).not.toHaveBeenCalled();
+  });
+
   it("answers a search from the site's data and counts the read for its operation", async () => {
     const { readSiteDirectly, siteApiPilot, siteReadNote } = await direct();
     expect(siteApiPilot(scope)).toBe(true);

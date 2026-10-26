@@ -610,6 +610,29 @@ async function readSite(
     });
     return undefined;
   }
+  if (read.landed !== undefined) {
+    // The site sent the search to a category of its own: its cards answer
+    // the turn as a look's do. Not the operation's read — it counts neither
+    // for nor against it, and there is no next page of the same search.
+    console.info("[site-api] served", {
+      ...timing,
+      cards: read.cards.length,
+      count: read.count,
+      order: "page",
+      page: ask.page,
+      via: "category",
+      workerMs: read.ms,
+    });
+    return {
+      cards: read.cards,
+      count: read.count,
+      from: "page",
+      more: false,
+      order: "page",
+      page: 0,
+      url: read.landed,
+    };
+  }
   let { cards } = read;
   // The order read back: a site that did not sort as asked (an operation's
   // pairs it no longer takes), or too few prices to tell, has its page's
