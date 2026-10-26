@@ -58,9 +58,7 @@ export async function openLiveSession(options: {
       // undici's error event often has an empty `message`; the reason (refused tunnel, TLS, 4xx on the upgrade)
       // lives in `error` and its `cause`, and the "not ready" line of the log is the only trace of it.
       reject(
-        new Error(
-          `GPT-Live connection failed: ${describeSocketError(event)}`
-        )
+        new Error(`GPT-Live connection failed: ${describeSocketError(event)}`)
       );
     });
     socket.addEventListener("close", (event) => {
