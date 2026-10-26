@@ -1151,9 +1151,19 @@ class RowsDirectTest(DirectSetup):
         # A page that went home is no read of this one; a drawn page with no rows has none.
         self.next_page = RowsPage(fetched={url: rows_answer(BOOKS, landed="https://www.labirint.ru/")})
         self.assertEqual((await self.read(LABIRINT, url))["reason"], "moved")
-        # One that went to a page of the site that shows the same rows (a category) is read there.
+        # One that went to a page of the site that shows the same rows (a category) is read there when half of
+        # its first rows name what was searched; rows of «similar items» on one book's own page are not the search.
+        searched = {**LABIRINT, "name": "www.labirint.ru/search/%query%/",
+                    "page": "https://www.labirint.ru/search/%query%/"}
         self.next_page = RowsPage(fetched={url: rows_answer(BOOKS, landed="https://www.labirint.ru/genres/2304/")})
-        self.assertEqual((await self.read(LABIRINT, url))["count"], 3)
+        self.assertEqual((await self.read(searched, url))["count"], 3)
+        similar = [{**book, "name": name} for book, name in zip(BOOKS, ("Белая гвардия", "Собачье сердце",
+                                                                       "Мастер и Маргарита"))]
+        self.next_page = RowsPage(fetched={url: rows_answer(similar, landed="https://www.labirint.ru/books/1/")})
+        self.assertEqual((await self.read(searched, url))["reason"], "moved")
+        # Words it cannot check against (an %id% part) leave such a page unread.
+        self.next_page = RowsPage(fetched={url: rows_answer(BOOKS, landed="https://www.labirint.ru/genres/2304/")})
+        self.assertEqual((await self.read(LABIRINT, url))["reason"], "moved")
         # A drawn page with no rows: a search with no results when it shows no list (no count against the
         # operation), a changed site when it shows a list the selectors miss.
         self.next_page = RowsPage(fetched={url: rows_answer([], status=200)}, drawn=rows_answer([]))
@@ -1516,6 +1526,22 @@ class ItemPageTest(unittest.TestCase):
         # A front page shows its own picks in the same rows.
         self.assertFalse(landed(url, "https://moscow.petrovich.ru/", True))
 
+    def test_a_check_page_and_a_list_are_told_from_an_item(self):
+        walled = worker.site_item_walled
+        self.assertTrue(walled({"text": "Just a moment... Verify you are human"}, 200))
+        self.assertTrue(walled({"text": "Термос " * 100}, 429))
+        self.assertFalse(walled({"text": "Термос. " * 400 + " access denied for minors"}, 200))
+        with self.assertRaises(worker.SiteOpFailure):
+            worker.site_item_one({"ld": [], "lists": 1, "text": "Чайник " * 100})
+        product = {"ld": [{"@type": "Product"}], "lists": 1, "text": "Термос"}
+        self.assertIs(worker.site_item_one(product), product)
+
+    def test_a_sort_the_site_splits_into_a_key_and_a_direction_is_not_learned(self):
+        prices = [100.0, 200, 300, 400, 500, 600]
+        self.assertEqual(worker.site_learned_sort([("sort", "price")], prices), {"asc": "sort=price"})
+        self.assertIsNone(worker.site_learned_sort([("sort", "price"), ("direction", "desc")], prices[::-1]))
+        self.assertIsNone(worker.site_learned_sort([("order", "price"), ("way", "forward")], prices))
+
     def test_a_moved_failure_says_where_it_went(self):
         failure = worker.SiteOpFailure("moved", "went", "https://moscow.petrovich.ru/catalog/1234/")
         self.assertEqual(worker.site_template(failure.landed), "https://moscow.petrovich.ru/catalog/%id%/")
@@ -1534,6 +1560,12 @@ class ItemChromeTest(unittest.IsolatedAsyncioTestCase):
                + "</script><meta property=\"og:title\" content=\"Термос Hitt\"></head><body><header>Меню сайта</header>"
                "<main><h1>Термос Hitt 1 л</h1><p>Характеристики</p><p>Объём: 1 л</p><button>Купить</button></main>"
                "<footer>Подвал</footer></body></html>")
+    LIST = ("<html><head><title>Чайники</title><script type=\"application/ld+json\">"
+            + json.dumps({"@type": "ItemList", "itemListElement": [{"@type": "ListItem", "position": 1}]})
+            + "</script></head><body><main><h1>Чайники</h1>" + "<p>Чайник Polaris 1 590 ₽</p>" * 20
+            + "</main></body></html>")
+    WALL = "<html><head><title>Just a moment...</title></head><body><main>Checking your browser before you go on " \
+           "to the site. Verify you are human.</main></body></html>"
     SHELL = ("<html><head><title>Магазин</title></head><body><div id=\"app\"></div><script>setTimeout(() => {"
              "document.getElementById('app').innerHTML = '<main><h1>Термостат SASIC</h1><p>' + 'описание '.repeat(40)"
              " + '11 034 ₽</p></main>'}, 300)</script></body></html>")
@@ -1556,8 +1588,10 @@ class ItemChromeTest(unittest.IsolatedAsyncioTestCase):
             url = route.request.url
             if url.endswith("/robots.txt"):
                 return await route.fulfill(status=200, content_type="text/plain", body="User-agent: *")
-            pages = {"https://shop.example/product/1": self.PRODUCT, "https://app.example/item/2": self.SHELL}
-            await route.fulfill(status=200 if url in pages else 404, content_type="text/html; charset=utf-8",
+            pages = {"https://shop.example/product/1": self.PRODUCT, "https://app.example/item/2": self.SHELL,
+                     "https://shop.example/category/7": self.LIST, "https://walled.example/item/3": self.WALL}
+            status = 403 if "walled" in url else 200 if url in pages else 404
+            await route.fulfill(status=status, content_type="text/html; charset=utf-8",
                                 body=pages.get(url, "<html><main>404</main></html>"))
 
         await self.context.route("**/*", serve)
@@ -1585,6 +1619,14 @@ class ItemChromeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(holder["via"], "page")
         self.assertEqual(item["title"], "Термостат SASIC")
         self.assertIn("11 034 ₽", item["text"])
+
+    async def test_a_list_of_results_or_an_anti_bot_check_is_no_item(self):
+        with unittest.mock.patch.object(worker, "SITE_ITEM_DRAWN_S", 1):
+            for url, reason in (("https://shop.example/category/7", "unanswered"),
+                                ("https://walled.example/item/3", "blocked")):
+                with self.assertRaises(worker.SiteOpFailure) as raised:
+                    await worker.site_item_on(self.page, url, {})
+                self.assertEqual(raised.exception.reason, reason, url)
 
     async def test_a_page_that_is_gone_is_no_item(self):
         with self.assertRaises(worker.SiteOpFailure) as raised:

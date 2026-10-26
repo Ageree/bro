@@ -2446,6 +2446,7 @@ def site_cards(operation, data, page_url):
 SITE_LEARN_SORT_KEYS = (SITE_SORT_KEYS - {"s"}) | {"order_by"}
 SITE_INPUT_TOKEN = re.compile(r"[A-Za-z0-9_.-]{1,24}")
 SITE_LEARN_PRICES = 6
+SITE_SORT_DIRECTIONS = {"dir", "direction", "way", "order_dir", "orderdir", "sort_dir", "sortdir", "asc", "desc"}
 SITE_LEARN_ORDER = 0.9
 # A query key of the price's bounds (`site_learned_price`): one named for a price, and which end it holds.
 SITE_LEARN_PRICE_KEY = re.compile(r"price|cost", re.I)
@@ -2499,6 +2500,11 @@ def site_learned_sort(query, prices):
     pairs = [(key, value) for key, value in query
              if key.lower() in SITE_LEARN_SORT_KEYS and SITE_INPUT_TOKEN.fullmatch(value)]
     if len(pairs) != 1:
+        return None
+    # A sort the site splits into a key and a direction (`sort=price&direction=asc`, labirint.ru's `way`) is not one
+    # pair: learned without its direction, it would sort the other way.
+    if any(key != pairs[0][0] and (key.lower() in SITE_SORT_DIRECTIONS or value.lower() in ("asc", "desc"))
+           for key, value in query):
         return None
     steps = list(zip(prices, prices[1:]))
     key, value = pairs[0]
@@ -3087,7 +3093,10 @@ async def site_op_rows_fetched(page, operation, url):
         if answer["status"] != 200:
             raise site_status_failure(answer["status"], "the page")
         raise SiteOpFailure("no_data", "the page no longer has its rows where the operation reads them")
-    return site_rows_data(answer)
+    rows = site_rows_data(answer)
+    if not site_same_path(url, answer["landed"]) and not site_rows_name_search(operation, url, rows):
+        raise SiteOpFailure("moved", "the page answered from another address: open it instead", answer["landed"])
+    return rows
 
 
 def site_rows_landed(url, landed, rows):
@@ -3099,6 +3108,18 @@ def site_rows_landed(url, landed, rows):
         return True
     deeper = urllib.parse.urlsplit(landed or "").path.strip("/") != ""
     return bool(rows) and deeper and site_same_place(url, landed)
+
+
+def site_rows_name_search(operation, url, rows):
+    """Whether rows read where the site sent a search name what was searched, half of the first ten — stricter than
+    `site_op_answers`: a search the site sends to one item's own page (an exact title or code) shows rows of
+    «similar items» there, a match or two by chance, and is not the search's list."""
+    words = site_query_words(operation, url)
+    first = rows[:10]
+    if not words or not first:
+        return False
+    naming = sum(1 for row in first if any(stem in site_words(str(row.get("name") or "")) for stem in words))
+    return naming * 2 >= len(first)
 
 
 async def site_op_rows_drawn(page, operation, url, seconds=SITE_ROWS_DRAWN_S, load_seconds=None, goto=True):
@@ -3145,7 +3166,10 @@ async def site_op_rows_drawn(page, operation, url, seconds=SITE_ROWS_DRAWN_S, lo
         raise SiteOpFailure("no_data", "the page drew no rows where the operation reads them")
     if not site_rows_landed(url, page.url, True):
         raise SiteOpFailure("moved", "the page went to another address: open it instead", page.url)
-    return site_rows_data(answer)
+    rows = site_rows_data(answer)
+    if not site_same_path(url, page.url) and not site_rows_name_search(operation, url, rows):
+        raise SiteOpFailure("moved", "the page went to another address: open it instead", page.url)
+    return rows
 
 
 async def site_op_rows(page, operation, url, holder=None, load_seconds=None, block=None):
@@ -8772,7 +8796,11 @@ async def site_op(request):
     if cards is None:
         # Where a moved page went, as a template: the shape of the address (a category's page, a city's host), not
         # its words.
-        went = f", went to {site_template(landed)}" if reason == "moved" and isinstance(landed, str) else ""
+        # Where it went, as its host and depth only: a part of its path may be the errand's word (/brand/makita/).
+        went = ""
+        if reason == "moved" and isinstance(landed, str):
+            there = urllib.parse.urlsplit(landed)
+            went = f", went to {there.hostname} {len([p for p in there.path.split('/') if p])} parts deep"
         log.info("site op %s: %s via %s, %s, %d ms%s", operation["name"], reason, via, fit, ms, went)
         return web.json_response({"ok": False, "reason": reason, "detail": detail[:300], "fit": fit, "ms": ms})
     picked = site_op_pick(cards, sort, bounds[0], bounds[1], limit)
@@ -8781,22 +8809,28 @@ async def site_op(request):
     return web.json_response({"ok": True, "count": len(cards), "cards": picked, "fit": fit, "via": via, "ms": ms})
 
 
+async def site_keep_run_downloads(browser):
+    """Playwright points the browser's downloads at a folder of its own when it connects, and drops it when it stops:
+    a direct read, a look or an item's read puts them back to the folder of the run that may be downloading
+    meanwhile, as the code engine does (`run_code`)."""
+    live = worker.current if worker.current is not None and worker.current.status not in TERMINAL else None
+    session = worker.sessions.get(live.session_id) if live is not None else None
+    if session is None:
+        return
+    with contextlib.suppress(Exception):
+        cdp = await browser.new_browser_cdp_session()
+        await cdp.send("Browser.setDownloadBehavior", {"behavior": "allow", "eventsEnabled": True,
+                                                       "downloadPath": str(session.workspace / DOWNLOADS)})
+        await cdp.detach()
+
+
 async def site_op_direct(operation, url, holder):
     """The read of `site_op` in its own tab, kept in `holder` for the caller to close whatever happens."""
     from playwright.async_api import async_playwright
 
     holder["pw"] = await async_playwright().start()
     browser = await holder["pw"].chromium.connect_over_cdp(CDP_HTTP)
-    live = worker.current if worker.current is not None and worker.current.status not in TERMINAL else None
-    session = worker.sessions.get(live.session_id) if live is not None else None
-    if session is not None:
-        # Playwright points the browser's downloads at a folder of its own when it connects: back to the folder of
-        # the run that may be downloading meanwhile, as the code engine does (`run_code`).
-        with contextlib.suppress(Exception):
-            cdp = await browser.new_browser_cdp_session()
-            await cdp.send("Browser.setDownloadBehavior", {"behavior": "allow", "eventsEnabled": True,
-                                                           "downloadPath": str(session.workspace / DOWNLOADS)})
-            await cdp.detach()
+    await site_keep_run_downloads(browser)
     page = holder["page"] = await browser.contexts[0].new_page()
     cdp = await page.context.new_cdp_session(page)
     with contextlib.suppress(Exception):
@@ -8981,14 +9015,7 @@ async def site_look_page(url, holder, recorder, until):
 
     holder["pw"] = await async_playwright().start()
     browser = await holder["pw"].chromium.connect_over_cdp(CDP_HTTP)
-    live = worker.current if worker.current is not None and worker.current.status not in TERMINAL else None
-    session = worker.sessions.get(live.session_id) if live is not None else None
-    if session is not None:
-        with contextlib.suppress(Exception):
-            cdp = await browser.new_browser_cdp_session()
-            await cdp.send("Browser.setDownloadBehavior", {"behavior": "allow", "eventsEnabled": True,
-                                                           "downloadPath": str(session.workspace / DOWNLOADS)})
-            await cdp.detach()
+    await site_keep_run_downloads(browser)
     page = holder["page"] = await browser.contexts[0].new_page()
     with contextlib.suppress(Exception):
         cdp = await page.context.new_cdp_session(page)
@@ -9033,7 +9060,7 @@ async def site_look_page(url, holder, recorder, until):
 # document with less text than SITE_ITEM_MIN_TEXT and no data is an app's shell (wildberries.ru's product page, 26.10)
 # and the page is drawn instead, read once its text stops growing or at SITE_ITEM_DRAWN_S. Bro waits 38 s
 # (`itemReadTimeoutMs`); with its slot, close and load a read ends within 34.
-SITE_ITEM_S = 24
+SITE_ITEM_S = 18  # Bro waits 38 s: the slot (4), this, the wall's look (2) and the tab's close (5 + 5) fit in it
 SITE_ITEM_DRAWN_S = 9
 SITE_ITEM_MIN_TEXT = 200
 SITE_ITEM_TEXT = 4000
@@ -9058,14 +9085,17 @@ const flat = (value, prefix, out, depth) => {
   const text = clean(value);
   if (text) out[prefix] = text.slice(0, arg.value);
 };
+const lister = /^(ItemList|CollectionPage|SearchResultsPage|OfferCatalog)$/i;
 const readItem = (d) => {
   const ld = [];
+  let lists = 0;
   for (const script of d.querySelectorAll('script[type="application/ld+json"]')) {
     let value;
     try { value = JSON.parse(script.textContent); } catch (e) { continue; }
     for (const one of (Array.isArray(value) ? value : (value && value['@graph']) || [value])) {
       if (!one || typeof one !== 'object' || ld.length >= arg.ld) continue;
       const type = [].concat(one['@type'] || []).join(',');
+      if (lister.test(type)) lists += 1;
       if (!type || furniture.test(type)) continue;
       const out = {};
       flat(one, '', out, 0);
@@ -9095,7 +9125,8 @@ const readItem = (d) => {
     walk(copy);
   }
   const h1 = d.querySelector('h1');
-  return {title: clean((h1 && h1.textContent) || d.title).slice(0, 300), ld, meta, text: parts.join(' | ').slice(0, arg.text)};
+  return {title: clean((h1 && h1.textContent) || d.title).slice(0, 300), ld, lists, meta,
+          text: parts.join(' | ').slice(0, arg.text)};
 };"""
 
 SITE_ITEM_FETCH_JS = r"""async (arg) => {
@@ -9113,6 +9144,23 @@ SITE_ITEM_PAGE_JS = r"""(arg) => {
 SITE_ITEM_LIMITS = {"fields": SITE_ITEM_FIELDS, "ld": SITE_ITEM_LD, "text": SITE_ITEM_TEXT, "value": SITE_ITEM_VALUE}
 
 
+def site_item_walled(item, status):
+    """Whether an item's read is the site's anti-bot check rather than its page: a status the site turns browsers
+    away with, or a short text with a check's words (CODE_WALL_SIGNS, as the code engine's `code_wall`)."""
+    text = (item.get("text") or "").lower()
+    return status in SITE_BLOCKED or (len(text) < CODE_WALL_TEXT and any(sign in text for sign in CODE_WALL_SIGNS))
+
+
+def site_item_one(item):
+    """An item's read, unless the page's own data says it is a list of results (an ItemList, a collection or a
+    search, SITE_ITEM_LIB's `lists`) and names no one item: its text would be the first of many, and a question
+    about the cheapest or the best answered from them alone. A product page's list of similar ones has the
+    product's own data beside it."""
+    if item.get("lists") and not item.get("ld"):
+        raise SiteOpFailure("unanswered", "the page is a list of results, not one of them")
+    return item
+
+
 def site_item_says(item):
     """Whether a read of an item's page holds the item: its own data, or text enough to be more than a shell."""
     return bool(item.get("ld")) or len(item.get("text") or "") >= SITE_ITEM_MIN_TEXT
@@ -9125,11 +9173,15 @@ async def site_item_read(url, holder):
 
     holder["pw"] = await async_playwright().start()
     browser = await holder["pw"].chromium.connect_over_cdp(CDP_HTTP)
+    await site_keep_run_downloads(browser)
     page = holder["page"] = await browser.contexts[0].new_page()
     with contextlib.suppress(Exception):
         cdp = await page.context.new_cdp_session(page)
         holder["target"] = (await cdp.send("Target.getTargetInfo"))["targetInfo"]["targetId"]
         worker.visit_tabs.add(holder["target"])
+        # A drawn item's pictures and fonts are no part of what is read: left out, as a direct read's (SITE_HEAVY).
+        await cdp.send("Network.enable")
+        await cdp.send("Network.setBlockedURLs", {"urls": SITE_HEAVY})
     return await site_item_on(page, url, holder)
 
 
@@ -9140,15 +9192,21 @@ async def site_item_on(page, url, holder):
     answer = None
     with contextlib.suppress(Exception):
         await site_goto(page, f"https://{parts.hostname}/robots.txt", SITE_OP_LOAD_S)
-        answer = await asyncio.wait_for(page.evaluate(SITE_ITEM_FETCH_JS, {**SITE_ITEM_LIMITS, "url": url}),
+        # A site that sent the tab to its city's own host is asked there (`site_op_fetched`): a fetch across hosts
+        # is refused by the browser, and the page would have to be drawn.
+        asked = url
+        here = urllib.parse.urlsplit(page.url or "")
+        if here.hostname and here.hostname != parts.hostname and site_same_place(url, page.url):
+            asked = urllib.parse.urlunsplit(("https", here.hostname, parts.path, parts.query, ""))
+        answer = await asyncio.wait_for(page.evaluate(SITE_ITEM_FETCH_JS, {**SITE_ITEM_LIMITS, "url": asked}),
                                         SITE_OP_FETCH_S)
     if answer is not None:
         if answer["status"] in SITE_GONE:
             raise site_status_failure(answer["status"], "the page")
         if not site_same_place(url, answer["landed"]):
             raise SiteOpFailure("moved", "the page answered from another site", answer["landed"])
-        if answer["status"] == 200 and site_item_says(answer):
-            return answer
+        if answer["status"] == 200 and site_item_says(answer) and not site_item_walled(answer, 200):
+            return site_item_one(answer)
     holder["via"] = "page"
     response = await site_goto(page, url, SITE_OP_LOAD_S)
     status = response.status if response is not None else None
@@ -9168,11 +9226,13 @@ async def site_item_on(page, url, holder):
             break
         last = size
         await asyncio.sleep(0.8)
+    if best is not None and site_item_walled(best, status):
+        raise SiteOpFailure("blocked", "the page is the site's anti-bot check")
     if best is None or not site_item_says(best):
         if status in SITE_BLOCKED:
             raise site_status_failure(status, "the page")
         raise SiteOpFailure("empty", "the page shows nothing of the item")
-    return {**best, "status": status}
+    return site_item_one({**best, "status": status})
 
 
 async def site_item(request):

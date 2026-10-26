@@ -121,7 +121,9 @@ function standingIn(
   return {
     ...find,
     about: same ? known.about : undefined,
-    inputs: mergeSiteInputs(known.inputs, find.inputs),
+    // The reviewer's inputs were read back live: a find's learned ones only
+    // fill in what they lack.
+    inputs: mergeSiteInputs(find.inputs, known.inputs),
   };
 }
 

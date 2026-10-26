@@ -22,9 +22,15 @@ interface Filled {
 interface Guessed {
   output: { query: string | null; url: string | null };
 }
+/** What the model answers whether an errand asks about its links' own pages (`askedAboutPages`). */
+interface AboutPages {
+  output: { pages: boolean | null };
+}
 const model = vi.hoisted(() => ({
   generateText:
-    vi.fn<(input: { prompt: string }) => Promise<Filled | Guessed>>(),
+    vi.fn<
+      (input: { prompt: string }) => Promise<Filled | Guessed | AboutPages>
+    >(),
 }));
 vi.mock("ai", async (importOriginal) => ({
   ...(await importOriginal<typeof ai>()),
@@ -284,6 +290,26 @@ describe("Bro's own read of a site it has read before", () => {
     ]);
     if (next === undefined) throw new Error("no next page");
     expect(siteReadNote(next)).toContain("page 2 of the same search");
+    // «More» with other words, or a new bound, is a new search: the site's pages.
+    for (const output of [
+      { priceMax: null, url: "https://www.ozon.ru/search/?text=утюг" },
+      { priceMax: 2000, url: "https://www.ozon.ru/search/?text=чайник" },
+    ]) {
+      model.generateText.mockResolvedValue({
+        output: {
+          limit: null,
+          more: true,
+          operation: "www.ozon.ru/search/",
+          priceMin: null,
+          sort: "site",
+          ...output,
+        },
+      });
+      expect(
+        // oxlint-disable-next-line eslint/no-await-in-loop -- each start follows the one before in the session
+        await readSiteDirectly(scope, { ...site, sessionId: "o" })
+      ).toBeUndefined();
+    }
     // The same search again without asking for more wants the site's pages.
     fillOzon(false);
     expect(
@@ -336,11 +362,12 @@ describe("Bro's own read of a site it has read before", () => {
         []
       )
     ).toEqual(["https://hh.ru/vacancy/1", "https://spb.hh.ru/vacancy/2"]);
-    // The site's own front page and a results page of its operation are no
-    // item; a page of as many parts as the results page is.
+    // The site's own front page and a results page of its operation, on a
+    // city's host or with Bro's own sort and page beside it, are no item; a
+    // page of as many parts as the results page is.
     expect(
       itemLinks(
-        "https://hh.ru/ и https://hh.ru/search/vacancy?text=x и https://hh.ru/vacancy/5",
+        "https://hh.ru/ и https://spb.hh.ru/search/vacancy?text=x&order_by=salary_desc&page=1 и https://hh.ru/vacancy/5",
         hh,
         knownSiteOperations.filter(({ name }) => name.startsWith("hh.ru"))
       )
@@ -354,6 +381,18 @@ describe("Bro's own read of a site it has read before", () => {
       )
     ).toEqual(["https://hh.ru/@me/vacancy/8"]);
     const asked = "Какая зарплата в https://hh.ru/vacancy/138625702?";
+    // A link with «the cheapest» is a search: its page is never read as one item.
+    model.generateText.mockResolvedValue({ output: { pages: false } });
+    expect(
+      await readItemsDirectly(scope, {
+        errand:
+          "Найди самую высокую зарплату среди https://hh.ru/vacancy/1 и похожих",
+        sessionId: "h",
+        site: hh,
+      })
+    ).toBeUndefined();
+    expect(browser.readBrowserVmItemDirectly).not.toHaveBeenCalled();
+    model.generateText.mockResolvedValue({ output: { pages: true } });
     browser.readBrowserVmItemDirectly.mockResolvedValue({
       ld: [{ "@type": "JobPosting", title: "Продакт-менеджер" }],
       meta: {},
