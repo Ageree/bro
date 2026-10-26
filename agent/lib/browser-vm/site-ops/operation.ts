@@ -447,7 +447,7 @@ const sortPairsSchema = z
  * read back live on the stand, and Bro reads the order back again on every
  * read (`site-ops/inputs.ts`).
  */
-export const siteInputsSchema = z.strictObject({
+const siteInputsSchema = z.strictObject({
   /** The page of the results: `first` is the number of the first one (0 on hh.ru). */
   page: z
     .strictObject({
