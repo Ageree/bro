@@ -1,4 +1,15 @@
-import { and, eq, gte, notInArray, sql } from "drizzle-orm";
+import {
+  and,
+  desc,
+  eq,
+  gt,
+  gte,
+  lt,
+  ne,
+  notInArray,
+  or,
+  sql,
+} from "drizzle-orm";
 import { browserSiteOperations, db } from "@db";
 
 type SiteOperationRow = Pick<
@@ -20,6 +31,55 @@ export async function listBrowserSiteOperations(workspaceId: string) {
       sql`${browserSiteOperations.updatedAt} DESC`
     )
     .limit(200);
+}
+
+/**
+ * Other workspaces' operations that proved themselves, the best kept of
+ * each (most served, then latest), on a site's host (and the hosts under it
+ * or above it, `sameSiteHost`) or by one name: one that answered a read of
+ * Bro's own with no run (`served`), or one that two workspaces' runs found
+ * apart (`runs` in each) — a page one person alone sees is not found the
+ * same by another. Never one that stopped reading its site where it is
+ * kept, and never which workspace kept it.
+ */
+export async function listSharedBrowserSiteOperations(
+  workspaceId: string,
+  where: { readonly host: string } | { readonly name: string },
+  brokenAfter: number
+) {
+  const table = browserSiteOperations;
+  const bare = sql`regexp_replace(${table.host}, '^www\\.', '')`;
+  const place =
+    "name" in where
+      ? eq(table.name, where.name)
+      : or(
+          sql`${bare} = ${where.host}`,
+          sql`${bare} LIKE '%.' || ${where.host}`,
+          sql`${where.host} LIKE '%.' || ${bare}`
+        );
+  const foundApart = db
+    .select({ name: table.name })
+    .from(table)
+    .where(and(gt(table.runs, 0), place))
+    .groupBy(table.name)
+    .having(sql`count(DISTINCT ${table.workspaceId}) >= 2`);
+  return db
+    .selectDistinctOn([table.name], {
+      host: table.host,
+      name: table.name,
+      operation: table.operation,
+    })
+    .from(table)
+    .where(
+      and(
+        ne(table.workspaceId, workspaceId),
+        place,
+        lt(table.failures, brokenAfter),
+        or(gt(table.served, 0), sql`${table.name} IN ${foundApart}`)
+      )
+    )
+    .orderBy(table.name, desc(table.served), desc(table.updatedAt))
+    .limit(20);
 }
 
 /**
@@ -69,8 +129,8 @@ export async function deleteBrowserSiteOperation(
 }
 
 /**
- * A read of one of the workspace's operations (or of a reviewed one, whose
- * row then holds its health alone, `runs` 0): one that gave results ends
+ * A read of one of the workspace's operations (or of a reviewed or shared
+ * one, whose row then holds its health alone, `runs` 0): one that gave results ends
  * its failures, and counts as served when it was Bro's own read with no
  * run; one that found the site changed (`readCounts` in
  * agent/lib/browser-vm/site-ops/health.ts) adds one to them.
@@ -79,10 +139,11 @@ export async function noteBrowserSiteOperationRead(
   workspaceId: string,
   row: SiteOperationRow & {
     /**
-     * A reviewed operation's health may need its row made; a find's row
-     * exists, and one a find replaced meanwhile is not made again.
+     * A reviewed or another workspace's operation's health may need its row
+     * made — the shared one is the workspace's own from then on; a find's
+     * row exists, and one a find replaced meanwhile is not made again.
      */
-    readonly reviewed: boolean;
+    readonly adopted: boolean;
   },
   outcome:
     | { readonly direct: boolean; readonly ok: true }
@@ -90,7 +151,7 @@ export async function noteBrowserSiteOperationRead(
 ) {
   const now = new Date();
   const served = outcome.ok && outcome.direct ? 1 : 0;
-  if (!row.reviewed) {
+  if (!row.adopted) {
     await db
       .update(browserSiteOperations)
       .set(

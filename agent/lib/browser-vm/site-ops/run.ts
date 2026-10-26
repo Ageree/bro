@@ -2,6 +2,7 @@ import {
   deleteBrowserSiteOperation,
   dropBrokenBrowserSiteOperations,
   listBrowserSiteOperations,
+  listSharedBrowserSiteOperations,
   noteBrowserSiteOperationRead,
   saveBrowserSiteOperation,
 } from "@db/services/browser-site-operations";
@@ -38,6 +39,48 @@ export function siteOpsPilot(scope: { readonly workspaceId: string }) {
   return listed.includes("*") || listed.includes(scope.workspaceId);
 }
 
+/**
+ * Whether the workspace also gets the operations other workspaces' runs
+ * found once they proved themselves (BROWSER_SITE_SHARED_WORKSPACES: ids or
+ * `*`, inside the pilot above). Pomerado's library is one for everybody: a
+ * site learned once is fast for the next person too. An operation is a
+ * site's results page as a template and where its data lie — the schema
+ * keeps every value of an errand out of it (`operation.ts`) — and the
+ * workspace reads it with its own browser, so nothing of the person whose
+ * run found it goes with it.
+ */
+function siteSharedPilot(scope: { readonly workspaceId: string }) {
+  const listed = env.BROWSER_SITE_SHARED_WORKSPACES ?? [];
+  return (
+    (listed.includes("*") || listed.includes(scope.workspaceId)) &&
+    siteOpsPilot(scope)
+  );
+}
+
+/**
+ * Other workspaces' operations the workspace may get (`siteSharedPilot`),
+ * by the site's host or by one name, each through the schema again. A
+ * reviewed operation is every workspace's already.
+ */
+async function sharedOperations(
+  workspaceId: string,
+  where: { readonly host: string } | { readonly name: string }
+) {
+  if (!siteSharedPilot({ workspaceId })) return [];
+  const reviewed = new Set(knownSiteOperations.map(({ name }) => name));
+  const rows = await listSharedBrowserSiteOperations(
+    workspaceId,
+    where,
+    brokenAfter
+  );
+  return rows.flatMap((row) => {
+    const parsed = siteOperationSchema.safeParse(row.operation);
+    return parsed.success && !reviewed.has(parsed.data.name)
+      ? [{ ...parsed.data, about: undefined }]
+      : [];
+  });
+}
+
 /** The errand's site, from the task's `Site:` line (`composeBrowserTask`). */
 export function errandSite(task: string) {
   return /^Site: (https:\/\/\S+)$/mu.exec(task)?.[1];
@@ -52,6 +95,9 @@ export function errandSite(task: string) {
  * found again while op() reads it) has no reviewer's words about its fields
  * (`about`), and would read in their place — unless the reviewed one
  * stopped reading the site for this workspace, and its find is the repair.
+ * Last, while there is room, other workspaces' operations on the site that
+ * proved themselves (`siteSharedPilot`), never one the workspace keeps a
+ * row of: its own copy, or its own health of it, is what it reads by.
  */
 export async function siteOperationsFor(
   workspaceId: string,
@@ -88,7 +134,25 @@ export async function siteOperationsFor(
       ? [operation]
       : [];
   });
-  return [...known, ...own].slice(0, operationsPerRun);
+  const given = [...known, ...own];
+  if (given.length >= operationsPerRun) return given.slice(0, operationsPerRun);
+  const host = URL.parse(site)?.hostname.replace(/^www\./u, "");
+  if (host === undefined) return given;
+  const shared = (await sharedOperations(workspaceId, { host })).filter(
+    (operation) =>
+      siteOperationOnSite(operation, site) &&
+      !health.has(operation.name) &&
+      ![...reviewedHosts].some((reviewedHost) =>
+        sameSiteHost(reviewedHost, siteOperationHost(operation.page))
+      )
+  );
+  if (shared.length > 0) {
+    console.info("[site-ops] shared", {
+      names: shared.map(({ name }) => name).slice(0, operationsPerRun),
+      workspaceId,
+    });
+  }
+  return [...given, ...shared].slice(0, operationsPerRun);
 }
 
 /**
@@ -128,19 +192,26 @@ function standingIn(
 }
 
 /**
- * An operation of the workspace's by its name, its own find or a reviewed
- * one, for a read of it to be noted against (`noteSiteOperationRead`).
+ * An operation of the workspace's by its name, for a read of it to be noted
+ * against (`noteSiteOperationRead`): a reviewed one, its own row, or one
+ * another workspace shared — the last two with no row of the workspace's
+ * yet are `adopted`, and the note makes their row.
  */
 async function operationNamed(workspaceId: string, name: string) {
   const known = knownSiteOperations.find(
     (operation) => operation.name === name
   );
-  if (known !== undefined) return known;
+  if (known !== undefined) return { adopted: true, operation: known };
   const rows = await listBrowserSiteOperations(workspaceId);
   const row = rows.find((candidate) => candidate.name === name);
-  return row === undefined
+  if (row !== undefined) {
+    const operation = siteOperationSchema.safeParse(row.operation).data;
+    return operation === undefined ? undefined : { adopted: false, operation };
+  }
+  const [shared] = await sharedOperations(workspaceId, { name });
+  return shared === undefined
     ? undefined
-    : siteOperationSchema.safeParse(row.operation).data;
+    : { adopted: true, operation: shared };
 }
 
 /**
@@ -160,15 +231,16 @@ export async function noteSiteOperationRead(
       }
 ) {
   if (!outcome.ok && !readCounts(outcome.reason, outcome.fit)) return;
-  const operation = await operationNamed(workspaceId, name);
-  if (operation === undefined) return;
+  const named = await operationNamed(workspaceId, name);
+  if (named === undefined) return;
+  const { operation } = named;
   await noteBrowserSiteOperationRead(
     workspaceId,
     {
+      adopted: named.adopted,
       host: siteOperationHost(operation.page),
       name: operation.name,
       operation,
-      reviewed: knownSiteOperations.some(({ name: known }) => known === name),
     },
     outcome.ok
       ? { direct: outcome.direct, ok: true }
