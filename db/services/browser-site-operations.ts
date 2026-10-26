@@ -1,15 +1,4 @@
-import {
-  and,
-  desc,
-  eq,
-  gt,
-  gte,
-  lt,
-  ne,
-  notInArray,
-  or,
-  sql,
-} from "drizzle-orm";
+import { and, desc, eq, gt, gte, lt, ne, notInArray, sql } from "drizzle-orm";
 import { browserSiteOperations, db } from "@db";
 
 type SiteOperationRow = Pick<
@@ -34,13 +23,14 @@ export async function listBrowserSiteOperations(workspaceId: string) {
 }
 
 /**
- * Other workspaces' operations that proved themselves, the best kept of
- * each (most served, then latest), on a site's host (and the hosts under it
- * or above it, `sameSiteHost`) or by one name: one that answered a read of
- * Bro's own with no run (`served`), or one that two workspaces' runs found
- * apart (`runs` in each) — a page one person alone sees is not found the
- * same by another. Never one that stopped reading its site where it is
- * kept, and never which workspace kept it.
+ * Other workspaces' operations that runs of two workspaces or more found
+ * apart (`runs`, never on an `adopted` row), on the very host an errand
+ * names (its leading `www.` aside) or by one name: a page one person alone
+ * sees — a signed-in cabinet, a company's own subdomain, a user's own path —
+ * is never found the same by another, and a host above or below the
+ * errand's is another site. A row that stopped reading its site does not
+ * count; of each name the latest kept find goes, the most found first, and
+ * never which workspace kept it.
  */
 export async function listSharedBrowserSiteOperations(
   workspaceId: string,
@@ -48,52 +38,68 @@ export async function listSharedBrowserSiteOperations(
   brokenAfter: number
 ) {
   const table = browserSiteOperations;
-  const bare = sql`regexp_replace(${table.host}, '^www\\.', '')`;
   const place =
     "name" in where
       ? eq(table.name, where.name)
-      : or(
-          sql`${bare} = ${where.host}`,
-          sql`${bare} LIKE '%.' || ${where.host}`,
-          sql`${where.host} LIKE '%.' || ${bare}`
-        );
-  const foundApart = db
-    .select({ name: table.name })
+      : sql`regexp_replace(${table.host}, '^www\\.', '') = ${where.host}`;
+  const found = and(
+    gt(table.runs, 0),
+    eq(table.adopted, false),
+    lt(table.failures, brokenAfter)
+  );
+  const apart = db
+    .select({
+      foundBy: sql<number>`count(DISTINCT ${table.workspaceId})::int`.as(
+        "found_by"
+      ),
+      name: table.name,
+    })
     .from(table)
-    .where(and(gt(table.runs, 0), place))
+    .where(and(found, place))
     .groupBy(table.name)
-    .having(sql`count(DISTINCT ${table.workspaceId}) >= 2`);
-  return db
+    .having(sql`count(DISTINCT ${table.workspaceId}) >= 2`)
+    .as("apart");
+  const rows = await db
     .selectDistinctOn([table.name], {
+      foundBy: apart.foundBy,
       host: table.host,
       name: table.name,
       operation: table.operation,
     })
     .from(table)
-    .where(
-      and(
-        ne(table.workspaceId, workspaceId),
-        place,
-        lt(table.failures, brokenAfter),
-        or(gt(table.served, 0), sql`${table.name} IN ${foundApart}`)
-      )
-    )
-    .orderBy(table.name, desc(table.served), desc(table.updatedAt))
-    .limit(20);
+    .innerJoin(apart, eq(apart.name, table.name))
+    .where(and(ne(table.workspaceId, workspaceId), found))
+    .orderBy(table.name, desc(table.updatedAt))
+    .limit(200);
+  return rows
+    .toSorted((one, two) => two.foundBy - one.foundBy)
+    .slice(0, 20)
+    .map(({ host, name, operation }) => ({ host, name, operation }));
 }
 
 /**
  * Keeps an operation for the workspace, or counts one more run that found
- * it: the latest find replaces what is kept of it.
+ * it: the latest find replaces what is kept of it. A row made `adopted`
+ * stays so, and one that was not never becomes so.
  */
 export async function saveBrowserSiteOperation(
   workspaceId: string,
-  row: SiteOperationRow & { readonly runs?: number }
+  row: SiteOperationRow & {
+    /** The run read it through op() as another workspace's (`adopted`). */
+    readonly adopted?: boolean;
+    readonly runs?: number;
+  }
 ) {
   const now = new Date();
   await db
     .insert(browserSiteOperations)
-    .values({ ...row, runs: row.runs ?? 1, updatedAt: now, workspaceId })
+    .values({
+      ...row,
+      adopted: row.adopted ?? false,
+      runs: row.runs ?? 1,
+      updatedAt: now,
+      workspaceId,
+    })
     .onConflictDoUpdate({
       // A run that found it otherwise than it was kept read its site anew:
       // whatever reads of the old one failed are over. Found again as it
@@ -179,6 +185,7 @@ export async function noteBrowserSiteOperationRead(
   await db
     .insert(browserSiteOperations)
     .values({
+      adopted: true,
       failedAt: outcome.ok ? null : now,
       host: row.host,
       name: row.name,

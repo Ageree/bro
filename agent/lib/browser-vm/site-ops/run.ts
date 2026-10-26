@@ -41,13 +41,15 @@ export function siteOpsPilot(scope: { readonly workspaceId: string }) {
 
 /**
  * Whether the workspace also gets the operations other workspaces' runs
- * found once they proved themselves (BROWSER_SITE_SHARED_WORKSPACES: ids or
- * `*`, inside the pilot above). Pomerado's library is one for everybody: a
- * site learned once is fast for the next person too. An operation is a
- * site's results page as a template and where its data lie — the schema
- * keeps every value of an errand out of it (`operation.ts`) — and the
- * workspace reads it with its own browser, so nothing of the person whose
- * run found it goes with it.
+ * found (BROWSER_SITE_SHARED_WORKSPACES: ids or `*`, inside the pilot
+ * above). Pomerado's library is one for everybody: a site learned by others
+ * is fast for the next person too. An operation is a site's results page as
+ * a template and where its data lie — the schema keeps every value of an
+ * errand out of it (`operation.ts`) —, the workspace reads it with its own
+ * browser, and it is shared only once runs of two workspaces found it apart
+ * on the very host the errand names (`listSharedBrowserSiteOperations`): a
+ * page one person alone sees, as a company's own subdomain or a user's own
+ * path, is never found the same by another.
  */
 function siteSharedPilot(scope: { readonly workspaceId: string }) {
   const listed = env.BROWSER_SITE_SHARED_WORKSPACES ?? [];
@@ -81,6 +83,11 @@ async function sharedOperations(
   });
 }
 
+/** A host as one site, its leading `www.` aside. */
+function bareHost(host: string) {
+  return host.toLowerCase().replace(/^www\./u, "");
+}
+
 /** The errand's site, from the task's `Site:` line (`composeBrowserTask`). */
 export function errandSite(task: string) {
   return /^Site: (https:\/\/\S+)$/mu.exec(task)?.[1];
@@ -95,9 +102,10 @@ export function errandSite(task: string) {
  * found again while op() reads it) has no reviewer's words about its fields
  * (`about`), and would read in their place — unless the reviewed one
  * stopped reading the site for this workspace, and its find is the repair.
- * Last, while there is room, other workspaces' operations on the site that
- * proved themselves (`siteSharedPilot`), never one the workspace keeps a
- * row of: its own copy, or its own health of it, is what it reads by.
+ * Last, while there is room and the workspace reads nothing of its own on
+ * the errand's very host, other workspaces' operations there
+ * (`siteSharedPilot`), never one the workspace keeps a row of: its own
+ * copy, or its own health of it, is what it reads by.
  */
 export async function siteOperationsFor(
   workspaceId: string,
@@ -135,16 +143,18 @@ export async function siteOperationsFor(
       : [];
   });
   const given = [...known, ...own];
-  if (given.length >= operationsPerRun) return given.slice(0, operationsPerRun);
-  const host = URL.parse(site)?.hostname.replace(/^www\./u, "");
-  if (host === undefined) return given;
+  const host = bareHost(URL.parse(site)?.hostname ?? "");
+  if (
+    given.length >= operationsPerRun ||
+    host === "" ||
+    given.some(({ page }) => bareHost(siteOperationHost(page)) === host)
+  ) {
+    return given.slice(0, operationsPerRun);
+  }
   const shared = (await sharedOperations(workspaceId, { host })).filter(
     (operation) =>
-      siteOperationOnSite(operation, site) &&
-      !health.has(operation.name) &&
-      ![...reviewedHosts].some((reviewedHost) =>
-        sameSiteHost(reviewedHost, siteOperationHost(operation.page))
-      )
+      bareHost(siteOperationHost(operation.page)) === host &&
+      !health.has(operation.name)
   );
   if (shared.length > 0) {
     console.info("[site-ops] shared", {
@@ -344,9 +354,13 @@ export async function rememberSiteOperations(
     return [{ ...parsed.data, about: undefined }];
   });
   if (operations.length === 0) return;
+  // A find the run read through op() came to it from the workspace's rows
+  // or from another workspace's: a new row of it is not a find of its own.
+  const called = new Set((calls ?? []).map(({ name }) => name));
   for (const operation of operations.slice(0, operationsPerRun)) {
     let kept: SiteOperation = operation;
     let runs = 1;
+    let adopted = called.has(operation.name);
     for (const row of reviewed.has(operation.name) ? [] : rows) {
       const parsed = siteOperationSchema.safeParse(row.operation);
       // A reviewed operation's row is its health, not a find to merge.
@@ -361,6 +375,7 @@ export async function rememberSiteOperations(
       if (merged !== undefined) {
         kept = merged;
         runs += row.runs;
+        adopted ||= row.adopted;
         // oxlint-disable-next-line eslint/no-await-in-loop -- One narrower find replaced at a time.
         await deleteBrowserSiteOperation(workspaceId, row.name);
         break;
@@ -379,6 +394,7 @@ export async function rememberSiteOperations(
     }
     // oxlint-disable-next-line eslint/no-await-in-loop -- A run finds one or two.
     await saveBrowserSiteOperation(workspaceId, {
+      adopted,
       host: siteOperationHost(kept.page),
       name: kept.name,
       operation: kept,

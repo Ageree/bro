@@ -558,6 +558,7 @@ describe("Bro's own read of a site it has read before", () => {
     };
     records.listBrowserSiteOperations.mockResolvedValue([
       {
+        adopted: false,
         createdAt: new Date(),
         failedAt: null,
         failures: 0,

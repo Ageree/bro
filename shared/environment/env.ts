@@ -396,11 +396,10 @@ export const env = createEnv({
     // Needs BROWSER_SITE_API_WORKSPACES. Unset, nobody.
     BROWSER_SITE_COLD_WORKSPACES: workspaceListSchema.optional(),
     // Workspace ids or `*` that also get the site operations other
-    // workspaces' runs found, once one proved itself: it answered a direct
-    // read, or two workspaces' runs found it apart
-    // (`agent/lib/browser-vm/site-ops/run.ts`). An operation holds no value
-    // of an errand, and each workspace keeps its own health of it. Unset,
-    // nobody.
+    // workspaces' runs found, once runs of two workspaces found one apart on
+    // the very host an errand names (`agent/lib/browser-vm/site-ops/run.ts`).
+    // An operation holds no value of an errand, and each workspace keeps its
+    // own health of it. Unset, nobody.
     BROWSER_SITE_SHARED_WORKSPACES: workspaceListSchema.optional(),
     // Who may get the sign-in link, where the person signs in to a site
     // themselves in a live view of their own cloud browser
