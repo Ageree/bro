@@ -53,7 +53,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install test dependencies
-        run: python -m pip install aiohttp cryptography quickjs==1.19.4
+        run: python -m pip install aiohttp cryptography quickjs==1.19.4 pyflakes==4.0.3
 
       - name: Pool host (hostd, boot)
         working-directory: browser-vm/host
