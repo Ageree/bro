@@ -291,7 +291,12 @@ async function placeCall(
       duplicate: !planned.created,
     };
   const number = await readPhoneNumber(scope);
-  if (!number?.outboundPhoneNumberId || !number.agentId || !number.sipId) {
+  // GPT-Live dials from the SIP line alone; the ElevenLabs ids matter only for the fallback.
+  if (
+    !number?.sipId ||
+    (!liveCallsFor(scope.workspaceId) &&
+      (!number.outboundPhoneNumberId || !number.agentId))
+  ) {
     await recordCallUncertain(started.id);
     return {
       callId: started.id,
@@ -352,6 +357,14 @@ async function placeCall(
         note: "The call is being dialled; this does not prove a connection or task success. The result will be reported here.",
       };
     }
+  }
+  if (!number.outboundPhoneNumberId || !number.agentId) {
+    await recordCallNotSubmitted(started.id);
+    return {
+      callId: started.id,
+      state: "failed",
+      note: "The call was not placed: the voice line was not ready. Nothing was dialed, so tell the person plainly and offer to try again.",
+    };
   }
   try {
     const accepted = await startCall({
