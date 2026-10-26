@@ -9,6 +9,7 @@ import { clearBrowserVmSettings } from "../../helpers/browser-vm";
 interface Filled {
   output: {
     limit: number | null;
+    more?: boolean | null;
     operation: string | null;
     priceMax: number | null;
     priceMin: number | null;
@@ -99,6 +100,25 @@ function filled(
   });
 }
 
+function kettles(
+  prices: readonly number[],
+  from = 0
+): Extract<BrowserVmSiteRead, { ok: true }> {
+  return {
+    cards: prices.map((price, index) => ({
+      link: `https://www.ozon.ru/product/${String(from + index)}/`,
+      more: {},
+      name: `Чайник ${String(from + index)}`,
+      price,
+    })),
+    count: 36,
+    fit: "exact",
+    ms: 900,
+    ok: true,
+    via: "fetch",
+  };
+}
+
 beforeEach(() => {
   vi.spyOn(console, "info").mockImplementation(() => undefined);
 });
@@ -128,6 +148,9 @@ describe("Bro's own read of a site it has read before", () => {
       cards: vacancies.cards,
       count: 50,
       from: "data",
+      more: true,
+      order: "relevance",
+      page: 0,
       url,
     });
     const [[workspace, asked] = []] =
@@ -149,12 +172,29 @@ describe("Bro's own read of a site it has read before", () => {
       { direct: true, ok: true }
     );
     expect(
-      siteReadNote({ cards: [], count: 0, from: "data", url, ...read })
+      siteReadNote({
+        cards: [],
+        count: 0,
+        from: "data",
+        more: false,
+        order: "relevance",
+        page: 0,
+        url,
+        ...read,
+      })
     ).toContain("call browser_task start again");
     // A first look's cards are the page's own order, and the note says so.
-    expect(siteReadNote({ cards: [], count: 0, from: "page", url })).toContain(
-      "neither filtered nor sorted"
-    );
+    expect(
+      siteReadNote({
+        cards: [],
+        count: 0,
+        from: "page",
+        more: false,
+        order: "page",
+        page: 0,
+        url,
+      })
+    ).toContain("neither filtered nor sorted");
     // A second start on the site in the session wants what the read did not give: the browser.
     expect(
       await readSiteDirectly(scope, {
@@ -165,6 +205,104 @@ describe("Bro's own read of a site it has read before", () => {
       })
     ).toBeUndefined();
     expect(browser.readBrowserVmSiteDirectly).toHaveBeenCalledTimes(1);
+  });
+
+  it("has the site sort its whole search by price, reads the order back, and pages the same search when asked for more", async () => {
+    const { readSiteDirectly, siteReadNote } = await direct();
+    const site = {
+      errand: "Найди на Озоне самые дешёвые чайники до 3000 ₽",
+      note: undefined,
+      site: "https://www.ozon.ru",
+    };
+    const fillOzon = (more: boolean) => {
+      model.generateText.mockResolvedValue({
+        output: {
+          limit: 5,
+          more,
+          operation: "www.ozon.ru/search/",
+          priceMax: 3000,
+          priceMin: null,
+          sort: "price_asc",
+          url: "https://www.ozon.ru/search/?text=чайник&deny_category_prediction=true",
+        },
+      });
+    };
+    const askedOf = (call: number) => {
+      const asked = browser.readBrowserVmSiteDirectly.mock.calls[call]?.[1];
+      const address = new URL(asked?.url ?? "https://none.invalid/");
+      return { address, limit: asked?.limit, sort: asked?.sort };
+    };
+    fillOzon(false);
+    browser.readBrowserVmSiteDirectly.mockResolvedValue(
+      kettles([103, 129, 165, 176, 178])
+    );
+    const read = await readSiteDirectly(scope, { ...site, sessionId: "o" });
+    // The site's own pairs and price key; its order is kept and read back.
+    const first = askedOf(0);
+    expect(first.sort).toBe("site");
+    expect(first.limit).toBe(20);
+    expect(first.address.searchParams.get("sorting")).toBe("price");
+    expect(first.address.searchParams.get("currency_price")).toBe(
+      "0.000;3000.000"
+    );
+    expect(read?.order).toBe("site");
+    expect(read?.more).toBe(true);
+    if (read === undefined) throw new Error("no read");
+    expect(siteReadNote(read)).toContain("sorted everything it found");
+    // More of the same search is its next page, with nothing shown again.
+    fillOzon(true);
+    browser.readBrowserVmSiteDirectly.mockResolvedValue({
+      ...kettles([178, 205, 207], 4),
+    });
+    const next = await readSiteDirectly(scope, { ...site, sessionId: "o" });
+    expect(askedOf(1).address.searchParams.get("page")).toBe("2");
+    expect(next?.page).toBe(1);
+    expect(next?.cards.map(({ link }) => link)).toEqual([
+      "https://www.ozon.ru/product/5/",
+      "https://www.ozon.ru/product/6/",
+    ]);
+    if (next === undefined) throw new Error("no next page");
+    expect(siteReadNote(next)).toContain("page 2 of the same search");
+    // The same search again without asking for more wants the site's pages.
+    fillOzon(false);
+    expect(
+      await readSiteDirectly(scope, { ...site, sessionId: "o" })
+    ).toBeUndefined();
+    expect(browser.readBrowserVmSiteDirectly).toHaveBeenCalledTimes(2);
+    // A site that no longer sorts as asked: its page's cards are sorted here.
+    fillOzon(false);
+    browser.readBrowserVmSiteDirectly.mockResolvedValue(
+      kettles([500, 100, 900, 50, 300])
+    );
+    const unsorted = await readSiteDirectly(scope, {
+      ...site,
+      sessionId: "p",
+    });
+    expect(unsorted?.order).toBe("picked");
+    expect(unsorted?.cards.map(({ price }) => price)).toEqual([
+      50, 100, 300, 500, 900,
+    ]);
+    if (unsorted === undefined) throw new Error("no read");
+    expect(siteReadNote(unsorted)).toContain("not of everything it has");
+    // Its cheapest name nothing searched (accessories): the search's own
+    // order is read and sorted here.
+    fillOzon(false);
+    browser.readBrowserVmSiteDirectly
+      .mockResolvedValueOnce({
+        fit: "exact",
+        ms: 900,
+        ok: false,
+        reason: "unanswered",
+      })
+      .mockResolvedValueOnce(kettles([1494, 1024, 3208]));
+    const relevant = await readSiteDirectly(scope, {
+      ...site,
+      sessionId: "q",
+    });
+    const plain = askedOf(4);
+    expect(plain.address.searchParams.has("sorting")).toBe(false);
+    expect(plain.sort).toBe("price_asc");
+    expect(relevant?.order).toBe("picked");
   });
 
   it("leaves the errand to the browser: no operation, an address off the template, a changed site", async () => {
@@ -389,6 +527,9 @@ describe("Bro's own read of a site it has read before", () => {
       ],
       count: 36,
       from: "page",
+      more: false,
+      order: "page",
+      page: 0,
       url: new URL(page).href,
     });
     expect(browser.lookBrowserVmSiteDirectly).toHaveBeenCalledWith(
