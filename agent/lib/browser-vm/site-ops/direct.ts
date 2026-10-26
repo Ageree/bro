@@ -400,6 +400,13 @@ async function readSite(
     workspaceId: scope.workspaceId,
   };
   if (read === undefined) return undefined;
+  if (read === null) {
+    console.info("[site-api] left to the browser", {
+      ...timing,
+      reason: "worker",
+    });
+    return undefined;
+  }
   if (!read.ok) {
     console.info("[site-api] left to the browser", {
       ...timing,

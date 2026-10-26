@@ -191,8 +191,15 @@ describe("Bro's own read of a site it has read before", () => {
     expect(
       await readSiteDirectly(scope, { ...site, sessionId: "b" })
     ).toBeUndefined();
-    // The site no longer holds its results there: counted against the operation.
+    // The sandbox's worker is older than the operation needs: nothing is read
+    // and nothing counts against the operation.
     filled("https://hh.ru/search/vacancy?text=x");
+    browser.readBrowserVmSiteDirectly.mockResolvedValue(null);
+    expect(
+      await readSiteDirectly(scope, { ...site, sessionId: "w" })
+    ).toBeUndefined();
+    expect(records.noteBrowserSiteOperationRead).not.toHaveBeenCalled();
+    // The site no longer holds its results there: counted against the operation.
     browser.readBrowserVmSiteDirectly.mockResolvedValue({
       fit: "exact",
       ms: 900,

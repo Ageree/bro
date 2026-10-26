@@ -292,6 +292,15 @@ export async function rollOutBrowserVmWorker(
 }
 
 /**
+ * Whether a worker in version `running` has what `needed` brought: the same
+ * version or a newer one (an undated one, fixed by hand, is taken at its
+ * word).
+ */
+export function browserVmWorkerAtLeast(running: string, needed: string) {
+  return running === needed || newer(running, needed);
+}
+
+/**
  * Whether `published` should replace `running`: another version, and not
  * an older one when both are dated (a VM from a newer image, or one fixed
  * by hand, keeps its worker).

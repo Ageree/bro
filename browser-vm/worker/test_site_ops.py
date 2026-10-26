@@ -10,6 +10,7 @@ import sys
 import time
 import types
 import unittest
+import urllib.parse
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -226,6 +227,14 @@ class SiteTrafficTest(unittest.IsolatedAsyncioTestCase):
         traffic = worker.SiteTraffic()
         self.assertIsNone(traffic.request("GET", "https://other.msk.ru/api", "https://shop.msk.ru/", "xhr"))
         self.assertIsNotNone(traffic.request("GET", "https://shop.msk.ru/api", "https://shop.msk.ru/", "xhr"))
+        # The site's own API host under the page's (offers-api.tutu.ru for www.tutu.ru) is the site's, another site's
+        # is not (search.wb.ru for wildberries.ru); a request's text/plain answer may be its JSON, a document's not.
+        page = "https://www.tutu.ru/poezda/Moskva/Kazan/"
+        self.assertIsNotNone(traffic.request("POST", "https://offers-api.tutu.ru/railway/offers", page, "xhr"))
+        self.assertIsNone(traffic.request("GET", "https://search.wb.ru/v18/search", "https://www.wildberries.ru/",
+                                          "fetch"))
+        self.assertTrue(worker.SiteTraffic.wanted({"status": 200, "mime": "text/plain", "type": "fetch"}))
+        self.assertFalse(worker.SiteTraffic.wanted({"status": 200, "mime": "text/plain", "type": "document"}))
 
     async def test_bodies_are_counted_in_bytes_and_one_over_the_cap_is_not_asked_for(self):
         traffic = worker.SiteTraffic()
@@ -550,6 +559,139 @@ class FitAndPickTest(unittest.TestCase):
         self.assertEqual(picked[0]["more"], {"rating": 8.5, "address.city": "Казань", "stars": 30})
         self.assertEqual([card["name"] for card in worker.site_op_pick(cards, "site", 3000, None, 10)],
                          ["Отель 0", "Отель 1", "Отель 3", "Отель 4"])
+
+
+OZON_PAGE = "https://www.ozon.ru/search/?text=%D1%87%D0%B0%D0%B9%D0%BD%D0%B8%D0%BA&deny_category_prediction=true"
+
+
+def ozon_item(name, price, link, order):
+    """An item of ozon.ru's grid as its SSR state has it: atoms in an order of their own, the name told by its id."""
+    atoms = {"name": {"type": "textAtom", "id": "name", "textDS": {"text": name}},
+             "price": {"type": "priceV2", "id": "atom", "priceV2": {"price": [{"text": price}]}},
+             "label": {"type": "labelList", "id": "labels", "labelList": {"items": [{"title": "Бренд проверен"}]}},
+             "rating": {"type": "labelList", "id": "rating", "labelList": {"items": [{"title": "4.9"}]}}}
+    return {"mainState": [atoms[key] for key in order], "action": {"link": link}, "sku": len(name) * 1000003}
+
+
+OZON_ITEMS = [
+    ozon_item("Чайник электрический Weissgauff WK 1760", "1 494 ₽", "/product/chaynik-weissgauff-1760-1/",
+              ["label", "rating", "name", "price"]),
+    ozon_item("Чайник Polaris PWK 1755", "2 190 ₽", "/product/chaynik-polaris-1755-2/",
+              ["label", "rating", "price", "name"]),
+    ozon_item("Чайник Xiaomi Electric Kettle 2", "2 799 ₽", "/product/chaynik-xiaomi-kettle-3/",
+              ["rating", "label", "name", "price"]),
+    ozon_item("Чайник Kitfort KT-6150", "3 450 ₽", "/product/chaynik-kitfort-6150-4/",
+              ["label", "rating", "name", "price"]),
+]
+OZON_DOCUMENT = ("<html><body><div class=a></div>"
+                 '<div id="state-searchResultsHeader-3669721-default-1" data-state=\'{"title": "чайник"}\'></div>'
+                 '<div id="state-tileGridDesktop-3669724-default-1" data-state=\''
+                 + html.escape(json.dumps({"items": OZON_ITEMS}, ensure_ascii=False), quote=False).replace("'", "&#39;")
+                 + "\'></div></body></html>")
+OZON_REPORT = "ITEMS: " + json.dumps([{"name": i["mainState"][[a["id"] for a in i["mainState"]].index("name")]
+                                       ["textDS"]["text"], "price": p, "url": "https://www.ozon.ru" + i["action"]["link"]}
+                                      for i, p in zip(OZON_ITEMS, ["1 494 ₽", "2 190 ₽", "2 799 ₽"])], ensure_ascii=False)
+
+TUTU_PAGE = "https://www.tutu.ru/poezda/Moskva/Sankt-Peterburg/?date=05.11.2026"
+TUTU_ANSWER = [{
+    "offers": {"actual": {
+        f"{n:08x}cafe": {"routeIds": [f"r{n}"], "offerVariants": [{"price": {"value": {"amount": amount}}},
+                                                                 {"price": {"value": {"amount": amount + 150000}}}]}
+        for n, amount in [(1, 249165), (2, 604700), (3, 283500), (4, 590000)]}},
+    "dictionary": {"common": {"routes": {f"r{n}": {"voyageNumber": f"V{n}20260"} for n in (1, 2, 3, 4)}},
+                   "train": {"voyages": {f"V{n}20260": {"numberForPassengers": number, "departure": time_}
+                                         for n, number, time_ in [(1, "030У", "00:01"), (2, "022А", "00:20"),
+                                                                  (3, "050С", "00:23"), (4, "750А", "05:30")]}}}}]
+TUTU_REPORT = "ITEMS: " + json.dumps([{"name": name, "price": price, "url": TUTU_PAGE} for name, price in [
+    ("Поезд 030У, 00:01–09:32", "от 2 492 ₽"), ("Поезд 022А «Ночной экспресс», 00:20–09:00", "от 6 047 ₽"),
+    ("Поезд 050С, 00:23–09:25", "от 2 835 ₽")]], ensure_ascii=False)
+
+
+class StateAndShapeTest(unittest.IsolatedAsyncioTestCase):
+    """A document's state where its scripts keep it, and data that is no plain list of results (25.10–26.10 on the
+    stand: none of ozon.ru, tutu.ru, kassir.ru, litres.ru, 2gis.ru gave an operation before)."""
+
+    async def asyncSetUp(self):
+        self.traffic = worker.SiteTraffic()
+        self.errors = worker.SiteErrors()
+        self.errors.traffic = self.traffic
+        self.socket = types.SimpleNamespace(ws=Socket(), next_id=1)
+
+    def test_a_documents_state_is_found_where_its_scripts_and_elements_keep_it(self):
+        state = {"list": [{"name": "a" * 80}, {"name": "b" * 80}, {"name": "c" * 80}]}
+        literal = json.dumps(state)
+        flat = [["Reactive", 1], {"list": 2}, [3, 5, 7], {"name": 4}, "a" * 80, {"name": 6}, "b" * 80, {"name": 8},
+                "c" * 80]
+        flight = ('1:I["chunk",[]]\n' + "2:" + json.dumps(["$", "div", None, {"state": state}]) + "\n")
+        document = (
+            "<script>var i = " + literal + "; window.initialState = JSON.parse(" + json.dumps(literal) + ");</script>"
+            "<script>window.__initialData__ = " + json.dumps(urllib.parse.quote(literal)) + "</script>"
+            '<div id="state-grid-123456-default" data-state=\'' + html.escape(literal, quote=False) + "\'></div>"
+            '<script id="__NUXT_DATA__" type="application/json">' + json.dumps(flat) + "</script>"
+            "<script>self.__next_f.push([1," + json.dumps(flight) + "])</script>")
+        found = dict((json.dumps(selector, sort_keys=True), value) for selector, value in worker.embedded_states(document))
+        for selector, value in [
+            ({"assignment": "initialState"}, state), ({"assignment": "__initialData__"}, state),
+            ({"attribute": "data-state", "idPrefix": "state-grid-"}, state),
+            ({"tag": "script", "id": "__NUXT_DATA__", "decode": "devalue"}, state),
+            ({"flight": "next"}, {"2": ["$", "div", None, {"state": state}]})]:
+            self.assertEqual(found.get(json.dumps(selector, sort_keys=True)), value, selector)
+            self.assertEqual(worker.embedded_state(document, selector), value, selector)
+        # A minifier's local (`i`) is no state a page keeps from build to build.
+        self.assertNotIn(json.dumps({"assignment": "i"}), found)
+
+    def test_paths_decode_json_text_take_a_key_by_its_start_and_an_element_by_its_word(self):
+        data = {"widgetStates": {"tileGrid-3669724-default-1": json.dumps({"items": OZON_ITEMS}, ensure_ascii=False)}}
+        path = ["widgetStates", {"prefix": "tileGrid-"}, {"json": True}, "items", 1, "mainState",
+                {"with": ["id", "name"]}, "textDS", "text"]
+        self.assertEqual(worker.site_walk(data, path), "Чайник Polaris PWK 1755")
+        self.assertEqual(worker.site_walk({"a": {"b": [{"rows": [1, 2]}]}}, [{"deep": "rows"}]), [1, 2])
+        self.assertEqual(worker.site_items({"t": {"x1": {"a": 1}, "x2": {"a": 2}}}, ["t", "*"]), [{"a": 1}, {"a": 2}])
+        self.assertEqual(worker.site_walk(TUTU_ANSWER[0]["offers"]["actual"]["00000001cafe"],
+                                          ["routeIds", 0, {"at": [0, "dictionary", "common", "routes"]}, "voyageNumber"],
+                                          TUTU_ANSWER), "V120260")
+
+    async def test_an_elements_atoms_in_their_own_order_give_one_operation_that_reads_them_all(self):
+        await feed(self.errors, self.socket, "d1", "Document", OZON_PAGE, OZON_PAGE, 200, "text/html", OZON_DOCUMENT)
+        [operation] = self.traffic.operations(OZON_REPORT)
+        self.assertEqual(operation["source"], {"kind": "document",
+                                               "state": {"attribute": "data-state", "idPrefix": "state-tileGridDesktop-"}})
+        self.assertEqual(operation["fields"]["name"], ["mainState", {"with": ["id", "name"]}, "textDS", "text"])
+        cards = worker.site_cards(operation, worker.site_state(operation, OZON_DOCUMENT), OZON_PAGE)
+        self.assertEqual([card["name"] for card in cards], [
+            "Чайник электрический Weissgauff WK 1760", "Чайник Polaris PWK 1755", "Чайник Xiaomi Electric Kettle 2",
+            "Чайник Kitfort KT-6150"])
+        self.assertEqual(cards[3]["link"], "https://www.ozon.ru/product/chaynik-kitfort-6150-4/")
+        self.assertNotIn("чайник", json.dumps(operation, ensure_ascii=False).lower())
+
+    async def test_a_normalized_answer_on_the_sites_api_host_joins_its_tables(self):
+        await feed(self.errors, self.socket, "x1", "XHR", "https://offers-api.tutu.ru/railway/offers", TUTU_PAGE, 200,
+                   "application/json", json.dumps(TUTU_ANSWER), method="POST")
+        [operation] = self.traffic.operations(TUTU_REPORT)
+        self.assertEqual(operation["source"], {"kind": "xhr", "method": "POST",
+                                               "url": "https://offers-api.tutu.ru/railway/offers"})
+        self.assertEqual(operation["items"], [0, "offers", "actual", "*"])
+        self.assertTrue(operation["fields"]["cents"])
+        cards = worker.site_cards(operation, TUTU_ANSWER, TUTU_PAGE)
+        # The train's number from its voyage two tables away; its «от» price the least of its classes, in roubles.
+        self.assertEqual([(card["name"], card["price"]) for card in cards],
+                         [("030У", 2491.65), ("022А", 6047.0), ("050С", 2835.0), ("750А", 5900.0)])
+        self.assertEqual(cards[0]["link"], TUTU_PAGE)
+
+    def test_a_step_named_after_the_errands_words_is_no_operation(self):
+        page = "https://site.ru/search?text=%D0%BA%D0%B0%D0%BB%D1%8C%D1%8F%D0%BD&sort=price.asc"
+        self.assertEqual(worker.errand_words(page), {"кальян"})
+        self.assertEqual(worker.errand_words("https://2gis.ru/moscow/search/%D0%B0%D0%BF%D1%82%D0%B5%D0%BA%D0%B0"),
+                         {"аптека"})
+
+    def test_a_cyrillic_word_of_the_path_is_asked_for_and_a_transliterated_one_is_not(self):
+        twogis = {"page": "https://2gis.ru/moscow/search/%word%"}
+        url = "https://2gis.ru/moscow/search/%D0%B0%D0%BF%D1%82%D0%B5%D0%BA%D0%B0"
+        self.assertFalse(worker.site_op_answers(twogis, url, [{"name": "Додо Пицца", "more": {}}]))
+        self.assertTrue(worker.site_op_answers(twogis, url, [{"name": "Горздрав, аптека №820", "more": {}}]))
+        chitai = {"page": "https://www.chitai-gorod.ru/search/%word%"}
+        self.assertTrue(worker.site_op_answers(chitai, "https://www.chitai-gorod.ru/search/dyuna",
+                                               [{"name": "Дюна", "more": {}}]))
 
 
 class DirectSetup(unittest.IsolatedAsyncioTestCase):

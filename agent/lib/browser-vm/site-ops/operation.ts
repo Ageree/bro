@@ -17,16 +17,19 @@ import * as z from "zod";
  * the schema refuses, it never cleans.
  */
 const placeholder = /^%(?:query|number|date|sort|flag|id|word)%$/u;
-const keyPattern = /^[A-Za-z0-9_.\-[\]]{1,40}$/u;
+// `$` for a Nuxt state's own keys (chitai-gorod.ru's `$sproducts-list`).
+const keyPattern = /^[A-Za-z0-9_.$\-[\]]{1,40}$/u;
 // A key that is itself a value: a run of four digits, eight hex digits, a uuid.
 const valueKey = /\d{4}|[0-9a-f]{8}|[0-9a-f]{8}-[0-9a-f]{4}-/iu;
 const hostPattern = /^(?:[a-z0-9-]{1,63}\.)+[a-z]{2,63}$/u;
 // A part of an address's path kept as it is: a short word of lower-case
-// latin letters and hyphens (`search`, `vacancy`, `kazan`). A
-// percent-encoded word, a phone with dashes (916-123-45-67), a user name
-// (ivan_petrov), a number: none of them is, they are a person's or an
-// errand's values. A request's own path may also have its API version (v2).
-const literalSegment = /^[a-z-]{0,24}$/u;
+// latin letters and hyphens (`search`, `vacancy`, `kazan`), or a page's file
+// name (wildberries.ru's `detail.aspx`). A percent-encoded word, a phone
+// with dashes (916-123-45-67), a user name (ivan_petrov), a number: none of
+// them is, they are a person's or an errand's values. A request's own path
+// may also have its API version (v2).
+const literalSegment =
+  /^(?:[a-z-]{1,24}(?:\.(?:html?|shtml|php|aspx?|jsp|cgi))?)?$/u;
 const apiVersion = /^v\d{1,2}$/u;
 
 const plainKey = z
@@ -84,9 +87,87 @@ function templateSchema(request: boolean) {
     }, "a results page as a template: placeholders for every value");
 }
 
+const indexSchema = z.number().int().min(0).max(1000);
+
+/**
+ * A word of the site's own data a step names (the field's value that tells
+ * an element of a list from the others, a key's stable start): latin, no
+ * value in it. The worker drops an operation whose step is a word of its
+ * page's own address — the errand's —, which the schema cannot know.
+ */
+const dataWord = z
+  .string()
+  .regex(/^[A-Za-z][A-Za-z0-9_.-]{1,39}$/u)
+  .refine((word) => !valueKey.test(word), "a word, not a value");
+
+/** A path from the data's root to a table: its keys, never an id looked up in it. */
+const tablePathSchema = z
+  .array(z.union([plainKey, indexSchema]))
+  .min(1)
+  .max(8);
+
+/**
+ * One step of a path into the data (`site_values` in
+ * browser-vm/worker/worker.py): a key, an index, `"*"` (every element of a
+ * list or value of a table there — a price read so is the least of them),
+ * or: `json` (the value is a string of JSON: ozon.ru's widget states),
+ * `prefix` (the first key that starts so, the rest of it a value),
+ * `with` (the element of a list whose field is the word: ozon.ru's atoms),
+ * `deep` (the first value under the key anywhere below: a Next.js flight's
+ * rows) and `at` (the value is an id: go on in that table's entry, the
+ * table by its path from the data's root: kupibilet.ru's flights).
+ */
+const joinSchema = z.strictObject({ at: tablePathSchema });
+
+/** A step that is more than a key or an index: what only a worker from 26.10 walks. */
+const wideStepSchema = z.union([
+  z.literal("*"),
+  joinSchema,
+  z.strictObject({ json: z.literal(true) }),
+  z.strictObject({
+    prefix: dataWord.refine(
+      (prefix) => /[-_:]$/u.test(prefix),
+      "a key's start, up to a separator"
+    ),
+  }),
+  z.strictObject({
+    with: z.tuple([
+      z.enum([
+        "id",
+        "key",
+        "type",
+        "name",
+        "kind",
+        "code",
+        "component",
+        "widget",
+      ]),
+      dataWord,
+    ]),
+  }),
+  z.strictObject({ deep: plainKey }),
+]);
+
+const stepSchema = z.union([plainKey, indexSchema, wideStepSchema]);
+
+function isJoin(step: z.infer<typeof stepSchema>) {
+  return joinSchema.safeParse(step).success;
+}
+
 const fieldPathSchema = z
-  .array(z.union([plainKey, z.number().int().min(0).max(1000)]))
-  .max(12);
+  .array(stepSchema)
+  .max(12)
+  .refine((path) => path.filter(isJoin).length <= 3, "at most three joins");
+
+/** Where the results are: a list, or with `"*"` as its last step a table's values (tutu.ru's offers). */
+const itemsSchema = fieldPathSchema.refine(
+  (path) =>
+    path.every(
+      (step, index) =>
+        (step !== "*" || index === path.length - 1) && !isJoin(step)
+    ),
+  "a list's path: a table's values only last, no join"
+);
 
 const linkSchema = z.union([
   z.literal("page"),
@@ -98,7 +179,7 @@ const linkSchema = z.union([
       template: z
         .string()
         .max(300)
-        .regex(/^\/[a-z\-/{}0-9]*$/u),
+        .regex(/^\/[a-z\-/{}0-9.]*$/u),
     })
     .refine(
       ({ parts, template }) =>
@@ -108,20 +189,62 @@ const linkSchema = z.union([
     ),
 ]);
 
+/**
+ * A global a page's script assigns its state to (`window.initialState =
+ * {…}`, `X = JSON.parse("…")`), written dotted: a name the page keeps across
+ * its builds — four characters at least, not a minifier's local — and up to
+ * three properties (`_cianConfig.frontend-serp`).
+ */
+const assignmentName = z
+  .string()
+  .max(80)
+  .regex(/^[A-Za-z_$][\w$]{3,40}(?:\.[\w$-]{1,40}){0,3}$/u)
+  .refine(
+    (name) => name.split(".").every((part) => !valueKey.test(part)),
+    "a name, not a value"
+  );
+
+const attributeName = z.string().regex(/^data-[a-z][a-z0-9-]{0,30}$/u);
+
+/**
+ * Where a results document keeps its state (`embedded_states` in
+ * browser-vm/worker/worker.py): a script or template that is JSON whole —
+ * by its id, or its type and place; a Nuxt 3 payload unflattened —, a
+ * script's assignment, JSON in an element's data-* attribute (the element
+ * by its id, the stable start of an id whose rest is a value, or its place)
+ * or a Next.js flight's rows.
+ */
+const stateSchema = z.union([
+  z.strictObject({
+    decode: z.literal("devalue").optional(),
+    id: plainKey,
+    tag: z.enum(["script", "template"]),
+  }),
+  z.strictObject({
+    index: z.number().int().min(0).max(50),
+    tag: z.enum(["script", "template"]),
+    type: z.enum(["application/json", "application/ld+json", ""]),
+  }),
+  z.strictObject({ assignment: assignmentName }),
+  z.strictObject({
+    attribute: attributeName,
+    idPrefix: dataWord.refine(
+      (prefix) => /[-_:]$/u.test(prefix),
+      "an id's start, up to a separator"
+    ),
+  }),
+  z.strictObject({ attribute: attributeName, id: plainKey }),
+  z.strictObject({
+    attribute: attributeName,
+    index: z.number().int().min(0).max(200),
+  }),
+  z.strictObject({ flight: z.literal("next") }),
+]);
+
 const sourceSchema = z.discriminatedUnion("kind", [
   z.strictObject({
     kind: z.literal("document"),
-    state: z.union([
-      z.strictObject({
-        id: plainKey,
-        tag: z.enum(["script", "template"]),
-      }),
-      z.strictObject({
-        index: z.number().int().min(0).max(50),
-        tag: z.enum(["script", "template"]),
-        type: z.enum(["application/json", "application/ld+json", ""]),
-      }),
-    ]),
+    state: stateSchema,
   }),
   z.strictObject({
     kind: z.literal("xhr"),
@@ -146,11 +269,13 @@ export const siteOperationSchema = z
       .regex(/^[^\n%{}]*$/u)
       .optional(),
     fields: z.strictObject({
+      /** The price is in hundredths of the currency (kopecks: tutu.ru, wildberries.ru, youla.ru). */
+      cents: z.literal(true).optional(),
       link: linkSchema.optional(),
       name: fieldPathSchema.min(1).optional(),
       price: fieldPathSchema.min(1).optional(),
     }),
-    items: fieldPathSchema,
+    items: itemsSchema,
     name: z.string().min(1).max(160),
     page: templateSchema(false),
     seen: z.strictObject({
@@ -166,8 +291,10 @@ export const siteOperationSchema = z
   )
   .refine((operation) => {
     if (operation.source.kind !== "xhr") return true;
+    // The site's own API host counts: one under the page's host (api.litres.ru
+    // for www.litres.ru, offers-api.tutu.ru for www.tutu.ru), never another site.
     const request = splitAddress(operation.source.url)?.host ?? "";
-    return siteOf(request) === siteOf(siteOperationHost(operation.page));
+    return sameSiteHost(request, siteOperationHost(operation.page));
   }, "the page's own site answers it");
 
 export type SiteOperation = z.infer<typeof siteOperationSchema>;
@@ -223,6 +350,37 @@ export const siteOperationCallsSchema = z
 function siteOperationName(page: string) {
   return page.replace(/^https:\/\//u, "").split("?")[0] ?? page;
 }
+
+/**
+ * The worker an operation needs to be read right (`site_values` and
+ * `embedded_states` in browser-vm/worker/worker.py): one from 26.10 when its
+ * state is kept anywhere but a script or template that is JSON whole, a step
+ * of a path is more than a key or an index, or its price is in hundredths.
+ * An older worker reads no such state or step and answers `no_data`, which
+ * would count against a sound operation; it reads a price in hundredths as
+ * roubles. Undefined when any worker reads it.
+ */
+export function siteOperationWorker(operation: SiteOperation) {
+  const { fields, items, source } = operation;
+  const link = fields.link === "page" ? undefined : fields.link;
+  const paths = [
+    items,
+    fields.name ?? [],
+    fields.price ?? [],
+    ...(link === undefined ? [] : "path" in link ? [link.path] : link.parts),
+  ];
+  const state =
+    source.kind === "document" &&
+    !("tag" in source.state && !("decode" in source.state));
+  const steps = paths.some((path) =>
+    path.some((step) => wideStepSchema.safeParse(step).success)
+  );
+  return state || steps || fields.cents === true
+    ? stateReadingWorker
+    : undefined;
+}
+
+const stateReadingWorker = "2026-10-26.1";
 
 export function siteOperationHost(page: string) {
   return splitAddress(page)?.host ?? "";

@@ -74,6 +74,7 @@ import html as html_lib
 import importlib.metadata
 import importlib.util
 import ipaddress
+import itertools
 import json
 import logging
 import os
@@ -92,7 +93,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-10-25.13"
+VERSION = "2026-10-26.1"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -833,16 +834,59 @@ SITE_DATE = re.compile(r"\d{1,4}[.\-/]\d{1,2}[.\-/]\d{1,4}")
 SITE_ID = re.compile(r"\d{4,}|[0-9a-f]{8,}|@|[0-9a-f]{8}-[0-9a-f]{4}", re.I)  # searched: an id, a hash, an email
 SITE_UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-", re.I)
 # A part of a template's path that stays as it is: a short word of lower-case latin letters and hyphens (`search`,
-# `vacancy`, `kazan`). Anything else (a percent-encoded word, a phone with dashes, a user name with `_`, a number)
-# is a placeholder: a path part is where a site writes a person's or an errand's own value. The same rule is
-# Bro's schema (`literalSegment` in agent/lib/browser-vm/site-ops/operation.ts), which refuses what breaks it.
-SITE_PATH_WORD = re.compile(r"[a-z\-]{1,24}")
+# `vacancy`, `kazan`), or a page's file name (wildberries.ru's `detail.aspx`, `index.php`). Anything else (a
+# percent-encoded word, a phone with dashes, a user name with `_`, a number) is a placeholder: a path part is where a
+# site writes a person's or an errand's own value. The same rule is Bro's schema (`literalSegment` in
+# agent/lib/browser-vm/site-ops/operation.ts), which refuses what breaks it.
+SITE_PATH_WORD = re.compile(r"[a-z\-]{1,24}(?:\.(?:html?|shtml|php|aspx?|jsp|cgi))?")
 SITE_API_VERSION = re.compile(r"v\d{1,2}")  # in a request's own path only: /hotel/search/v2/site/serp
 SITE_LETTERS = re.compile(r"[^\W\d_]+(?:-[^\W\d_]+)*")
 # A key of the data (a field's path, a query's key) that is itself a value: an id, a hash, a uuid.
 SITE_VALUE_KEY = re.compile(r"\d{4,}|[0-9a-f]{8,}|[0-9a-f]{8}-[0-9a-f]{4}-", re.I)
 SITE_SORT_KEYS = {"sort", "order", "sorting", "orderby", "sort_by", "sortby", "s"}
 EMBEDDED_STATE = re.compile(r"<(script|template)\b([^>]*)>(.*?)</\1\s*>", re.S | re.I)
+# Where else a document keeps its state (`embedded_states`), beside a script or template that is JSON whole — none
+# of them found a single operation on 25.10, though the results were in the document: a script's assignment
+# (`window.__X__ = {…}`, `X = JSON.parse("…")`, `X = "%7B…"`: 2gis.ru's initialState, cian.ru's config), JSON in an
+# element's data-* attribute (ozon.ru's SSR widgets, `<div id="state-tileGridDesktop-3669724-…" data-state='{…}'>`),
+# a Next.js flight (`self.__next_f.push([1,"…"])`: litres.ru, kupibilet.ru) and a Nuxt 3 payload (devalue's flat
+# array of index references in `__NUXT_DATA__`: kassir.ru, chitai-gorod.ru). A state shorter than SITE_STATE_MIN is
+# a page's setting, not its results.
+SITE_STATE_MIN = 200
+SITE_SCRIPT = re.compile(r"<script\b([^>]*)>(.*?)</script\s*>", re.S | re.I)
+SITE_NAME_PART = r"[A-Za-z_$][\w$]{0,40}"
+SITE_ASSIGNED = re.compile(
+    r"(?:^|[^\w$.\]])(?:(?:var|let|const)\s+)?((?:(?:window|self|globalThis)(?:\.|(?=\[)))?"
+    rf"{SITE_NAME_PART}(?:\.{SITE_NAME_PART}|\[\s*[\"'][\w$\-.:]{{1,40}}[\"']\s*\]){{0,3}})\s*=(?![=>])")
+SITE_DATA_ATTRIBUTE = re.compile(
+    r"""<(\w+)\b([^>]*?)\s(data-[a-z][a-z0-9\-]{0,30})\s*=\s*(?:"([\[{][^"]*)"|'([\[{][^']*)')""", re.S | re.I)
+SITE_FLIGHT = re.compile(r"self\.__next_f\.push\(\[1\s*,\s*(\"(?:[^\"\\]|\\.)*\")\s*\]\)", re.S)
+SITE_JS_UNDEFINED = re.compile(r"([:,\[]\s*)undefined\b")
+SITE_DEVALUE_WRAPPERS = {"Reactive", "ShallowReactive", "Ref", "ShallowRef", "Object", "NuxtError", "skipHydrate"}
+SITE_JSON = json.JSONDecoder()
+# A string of JSON inside the data (ozon.ru's entrypoint answer: its widgetStates' values are JSON as text) is
+# decoded and walked into (`{"json": true}`) from this length.
+SITE_JSON_STRING = 40
+# The fields a list's elements are told apart by (`{"with": [field, word]}`: ozon.ru's atoms, whose name sits at
+# index 2 or 3 of an item's mainState, by its `id: "name"`).
+SITE_DISCRIMINATORS = ("id", "key", "type", "name", "kind", "code", "component", "widget")
+SITE_WORD = re.compile(r"[A-Za-z][A-Za-z0-9_.\-]{1,39}")
+# A table: a dict of SITE_TABLE or more alike objects keyed by their ids (tutu.ru's offers by their hashes, its
+# stations by "Rzd:2006004"), walked as the list of its values (`"*"`); a field may go on in another table's entry by
+# its own value (`{"at": table}`: a kupibilet.ru variant's flight id → its flight), SITE_JOINS deep at most.
+SITE_TABLE = 3
+SITE_JOINS = 3
+SITE_JOINED = 300  # the elements of a list whose joins a find follows: the report's options are among the first
+SITE_FAN = 60  # the elements a `"*"` of a field path reads (a train's classes: its price is the least of them)
+SITE_LEAF_LIST = 8  # the elements of a list inside an element whose fields are read (ozon.ru's atoms)
+SITE_DESCEND = 60  # the elements of a wrapper list looked into
+SITE_KEYED = 400  # the elements of a list of objects looked into by the field that tells them apart
+# A price field that is the one before a discount (youla.ru's origPrice beside realPrice): equal to the price on most
+# items, so a find cannot tell them apart by count; the other one is what a person pays.
+SITE_OLD_PRICE = re.compile(r"old|orig|basic|base|before|full|strike|crossed|was|regular|list", re.I)
+SITE_PRICE_KEY = re.compile(r"price|cost|amount|sum", re.I)
+SITE_PRICE_TEXT = re.compile(r"(?:от\s*)?\d[\d\s   ]{0,12}(?:[.,]\d{1,2})?\s*(?:₽|руб\.?|RUB|р\.)?",
+                             re.I)
 
 
 def site_key(key):
@@ -865,14 +909,13 @@ def site_attribute(attributes, name):
     return (match.group(1) or match.group(2) or match.group(3) or "") if match else ""
 
 
-def embedded_states(text):
-    """The JSON a page's document carries for its scripts: a <template> or <script type="application/json"> (or
-    one with an id) whose whole content is JSON, as [(selector, value)]. A selector names it by its id, or by
-    its type and place among those of that type."""
+def json_states(text):
+    """The JSON a page's document carries whole in a <template> or <script type="application/json"> (or one with an
+    id), as [(selector, value)]. A selector names it by its id, or by its type and place among those of that type."""
     found, places = [], {}
     for match in EMBEDDED_STATE.finditer(text):
         tag, attributes, body = match.group(1).lower(), match.group(2), match.group(3).strip()
-        if len(body) < 200 or body[0] not in "{[&":
+        if len(body) < SITE_STATE_MIN or body[0] not in "{[&":
             continue
         ident, kind = site_attribute(attributes, "id"), site_attribute(attributes, "type").lower()
         if tag == "script" and not ident and kind not in ("application/json", "application/ld+json"):
@@ -880,7 +923,7 @@ def embedded_states(text):
         place = places[(tag, kind)] = places.get((tag, kind), -1) + 1
         try:
             value = json.loads(html_lib.unescape(body) if tag == "template" or body[0] == "&" else body)
-        except ValueError:
+        except (ValueError, RecursionError):
             continue
         if not isinstance(value, (dict, list)):
             continue
@@ -891,49 +934,683 @@ def embedded_states(text):
     return found
 
 
-def site_walk(value, path):
-    for key in path:
-        if isinstance(value, dict) and isinstance(key, str):
-            value = value.get(key)
-        elif isinstance(value, list) and isinstance(key, int) and -len(value) <= key < len(value):
-            value = value[key]
-        else:
+def embedded_states(text):
+    """Every state a page's document carries for its scripts, as [(selector, value)]: the JSON scripts and
+    templates (`json_states`; a Nuxt 3 payload among them unflattened, `decode: "devalue"`), the states its
+    scripts assign (`{"assignment": name}`), JSON in data-* attributes (`{"attribute": …}`) and a Next.js flight's
+    rows (`{"flight": "next"}`)."""
+    found = []
+    for selector, value in json_states(text):
+        if devalue_payload(value):
+            with contextlib.suppress(RecursionError):
+                found.append(({**selector, "decode": "devalue"}, devalue(value)))
+            continue
+        found.append((selector, value))
+    found.extend(({"assignment": name}, value) for name, value in assigned_states(text))
+    found.extend(attribute_states(text))
+    rows = flight_rows(text)
+    if rows:
+        found.append(({"flight": "next"}, rows))
+    return found
+
+
+def embedded_state(text, selector):
+    """The one state of a document a selector names, or None: on a read only what the operation asks for is
+    parsed."""
+    if "assignment" in selector:
+        values = assigned_states(text, selector["assignment"])
+        return values[-1][1] if values else None
+    if "attribute" in selector:
+        values = attribute_states(text, selector)
+        return values[0][1] if values else None
+    if "flight" in selector:
+        return flight_rows(text)
+    plain = {key: value for key, value in selector.items() if key != "decode"}
+    for got, value in json_states(text):
+        if got == plain:
+            if selector.get("decode") == "devalue":
+                return devalue(value) if devalue_payload(value) else None
+            return value
+    return None
+
+
+def js_string_end(text, start):
+    """The end of the JavaScript string literal at `start` (past its closing quote), or None."""
+    quote, index = text[start], start + 1
+    while index < len(text):
+        char = text[index]
+        if char == "\\":
+            index += 2
+            continue
+        if char == quote:
+            return index + 1
+        if char == "\n" and quote != "`":
             return None
-    return value
+        index += 1
+    return None
 
 
-def object_arrays(value, path=(), depth=0):
-    """Every list of three or more objects in a JSON value, with its path: the lists of results. A list inside
-    such a list's elements is theirs (a hotel's rates), not looked into; a wrapper list of one or two is."""
-    if depth > 8:
+def js_string(literal):
+    """A JavaScript string literal's value, its escapes decoded."""
+    if literal[0] == '"':
+        with contextlib.suppress(ValueError):
+            return json.loads(literal)
+    body, out, index = literal[1:-1], [], 0
+    while index < len(body):
+        char = body[index]
+        if char != "\\":
+            out.append(char)
+            index += 1
+            continue
+        after = body[index + 1:index + 2]
+        if after == "u" and re.fullmatch(r"[0-9a-fA-F]{4}", body[index + 2:index + 6]):
+            out.append(chr(int(body[index + 2:index + 6], 16)))
+            index += 6
+        elif after == "x" and re.fullmatch(r"[0-9a-fA-F]{2}", body[index + 2:index + 4]):
+            out.append(chr(int(body[index + 2:index + 4], 16)))
+            index += 4
+        else:
+            out.append({"n": "\n", "r": "\r", "t": "\t", "b": "\b", "f": "\f", "v": "\v", "0": "\0"}.get(after, after))
+            index += 2
+    text = "".join(out)
+    with contextlib.suppress(UnicodeError):  # a pair of \u escapes for one character
+        text = text.encode("utf-16", "surrogatepass").decode("utf-16")
+    return text
+
+
+def balanced_end(text, start):
+    """The end of the balanced {…} or […] at `start`, its strings skipped, or None."""
+    depth, index = 0, start
+    while index < len(text):
+        char = text[index]
+        if char in "\"'`":
+            end = js_string_end(text, index)
+            if end is None:
+                return None
+            index = end
+            continue
+        if char in "{[":
+            depth += 1
+        elif char in "}]":
+            depth -= 1
+            if depth == 0:
+                return index + 1
+        index += 1
+    return None
+
+
+def json_text(text):
+    """The object or list a text holds as JSON, or as percent-encoded JSON (avito.ru's __initialData__), or None."""
+    text = text.strip()
+    if text[:3].upper() in ("%7B", "%5B"):
+        text = urllib.parse.unquote(text)
+    if not text or text[0] not in "{[":
+        return None
+    with contextlib.suppress(ValueError, RecursionError):
+        value = json.loads(text)
+        return value if isinstance(value, (dict, list)) else None
+    return None
+
+
+def assigned_value(script, at):
+    """The state a script assigns just past `at` (its `=`): a literal, JSON.parse of a string, a string of JSON, or
+    the literal a `(X || []).concat(…)` adds (cian.ru). (value or None, where it ends or None when it never does)."""
+    start = at + len(script[at:at + 200]) - len(script[at:at + 200].lstrip())
+    head = script[start:start + 200]
+    if head.startswith("JSON.parse("):
+        quoted = start + 11 + (len(head[11:]) - len(head[11:].lstrip()))
+        if script[quoted:quoted + 1] not in ("'", '"', "`"):
+            return None, start
+        end = js_string_end(script, quoted)
+        if end is None:
+            return None, None
+        return json_text(js_string(script[quoted:end]) or ""), end
+    if head[:1] in ("'", '"'):
+        end = js_string_end(script, start)
+        if end is None:
+            return None, None
+        return (json_text(js_string(script[start:end]) or "") if end - start >= SITE_STATE_MIN else None), end
+    concat = re.match(r"\([^()]{1,160}\|\|\s*[\[{][\]}]\s*\)\s*\.concat\(\s*", head)
+    if concat:
+        start += concat.end()
+    if script[start:start + 1] not in ("{", "["):
+        return None, start
+    # JSON first, at C speed; a JS literal with `undefined` in it (domclick.ru's state) by its balanced end.
+    with contextlib.suppress(ValueError, RecursionError):
+        value, end = SITE_JSON.raw_decode(script, start)
+        return (value if isinstance(value, (dict, list)) and end - start >= SITE_STATE_MIN else None), end
+    end = balanced_end(script, start)
+    if end is None:
+        return None, None
+    if end - start < SITE_STATE_MIN:
+        return None, end
+    with contextlib.suppress(ValueError, RecursionError):
+        value = json.loads(SITE_JS_UNDEFINED.sub(r"\1null", script[start:end]))
+        return (value if isinstance(value, (dict, list)) else None), end
+    return None, end
+
+
+def assignment_name(written):
+    """A name as a selector writes it: no `window.`, a bracketed key as a dotted part."""
+    name = re.sub(r"^(?:window|self|globalThis)\.?", "", written)
+    return re.sub(r"\[\s*[\"']([\w$\-.:]+)[\"']\s*\]", r".\1", name).lstrip(".")
+
+
+def assignment_kept(name):
+    """A name a page keeps across its builds: a global's, not a minifier's short local (cian.ru's `var i = {…}`
+    holds a copy of its products for analytics), and no part of it a value."""
+    parts = name.split(".")
+    return (len(parts[0]) >= 4 and len(parts) <= 4 and len(name) <= 80
+            and all(re.fullmatch(r"[\w$\-]{1,40}", part) and not SITE_VALUE_KEY.search(part) for part in parts))
+
+
+def assigned_states(text, wanted=None):
+    """[(name, value)] of the states a document's own scripts assign, the last assignment of a name winning, as
+    when the page runs; with `wanted`, only that name's."""
+    found = {}
+    for match in SITE_SCRIPT.finditer(text):
+        attributes, script = match.group(1), match.group(2)
+        kind = site_attribute(attributes, "type").lower()
+        if site_attribute(attributes, "src") or len(script) < SITE_STATE_MIN \
+                or kind not in ("", "module", "text/javascript", "application/javascript"):
+            continue
+        if wanted is not None and wanted.split(".")[-1] not in script:
+            continue
+        index = 0
+        while (found_at := SITE_ASSIGNED.search(script, index)) is not None:
+            name = assignment_name(found_at.group(1))
+            index = found_at.end()
+            if (wanted is not None and name != wanted) or not assignment_kept(name):
+                continue
+            value, end = assigned_value(script, found_at.end())
+            if end is None:
+                break  # a value that never closes: nothing after it does either
+            index = max(index, end)
+            if value is not None:
+                found[name] = value
+    return list(found.items())
+
+
+def id_prefix(ident):
+    """The stable start of an element's id, or of a key whose rest is a value: `state-tileGridDesktop-` of
+    `state-tileGridDesktop-3669724-default-1`. None when the whole of it is stable or its start is too short."""
+    parts = re.split(r"([\-_:])", ident)
+    prefix = ""
+    for index in range(0, len(parts), 2):
+        if SITE_VALUE_KEY.search(parts[index]) or re.fullmatch(r"\d{3,}", parts[index]):
+            break
+        prefix += parts[index] + (parts[index + 1] if index + 1 < len(parts) else "")
+    else:
+        return None
+    if len(prefix) < 4 or not SITE_KEY.fullmatch(prefix) or SITE_VALUE_KEY.search(prefix):
+        return None
+    return prefix
+
+
+def attribute_states(text, wanted=None):
+    """JSON in an element's data-* attribute, as [(selector, value)]: the element by its id, by the stable start of
+    an id whose rest is a value (`idPrefix`), or by its place among those with the attribute."""
+    found, places, prefixes = [], collections.Counter(), set()
+    for match in SITE_DATA_ATTRIBUTE.finditer(text):
+        attribute = match.group(3).lower()
+        raw = match.group(4) if match.group(4) is not None else match.group(5)
+        place = places[attribute]
+        places[attribute] += 1
+        if len(raw) < SITE_STATE_MIN:
+            continue
+        ident = site_attribute(match.group(2), "id")
+        prefix = id_prefix(ident) if ident else None
+        if ident and prefix is None and site_key(ident):
+            selector = {"attribute": attribute, "id": ident}
+        elif prefix is not None:
+            if (attribute, prefix) in prefixes:
+                continue  # the first element of a prefix is the one its selector names
+            prefixes.add((attribute, prefix))
+            selector = {"attribute": attribute, "idPrefix": prefix}
+        else:
+            selector = {"attribute": attribute, "index": place}
+        if wanted is not None and selector != wanted:
+            continue
+        value = json_text(html_lib.unescape(raw))
+        if value is not None:
+            found.append((selector, value))
+            if wanted is not None:
+                break
+    return found
+
+
+def flight_rows(text):
+    """A Next.js flight's rows as {row id: value}: its JSON rows (`57:["$","$L59",null,{…}]`), not its imports
+    (`I[…]`), hints (`HL[…]`) or texts (`T…`). A find marks them (SITE_FLIGHT_ROWS) to write no row id in a path."""
+    chunks = [js_string(match.group(1)) for match in SITE_FLIGHT.finditer(text)]
+    payload = "".join(chunk for chunk in chunks if chunk)
+    rows = {}
+    for row in re.finditer(r"(?:^|\n)([0-9a-f]{1,6}):(?!(?:I|HL|H)\[|T[0-9a-f]+,)", payload):
+        if payload[row.end():row.end() + 1] not in ("[", "{"):
+            continue
+        with contextlib.suppress(ValueError, RecursionError):
+            value, _ = SITE_JSON.raw_decode(payload, row.end())
+            if isinstance(value, (dict, list)):
+                rows[row.group(1)] = value
+    return rows or None
+
+
+def devalue_payload(value):
+    """Whether a JSON value is a Nuxt 3 payload: devalue's flat array, its root a reactive object at index 1."""
+    return (isinstance(value, list) and len(value) > 1 and isinstance(value[0], list) and len(value[0]) == 2
+            and value[0][0] in ("Reactive", "ShallowReactive") and value[0][1] == 1)
+
+
+def devalue(flat):
+    """A Nuxt 3 payload as the value it stands for: a wrapper (["Reactive", n], ["Ref", n]…) is its value, an empty
+    ref null, a Set a list, a Map an object, a Date its text. A value referenced twice is one object; a cycle stays
+    one."""
+    memo = {}
+
+    def get(index):
+        if not isinstance(index, int) or isinstance(index, bool) or not 0 <= index < len(flat):
+            return None
+        if index in memo:
+            return memo[index]
+        value = flat[index]
+        if isinstance(value, list) and value and isinstance(value[0], str):
+            kind = value[0]
+            memo[index] = None
+            if kind in SITE_DEVALUE_WRAPPERS and len(value) == 2:
+                memo[index] = get(value[1])
+            elif kind == "Set":
+                memo[index] = out = []
+                out.extend(get(item) for item in value[1:])
+            elif kind in ("Map", "null"):
+                memo[index] = out = {}
+                for key, item in zip(value[1::2], value[2::2]):
+                    out[str(get(key) if kind == "Map" else key)] = get(item)
+            elif kind == "Date":
+                memo[index] = value[1] if len(value) > 1 else None
+            return memo[index]
+        if isinstance(value, list):
+            memo[index] = out = []
+            out.extend(get(item) for item in value)
+            return out
+        if isinstance(value, dict):
+            memo[index] = out = {}
+            for key, item in value.items():
+                out[key] = get(item)
+            return out
+        memo[index] = value
+        return value
+
+    return get(0)
+
+
+# A path's steps. In an operation (JSON) a step is a key of the data, an index, "*" — every element of a list or
+# value of a table there (a table's values as the results: the last step of `items`) —, or one of {"json": true} (the
+# value is a string of JSON: decode it), {"prefix": start} (the first key that starts so, its rest a value),
+# {"with": [field, word]} (the element of a list whose field is the word), {"deep": key} (the first value under the
+# key anywhere below: a flight's rows) and {"at": table} (the value is an id: go on in that table's entry, the table
+# by its path from the data's root). While a find works, an object step is a string token (`site_step`), so that a
+# path stays hashable and comes back from JSON as it went.
+SITE_TOKEN = "\0"
+
+
+def site_step(step):
+    """An operation's step in the form a walk reads: an object step as its token, any other as it is."""
+    if not isinstance(step, dict):
+        return step
+    if step.get("json") is True:
+        return "\0json"
+    if isinstance(step.get("prefix"), str):
+        return "\0prefix:" + step["prefix"]
+    if isinstance(step.get("with"), list) and len(step["with"]) == 2:
+        return "\0with:" + json.dumps([str(part) for part in step["with"]], ensure_ascii=False)
+    if isinstance(step.get("deep"), str):
+        return "\0deep:" + step["deep"]
+    if isinstance(step.get("at"), list):
+        return "\0at:" + json.dumps(step["at"], ensure_ascii=False)
+    return "\0unknown"
+
+
+@functools.lru_cache(maxsize=512)
+def site_token(token):
+    """A token's kind and argument: ("with", [field, word]), ("at", [path])…"""
+    kind, _, argument = token[1:].partition(":")
+    if kind in ("with", "at"):
+        return kind, json.loads(argument)
+    return kind, argument
+
+
+def site_step_json(step):
+    """A step as an operation writes it (`site_step` back)."""
+    if not (isinstance(step, str) and step.startswith(SITE_TOKEN)):
+        return step
+    kind, argument = site_token(step)
+    if kind == "json":
+        return {"json": True}
+    if kind == "at":
+        return {"at": list(argument)}
+    return {kind: argument}
+
+
+def site_path_json(path):
+    return [site_step_json(step) for step in path]
+
+
+def site_path_text(path):
+    """A path as a card's `more` names its field: `mainState.name.textDS.text` for an atom found by its id."""
+    words = []
+    for step in path:
+        if isinstance(step, str) and step.startswith(SITE_TOKEN):
+            kind, argument = site_token(step)
+            if kind == "with":
+                words.append(str(argument[1]))
+            elif kind == "at":
+                words.append(str(argument[-1]) if argument else "at")
+            elif kind in ("prefix", "deep"):
+                words.append(str(argument).rstrip("-_:"))
+        else:
+            words.append(str(step))
+    return ".".join(words)
+
+
+SITE_JSON_STRINGS = {}
+
+
+def json_string(value):
+    """The object or list a string of the data holds as JSON, or None; remembered, since a find walks one string
+    many times."""
+    if not isinstance(value, str) or len(value) < SITE_JSON_STRING or value.lstrip()[:1] not in ("{", "["):
+        return None
+    key = (len(value), hash(value))
+    if key not in SITE_JSON_STRINGS:
+        if len(SITE_JSON_STRINGS) > 4000:
+            SITE_JSON_STRINGS.clear()
+        SITE_JSON_STRINGS[key] = json_text(value)
+    return SITE_JSON_STRINGS[key]
+
+
+def deep_value(value, key, limit=20000):
+    """The first object or list under `key` anywhere below `value`, breadth first."""
+    queue, seen, looked = collections.deque([value]), set(), 0
+    while queue and looked < limit:
+        item = queue.popleft()
+        looked += 1
+        if isinstance(item, (dict, list)):
+            if id(item) in seen:
+                continue
+            seen.add(id(item))
+        if isinstance(item, dict):
+            inner = item.get(key)
+            if isinstance(inner, (dict, list)) and inner:
+                return inner
+            queue.extend(v for v in item.values() if isinstance(v, (dict, list)))
+        elif isinstance(item, list):
+            queue.extend(v for v in item if isinstance(v, (dict, list)))
+    return None
+
+
+def site_values(value, path, root=None):
+    """The values a path reaches from `value`: one, or several past a "*"; an `at` step looks the value reached so
+    far up in its table, which it finds from `root` (the whole data, `value` itself by default)."""
+    root = value if root is None else root
+    values = [value]
+    for raw in path:
+        step = site_step(raw)
+        reached = []
+        for current in values:
+            if step == "*":
+                if isinstance(current, dict):
+                    reached.extend(itertools.islice(current.values(), SITE_OP_ARRAY))
+                elif isinstance(current, list):
+                    reached.extend(current[:SITE_OP_ARRAY])
+                continue
+            if isinstance(step, str) and step.startswith(SITE_TOKEN):
+                inner = site_token_step(step, current, root)
+            elif isinstance(current, dict) and isinstance(step, str):
+                inner = current.get(step)
+            elif isinstance(current, list) and isinstance(step, int) and not isinstance(step, bool) \
+                    and -len(current) <= step < len(current):
+                inner = current[step]
+            else:
+                inner = None
+            if inner is not None:
+                reached.append(inner)
+        values = reached
+        if not values:
+            return []
+    return values
+
+
+def site_token_step(step, current, root):
+    kind, argument = site_token(step)
+    if kind == "json":
+        return json_string(current)
+    if kind == "prefix" and isinstance(current, dict):
+        return next((inner for key, inner in current.items() if isinstance(key, str) and key.startswith(argument)),
+                    None)
+    if kind == "with" and isinstance(current, list):
+        field, word = argument
+        return next((item for item in current if isinstance(item, dict) and item.get(field) == word), None)
+    if kind == "deep":
+        return deep_value(current, argument)
+    if kind == "at" and isinstance(current, (str, int)) and not isinstance(current, bool):
+        table = site_walk(root, argument)
+        return table.get(str(current)) if isinstance(table, dict) else None
+    return None
+
+
+def site_walk(value, path, root=None):
+    """The first value a path reaches (`site_values`), or None."""
+    found = site_values(value, path, root)
+    return found[0] if found else None
+
+
+def site_items(data, items):
+    """The results an operation's `items` reach: a list, or with "*" as its last step a table's values."""
+    if items and items[-1] == "*":
+        inner = site_walk(data, items[:-1])
+        if isinstance(inner, dict):
+            return list(inner.values())
+        return inner if isinstance(inner, list) else None
+    inner = site_walk(data, items)
+    return inner if isinstance(inner, list) else None
+
+
+def site_table(value):
+    """Whether a value is a table: a dict of SITE_TABLE or more alike objects (two thirds of them share a key)."""
+    if not isinstance(value, dict) or len(value) < SITE_TABLE:
+        return False
+    objects = [inner for inner in itertools.islice(value.values(), 200) if isinstance(inner, dict)]
+    if len(objects) < SITE_TABLE or len(objects) * 4 < min(len(value), 200) * 3:
+        return False
+    counted = collections.Counter(key for inner in objects for key in itertools.islice(inner, 60))
+    return bool(counted) and counted.most_common(1)[0][1] * 3 >= len(objects) * 2
+
+
+def keyed_steps(items):
+    """For a list's objects, each one's step: a `with` token where a field tells it from the others (a plain word
+    only it has), else its index."""
+    counts = {field: collections.Counter(item.get(field) for item in items if isinstance(item, dict))
+              for field in SITE_DISCRIMINATORS}
+    steps = []
+    for index, item in enumerate(items):
+        step = index
+        if isinstance(item, dict):
+            for field in SITE_DISCRIMINATORS:
+                word = item.get(field)
+                if isinstance(word, str) and counts[field][word] == 1 and SITE_WORD.fullmatch(word) \
+                        and site_key(word):
+                    step = site_step({"with": [field, word]})
+                    break
+        steps.append(step)
+    return steps
+
+
+def object_arrays(value, path=(), depth=0, seen=None):
+    """Every list of three or more objects in a JSON value, with its path: the lists of results. A list inside such
+    a list's elements is theirs (a hotel's rates), not looked into; a wrapper list of one or two is, and so is a list
+    of objects each told apart by a field (cian.ru's config entries), element by element. A table is a list too (its
+    values, "*"); a string of JSON is decoded and looked into, a key that is a value with a stable start by that
+    start, a flight's rows by their ids (a find rewrites them, `flight_path`)."""
+    seen = set() if seen is None else seen
+    if depth > 10:
         return
+    if isinstance(value, (dict, list)):
+        if id(value) in seen:
+            return
+        seen.add(id(value))
     if isinstance(value, dict):
-        for key, inner in list(value.items())[:400]:
-            if site_key(key):
-                yield from object_arrays(inner, (*path, key), depth + 1)
+        if path and site_table(value):
+            yield (*path, "*"), list(itertools.islice(value.values(), SITE_OP_ARRAY))
+        flight, prefixes = value.get(SITE_FLIGHT_ROWS) is True, set()
+        for key, inner in itertools.islice(value.items(), 400):
+            if flight and path == () and isinstance(key, str) and re.fullmatch(r"[0-9a-f]{1,6}", key):
+                yield from object_arrays(inner, (*path, "\0row:" + key), depth + 1, seen)
+            elif site_key(key):
+                yield from object_arrays(inner, (*path, key), depth + 1, seen)
+            elif isinstance(key, str) and key.startswith("$") and site_key(key[1:]) and len(key) <= 41:
+                yield from object_arrays(inner, (*path, key), depth + 1, seen)  # a Nuxt state's `$sname`
+            elif isinstance(key, str) and (prefix := id_prefix(key)) is not None and prefix not in prefixes:
+                prefixes.add(prefix)
+                yield from object_arrays(inner, (*path, site_step({"prefix": prefix})), depth + 1, seen)
     elif isinstance(value, list):
-        if sum(1 for element in value[:SITE_OP_ARRAY] if isinstance(element, dict)) >= 3:
+        objects = sum(1 for element in value[:SITE_OP_ARRAY] if isinstance(element, dict))
+        if objects >= 3:
             yield path, value
-        elif len(value) <= 2:
-            for index, inner in enumerate(value):
-                yield from object_arrays(inner, (*path, index), depth + 1)
+            for step, inner in zip(keyed_steps(value[:SITE_KEYED]), value[:SITE_KEYED]):
+                if isinstance(step, str):
+                    yield from object_arrays(inner, (*path, step), depth + 1, seen)
+        elif len(value) <= 2 or objects:
+            for index, inner in enumerate(value[:SITE_DESCEND]):
+                if isinstance(inner, (dict, list, str)):
+                    yield from object_arrays(inner, (*path, index), depth + 1, seen)
+    elif isinstance(value, str):
+        inner = json_string(value)
+        if inner is not None:
+            yield from object_arrays(inner, (*path, site_step({"json": True})), depth + 1, seen)
+
+
+# A flight's rows as a find gets them: marked, so that `object_arrays` steps into a row by its id (`flight_path`
+# rewrites that), and no other data's numeric keys.
+SITE_FLIGHT_ROWS = "\0flight"
 
 
 def element_leaves(element, path=(), depth=0, out=None):
-    """An object's scalar fields as [(path, value)], nested objects and the first three of a list included."""
+    """An object's scalar fields as [(path, value)], nested objects and the first SITE_LEAF_LIST elements of a list
+    included, each element of a list of objects by the field that tells it apart where one does (`keyed_steps`)."""
     out = [] if out is None else out
-    if len(out) >= SITE_OP_LEAVES or depth > 5:
+    if len(out) >= SITE_OP_LEAVES or depth > 6:
         return out
     if isinstance(element, dict):
         for key, inner in element.items():
             if site_key(key):
                 element_leaves(inner, (*path, key), depth + 1, out)
     elif isinstance(element, list):
-        for index, inner in enumerate(element[:3]):
-            element_leaves(inner, (*path, index), depth + 1, out)
+        items = element[:SITE_LEAF_LIST]
+        steps = (keyed_steps(items) if sum(isinstance(item, dict) for item in items) >= 2
+                 else list(range(len(items))))
+        for step, inner in zip(steps, items):
+            element_leaves(inner, (*path, step), depth + 1, out)
     elif isinstance(element, (str, int, float)) and not isinstance(element, bool) and path:
         out.append((path, element))
     return out
+
+
+def site_amount(value):
+    """A number of the data as an amount: a number, or a text of digits alone."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str) and re.fullmatch(r"\d{2,9}(?:\.\d{1,2})?", value.strip()):
+        return float(value.strip())
+    return None
+
+
+def list_minima(element, path=(), depth=0, out=None):
+    """For each list of two or more objects in an element (a train's classes), the least amount at each of its
+    elements' paths, at the path with "*": the «от» price a results page shows."""
+    out = [] if out is None else out
+    if depth > 4 or len(out) > 60:
+        return out
+    if isinstance(element, dict):
+        for key, inner in element.items():
+            if site_key(key):
+                list_minima(inner, (*path, key), depth + 1, out)
+    elif isinstance(element, list):
+        objects = [inner for inner in element[:SITE_FAN] if isinstance(inner, dict)]
+        if len(objects) >= 2:
+            amounts = collections.defaultdict(list)
+            for inner in objects:
+                for leaf, value in element_leaves(inner):
+                    amount = site_amount(value)
+                    if amount is not None and amount > 0 and not any(isinstance(step, int) for step in leaf):
+                        amounts[leaf].append(amount)
+            out.extend(((*path, "*", *leaf), min(values)) for leaf, values in amounts.items() if len(values) >= 2)
+    return out
+
+
+class SiteTables:
+    """A body's tables by the keys of their entries: what a find joins an element's ids through."""
+
+    def __init__(self, root):
+        self.tables = {}
+        self.collect(root, (), 0)
+        self.by_key = collections.defaultdict(list)
+        for path, table in self.tables.items():
+            for key in table:
+                self.by_key[key].append(path)
+
+    def collect(self, value, path, depth):
+        if depth > 8 or len(self.tables) > 200:
+            return
+        if isinstance(value, dict):
+            if path and site_table(value):
+                self.tables[path] = value
+            for key, inner in itertools.islice(value.items(), 400):
+                if site_key(key):
+                    self.collect(inner, (*path, key), depth + 1)
+        elif isinstance(value, list):
+            for index, inner in enumerate(value[:3]):
+                self.collect(inner, (*path, index), depth + 1)
+
+    def lookup(self, value, skip):
+        """The entries a value is the key of: only an id or a code — with a digit (a hash, `Rzd:2006004`) or in
+        capitals (`SU`) —, not a word of the data (`train`) a dict of sections would answer."""
+        if isinstance(value, bool) or not isinstance(value, (str, int)):
+            return []
+        key = str(value)
+        if len(key) < 2 or not (re.search(r"\d", key) or key.upper() == key != key.lower()):
+            return []
+        return [(path, self.tables[path][key]) for path in self.by_key.get(key, []) if path not in skip]
+
+
+def joined_leaves(own, tables, items_path, hops=SITE_JOINS):
+    """An element's leaves (`own`), then the fields of the table entries its values are the keys of — an `at` step
+    in their path —, up to `hops` joins deep. A body that is a list of answers each with its own tables (tutu.ru's
+    offers: two, sharing ids) is joined inside the element's own answer: its part of the items' path up to its last
+    index."""
+    out = list(own)
+    if tables is None or hops <= 0:
+        return out[:SITE_OP_LEAVES]
+    skip = {tuple(items_path[:-1])} if items_path and items_path[-1] == "*" else set()
+    indexes = [at for at, step in enumerate(items_path) if isinstance(step, int)]
+    scope = tuple(items_path[:indexes[-1] + 1]) if indexes else ()
+    skip |= {path for path in tables.tables if tuple(path[:len(scope)]) != scope}
+    for path, value in list(out):
+        if len(out) >= SITE_OP_LEAVES:
+            break
+        if "*" in path or any(isinstance(step, str) and step.startswith("\0at:") for step in path):
+            continue
+        for table_path, entry in tables.lookup(value, skip):
+            if not isinstance(entry, dict):
+                continue
+            step = site_step({"at": list(table_path)})
+            inner = element_leaves(entry) + list_minima(entry)
+            for inner_path, inner_value in joined_leaves(inner, tables, (*table_path, "*"), hops - 1):
+                out.append(((*path, step, *inner_path), inner_value))
+                if len(out) >= SITE_OP_LEAVES:
+                    break
+    return out[:SITE_OP_LEAVES]
 
 
 def site_words(text):
@@ -976,30 +1653,70 @@ def reported_options(text):
     return []
 
 
-def match_option(option, leaves, base):
-    """Which fields of one element hold the option's name, price and link: {role: path}."""
-    roles, contained = {}, None
-    link = site_link_key(option["url"]) if option["url"] else None
+def prepared_leaves(leaves):
+    """Leaves with their words and amounts worked out once for all the options: [(path, value, words, amounts)].
+    An amount is a number, a text of digits, or a short price as a page writes it («1 974 ₽», «от 2 500 ₽»)."""
+    out = []
     for path, value in leaves:
-        if isinstance(value, str):
-            words = site_words(value)
-            if option["name"] and words:
-                if words == option["name"]:
-                    roles.setdefault("name", path)
-                elif contained is None and min(len(words), len(option["name"])) >= 5 and (
-                        words in option["name"] or option["name"] in words):
-                    contained = path
-            if link and len(value) < 2000 and ("/" in value) and site_link_key(value, base) == link:
-                roles.setdefault("link", path)
-            number = None
-            if re.fullmatch(r"\d{2,9}(?:\.\d{1,2})?", value.strip()):
-                number = float(value)
-        else:
-            number = float(value)
-        if number is not None and number >= 10 and any(abs(number - amount) < 0.51 for amount in option["numbers"]):
-            roles.setdefault("price", path)
-    if "name" not in roles and contained is not None:
-        roles["name"] = contained
+        words, amounts = (site_words(value) if isinstance(value, str) else ""), set()
+        amount = site_amount(value)
+        if amount is not None:
+            amounts = {amount}
+        elif isinstance(value, str) and len(value) <= 24 and re.search(r"\d", value) \
+                and SITE_PRICE_TEXT.fullmatch(value.strip()):
+            amounts = site_numbers(value)
+        out.append((path, value, words, amounts))
+    return out
+
+
+def match_option(option, prepared, base):
+    """Which fields of one element hold the option's name, price and link: {role: path}, with every path that may
+    be its name (`names`: its words exactly first, then a phrase of five letters or more inside the name or the name
+    inside it, or a code of three to six characters with a digit and a letter that is a word of the name — a train's
+    «030У» in «Поезд 030У») and its price (`prices`, a field named like a price first), for the list to choose the
+    path most options share. A price may be in hundredths (`cents`: tutu.ru's, youla.ru's kopecks), only when no
+    field holds the amount itself. Without a field holding the link, `link_part` is one whose value is a whole part
+    of the link telling this option from the others (2gis.ru's /moscow/firm/<id>): the link is a template then."""
+    roles, exact, contained, prices = {}, [], [], []
+    wanted, amounts = option["name"], option["numbers"]
+    padded = f" {wanted} "
+    link = site_link_key(option["url"]) if option["url"] else None
+    for path, value, words, found in prepared:
+        if words and wanted:
+            if words == wanted:
+                exact.append(path)
+            elif (min(len(words), len(wanted)) >= 5 and (words in wanted or wanted in words)) or (
+                    3 <= len(words) <= 6 and f" {words} " in padded and re.search(r"\d", words)
+                    and re.search(r"[^\W\d_]", words)):
+                contained.append(path)
+        if link and words and len(value) < 2000 and "/" in value and site_link_key(value, base) == link:
+            roles.setdefault("link", path)
+        if any(amount >= 10 and abs(amount - asked) < 0.51 for amount in found for asked in amounts):
+            prices.append(path)
+    if not prices and amounts:
+        for path, value, _, _ in prepared:
+            whole = site_amount(value) if not isinstance(value, str) else None
+            if whole is not None and whole >= 1000 and whole == int(whole) \
+                    and any(abs(whole / 100 - asked) < 1 for asked in amounts):
+                prices.append(path)
+                roles["cents"] = True
+    if exact or contained:
+        roles["names"] = exact + contained
+        roles["name"] = roles["names"][0]
+    if prices:
+        named = [path for path in prices if SITE_PRICE_KEY.search(" ".join(str(step) for step in path[-2:]))]
+        roles["prices"] = named + [path for path in prices if path not in named]
+        roles["price"] = roles["prices"][0]
+    if "link" not in roles and option["url"]:
+        page = {urllib.parse.unquote(part) for part in urllib.parse.urlsplit(base or "").path.split("/")}
+        parts = [urllib.parse.unquote(part) for part in urllib.parse.urlsplit(option["url"]).path.split("/")
+                 if part and urllib.parse.unquote(part) not in page]
+        parts = [part for part in parts if re.search(r"\d", part) or len(part) >= 12]
+        for path, value, _, _ in prepared:
+            text = str(value)
+            if len(text) >= 5 and any(part == text or (part.endswith(text) and len(text) >= 8) for part in parts):
+                roles["link_part"] = path
+                break
     return roles
 
 
@@ -1042,22 +1759,22 @@ def link_template(url, leaves):
     return template, order
 
 
-def render_link(link, element, page_url, host):
+def render_link(link, element, page_url, host, root=None):
     """An element's link as the operation writes it (`site_operations`): a field holding it, a template of its
-    fields, or the results page itself."""
+    fields, or the results page itself. `root` is the data the element is in, for a field joined from a table."""
     if link == "page":
         return page_url
     if not isinstance(link, dict):
         return None
     base = f"https://{host}/"
     if "path" in link:
-        value = site_walk(element, link["path"])
+        value = site_walk(element, link["path"], root)
         return urllib.parse.urljoin(base, value) if isinstance(value, str) and value else None
     template = link.get("template")
     if not isinstance(template, str):
         return None
     for index, part in enumerate(link.get("parts") or []):
-        value = site_walk(element, part)
+        value = site_walk(element, part, root)
         if value is None or isinstance(value, (dict, list)):
             return None
         template = template.replace("{" + str(index) + "}", urllib.parse.quote(str(value), safe="/"))
@@ -1121,49 +1838,96 @@ def site_template_fit(template, url):
     return fit
 
 
+def distinct_share(objects, path, root):
+    """How many different values a list's elements (its first 300) have at `path`, for each element: a list of
+    results differs in its names."""
+    values = [site_walk(element, path, root) for element in objects[:300]]
+    named = {str(value).strip().lower() for value in values
+             if isinstance(value, (str, int, float)) and str(value).strip()}
+    return len(named) / len(values) if values else 0.0
+
+
+def price_rank(path):
+    """Among price fields as many options share: not one before a discount (youla.ru's origPrice beside realPrice),
+    then one named like a price (cian.ru's priceRur beside its deposit)."""
+    keys = [step for step in path if isinstance(step, str) and not step.startswith(SITE_TOKEN)]
+    return (not any(SITE_OLD_PRICE.search(key) for key in keys),
+            bool(SITE_PRICE_KEY.search(" ".join(keys[-2:]))))
+
+
 def best_array(value, options, base, deadline=None):
     """The list in a JSON value whose elements hold the reported options, with what it matched:
-    (path, elements, {role: path or link}, matched), or None when fewer than three (or all) of them match."""
+    (path, elements, {role: path or link}, matched), or None when fewer than three (or all) of them match. A list
+    whose own fields hold something of two options has its elements' joins followed (`joined_leaves`); a name is a
+    field whose value differs from one element to the next (a look's card titles named every train's departure
+    station on tutu.ru), a price the one most options share and not one before a discount."""
     best = None
-    need = min(3, len(options))
+    need = max(2, min(3, len(options)))
+    tables = None
     for path, elements in object_arrays(value):
         if deadline is not None and time.monotonic() > deadline:
             return None
         objects = [element for element in elements[:SITE_OP_ARRAY] if isinstance(element, dict)]
-        leaves = [element_leaves(element) for element in objects]
+        own = [element_leaves(element) + list_minima(element) for element in objects]
+        ready = [prepared_leaves(fields) for fields in own]
+        hits = 0
+        for option in options:
+            if any(match_option(option, fields, base) for fields in ready):
+                hits += 1
+                if hits >= need:
+                    break
+        if hits < need:
+            continue
+        tables = SiteTables(value) if tables is None else tables
+        leaves = [joined_leaves(fields, tables, path) if index < SITE_JOINED else fields
+                  for index, fields in enumerate(own)]
+        ready = [mine + prepared_leaves(fields[len(mine):]) for mine, fields in zip(ready, leaves)]
         pairs, used = [], set()
         for option in options:
             scored = []
-            for index, element_fields in enumerate(leaves):
+            for index, element_fields in enumerate(ready):
                 if index in used:
                     continue
                 roles = match_option(option, element_fields, base)
-                score = 2 * ("link" in roles) + ("name" in roles) + ("price" in roles)
+                score = 2 * ("link" in roles or "link_part" in roles) + ("name" in roles) + ("price" in roles)
                 if score >= 2:
                     scored.append((score, -index, roles))
             if scored:
-                score, index, roles = max(scored, key=lambda s: (s[0], s[1]))
+                _, index, roles = max(scored, key=lambda s: (s[0], s[1]))
                 used.add(-index)
                 pairs.append((option, -index, roles))
-        if len(pairs) < max(2, need):
+        if len(pairs) < need:
             continue
         fields = {}
-        for role in ("name", "price", "link"):
-            counted = collections.Counter(tuple(roles[role]) for _, _, roles in pairs if role in roles)
-            if counted:
-                path_of, count = counted.most_common(1)[0]
-                if count >= 2:
-                    fields[role] = list(path_of) if role != "link" else {"path": list(path_of)}
+        names = collections.Counter(path for _, _, roles in pairs for path in dict.fromkeys(roles.get("names", [])))
+        names = collections.Counter({path: count for path, count in names.items()
+                                     if distinct_share(objects, path, value) >= 0.5})
+        prices = collections.Counter(path for _, _, roles in pairs for path in dict.fromkeys(roles.get("prices", [])))
+        links = collections.Counter(roles["link"] for _, _, roles in pairs if "link" in roles)
+        for role, counted in (("name", names), ("price", prices), ("link", links)):
+            if not counted:
+                continue
+            path_of, count = max(counted.items(), key=lambda item: (item[1], *(price_rank(item[0]) if role == "price"
+                                                                                 else ())))
+            if count < 2:
+                continue
+            fields[role] = list(path_of) if role != "link" else {"path": list(path_of)}
+            if role == "price" and sum(1 for _, _, roles in pairs
+                                       if roles.get("cents") and path_of in roles.get("prices", [])) * 2 > count:
+                fields["cents"] = True
         if "link" not in fields:
-            fields.update(link_of(pairs, objects, leaves, base))
+            fields.update(link_of(pairs, objects, leaves, base, value))
+        if "name" not in fields and "link" not in fields:
+            continue  # prices alone name nothing a person could choose
         key = (len(pairs), len(fields), len(objects))
         if best is None or key > best[0]:
             best = (key, (list(path), len(elements), fields, len(pairs)))
     return best[1] if best else None
 
 
-def link_of(pairs, objects, leaves, page_url):
-    """The link of the pairs' options as a template of their elements' fields, or the results page itself."""
+def link_of(pairs, objects, leaves, page_url, root=None):
+    """The link of the pairs' options as a template of their elements' fields (joined ones too, from `root`), or
+    the results page itself."""
     page = site_link_key(page_url)
     if sum(1 for option, _, _ in pairs if option["url"] and site_link_key(option["url"]) == page) >= 2:
         return {"link": "page"}
@@ -1181,7 +1945,7 @@ def link_of(pairs, objects, leaves, page_url):
         link = {"template": template, "parts": parts,
                 "query": sorted(key for key in page_keys & link_keys if site_key(key))}
         # The template is kept only if it writes each pair's own link from that pair's own element.
-        if all(site_link_key(render_link(link, objects[i], None, host) or "") == site_link_key(o["url"])
+        if all(site_link_key(render_link(link, objects[i], None, host, root) or "") == site_link_key(o["url"])
                for o, i, _ in pairs if o["url"] and site_link_key(o["url"]) is not None):
             counted[json.dumps(link, sort_keys=True)] += 1
     if counted:
@@ -1216,7 +1980,11 @@ class SiteTraffic:
         if resource not in ("xhr", "fetch", "document") or not str(url).startswith("https://"):
             return None
         page_url = url if resource == "document" else (page_url or "")
-        if not same_host(url, page_url) or len(self.entries) >= SITE_TRAFFIC_ENTRIES:
+        # A request of the page's to its site's own API host counts: one under the page's host (api.litres.ru,
+        # offers-api.tutu.ru, api-rs-lb.kupibilet.ru for their www.), never a third party's. A document only on
+        # the page's own host.
+        mine = same_host(url, page_url) if resource == "document" else site_same_place(url, page_url)
+        if not mine or len(self.entries) >= SITE_TRAFFIC_ENTRIES:
             return None
         entry = {"method": str(method or "GET").upper(), "url": url, "page": page_url, "type": resource,
                  "status": None, "mime": "", "size": None}
@@ -1235,8 +2003,11 @@ class SiteTraffic:
 
     @staticmethod
     def wanted(entry):
+        """A body to hold: JSON, a document's HTML, or a request's text/plain (wildberries.ru answers its search so:
+        `operations` reads a body as JSON whatever its type says)."""
         mime = entry["mime"].lower()
-        return entry["status"] == 200 and ("json" in mime or (entry["type"] == "document" and "html" in mime))
+        return entry["status"] == 200 and ("json" in mime or (entry["type"] == "document" and "html" in mime)
+                                           or (entry["type"] != "document" and mime == "text/plain"))
 
     def room(self, size=0):
         """Whether a body of `size` bytes still fits: one up to SITE_TRAFFIC_BODY, all of them SITE_TRAFFIC_BODIES."""
@@ -1385,10 +2156,16 @@ class SiteTraffic:
                 with contextlib.suppress(ValueError):
                     states = [(None, json.loads(text))]
             for selector, value in states:
+                if selector is not None and selector.get("flight"):
+                    value = {**value, SITE_FLIGHT_ROWS: True}
                 best = best_array(value, options, entry["page"], deadline)
                 if best is None:
                     continue
                 path, count, fields, matched = best
+                if any(isinstance(step, str) and step.startswith("\0row:") for step in path):
+                    path = flight_path(value, path)
+                    if path is None:
+                        continue
                 page = site_template(entry["page"])
                 if selector is None:
                     parts = urllib.parse.urlsplit(entry["url"])
@@ -1398,8 +2175,12 @@ class SiteTraffic:
                 else:
                     source = {"kind": "document", "state": selector}
                 operation = {"name": page.split("?")[0].removeprefix("https://")[:120], "page": page,
-                             "source": source, "items": path, "fields": fields,
+                             "source": source, "items": site_path_json(path), "fields": json_fields(fields),
                              "seen": {"items": count, "matched": matched, "of": len(options)}}
+                # A step the data names after the errand (a `with` word, a key, a state's name that is a word of
+                # the page's own query or of a placeholder part of its path) is the errand's value: no operation.
+                if errand_words(entry["page"]) & set(operation_words(operation)):
+                    continue
                 key = operation["name"]
                 if key not in found or (matched, len(fields)) > (found[key]["seen"]["matched"], len(found[key]["fields"])):
                     found[key] = operation
@@ -1435,26 +2216,144 @@ async def site_operations_found(recorder, report, secrets=None, seconds=SITE_OPS
         return []
 
 
+def json_fields(fields):
+    """An operation's fields as JSON: every path's steps as an operation writes them (`site_path_json`)."""
+    out = {}
+    for role, field in fields.items():
+        if role in ("name", "price"):
+            out[role] = site_path_json(field)
+        elif role == "link" and isinstance(field, dict):
+            out[role] = {**field, **({"path": site_path_json(field["path"])} if "path" in field else {}),
+                         **({"parts": [site_path_json(part) for part in field["parts"]]} if "parts" in field else {})}
+        else:
+            out[role] = field
+    return out
+
+
+def flight_path(value, path):
+    """A path found in a flight's rows rewritten so that no row's id is in it (an id changes with every build): the
+    last key before the list looked up from the top (`deep`), when that key is in one place only and finds the same
+    list. None when no key does."""
+    keys = collections.Counter()
+
+    def count(item, depth=0):
+        if depth > 40:
+            return
+        if isinstance(item, dict):
+            for key, inner in item.items():
+                keys[key] += 1
+                count(inner, depth + 1)
+        elif isinstance(item, list):
+            for inner in item:
+                count(inner, depth + 1)
+
+    count(value)
+
+    def walk(steps):
+        current = value
+        for step in steps:
+            if isinstance(step, str) and step.startswith("\0row:"):
+                current = current.get(step[5:]) if isinstance(current, dict) else None
+            else:
+                current = site_walk(current, [step])
+            if current is None:
+                return None
+        return current
+
+    target = walk(path)
+    for index in range(len(path) - 1, -1, -1):
+        step = path[index]
+        if not (isinstance(step, str) and site_key(step)):
+            continue
+        rest = list(path[index + 1:])
+        if any(isinstance(part, str) and part.startswith("\0row:") for part in rest):
+            return None
+        candidate = [site_step({"deep": step})] + rest
+        if keys[step] == 1 and walk(candidate) is target:
+            return candidate
+    return None
+
+
+def errand_words(page_url):
+    """The words of a results page's address that are the errand's: the values of its query a template writes as
+    `%query%` (not a sort's `price.asc` or a flag) and the parts of its path it writes as placeholders, in lower
+    case, of three letters or more."""
+    parts = urllib.parse.urlsplit(page_url or "")
+    template = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(site_template(page_url or "")).query))
+    words = set()
+    for key, value in urllib.parse.parse_qsl(parts.query):
+        if template.get(key) == "%query%":
+            words.update(word for word in site_words(value).split() if len(word) >= 3 and not word.isdigit())
+    for segment in parts.path.split("/"):
+        if site_path_part(segment) != segment:
+            words.update(word for word in site_words(urllib.parse.unquote(segment)).split() if len(word) >= 3)
+    return words
+
+
+def operation_words(operation):
+    """Every key, prefix, `with` word and table key an operation's paths hold, and its state's name, in lower case."""
+    paths = [operation["items"]] + [field if isinstance(field, list) else field.get("path") or []
+                                     for field in operation["fields"].values() if isinstance(field, (list, dict))]
+    link = operation["fields"].get("link")
+    if isinstance(link, dict):
+        paths.extend(link.get("parts") or [])
+    out = []
+    for path in paths:
+        for step in path:
+            if isinstance(step, str):
+                out.append(step)
+            elif isinstance(step, dict):
+                for value in step.values():
+                    out.extend(item for item in (value if isinstance(value, list) else [value]) if isinstance(item, str))
+    state = operation["source"].get("state") or {}
+    out.extend(value for value in state.values() if isinstance(value, str))
+    return [value.lower() for value in out]
+
+
 def site_cards(operation, data, page_url):
     """An operation's data as cards: name, price and link where the operation knows them, and `more`, the
-    element's own fields by their paths, for what the errand asks beyond them."""
-    elements = site_walk(data, operation["items"])
-    if not isinstance(elements, list):
+    element's own fields by their paths and those of the table entries its name and price are joined from (a
+    train's segment: its departure and arrival), for what the errand asks beyond them. A price read past a "*" is
+    the least of its values (a train's classes: the «от» price), one in hundredths (`cents`) in roubles."""
+    elements = site_items(data, operation["items"])
+    if elements is None:
         raise SiteOpFailure("no_data", "the site's data no longer has its list of results: use the page instead")
     host = urllib.parse.urlsplit(operation["page"]).hostname or ""
     fields = operation.get("fields") or {}
+    joins = []
+    for role in ("name", "price"):
+        path = fields.get(role)
+        for index, step in enumerate(path if isinstance(path, list) else []):
+            if isinstance(step, dict) and "at" in step and path[:index + 1] not in joins:
+                joins.append(path[:index + 1])
     cards = []
     for element in elements[:SITE_OP_ARRAY]:
         if not isinstance(element, dict):
             continue
         card = {}
-        for role in ("name", "price"):
-            if isinstance(fields.get(role), list):
-                card[role] = site_walk(element, fields[role])
+        if isinstance(fields.get("name"), list):
+            card["name"] = site_walk(element, fields["name"], data)
+        if isinstance(fields.get("price"), list):
+            prices = site_values(element, fields["price"], data)
+            if "*" in fields["price"]:
+                # A class with no price (a sold-out one's 0) is no «от» price.
+                amounts = [amount for amount in map(site_amount, prices) if amount is not None and amount > 0]
+                card["price"] = min(amounts) if amounts else None
+            else:
+                card["price"] = prices[0] if prices else None
+            if fields.get("cents") and site_amount(card["price"]) is not None:
+                card["price"] = round(site_amount(card["price"]) / 100, 2)
         if "link" in fields:
-            card["link"] = render_link(fields["link"], element, page_url, host)
-        card["more"] = {".".join(map(str, path)): (value[:200] if isinstance(value, str) else value)
-                        for path, value in element_leaves(element)[:SITE_OP_MORE]}
+            card["link"] = render_link(fields["link"], element, page_url, host, data)
+        more = {site_path_text(path): (value[:200] if isinstance(value, str) else value)
+                for path, value in element_leaves(element)[:SITE_OP_MORE]}
+        for join in joins:
+            entry = site_walk(element, join, data)
+            if isinstance(entry, dict):
+                label = str((join[-1]["at"] or ["at"])[-1])
+                for path, value in element_leaves(entry)[:30]:
+                    more.setdefault(f"{label}.{site_path_text(path)}", value[:200] if isinstance(value, str) else value)
+        card["more"] = more
         cards.append(card)
     encoded = len(json.dumps(cards, ensure_ascii=False))
     if encoded > SITE_OP_CHARS:
@@ -1523,10 +2422,10 @@ def site_same_path(url, landed):
 
 def site_state(operation, text):
     """The state of a results document the operation reads its results from (its `source.state`)."""
-    states = [value for selector, value in embedded_states(text) if selector == operation["source"].get("state")]
-    if not states:
+    state = embedded_state(text, operation["source"].get("state") or {})
+    if state is None:
         raise SiteOpFailure("no_data", "the page no longer carries its results as data: read the page instead")
-    return states[0]
+    return state
 
 
 async def site_op_document(page, operation, url, seconds=None):
@@ -1596,7 +2495,7 @@ async def site_op_xhr(page, operation, url, seconds=SITE_OP_S, load_seconds=None
             if response.status != 200 or found.done():
                 return
             data = json.loads(await response.text())
-            if isinstance(site_walk(data, operation["items"]), list):
+            if site_items(data, operation["items"]) is not None:
                 if not found.done():
                     found.set_result(data)
             else:
@@ -1657,15 +2556,21 @@ SITE_SEARCH_KEY = re.compile(r"q|qt|k|kw|s|st|text|query|keywords?|what|phrase|t
 
 def site_query_words(operation, url):
     """The words a results page was asked for: the values of its template's %query% keys that hold a search's words
-    (SITE_SEARCH_KEY), each word of four letters or more as its first four (a stem: «чайники» and «чайник» share
-    it)."""
+    (SITE_SEARCH_KEY), and a `%word%` part of its path written in Cyrillic (2gis.ru's /moscow/search/аптека; a
+    Latin one may be a transliteration no result names: chitai-gorod.ru's /search/dyuna), each word of four letters
+    or more as its first four (a stem: «чайники» and «чайник» share it)."""
     template = urllib.parse.urlsplit(operation["page"])
     keys = {key for key, value in urllib.parse.parse_qsl(template.query)
             if value == "%query%" and SITE_SEARCH_KEY.fullmatch(key)}
+    values = [value for key, value in urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query) if key in keys]
+    wanted = template.path.rstrip("/").split("/")
+    given = urllib.parse.urlsplit(url).path.rstrip("/").split("/")
+    if len(wanted) == len(given):
+        values.extend(urllib.parse.unquote(part) for want, part in zip(wanted, given)
+                      if want == "%word%" and re.search(r"[а-яё]", urllib.parse.unquote(part), re.I))
     words = set()
-    for key, value in urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query):
-        if key in keys:
-            words.update(word[:4] for word in site_words(value).split() if len(word) >= 4 and not word.isdigit())
+    for value in values:
+        words.update(word[:4] for word in site_words(value).split() if len(word) >= 4 and not word.isdigit())
     return words
 
 
@@ -6696,7 +7601,9 @@ SITE_LOOK_LEARN_S = 5
 SITE_LOOK_GATE_S = 4
 SITE_LOOK_CARDS_S = 8
 SITE_LOOK_CARDS = 30
-SITE_LOOK_PRICE = re.compile(r"(\d[\d\s\u00a0\u202f]{0,10}(?:[.,]\d{1,2})?)\s?(?:₽|руб)")
+# A card's price: its digits grouped by thousands, so that a date before it («АКЦИЯ 11.11 1 950 ₽» on
+# wildberries.ru) is not read into it.
+SITE_LOOK_PRICE = re.compile(r"(?<![\d.,])((?:\d{1,3}(?:[\s\u00a0\u202f\u2009]\d{3})+|\d+)(?:[.,]\d{1,2})?)\s?(?:₽|руб)")
 
 
 def site_look_report(cards):
