@@ -409,6 +409,14 @@ function phoneNumbers(phone: string) {
   );
 }
 
+/**
+ * Whether the words carry a whole phone number (ten digits or more, however
+ * grouped): the person gave one themselves, for the form that asks for it.
+ */
+export function givesPhone(words: readonly string[]) {
+  return phoneNumbers(words.join("\n")).some((number) => number.length >= 10);
+}
+
 /** The distinct numbers of the person's phone fields. */
 function ownPhoneNumbers(phones: readonly string[]) {
   return [...new Set(phones.flatMap(phoneNumbers))];

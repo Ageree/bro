@@ -733,7 +733,7 @@ beforeEach(() => {
   readUserProfile.mockResolvedValue(emptyUserProfile);
   readVaultItems.mockResolvedValue([]);
   readVaultSecret.mockResolvedValue(undefined);
-  readAccountPhoneNumber.mockResolvedValue(undefined);
+  readAccountPhoneNumber.mockResolvedValue("+79990000002");
   resolveBrowserSecretBindings.mockResolvedValue({
     aliases: [],
     bindings: [],
@@ -1083,6 +1083,16 @@ describe("browser_task continuation", () => {
       runId: followUpRunId,
       status: "running",
     });
+  });
+
+  it("asks for the person's phone instead of handing a run their approval with no number to type", async () => {
+    readAccountPhoneNumber.mockResolvedValue(undefined);
+
+    await expect(
+      continueErrand({ allowSubmit: true, task: "Да, записывай" })
+    ).rejects.toThrow("phone number is not saved anywhere");
+    expect(queueBrowserUseSessionMessage).not.toHaveBeenCalled();
+    expect(createBrowserUseRun).not.toHaveBeenCalled();
   });
 
   it("hands a live run the person's approval to submit with their details", async () => {
@@ -8500,6 +8510,54 @@ describe("browser_task takes an errand the person asked to be done to its last s
     );
     return String(createBrowserUseRun.mock.calls[0]?.[0].task);
   }
+
+  describe("a person with no phone of their own saved", () => {
+    // 25.10, a table at «ДВ»: a Telegram account has no phone, the run typed
+    // the venue's own number and the site kept its button locked.
+    const book = "забронируй столик в «ДВ» на 19:30 на пятерых";
+
+    beforeEach(() => {
+      readAccountPhoneNumber.mockResolvedValue(undefined);
+    });
+
+    it("is asked for it before an errand done in their name starts", async () => {
+      const tool = await resolvedBrowserTask([], book);
+
+      await expect(
+        tool.execute(
+          {
+            action: "start",
+            personWants: "done",
+            site: "https://yandex.ru",
+            task: "Забронировать столик в ДВ на 19:30",
+          },
+          toolContext("better-auth:alice", "photon-imessage")
+        )
+      ).rejects.toThrow("phone number is not saved anywhere");
+      expect(createBrowserUseRun).not.toHaveBeenCalled();
+    });
+
+    it("starts with the number they wrote in the same message", async () => {
+      const said = `${book}, мой номер +7 921 994-19-00`;
+      const task = await startFor(
+        said,
+        "Забронировать столик в ДВ на 19:30",
+        "done"
+      );
+
+      expect(task).toContain(stagedByPerson);
+    });
+
+    it("is not asked for it where they only look", async () => {
+      const task = await startFor(
+        "найди, где поужинать в пятницу",
+        "Найти ресторан",
+        "look"
+      );
+
+      expect(task).not.toContain(stagedByPerson);
+    });
+  });
 
   it("stages what the person asked to be done, whatever the errand says", async () => {
     // RU 25.09, d13: «забронируй на субботу столик» went out as «Ничего не

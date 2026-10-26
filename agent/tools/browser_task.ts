@@ -131,6 +131,7 @@ import type { AccessScope } from "@shared/identity/access-scope";
 import {
   browserRunFacts,
   contactsNotIn,
+  givesPhone,
   deliveryAddressFor,
   readOwnContacts,
   withoutOwnContacts,
@@ -3479,6 +3480,22 @@ async function codeFromMail(
   throw new Error(mailCodeMissingNote(why));
 }
 
+/**
+ * A booking, an order or a sign-up asks the form for the person's phone, and
+ * Telegram accounts have none saved: the run found no number of theirs,
+ * typed the venue's own into the field (25.10, a table at «ДВ») and stopped
+ * on a button the site kept locked. Bro asks once, before the run starts or
+ * is given the person's details, and keeps the answer for every later errand.
+ */
+const phoneNeededRefusal =
+  "Nothing was started: this errand types the user's details into a site's form, and the user's own phone number is not saved anywhere, so the run would have none to type. Ask the user once, in one short line, for the phone number to put in forms («Какой номер телефона указать? Запомню на будущее»). When they send it, save it as `phone` with the Personal Info update tool (when it is their own), and call browser_task again at once. If they gave a phone in this very conversation for this errand, pass it in personSaid or the errand as they wrote it.";
+
+/** Whether the run is about to get the person's details and has no phone of theirs to type. */
+async function ownPhoneMissing(scope: AccessScope, words: readonly string[]) {
+  const own = await readOwnContacts(scope);
+  return own.phones.length === 0 && !givesPhone(words);
+}
+
 /** How a follow-up's message quotes the person, and marks Bro's addition. */
 const personQuoteLead = "Человек написал: «";
 const coordinatorAddsLead =
@@ -4857,6 +4874,16 @@ async function runBrowserTask(
             forPerson
           )
         : undefined;
+    // A run that gets the person's details and has no phone of theirs to type
+    // is not started: Bro asks for the number first.
+    if (
+      byPerson &&
+      signUp === undefined &&
+      sharesDetails(consent, staging) &&
+      (await ownPhoneMissing(scope, spoken.typed))
+    ) {
+      throw new Error(phoneNeededRefusal);
+    }
     // Their phone and email reach the run only with their details: without
     // them, the errand and the site the model wrote lose them too, here and
     // as stored.
@@ -5343,6 +5370,20 @@ async function runBrowserTask(
     const taskOrigin = row.task.startsWith(personQuoteLead)
       ? await browserRunTaskOrigin(scope, row)
       : "start";
+    // The consent that gives the run the person's details meets the same
+    // check as a start: no phone of theirs saved or given on this errand
+    // asks Bro to ask for it, not a run to type the venue's own number.
+    if (
+      confirmedNow !== undefined &&
+      signUp === undefined &&
+      !mail &&
+      (await ownPhoneMissing(scope, [
+        ...spoken.typed,
+        ...quotedPersonWords(row.task, taskOrigin),
+      ]))
+    ) {
+      throw new Error(phoneNeededRefusal);
+    }
     const contacts = contactCut(
       sharesDetails(
         consent,
