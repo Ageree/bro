@@ -13,6 +13,7 @@ import {
   checkCard,
 } from "@agent/lib/cards/tools";
 import { markTurnDelivered } from "@agent/lib/delivery/holds";
+import { cardWithPartnerLinks } from "@agent/lib/partner-links/rewrite";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { conversationOf } from "@agent/lib/yoomoney/onboarding";
 import { cardWatched, updateCard } from "@db/services/cards";
@@ -149,7 +150,13 @@ export default defineDynamic({
                 );
                 if (checked.refusal)
                   return { card: undefined, problem: checked.refusal.reply };
-                return keepCardPhotos(kept.id, checked.card, kept.card);
+                // Only the new options' links are asked: the kept ones went
+                // out as partner links already.
+                const linked = await cardWithPartnerLinks(
+                  checked.card,
+                  scopeFromPrincipal(current)
+                );
+                return keepCardPhotos(kept.id, linked, kept.card);
               }
             );
             if (!updated)

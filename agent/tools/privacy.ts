@@ -9,6 +9,7 @@ import { schedulesEnabled } from "@agent/lib/schedules/enabled";
 import { resolveModeValue } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { signEnabled } from "@agent/lib/signatures/pilot";
+import { partnerLinksPilot } from "@agent/lib/partner-links/travelpayouts";
 import { yclientsPilot } from "@agent/lib/yclients/api";
 import { agentMailboxEnabled } from "@db/services/agent-mail";
 import { broToBroStanding } from "@db/services/bro-to-bro/enabled";
@@ -113,6 +114,7 @@ export const privacy = defineTool({
           taskKitRoutedWorkspace(scope.workspaceId) ||
           taskJobs,
         ...(location && { location }),
+        ...(partnerLinksPilot(scope) && { partnerLinks: true }),
         phone,
         ...(yclientsPilot(scope) && { yclients: true }),
       }),

@@ -16,6 +16,7 @@ import { withGroupedRoubles } from "../lib/delivery/amounts";
 import { withHttpsLinks, withVisibleLinks } from "../lib/delivery/links";
 import { withExactBroInviteLinks } from "../lib/bro-to-bro/exact-invite";
 import { withExactLoginHandoffLink } from "../lib/login-handoff/exact-link";
+import { messageWithPartnerLinks } from "../lib/partner-links/rewrite";
 import { isSharedFileLink } from "../lib/sandbox/files";
 import {
   knownSharedLinks,
@@ -191,7 +192,8 @@ function withoutBookkeeping(message: SentMessage): SentMessage | undefined {
  * stands for (`sharedLinks`, `withExactSharedLinks`). In the report of an
  * errand the person gave, where Bro's card may carry its options
  * (`cardsDue`, `cardTurnOpener`), a list of options goes back once to be a
- * card (`sendRefusal`).
+ * card (`sendRefusal`). In the partner links' pilot a link to a travel brand
+ * goes out as the owner's partner link (`messageWithPartnerLinks`).
  */
 function defineSendMessage(
   turn: ReturnType<typeof turnSends>,
@@ -226,9 +228,14 @@ function defineSendMessage(
         markTurnDelivered(context.session);
         // «2000 ₽» goes out as «2 000 ₽» (`amounts.ts`).
         const sent = taskReport ? withoutFetchedUrls(outgoing) : outgoing;
-        return sent.kind === "message" && sent.text !== undefined
-          ? { ...sent, text: withGroupedRoubles(sent.text) }
-          : sent;
+        const grouped =
+          sent.kind === "message" && sent.text !== undefined
+            ? { ...sent, text: withGroupedRoubles(sent.text) }
+            : sent;
+        return (
+          messageWithPartnerLinks(grouped, context.session.auth.current) ??
+          grouped
+        );
       };
       if (report === undefined) return emit();
       return renewReportTurn(report, context).then((current) =>

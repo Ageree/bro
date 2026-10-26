@@ -6,6 +6,7 @@ import { keepCardPhotos, photosResult } from "@agent/lib/cards/photos/keep";
 import { updateCardToolName } from "@agent/lib/cards/sent";
 import { sendCardButton } from "@agent/lib/cards/telegram";
 import { markTurnDelivered } from "@agent/lib/delivery/holds";
+import { cardWithPartnerLinks } from "@agent/lib/partner-links/rewrite";
 import {
   cardsPerTurn,
   cardsThisTurn,
@@ -103,10 +104,12 @@ export default defineDynamic({
               "Nothing changed"
             );
             if (pick) return pick;
+            // Before the card's row is locked: Travelpayouts may take a while.
+            const linked = await cardWithPartnerLinks(checked.card, scope);
             const updated = await updateCard(
               scope,
               { conversationId: chat.conversationId, ref },
-              (kept) => keepCardPhotos(kept.id, checked.card, kept.card)
+              (kept) => keepCardPhotos(kept.id, linked, kept.card)
             );
             if (updated === undefined) {
               return {
