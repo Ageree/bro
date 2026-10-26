@@ -204,7 +204,9 @@ describe("Bro's own read of a site it has read before", () => {
         url,
       })
     ).toContain("neither filtered nor sorted");
-    // A second start on the site in the session wants what the read did not give: the browser.
+    // A second start of the same search in the session wants what the read
+    // did not give: its next page, and a page with nothing new is the
+    // browser's.
     expect(
       await readSiteDirectly(scope, {
         errand,
@@ -213,7 +215,11 @@ describe("Bro's own read of a site it has read before", () => {
         site: "https://www.hh.ru",
       })
     ).toBeUndefined();
-    expect(browser.readBrowserVmSiteDirectly).toHaveBeenCalledTimes(1);
+    expect(browser.readBrowserVmSiteDirectly).toHaveBeenCalledTimes(2);
+    const next = browser.readBrowserVmSiteDirectly.mock.calls[1]?.[1];
+    expect(
+      new URL(next?.url ?? "https://none.invalid/").searchParams.get("page")
+    ).toBe("1");
   });
 
   it("has the site sort its whole search by price, reads the order back, and pages the same search when asked for more", async () => {
@@ -290,7 +296,7 @@ describe("Bro's own read of a site it has read before", () => {
     ]);
     if (next === undefined) throw new Error("no next page");
     expect(siteReadNote(next)).toContain("page 2 of the same search");
-    // «More» with other words, or a new bound, is a new search: the site's pages.
+    // «More» of other words, or with a new bound, is something else: the site's pages.
     for (const output of [
       { priceMax: null, url: "https://www.ozon.ru/search/?text=утюг" },
       { priceMax: 2000, url: "https://www.ozon.ru/search/?text=чайник" },
@@ -310,12 +316,33 @@ describe("Bro's own read of a site it has read before", () => {
         await readSiteDirectly(scope, { ...site, sessionId: "o" })
       ).toBeUndefined();
     }
-    // The same search again without asking for more wants the site's pages.
+    // The same search again, «more» or not («the next ones by price» on the
+    // owner's Ozon, 26.10), wants more than it gave: the next page.
     fillOzon(false);
-    expect(
-      await readSiteDirectly(scope, { ...site, sessionId: "o" })
-    ).toBeUndefined();
-    expect(browser.readBrowserVmSiteDirectly).toHaveBeenCalledTimes(2);
+    browser.readBrowserVmSiteDirectly.mockResolvedValue(kettles([210, 220], 7));
+    const third = await readSiteDirectly(scope, { ...site, sessionId: "o" });
+    expect(askedOf(2).address.searchParams.get("page")).toBe("3");
+    expect(third?.page).toBe(2);
+    // Another search is read afresh, from its first page.
+    model.generateText.mockResolvedValue({
+      output: {
+        limit: null,
+        more: false,
+        operation: "www.ozon.ru/search/",
+        priceMax: null,
+        priceMin: null,
+        sort: "site",
+        url: "https://www.ozon.ru/search/?text=утюг&deny_category_prediction=true",
+      },
+    });
+    browser.readBrowserVmSiteDirectly.mockResolvedValue(
+      kettles([1500, 1700, 1900], 20)
+    );
+    const irons = await readSiteDirectly(scope, { ...site, sessionId: "o" });
+    expect(askedOf(3).address.searchParams.get("page")).toBeNull();
+    expect(askedOf(3).address.searchParams.get("text")).toBe("утюг");
+    expect(irons?.page).toBe(0);
+    expect(browser.readBrowserVmSiteDirectly).toHaveBeenCalledTimes(4);
     // A site that no longer sorts as asked: its page's cards are sorted here.
     fillOzon(false);
     browser.readBrowserVmSiteDirectly.mockResolvedValue(
@@ -346,7 +373,7 @@ describe("Bro's own read of a site it has read before", () => {
       ...site,
       sessionId: "q",
     });
-    const plain = askedOf(4);
+    const plain = askedOf(6);
     expect(plain.address.searchParams.has("sorting")).toBe(false);
     expect(plain.sort).toBe("price_asc");
     expect(relevant?.order).toBe("picked");

@@ -92,7 +92,7 @@ const fillSchema = z.object({
 
 const fillInstructions = `You fill a website's results-page address for an errand. You get the errand, today's date, and the site's known results pages as templates: each %placeholder% in a template stands for a value the site writes there, and every other part of the address stays exactly as the template writes it — except a part of the path that names a place, a brand, a model or a category (a city such as kazan, a make such as toyota), which you write for this errand the way the site writes it in its addresses. Use the site's note for how it writes its values. Leave out a query key the errand gives no value for; never add a key the template does not have.
 Answer {"operation": the name of the template you used or null, "url": the filled address or null, "sort": "price_asc", "price_desc" or "site" — the order the errand wants the results in, "priceMin" and "priceMax": the bounds of the price the errand names or null, "limit": how many results the errand asks for, or null, "more": true when the errand asks for more options of a search already shown (ещё, другие, следующие), else false}.
-An errand to find, pick, choose, compare or show options is a search the templates are for. Answer operation null when no template fits the errand: it asks for another kind of page, for something to be booked, bought, sent or signed in to, or for a detail only an item's own page has. A price bound or a count the template has no key for is no reason for null: give it in priceMin, priceMax and limit. The words of a %query% are only what to search for, never the site's name or the errand's other conditions.`;
+An errand to find, pick, choose, compare or show options on the site is a search, and a template that searches the site (one with a %query%) or lists the kind of options the errand wants fits it: use that template. Whatever else the errand says — a rating or reviews to check, things to leave out, delivery, stock, a screenshot, how to report, other sites to try if this one has nothing — is never a reason for null: Bro picks among the results itself. A price bound or a count goes in priceMin, priceMax and limit. Answer operation null only when the errand is no such search: it asks for something to be booked, bought, sent or signed in to, for one item's own page, or for a kind of page no template lists (an errand about trains with only a template of hotels). The words of a %query% are only what to search for, never the site's name or the errand's other conditions.`;
 
 /**
  * Bro's errand as one of the site's results pages, by a small model call
@@ -100,6 +100,15 @@ An errand to find, pick, choose, compare or show options is a search the templat
  * about 0.01 ₽ on the stand (25.10), and 11 errands of 11 filled right or
  * left for the browser (a booking, a vacancy's own page). Undefined on any
  * failure: the errand goes on as one.
+ *
+ * A search with the errand's own conditions (a rating to check, things to
+ * leave out, a screenshot, other sites to try) is still a search: on the
+ * owner's Ozon (26.10) such an errand got operation null and went to the
+ * browser, 69 s instead of 23. The 41 errands Bro wrote in the 48-site
+ * benchmark, four fills each on RunInfra as in production: 143 of 164
+ * chose the search before the instructions said so, 162 after; a purchase,
+ * a booking, a sign-in, an item's own page or a kind of page no template
+ * lists stayed null, 42 of 42.
  */
 async function fillSiteRead(
   scope: AccessScope,
@@ -221,10 +230,10 @@ function lookedRecently(workspaceId: string, site: string, now: number) {
 const servedForMs = 10 * 60_000;
 
 /**
- * The last direct read of a site, by session and host: a second start there
- * wants what the read did not give — the next page of the same search when
- * the errand asks for more and the site has pages (`inputs.page`), the
- * site's own pages in the browser otherwise.
+ * The last direct read of a site, by session and host: a second start of
+ * the same search wants what the read did not give — its next page when the
+ * site has pages (`inputs.page`), the site's own pages in the browser
+ * otherwise; another search is read afresh.
  */
 interface ServedRead {
   /** What the search asked of the site, its inputs already in `search`. */
@@ -416,19 +425,6 @@ async function readSite(
     return undefined;
   }
   const operations = await siteOperationsFor(scope.workspaceId, input.site);
-  // A second start after a read wants more than it gave: a next page of the
-  // same search, or the site's own pages.
-  if (
-    previous !== undefined &&
-    !operations.some(({ inputs }) => inputs?.page !== undefined)
-  ) {
-    console.info("[site-api] left to the browser", {
-      host,
-      reason: "served",
-      workspaceId: scope.workspaceId,
-    });
-    return undefined;
-  }
   if (operations.length === 0) {
     if (siteColdPilot(scope)) return lookSite(scope, input, began);
     console.info("[site-api] left to the browser", {
@@ -487,34 +483,43 @@ async function readSite(
     sort: fill?.sort ?? "site",
   };
   let personSort = first.sort;
-  if (previous !== undefined) {
-    // More of the same search is its next page, whatever words the fill
-    // gave the search this time («электрический чайник» for «чайники» on
-    // the owner's Ozon, 26.10) while they share one; new words, a new bound
-    // or another order are a new search, and anything else is the site's
-    // pages.
-    if (
-      fill?.more !== true ||
-      operation.inputs?.page === undefined ||
-      previous.operation !== operation.name ||
-      !sameSearch(operation, previous, url, first)
-    ) {
-      console.info("[site-api] left to the browser", {
-        fillMs,
-        host,
-        more: fill?.more ?? null,
-        reason: "served",
-        workspaceId: scope.workspaceId,
-      });
-      return undefined;
-    }
-    search = previous.search;
-    first = previous.ask;
-    personSort = previous.sort;
+  // A second start on the same search wants more than the read gave: its
+  // next page, whatever words the fill gave the search this time
+  // («электрический чайник» for «чайники» on the owner's Ozon, 26.10) while
+  // they share one, and whether or not the fill took it for «more» — Bro
+  // writes «the next ones by price, skip the first twenty» (26.10, `more`
+  // false); the browser when the site has no pages. New words, a new bound
+  // or another order are a new search, read afresh; «more» of something
+  // else is the site's own pages.
+  const continued =
+    previous !== undefined &&
+    previous.operation === operation.name &&
+    sameSearch(operation, previous, url, first)
+      ? previous
+      : undefined;
+  if (
+    previous !== undefined &&
+    (continued === undefined
+      ? fill?.more === true
+      : operation.inputs?.page === undefined)
+  ) {
+    console.info("[site-api] left to the browser", {
+      fillMs,
+      host,
+      more: fill?.more ?? null,
+      reason: "served",
+      workspaceId: scope.workspaceId,
+    });
+    return undefined;
+  }
+  if (continued !== undefined) {
+    search = continued.search;
+    first = continued.ask;
+    personSort = continued.sort;
   }
   const ask: SiteAsk = {
     ...first,
-    page: previous === undefined ? 0 : previous.page + 1,
+    page: continued === undefined ? 0 : continued.page + 1,
   };
   // The inputs the address holds: the search's own sort is left out when
   // its cheapest named nothing searched (below).
@@ -616,7 +621,7 @@ async function readSite(
     order = "picked";
   }
   if (ask.page > 0) {
-    const shown = new Set(previous?.links);
+    const shown = new Set(continued?.links);
     cards = cards.filter(({ link }) => !link || !shown.has(link));
     if (cards.length === 0) {
       console.info("[site-api] left to the browser", {
@@ -641,7 +646,7 @@ async function readSite(
     ask: searchAsk,
     at: Date.now(),
     links: [
-      ...(ask.page > 0 ? (previous?.links ?? []) : []),
+      ...(ask.page > 0 ? (continued?.links ?? []) : []),
       ...cards.flatMap(({ link }) => (link ? [link] : [])),
     ],
     operation: operation.name,
