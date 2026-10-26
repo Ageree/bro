@@ -2475,6 +2475,11 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   fetch за 8 с (21 с до ответа против 66–148 с браузером). Поэтому страница с 401/403/429 ждёт до `SITE_CHECK_S`
   (8 с), пока скрипт проверки сам её перезагрузит (`site_goto`; тест — `SiteCheckChromeTest`). Отказ `blocked`
   отправляет быстрый путь сайта отдыхать на 10 мин: повтор раньше — `resting` в `[site-api] left to the browser`.
+  Ожидание вживую не проверено: тестовый аккаунт Озон закрыл целиком (и поручение кончилось `NEEDS: captcha`).
+  Слова поиска в пути (labirint.ru `/search/мастер и маргарита/`) worker до 2026-10-26.3 писал `%id%`, и модель
+  заполнения не брала такой шаблон для поиска (`chose: null`, как superjob): теперь часть пути из нескольких слов —
+  `%query%`, её значение может нести пробелы (`SITE_QUERY_PART`, `queryPart` в `operation.ts`), а Бро не даёт такую
+  операцию worker старше .3. Labirint, petrovich и kinopoisk — просмотренные html-операции (`known.ts`).
 - Отчёт сразу после `done` (`BROWSER_FAST_DELIVERY_WORKSPACES`, id или `*`; с 25.10 в проде `*`; откат — снять флаг): Bro узнавал о конце
   запуска опросом — тик `browser-runs` живёт 45 с из 60, так что отчёт приходил через 3–19 с после конца запуска.
   Теперь старт запуска несёт `notify.url` (`/eve/v1/browser-run-ended`, `agent/channels/browser-run-ended.ts`), а worker (≥ 2026-10-25.8)

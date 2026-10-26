@@ -478,6 +478,45 @@ describe("a site's operation as Bro keeps it", () => {
     }
   });
 
+  it("reads a search's words with spaces in a part of the path the template writes as a query", () => {
+    // labirint.ru writes the search in its path (26.10): as `%id%` the fill took it for one book's page.
+    const labirint = siteOperationSchema.parse({
+      fields: { link: { path: ["link"] }, name: ["name"], price: ["price"] },
+      items: [],
+      name: "www.labirint.ru/search/%query%/",
+      page: "https://www.labirint.ru/search/%query%/?stype=%number%",
+      seen: { items: 60, matched: 0, of: 0 },
+      source: {
+        cells: {
+          link: { attribute: "href", selector: "a.product-card__img" },
+          name: { selector: "a.product-card__name" },
+        },
+        kind: "html",
+        render: false,
+        rows: "div.product-card",
+      },
+    });
+    expect(siteOperationWorker(labirint)).toBe("2026-10-26.3");
+    for (const address of [
+      "https://www.labirint.ru/search/анна каренина/?stype=0",
+      "https://www.labirint.ru/search/%D0%B0%D0%BD%D0%BD%D0%B0%20%D0%BA%D0%B0%D1%80%D0%B5%D0%BD%D0%B8%D0%BD%D0%B0/",
+      "https://www.labirint.ru/search/гарри поттер 3/",
+    ]) {
+      expect(siteReadFit(labirint, address)).toBe("exact");
+    }
+    for (const address of [
+      "https://www.labirint.ru/search/анна/каренина/",
+      "https://www.labirint.ru/search/%25query%25/",
+      "https://www.labirint.ru/search/a%3Cb/",
+    ]) {
+      expect(siteReadFit(labirint, address)).toBeUndefined();
+    }
+    // A word the template kept, or a `%word%`, takes no spaces still.
+    expect(
+      siteReadFit(kazan, "https://ostrovok.ru/hotel/russia/nizhny novgorod/")
+    ).toBeUndefined();
+  });
+
   it("widens an operation that read a loose page: its path's other words become placeholders", () => {
     const wider = widenedSiteOperation(
       kazan,

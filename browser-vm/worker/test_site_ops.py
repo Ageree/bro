@@ -205,6 +205,11 @@ class SiteTrafficTest(unittest.IsolatedAsyncioTestCase):
             "https://site.ru/p/a@b": "https://site.ru/p/%id%",
             "https://site.ru/street/ulitsa-bolshaya-sadovaya-dom": "https://site.ru/street/%word%",
             "https://site.ru/v2/list": "https://site.ru/%id%/list",
+            # A search's words in the path (labirint.ru, 26.10): a query, not one item's id.
+            "https://www.labirint.ru/search/%D0%BC%D0%B0%D1%81%D1%82%D0%B5%D1%80%20%D0%B8%20%D0%BC%D0%B0%D1%80%D0%B3%D0%B0"
+            "%D1%80%D0%B8%D1%82%D0%B0/?stype=0": "https://www.labirint.ru/search/%query%/?stype=%number%",
+            "https://site.ru/search/harry+potter+3": "https://site.ru/search/%query%",
+            "https://site.ru/p/12%2034": "https://site.ru/p/%id%",
         }
         for url, template in cases.items():
             self.assertEqual(worker.site_template(url), template, url)
@@ -725,6 +730,20 @@ class StateAndShapeTest(unittest.IsolatedAsyncioTestCase):
         chitai = {"page": "https://www.chitai-gorod.ru/search/%word%"}
         self.assertTrue(worker.site_op_answers(chitai, "https://www.chitai-gorod.ru/search/dyuna",
                                                [{"name": "Дюна", "more": {}}]))
+
+    def test_a_search_in_the_path_takes_its_words_with_spaces_and_is_asked_for(self):
+        labirint = {"page": "https://www.labirint.ru/search/%query%/?stype=%number%"}
+        fit = worker.site_template_fit
+        for url in ("https://www.labirint.ru/search/%D0%B0%D0%BD%D0%BD%D0%B0%20%D0%BA%D0%B0%D1%80%D0%B5%D0%BD%D0%B8"
+                    "%D0%BD%D0%B0/?stype=0", "https://www.labirint.ru/search/анна+каренина/"):
+            self.assertEqual(fit(labirint["page"], url), "exact", url)
+        for url in ("https://www.labirint.ru/search/анна/каренина/", "https://www.labirint.ru/search/a%3Cb/"):
+            self.assertIsNone(fit(labirint["page"], url), url)
+        # A word the template kept, or a `%word%`, takes no spaces still.
+        self.assertIsNone(fit("https://2gis.ru/moscow/search/%word%", "https://2gis.ru/moscow/search/a%20b"))
+        url = "https://www.labirint.ru/search/%D0%B0%D0%BD%D0%BD%D0%B0%20%D0%BA%D0%B0%D1%80%D0%B5%D0%BD%D0%B8%D0%BD%D0%B0/"
+        self.assertTrue(worker.site_op_answers(labirint, url, [{"name": "Анна Каренина. Роман", "more": {}}]))
+        self.assertFalse(worker.site_op_answers(labirint, url, [{"name": "Мастер и Маргарита", "more": {}}]))
 
 
 class DirectSetup(unittest.IsolatedAsyncioTestCase):

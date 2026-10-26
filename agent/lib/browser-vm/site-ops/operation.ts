@@ -534,10 +534,16 @@ function siteOperationName(page: string) {
  * An older worker reads no such state or step and answers `no_data`, which
  * would count against a sound operation; it reads a price in hundredths as
  * roubles; one from 26.10 again (`.2`) for an html operation, which an
- * older worker does not read at all. Undefined when any worker reads it.
+ * older worker does not read at all, and (`.3`) for a page whose path holds
+ * a search's words (`%query%`), which an older one refuses. Undefined when
+ * any worker reads it.
  */
 export function siteOperationWorker(operation: SiteOperation) {
   const { fields, items, source } = operation;
+  const pages = [operation.page, ...("url" in source ? [source.url] : [])];
+  if (pages.some((page) => splitAddress(page)?.path.includes("%query%"))) {
+    return pathQueryWorker;
+  }
   if (source.kind === "html") return rowsReadingWorker;
   const link = fields.link === "page" ? undefined : fields.link;
   const paths = [
@@ -561,6 +567,9 @@ const stateReadingWorker = "2026-10-26.1";
 // The worker that reads a page's rows (`site_op_rows`): an older one leaves
 // an html operation out of a run's operations and refuses it in /v1/op.
 const rowsReadingWorker = "2026-10-26.2";
+// The worker that fills a `%query%` part of a path with words and spaces
+// (`site_template_fit`): an older one refuses such a page in /v1/op.
+const pathQueryWorker = "2026-10-26.3";
 
 export function siteOperationHost(page: string) {
   return splitAddress(page)?.host ?? "";
@@ -647,6 +656,9 @@ export function mergeSiteOperations(
 // A part of an address's path that a `loose` page may hold where its template
 // has a word (`site_template_fit` in browser-vm/worker/worker.py, SITE_LOOSE_PART).
 const loosePart = /^[\p{L}\p{N}_.-]{1,60}$/u;
+// What a `%query%` part of a path holds: a search's words, spaces between
+// them (labirint.ru's /search/анна каренина/; SITE_QUERY_PART in the worker).
+const queryPart = /^[\p{L}\p{N}_\-.,'"«»+:!?&() ]{1,120}$/u;
 
 /**
  * How an address fits an operation's results page, as the worker decides it
@@ -682,7 +694,11 @@ export function siteReadFit(operation: SiteOperation, address: string) {
     const filled = placeholder.test(part);
     if (!filled && decodeURIComponentSafe(part) === value) continue;
     // A placeholder's value is one part of a path all the same: no slash.
-    if (part === "" || value === undefined || !loosePart.test(value)) {
+    if (
+      part === "" ||
+      value === undefined ||
+      !(part === "%query%" ? queryPart : loosePart).test(value)
+    ) {
       return undefined;
     }
     if (!filled) fit = "loose";

@@ -21,7 +21,11 @@ import type { SiteOperation } from "./operation";
  * from its other atoms by its id; wildberries.ru asks its own host for the
  * search and prices it in kopecks; tutu.ru asks its API host, and a train's
  * number is three tables away from its offer; litres.ru's results are in
- * its Next.js flight; youla.ru asks its GraphQL host.
+ * its Next.js flight; youla.ru asks its GraphQL host. labirint.ru,
+ * petrovich.ru and kinopoisk.ru keep their results in no data at all: their
+ * rows are read from the results document by the site's own hooks (the
+ * worker's look, 26.10), each read live again on the stand; labirint.ru
+ * writes the search's words in its path.
  */
 export const knownSiteOperations: readonly SiteOperation[] = [
   {
@@ -169,6 +173,63 @@ export const knownSiteOperations: readonly SiteOperation[] = [
       kind: "xhr",
       method: "POST",
       url: "https://api-gw.youla.ru/graphql",
+    },
+  },
+  {
+    about:
+      "price is the price with the site's discount, in roubles; a book's other editions are results of their own",
+    fields: { link: { path: ["link"] }, name: ["name"], price: ["price"] },
+    items: [],
+    name: "www.labirint.ru/search/%query%/",
+    page: "https://www.labirint.ru/search/%query%/",
+    seen: { items: 60, matched: 4, of: 4 },
+    source: {
+      cells: {
+        link: { attribute: "href", selector: "a.product-card__img" },
+        name: { attribute: "data-name", selector: ":scope" },
+        price: { attribute: "data-discount-price", selector: ":scope" },
+      },
+      kind: "html",
+      render: false,
+      rows: "div.product-card",
+    },
+  },
+  {
+    about:
+      "price is the shop's price in Moscow, in roubles, as the site writes it",
+    fields: { link: { path: ["link"] }, name: ["name"], price: ["price"] },
+    items: [],
+    name: "moscow.petrovich.ru/search/",
+    page: "https://moscow.petrovich.ru/search/?q=%query%",
+    seen: { items: 20, matched: 3, of: 3 },
+    source: {
+      cells: {
+        link: { attribute: "href", selector: 'a[data-test="product-link"]' },
+        name: { selector: 'span[data-test="product-title"]' },
+        price: { selector: 'p[data-test="product-gold-price"]' },
+      },
+      kind: "html",
+      render: false,
+      rows: "div.page-item",
+    },
+  },
+  {
+    about:
+      "films, series and people named by the search, the best match first; no price",
+    fields: { link: { path: ["link"] }, name: ["name"] },
+    items: [],
+    name: "www.kinopoisk.ru/index.php",
+    page: "https://www.kinopoisk.ru/index.php?kp_query=%query%",
+    seen: { items: 12, matched: 3, of: 4 },
+    source: {
+      cells: {
+        link: { attribute: "href", selector: "p.name a.js-serp-metrika" },
+        name: { selector: "p.name a.js-serp-metrika" },
+      },
+      kind: "html",
+      render: false,
+      rows: "div.element",
+      twins: true,
     },
   },
 ];
