@@ -8926,6 +8926,32 @@ describe("browser_task takes an errand the person asked to be done to its last s
       );
     });
 
+    it("passes on a number the person gave earlier on the errand to the follow-up of a turn Bro opened", async () => {
+      // The booking form stayed locked on «Укажите телефон»: the person had
+      // sent their number, but the report turn's follow-up had it cut.
+      ownContacts();
+      browserRunTaskOrigin.mockResolvedValue("follow-up");
+      readBrowserRunForScope.mockResolvedValue({
+        ...browserRunRow(new Date(), "Needs: none"),
+        task: "Человек написал: «8 999 000 00 01»",
+      });
+      const tool = await resolvedBrowserTask([], reportOpening);
+
+      const result = await tool.execute(
+        {
+          action: "continue",
+          personWants: "look",
+          runId,
+          task: "Впиши в поле «Телефон» номер 8 999 000 00 01 и подтверди бронь",
+        },
+        toolContext("better-auth:alice", "browser-result")
+      );
+
+      const task = String(createBrowserUseRun.mock.calls[0]?.[0].task);
+      expect(contactsIn(task)).toMatchObject({ phone: true, phoneCut: false });
+      expect(continuationNote(result)).not.toContain("was cut");
+    });
+
     it("cuts a start's errand that only opens like the person's quote", async () => {
       // The model wrote it at the start, uncut on the person's card; only a
       // follow-up's row holds a quote the tool wrote.
