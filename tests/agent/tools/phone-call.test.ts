@@ -300,4 +300,28 @@ describe("phone-call in GPT-Live", () => {
       );
     })
   );
+
+  it(
+    "tries GPT-Live once more before falling back to ElevenLabs",
+    inContext(async () => {
+      const { LiveCallUnavailableError } =
+        await import("@agent/lib/phone/live/call");
+      services.liveCalls.mockReturnValue(true);
+      services.placeLiveCall
+        .mockRejectedValueOnce(
+          new LiveCallUnavailableError("GPT-Live connection failed.")
+        )
+        .mockResolvedValueOnce({
+          sessionId: "live_2",
+          dial: vi.fn<() => void>(),
+          cancel: vi.fn<() => void>(),
+        });
+      const phone = await setUp([person("Набери +7 495 123-45-67")]);
+      const target = "+74951234567";
+      await phone.decide("call-1", { target, task });
+      await phone.dial("call-1", { target, task });
+      expect(services.placeLiveCall).toHaveBeenCalledTimes(2);
+      expect(services.startCall).not.toHaveBeenCalled();
+    })
+  );
 });

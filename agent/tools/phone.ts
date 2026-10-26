@@ -305,24 +305,37 @@ async function placeCall(
     started.id
   ).catch(() => false);
   if (liveCallsFor(scope.workspaceId)) {
-    // GPT-Live first; when it throws, nothing reached the carrier, and ElevenLabs places the same call.
-    let live: Awaited<ReturnType<typeof placeLiveCall>> | null = null;
-    try {
-      live = await placeLiveCall({
-        callId: started.id,
-        sipId: number.sipId,
-        publicNumber: number.number,
-        target,
-        task: input.task,
-        familiar: input.familiar,
-        repeatCall,
-      });
-    } catch (error) {
-      if (!(error instanceof LiveCallUnavailableError)) throw error;
-      console.warn("[phone-live] not ready, the call goes through ElevenLabs", {
-        reason: error.message,
-      });
-    }
+    // GPT-Live first; when it throws, nothing reached the carrier, and ElevenLabs places the same call. The
+    // path to OpenAI (a US proxy) drops out for minutes at a time (26.10: three calls in 30 minutes fell to an
+    // ElevenLabs account without credits), so a second try comes before the fallback.
+    const tryLive = async (
+      attempt: number
+    ): Promise<Awaited<ReturnType<typeof placeLiveCall>> | null> => {
+      try {
+        return await placeLiveCall({
+          callId: started.id,
+          sipId: number.sipId,
+          publicNumber: number.number,
+          target,
+          task: input.task,
+          familiar: input.familiar,
+          repeatCall,
+        });
+      } catch (error) {
+        if (!(error instanceof LiveCallUnavailableError)) throw error;
+        const again = attempt < 2;
+        console.warn(
+          again
+            ? "[phone-live] not ready, trying once more"
+            : "[phone-live] not ready, the call goes through ElevenLabs",
+          { reason: error.message }
+        );
+        if (!again) return null;
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        return tryLive(attempt + 1);
+      }
+    };
+    const live = await tryLive(1);
     if (live) {
       try {
         await recordCallAccepted(started.id, live.sessionId);
