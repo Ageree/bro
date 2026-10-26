@@ -83,6 +83,20 @@ describe("a workspace's site operations", { timeout: 30_000 }, () => {
     expect(
       await run.siteOperationsFor(bob.workspaceId, "https://www.tutu.ru")
     ).toEqual([]);
+    // A run that ended on the site's section host found it there: the
+    // errand names the site.
+    const cars = {
+      ...trains,
+      name: "auto.drom.ru/kia/rio/",
+      page: "https://auto.drom.ru/kia/rio/",
+      source: { ...trains.source, url: "https://auto.drom.ru/api/bulls" },
+    };
+    await run.rememberSiteOperations(alice.workspaceId, [cars]);
+    expect(
+      (await run.siteOperationsFor(alice.workspaceId, "https://drom.ru")).map(
+        (operation) => operation.name
+      )
+    ).toEqual([cars.name]);
     // The reviewed ones are everybody's.
     expect(
       (await run.siteOperationsFor(bob.workspaceId, "https://hh.ru")).map(
@@ -109,12 +123,25 @@ describe("a workspace's site operations", { timeout: 30_000 }, () => {
       name: "hh.ru/search/resume",
       page: "https://hh.ru/search/resume?text=%query%",
     };
+    // The same search on the person's city host.
+    const city = {
+      ...vacancies,
+      name: "blagoveschensk.hh.ru/search/vacancy",
+      page: "https://blagoveschensk.hh.ru/search/vacancy?text=%query%",
+    };
     // A run that read the reviewed page with op() finds it again: not kept.
-    await run.rememberSiteOperations(alice.workspaceId, [vacancies, resumes]);
+    await run.rememberSiteOperations(alice.workspaceId, [
+      vacancies,
+      resumes,
+      city,
+    ]);
     const rows = await client.query<{ name: string }>(
-      "SELECT name FROM browser_site_operations"
+      "SELECT name FROM browser_site_operations ORDER BY name"
     );
-    expect(rows.rows).toEqual([{ name: "hh.ru/search/resume" }]);
+    expect(rows.rows).toEqual([
+      { name: "blagoveschensk.hh.ru/search/vacancy" },
+      { name: "hh.ru/search/resume" },
+    ]);
     // Its row of health alone (no run found it), or a find under another
     // name on the reviewed one's host, never reads in its place: the
     // reviewer's words about the fields stay.

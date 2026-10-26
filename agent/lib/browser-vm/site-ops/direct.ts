@@ -232,7 +232,7 @@ function servedRecently(sessionId: string, site: string, now: number) {
  * root or a worker before the fast path, a browser that did not come up).
  */
 const restMs = 10 * 60_000;
-/** Until when, by workspace and host (`*` for every host). */
+/** Until when, by workspace and the errand's site host (`*` for every host): an operation may read a subdomain of it. */
 const resting = new Map<string, number>();
 
 function hostOf(address: string) {
@@ -389,7 +389,7 @@ async function readSite(
       operation: operation.name,
       status: cause instanceof BrowserVmWorkerError ? cause.status : null,
     });
-    restAfter(scope.workspaceId, hostOf(url), cause);
+    restAfter(scope.workspaceId, host, cause);
     return undefined;
   });
   const timing = {
@@ -406,7 +406,7 @@ async function readSite(
       reason: read.reason,
     });
     if (read.reason === "failed" || read.reason === "blocked") {
-      rest(scope.workspaceId, hostOf(url));
+      rest(scope.workspaceId, host);
     }
     await noteSiteOperationRead(scope.workspaceId, operation.name, {
       fit: read.fit,
@@ -503,7 +503,7 @@ async function lookSite(
     if (!(cause instanceof BrowserVmWorkerError && cause.status === 400)) {
       looked.delete(key);
     }
-    restAfter(scope.workspaceId, hostOf(url), cause);
+    restAfter(scope.workspaceId, hostOf(input.site), cause);
     return undefined;
   });
   const timing = {

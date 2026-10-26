@@ -13,6 +13,7 @@ import {
   type foundSiteOperationsSchema,
   mergeSiteOperations,
   type siteOperationCallsSchema,
+  sameSiteHost,
   siteOperationHost,
   siteOperationOnSite,
   siteOperationSchema,
@@ -79,7 +80,9 @@ export async function siteOperationsFor(
     const operation = parsed.data;
     return siteOperationOnSite(operation, site) &&
       !reviewed.has(operation.name) &&
-      !reviewedHosts.has(siteOperationHost(operation.page)) &&
+      ![...reviewedHosts].some((host) =>
+        sameSiteHost(host, siteOperationHost(operation.page))
+      ) &&
       usable(operation)
       ? [operation]
       : [];

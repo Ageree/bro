@@ -279,6 +279,35 @@ describe("Bro's own read of a site it has read before", () => {
       scope.workspaceId,
       camry.name
     );
+    // The section's find is the site's: an errand that names drom.ru reads it,
+    // and a page that turned the browser away rests drom.ru, not the host the
+    // operation read.
+    model.generateText.mockClear();
+    filled("https://auto.drom.ru/kia/rio/", camry.name);
+    browser.readBrowserVmSiteDirectly.mockResolvedValue({
+      fit: "exact",
+      ms: 900,
+      ok: false,
+      reason: "blocked",
+    });
+    const errandOnSite = {
+      errand: "Подбери Kia Rio на drom до 1,2 млн",
+      note: undefined,
+      site: "https://drom.ru",
+    };
+    expect(
+      await readSiteDirectly(scope, { ...errandOnSite, sessionId: "s3" })
+    ).toBeUndefined();
+    expect(model.generateText).toHaveBeenCalledTimes(1);
+    model.generateText.mockClear();
+    expect(
+      await readSiteDirectly(scope, {
+        ...errandOnSite,
+        sessionId: "s4",
+        site: "https://www.drom.ru",
+      })
+    ).toBeUndefined();
+    expect(model.generateText).not.toHaveBeenCalled();
   });
 
   it("looks at the results page a model names on a site with no operation, and keeps the one behind its cards", async () => {

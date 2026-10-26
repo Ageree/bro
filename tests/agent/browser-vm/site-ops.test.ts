@@ -142,10 +142,20 @@ describe("a site's operation as Bro keeps it", () => {
     expect(siteOperationSchema.safeParse(plain).success).toBe(true);
   });
 
-  it("is the site's only on its own host, www. aside", () => {
+  it("is the site's on its own host and the site's subdomains, never a neighbour's", () => {
     expect(siteOperationOnSite(kazan, "https://www.ostrovok.ru")).toBe(true);
     expect(siteOperationOnSite(kazan, "https://ostrovok.ru/hotel")).toBe(true);
-    expect(siteOperationOnSite(kazan, "https://m.ostrovok.ru")).toBe(false);
+    expect(siteOperationOnSite(kazan, "https://m.ostrovok.ru")).toBe(true);
+    const city = {
+      ...kazan,
+      name: "kazan.ostrovok.ru/hotel/",
+      page: "https://kazan.ostrovok.ru/hotel/",
+      source: { ...kazan.source, url: "https://kazan.ostrovok.ru/api/serp" },
+    };
+    expect(siteOperationSchema.safeParse(city).success).toBe(true);
+    expect(siteOperationOnSite(city, "https://www.ostrovok.ru")).toBe(true);
+    expect(siteOperationOnSite(city, "https://spb.ostrovok.ru")).toBe(false);
+    expect(siteOperationOnSite(kazan, "https://notostrovok.ru")).toBe(false);
     const shop = {
       ...kazan,
       name: "shop.msk.ru/catalog/",
