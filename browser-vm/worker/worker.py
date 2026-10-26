@@ -93,7 +93,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-10-26.2"
+VERSION = "2026-10-26.3"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -844,6 +844,10 @@ SITE_UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-", re.I)
 SITE_PATH_WORD = re.compile(r"[a-z\-]{1,24}(?:\.(?:html?|shtml|php|aspx?|jsp|cgi))?")
 SITE_API_VERSION = re.compile(r"v\d{1,2}")  # in a request's own path only: /hotel/search/v2/site/serp
 SITE_LETTERS = re.compile(r"[^\W\d_]+(?:-[^\W\d_]+)*")
+# A part of a path that is a search's words: two or more words, letters or digits, with spaces between them
+# (`site_path_part`), and what a page fills such a part with (`site_template_fit`).
+SITE_PATH_QUERY = re.compile(r"[^\W_]+(?:[ +][^\W_]+)+")
+SITE_QUERY_PART = re.compile(r"[\w\-.,'\"«»+:!?&() ]{1,120}")
 # A key of the data (a field's path, a query's key) that is itself a value: an id, a hash, a uuid.
 SITE_VALUE_KEY = re.compile(r"\d{4,}|[0-9a-f]{8,}|[0-9a-f]{8}-[0-9a-f]{4}-", re.I)
 SITE_SORT_KEYS = {"sort", "order", "sorting", "orderby", "sort_by", "sortby", "s"}
@@ -900,12 +904,15 @@ def site_key(key):
 
 def site_path_part(segment, request=False):
     """One part of a page's (or, with `request`, the site's request's) path as a template writes it: a short
-    latin word as it is, a date `%date%`, a word of other letters `%word%`, anything else `%id%`."""
-    decoded = urllib.parse.unquote(segment)
+    latin word as it is, a date `%date%`, a word of other letters `%word%`, words with spaces between them
+    `%query%` (a search's own words: labirint.ru's /search/мастер и маргарита/, which as `%id%` read to Bro as
+    one item's page, 26.10), anything else `%id%`."""
+    decoded = urllib.parse.unquote_plus(segment) if "+" in segment else urllib.parse.unquote(segment)
     if segment == "" or SITE_PATH_WORD.fullmatch(segment) or (request and SITE_API_VERSION.fullmatch(segment)):
         return segment
     return ("%date%" if SITE_DATE.fullmatch(decoded) else
-            "%word%" if SITE_LETTERS.fullmatch(decoded) else "%id%")
+            "%word%" if SITE_LETTERS.fullmatch(decoded) else
+            "%query%" if SITE_PATH_QUERY.fullmatch(decoded) and SITE_LETTERS.search(decoded) else "%id%")
 
 
 def site_attribute(attributes, name):
@@ -1851,7 +1858,8 @@ def site_template_fit(template, url):
             continue
         # A placeholder's value is one part of a path all the same: no slash, no backslash, no placeholder left
         # unfilled (`%word%` as it is).
-        if w == "" or not SITE_LOOSE_PART.fullmatch(urllib.parse.unquote(g)):
+        if w == "" or not (SITE_QUERY_PART if w == "%query%" else SITE_LOOSE_PART).fullmatch(
+                urllib.parse.unquote(g)):
             return None
         if not (w.startswith("%") and w.endswith("%")):
             fit = "loose"
@@ -3046,9 +3054,9 @@ SITE_SEARCH_KEY = re.compile(r"q|qt|k|kw|s|st|text|query|keywords?|what|phrase|t
 
 def site_query_words(operation, url):
     """The words a results page was asked for: the values of its template's %query% keys that hold a search's words
-    (SITE_SEARCH_KEY), and a `%word%` part of its path written in Cyrillic (2gis.ru's /moscow/search/аптека; a
-    Latin one may be a transliteration no result names: chitai-gorod.ru's /search/dyuna), each word of four letters
-    or more as its first four (a stem: «чайники» and «чайник» share it)."""
+    (SITE_SEARCH_KEY), a `%query%` part of its path, and a `%word%` one written in Cyrillic (2gis.ru's
+    /moscow/search/аптека; a Latin one may be a transliteration no result names: chitai-gorod.ru's /search/dyuna),
+    each word of four letters or more as its first four (a stem: «чайники» and «чайник» share it)."""
     template = urllib.parse.urlsplit(operation["page"])
     keys = {key for key, value in urllib.parse.parse_qsl(template.query)
             if value == "%query%" and SITE_SEARCH_KEY.fullmatch(key)}
@@ -3057,7 +3065,8 @@ def site_query_words(operation, url):
     given = urllib.parse.urlsplit(url).path.rstrip("/").split("/")
     if len(wanted) == len(given):
         values.extend(urllib.parse.unquote(part) for want, part in zip(wanted, given)
-                      if want == "%word%" and re.search(r"[а-яё]", urllib.parse.unquote(part), re.I))
+                      if want == "%query%"
+                      or (want == "%word%" and re.search(r"[а-яё]", urllib.parse.unquote(part), re.I)))
     words = set()
     for value in values:
         words.update(word[:4] for word in site_words(value).split() if len(word) >= 4 and not word.isdigit())
