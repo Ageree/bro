@@ -1644,6 +1644,15 @@ class SiteSearchTest(unittest.TestCase):
         self.assertTrue(worker.site_search_checked(home, "https://shop.example/xpvnsulc/?back_location=https%3A%2F%2Fshop.example%2F"))
         self.assertTrue(worker.site_search_checked(home, "https://shop.example/showcaptcha?retpath=x"))
 
+    def test_only_the_results_bodies_teach_the_operation(self):
+        recorder = types.SimpleNamespace(bodies=[
+            ({"page": "https://www.shop.example/"}, "home"),
+            ({"page": "https://shop.example/?utm=x"}, "home with a query"),
+            ({"page": "https://shop.example/search/?q=x"}, "results"),
+        ])
+        worker.site_search_results_only(recorder, "https://shop.example/")
+        self.assertEqual([text for _, text in recorder.bodies], ["home with a query", "results"])
+
 
 class SearchChromeTest(unittest.IsolatedAsyncioTestCase):
     """A search through a site's own box as `/v1/look` makes it, in a real Chromium (no network): set

@@ -93,7 +93,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-10-26.5"
+VERSION = "2026-10-26.6"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -9727,6 +9727,17 @@ async def site_search_cards(page, home, homely, until):
         last = mark
         await asyncio.sleep(0.7)
     return best
+
+
+def site_search_results_only(recorder, home):
+    """The recorder's bodies of the results alone: the home page's own (its carousels' requests, the box's suggestions
+    as the words were typed) hold lists that name the results' items too, and an operation found in them would read
+    the home page (lenta.com's collections behind its home, found beside its search's on the stand, 26.10)."""
+    def at_home(url):
+        parts = urllib.parse.urlsplit(url or "")
+        return site_same_place(home, url) and parts.path.rstrip("/") == "" and not parts.query
+
+    recorder.bodies = [(entry, text) for entry, text in recorder.bodies if not at_home(entry["page"])]
 
 
 # One result's own page read for Bro (`/v1/item`): a vacancy's salary, a product's specs, a book's annotation, with no
