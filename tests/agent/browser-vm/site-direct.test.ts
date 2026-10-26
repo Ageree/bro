@@ -477,7 +477,7 @@ describe("Bro's own read of a site it has read before", () => {
     // A worker that has no look rests every site of the workspace: the next
     // errand does not pay for the model or the call again.
     model.generateText.mockResolvedValue({
-      output: { query: "диван", url: "https://youla.ru/moskva?q=диван" },
+      output: { query: "диван", url: "https://www.avito.ru/moskva?q=диван" },
     });
     browser.lookBrowserVmSiteDirectly.mockRejectedValueOnce(
       new BrowserVmWorkerError(404, "/v1/look", "not found")
@@ -486,7 +486,7 @@ describe("Bro's own read of a site it has read before", () => {
       await readSiteDirectly(scope, {
         ...site,
         sessionId: "t5",
-        site: "https://youla.ru",
+        site: "https://www.avito.ru",
       })
     ).toBeUndefined();
     model.generateText.mockClear();

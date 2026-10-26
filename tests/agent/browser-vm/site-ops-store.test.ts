@@ -49,25 +49,25 @@ async function store(pilot: string) {
   return { client, run };
 }
 
-// What a worker's record carries: the find behind a run's tutu.ru trains,
+// What a worker's record carries: the find behind a run's poezd.ru trains,
 // with one more record a broken or hostile worker might send beside it.
 const trains = {
   fields: { link: "page", name: ["number"], price: ["price", "min"] },
   items: [0, "trains"],
-  name: "www.tutu.ru/poezda/moskva/sankt-peterburg/",
-  page: "https://www.tutu.ru/poezda/moskva/sankt-peterburg/?date=%date%",
+  name: "www.poezd.ru/poezda/moskva/sankt-peterburg/",
+  page: "https://www.poezd.ru/poezda/moskva/sankt-peterburg/?date=%date%",
   seen: { items: 42, matched: 3, of: 3 },
   source: {
     kind: "xhr",
     method: "POST",
-    url: "https://www.tutu.ru/railway/v1/offers",
+    url: "https://www.poezd.ru/railway/v1/offers",
   },
 };
 const leaky = {
   ...trains,
   cookies: "sessionid=4f1c2d; _ym_uid=123",
-  name: "www.tutu.ru/poezda/moskva/kazan/",
-  page: "https://www.tutu.ru/poezda/moskva/kazan/?date=08.11.2026&phone=79217818876",
+  name: "www.poezd.ru/poezda/moskva/kazan/",
+  page: "https://www.poezd.ru/poezda/moskva/kazan/?date=08.11.2026&phone=79217818876",
   source: { ...trains.source, headers: { authorization: "Bearer s3cr3t" } },
 };
 
@@ -77,11 +77,11 @@ describe("a workspace's site operations", { timeout: 30_000 }, () => {
     await run.rememberSiteOperations(alice.workspaceId, [trains]);
     const own = await run.siteOperationsFor(
       alice.workspaceId,
-      "https://www.tutu.ru"
+      "https://www.poezd.ru"
     );
     expect(own.map((operation) => operation.name)).toEqual([trains.name]);
     expect(
-      await run.siteOperationsFor(bob.workspaceId, "https://www.tutu.ru")
+      await run.siteOperationsFor(bob.workspaceId, "https://www.poezd.ru")
     ).toEqual([]);
     // A run that ended on the site's section host found it there: the
     // errand names the site.
@@ -215,15 +215,15 @@ describe("a workspace's site operations", { timeout: 30_000 }, () => {
     await run.rememberSiteOperations(alice.workspaceId, [
       {
         ...trains,
-        name: "www.tutu.ru/poezda/moskva/kazan/",
-        page: "https://www.tutu.ru/poezda/moskva/kazan/?date=%date%",
+        name: "www.poezd.ru/poezda/moskva/kazan/",
+        page: "https://www.poezd.ru/poezda/moskva/kazan/?date=%date%",
       },
     ]);
     const rows = await client.query<{ name: string; runs: number }>(
       "SELECT name, runs FROM browser_site_operations"
     );
     expect(rows.rows).toEqual([
-      { name: "www.tutu.ru/poezda/moskva/%word%/", runs: 2 },
+      { name: "www.poezd.ru/poezda/moskva/%word%/", runs: 2 },
     ]);
   });
 
@@ -235,7 +235,7 @@ describe("a workspace's site operations", { timeout: 30_000 }, () => {
       (
         await run.siteOperationsFor(
           alice.workspaceId,
-          "https://www.tutu.ru",
+          "https://www.poezd.ru",
           now
         )
       ).map((operation) => operation.name);
@@ -278,8 +278,8 @@ describe("a workspace's site operations", { timeout: 30_000 }, () => {
     // broken one goes, the find is offered.
     const moved = {
       ...trains,
-      name: "www.tutu.ru/poezda/search/",
-      page: "https://www.tutu.ru/poezda/search/?from=%query%&to=%query%",
+      name: "www.poezd.ru/poezda/search/",
+      page: "https://www.poezd.ru/poezda/search/?from=%query%&to=%query%",
     };
     await run.rememberSiteOperations(alice.workspaceId, [moved], "run-3");
     expect(await offered()).toEqual([moved.name]);
