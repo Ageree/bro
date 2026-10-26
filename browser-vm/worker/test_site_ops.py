@@ -684,6 +684,38 @@ class StateAndShapeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(worker.errand_words("https://2gis.ru/moscow/search/%D0%B0%D0%BF%D1%82%D0%B5%D0%BA%D0%B0"),
                          {"аптека"})
 
+    def test_data_of_unusual_shapes_finds_no_operation_rather_than_failing(self):
+        page = "https://shop.ru/search?text=galaxy"
+        items = [{"title": f"Samsung Galaxy S{n}", "price": 50000 + n, "type": {"id": "product"},
+                  "link": f"/p/{n}"} for n in range(5)]
+        report = "ITEMS: " + json.dumps([{"name": f"Samsung Galaxy S{n}", "price": f"{50000 + n} ₽",
+                                          "url": f"https://shop.ru/p/{n}"} for n in range(3)])
+        traffic = worker.SiteTraffic()
+        entry = traffic.request("GET", "https://shop.ru/api/search", page, "xhr")
+        traffic.answered(entry, 200, "application/json")
+        traffic.hold(entry, json.dumps({"products": items}))
+        # A list's `type` that is an object, not a word: the operation is found all the same.
+        [operation] = traffic.operations(report)
+        self.assertEqual(operation["items"], ["products"])
+        # A report's link that is no address finds what the rest of it does.
+        broken = report.replace("https://shop.ru/p/0", "https://[shop.ru/p/0")
+        self.assertEqual(len(traffic.operations(broken)), 1)
+        # A key named after the errand's words (a Nuxt state's `search-<query>`) is its value: no operation.
+        traffic = worker.SiteTraffic()
+        entry = traffic.request("GET", "https://shop.ru/api/search", page, "xhr")
+        traffic.answered(entry, 200, "application/json")
+        traffic.hold(entry, json.dumps({"cache": {"search-galaxy": {"items": items}}}))
+        self.assertEqual(traffic.operations(report), [])
+
+    def test_an_assignment_inside_a_string_is_no_state_and_hides_none(self):
+        state = {"list": [{"name": "a" * 80}, {"name": "b" * 80}, {"name": "c" * 80}]}
+        for script in (f'fetch("/api?sort=");window.__INITIAL_STATE__={json.dumps(state)};',
+                       f'var u="https://x.ru/?page=";\nwindow.__INITIAL_STATE__={json.dumps(state)}'):
+            document = f"<script>{script}</script>"
+            self.assertEqual(worker.embedded_state(document, {"assignment": "__INITIAL_STATE__"}), state, script)
+            self.assertEqual([selector for selector, _ in worker.embedded_states(document)],
+                             [{"assignment": "__INITIAL_STATE__"}], script)
+
     def test_a_cyrillic_word_of_the_path_is_asked_for_and_a_transliterated_one_is_not(self):
         twogis = {"page": "https://2gis.ru/moscow/search/%word%"}
         url = "https://2gis.ru/moscow/search/%D0%B0%D0%BF%D1%82%D0%B5%D0%BA%D0%B0"
