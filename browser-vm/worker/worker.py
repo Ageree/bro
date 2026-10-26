@@ -4320,6 +4320,7 @@ CODE_LAST_CALL = ("This is your last call: call `done` now with your report of w
 CODE_WALL_SIGNS = ("проверяем браузер", "почти готово", "подтвердите, что вы не робот", "вы не робот",
                    "checking your browser", "just a moment", "verify you are human", "ddos-guard",
                    "доступ ограничен", "access denied")
+CODE_LLM_EMPTY_PAUSES_S = (2, 4, 8, 16)  # a reply with no choices (the model's host down) is asked again after these
 CODE_WALL_TEXT = 1_500  # past this much text the page is the site, whatever it also says
 CODE_WALL_READ_S = 2  # one look at the page for the check; a page that does not answer in it is not judged
 CODE_WALL_CALLS = 2  # calls in a row that ended on the check before the next one must be the report
@@ -6397,10 +6398,20 @@ class Worker:
                 if last:
                     messages.append({"role": "user", "content": CODE_WALL if walled >= CODE_WALL_CALLS else CODE_LAST_CALL})
                 asked = time.monotonic()
-                answer = await client.chat.completions.create(
-                    model=llm["model"], messages=messages, tools=CODE_TOOLS,
-                    tool_choice={"type": "function", "function": {"name": "done"}} if last else "required",
-                    extra_body=code_llm_body(tuning), timeout=CODE_LLM_S)
+                # The model's host answers an outage as a reply with no choices (RouterAI's «User not found» 503
+                # for eight minutes on 26.10: every run of a test account failed before its first call, both
+                # engines): waited out a little, as Bro's own steps are, rather than failing the errand at once.
+                for pause in (*CODE_LLM_EMPTY_PAUSES_S, None):
+                    answer = await client.chat.completions.create(
+                        model=llm["model"], messages=messages, tools=CODE_TOOLS,
+                        tool_choice={"type": "function", "function": {"name": "done"}} if last else "required",
+                        extra_body=code_llm_body(tuning), timeout=CODE_LLM_S)
+                    if answer.choices or pause is None or run.cancel_requested:
+                        break
+                    log.warning("code run %s: the model answered with no choices; again in %ss", run.id, pause)
+                    await asyncio.sleep(pause)
+                if not answer.choices:
+                    raise RuntimeError("The model's provider did not answer (no choices); try again shortly.")
                 timing = {"modelMs": round((time.monotonic() - asked) * 1000), "codeMs": 0}
                 tokens = {"in": 0, "cached": 0, "out": 0, "calls": 1}
                 if answer.usage:
