@@ -34,6 +34,12 @@ import {
 import { withApprovalCard } from "@shared/chat/approval-card";
 import { capabilityTipContext } from "@agent/lib/capability-tips";
 import { crossChannelRecap } from "@agent/lib/conversation/recap";
+import {
+  asksForPhoneButton,
+  contactButtonMarkup,
+  contactButtonPrompt,
+  telegramContact,
+} from "@agent/lib/contact-share/telegram";
 import { firstContactContext, ownerTelegram } from "@agent/lib/first-contact";
 import { telegramMediaTurn } from "@agent/lib/inbound-media/telegram";
 import {
@@ -48,12 +54,14 @@ import {
   locationButtonPrompt,
   locationButtonResultSchema,
   locationArrived,
+  rememberKeyboardShown,
   rememberLocationAsked,
   takeKeyboardRemoval,
   takeLocationAsked,
   telegramLocation,
 } from "@agent/lib/location/telegram";
 import { locationPilot } from "@db/services/location";
+import { patchUserProfile } from "@db/services/user-profile";
 import { pdfByteCap } from "@agent/lib/inbound-media/media-type";
 import {
   prepareAttachmentDelivery,
@@ -310,6 +318,17 @@ export default telegramChannel({
           text: locationButtonPrompt,
         });
         rememberLocationAsked(context.telegram.chatId);
+        return;
+      }
+
+      // The refusal that wants the person's own phone (`browser_task`): the
+      // contact button goes under Bro's question, so a tap replaces typing.
+      if (asksForPhoneButton(event.result)) {
+        await context.telegram.post({
+          reply_markup: contactButtonMarkup,
+          text: contactButtonPrompt,
+        });
+        rememberKeyboardShown(context.telegram.chatId);
         return;
       }
 
@@ -572,6 +591,44 @@ export default telegramChannel({
         message: inboundTurn(message.text || message.caption, [
           { kind: "note", text: marker },
         ]).message,
+      };
+    }
+    // A contact card: the person's own number (the button's answer) is saved
+    // as their phone for forms; anyone else's is words about a third person.
+    const contact = telegramContact(message, from.id);
+    if (contact) {
+      locationArrived(message.chat.id);
+      noteInbound(context.telegram.chatId, message.raw, receivedAt);
+      if (contact.kind === "own") {
+        try {
+          await patchUserProfile(scope, { phone: contact.phone });
+        } catch (error) {
+          console.warn("[telegram] shared phone was not saved", {
+            name: error instanceof Error ? error.name : "error",
+          });
+          await context.telegram.sendMessage(
+            "Не получилось сохранить номер. Напишите его сообщением, пожалуйста."
+          );
+          return null;
+        }
+        return {
+          auth: sessionAuth,
+          context: [
+            ...(await firstContactContext(scope)),
+            "Человек поделился своим номером кнопкой Telegram (номер проверен самим Telegram) и он сохранён как телефон для форм. Если он делился им, потому что поручение ждало номер, повтори это поручение сейчас; иначе коротко подтверди, что запомнил.",
+          ],
+          message: inboundTurn("", [
+            { kind: "note", text: "[поделился своим номером]" },
+          ]).message,
+        };
+      }
+      return {
+        auth: sessionAuth,
+        context: await firstContactContext(scope),
+        message: inboundTurn(
+          `Контакт${contact.name ? ` ${contact.name}` : ""}: ${contact.phone}`,
+          []
+        ).message,
       };
     }
     // A plain text: the tool router's question about it goes now, while the

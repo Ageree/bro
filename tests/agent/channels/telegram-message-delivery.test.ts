@@ -1170,6 +1170,54 @@ describe("Telegram location button", () => {
   });
 });
 
+const browserRefusal = (text: string) => ({
+  result: {
+    callId: "call-errand",
+    isError: true,
+    kind: "tool-result" as const,
+    output: text,
+    toolName: "browser_task",
+  },
+  sequence: 0,
+  status: "completed" as const,
+  stepIndex: 0,
+  turnId: "turn-1",
+});
+
+describe("Telegram contact button", () => {
+  it("shows the share-number button under the refusal that wants a phone", async () => {
+    const { context, post } = cardContext();
+    const { phoneButtonMarker } =
+      await import("@agent/lib/contact-share/telegram");
+
+    await handleActionResult(
+      browserRefusal(`${phoneButtonMarker} Nothing was started`),
+      context,
+      sessionContext()
+    );
+
+    expect(post).toHaveBeenCalledOnce();
+    const posted = postedCardSchema.parse(post.mock.calls[0]?.[0]);
+    expect(posted.reply_markup).toEqual({
+      keyboard: [[{ request_contact: true, text: "📱 Поделиться номером" }]],
+      one_time_keyboard: true,
+      resize_keyboard: true,
+    });
+  });
+
+  it("shows nothing for another refusal", async () => {
+    const { context, post } = cardContext();
+
+    await handleActionResult(
+      browserRefusal("Nothing was started: the site is not allowed"),
+      context,
+      sessionContext()
+    );
+
+    expect(post).not.toHaveBeenCalled();
+  });
+});
+
 describe("Telegram approval cards", () => {
   it("shows what a browser errand will submit in the person's name", async () => {
     const { context, post, state } = cardContext();
