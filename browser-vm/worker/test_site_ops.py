@@ -167,6 +167,50 @@ class SiteTrafficTest(unittest.IsolatedAsyncioTestCase):
         for value in ("07.11.2026", "price.asc", "7082cb8b", "Булгар", "7389083", "3936"):
             self.assertNotIn(value, written)
 
+    async def test_a_results_page_sorted_or_bounded_by_price_teaches_the_operation_the_sites_own_inputs(self):
+        hotels = [{**HOTELS[0], "ota_hotel_id": f"hotel_{n}", "master_id": 7389083 + n, "name": f"Отель {n}",
+                   "price": 3000 + 250 * n} for n in range(8)]
+        report = "ITEMS: " + json.dumps([{"name": h["name"], "price": f"{h['price']} ₽", "url": hotel_link(h)}
+                                         for h in hotels[:3]], ensure_ascii=False)
+
+        async def found(page, listed):
+            traffic = worker.SiteTraffic()
+            self.errors.traffic = traffic
+            await feed(self.errors, self.socket, f"q{len(self.socket.ws.sent)}", "Fetch", SERP, page, 200,
+                       "application/json", json.dumps({**SERP_ANSWER, "map_hotels": listed}, ensure_ascii=False),
+                       method="POST")
+            [operation] = traffic.operations(report)
+            return operation.get("inputs")
+
+        self.assertEqual(await found(OSTROVOK_PAGE, hotels), {"sort": {"asc": "sort=price.asc"}})
+        # A price as the site writes it (ozon.ru's «1 490 ₽») counts as its amount.
+        written = [{**h, "price": f"{h['price']:,} ₽".replace(",", " ")} for h in hotels]
+        self.assertEqual(await found(OSTROVOK_PAGE, written), {"sort": {"asc": "sort=price.asc"}})
+        descending = OSTROVOK_PAGE.replace("price.asc", "price.desc")
+        self.assertEqual(await found(descending, hotels[::-1]), {"sort": {"desc": "sort=price.desc"}})
+        # Prices out of order say nothing of the key; nor does a page with no sort key, or one whose value the
+        # site writes otherwise than a plain word.
+        shuffled = [hotels[n] for n in (3, 0, 6, 1, 7, 2, 5, 4)]
+        self.assertIsNone(await found(OSTROVOK_PAGE, shuffled))
+        self.assertIsNone(await found(OSTROVOK_PAGE.replace("&sort=price.asc", ""), hotels))
+        self.assertIsNone(await found(OSTROVOK_PAGE.replace("price.asc", "price%20asc%3B1"), hotels))
+        self.assertIsNone(await found(OSTROVOK_PAGE, hotels[:5]))
+
+        # The price's bounds the page was asked with, when every card is within them: keys of each end in roubles,
+        # one key of both ends in roubles (ozon.ru) or kopecks (wildberries.ru), as the cards tell.
+        unsorted = OSTROVOK_PAGE.replace("&sort=price.asc", "")
+        self.assertEqual(await found(unsorted + "&price_min=3000&priceTo=5000", shuffled),
+                         {"price": {"min": "price_min", "max": "priceTo"}})
+        self.assertEqual(await found(OSTROVOK_PAGE + "&currency_price=2000.000;6000.000", hotels),
+                         {"sort": {"asc": "sort=price.asc"},
+                          "price": {"decimals": 3, "range": "currency_price", "unit": "rub"}})
+        self.assertEqual(await found(unsorted + "&priceU=200000;600000", shuffled),
+                         {"price": {"decimals": 0, "range": "priceU", "unit": "kop"}})
+        # Bounds either unit holds, a card outside one, or a key of no end, teach nothing.
+        self.assertIsNone(await found(unsorted + "&priceU=20;600000", shuffled))
+        self.assertIsNone(await found(unsorted + "&price_max=4000", shuffled))
+        self.assertIsNone(await found(unsorted + "&price_total=3000", shuffled))
+
     async def test_no_operation_without_enough_reported_options_or_with_a_secret_in_its_page(self):
         await feed(self.errors, self.socket, "d1", "Document", HH_PAGE, HH_PAGE, 200, "text/html", HH_DOCUMENT)
         one = "ITEMS: " + json.dumps([{"name": "Продакт-менеджер", "price": "300 000 ₽",
@@ -348,7 +392,8 @@ class Page:
             self.listeners.append(handler)
 
     def remove_listener(self, event, handler):
-        self.listeners.remove(handler)
+        if event == "response":
+            self.listeners.remove(handler)
 
     @property
     def context(self):
@@ -1103,9 +1148,12 @@ class RowsDirectTest(DirectSetup):
         answer = await self.read(LABIRINT, url)
         self.assertEqual((answer["ok"], answer["via"], answer["count"]), (True, "page", 3))
         self.assertIn("Network.setBlockedURLs", self.pages[0].visited)
-        # A page that went elsewhere is no read of this one; a drawn page with no rows has none.
+        # A page that went home is no read of this one; a drawn page with no rows has none.
         self.next_page = RowsPage(fetched={url: rows_answer(BOOKS, landed="https://www.labirint.ru/")})
         self.assertEqual((await self.read(LABIRINT, url))["reason"], "moved")
+        # One that went to a page of the site that shows the same rows (a category) is read there.
+        self.next_page = RowsPage(fetched={url: rows_answer(BOOKS, landed="https://www.labirint.ru/genres/2304/")})
+        self.assertEqual((await self.read(LABIRINT, url))["count"], 3)
         # A drawn page with no rows: a search with no results when it shows no list (no count against the
         # operation), a changed site when it shows a list the selectors miss.
         self.next_page = RowsPage(fetched={url: rows_answer([], status=200)}, drawn=rows_answer([]))
@@ -1454,6 +1502,94 @@ class SiteCheckChromeTest(unittest.IsolatedAsyncioTestCase):
                 await worker.site_op_document(self.page, self.OPERATION, self.URL, 10)
         self.assertEqual(raised.exception.reason, "blocked")
         self.assertLess(time.monotonic() - began, 5)
+
+
+class ItemPageTest(unittest.TestCase):
+    def test_an_html_operation_reads_a_page_of_the_site_it_was_sent_to_only_when_its_rows_are_there(self):
+        url = "https://moscow.petrovich.ru/search/?q=x"
+        landed = worker.site_rows_landed
+        self.assertTrue(landed(url, url, False))
+        # A search sent to the category of its word (petrovich.ru, 26.10): the same rows answer it.
+        self.assertTrue(landed(url, "https://moscow.petrovich.ru/catalog/1234/", True))
+        self.assertFalse(landed(url, "https://moscow.petrovich.ru/catalog/1234/", False))
+        self.assertFalse(landed(url, "https://evil.ru/search/?q=x", True))
+        # A front page shows its own picks in the same rows.
+        self.assertFalse(landed(url, "https://moscow.petrovich.ru/", True))
+
+    def test_a_moved_failure_says_where_it_went(self):
+        failure = worker.SiteOpFailure("moved", "went", "https://moscow.petrovich.ru/catalog/1234/")
+        self.assertEqual(worker.site_template(failure.landed), "https://moscow.petrovich.ru/catalog/%id%/")
+
+
+class ItemChromeTest(unittest.IsolatedAsyncioTestCase):
+    """One result's page read as `/v1/item` reads it, in a real Chromium (no network): set BRO_SITE_ROWS_CHROME as for
+    RowsChromeTest; CI skips it."""
+
+    PRODUCT = ("<html><head><title>Термос</title><script type=\"application/ld+json\">"
+               + json.dumps({"@context": "https://schema.org", "@type": "Product", "name": "Термос Hitt 1 л",
+                             "image": "https://shop.example/1.jpg",
+                             "offers": {"@type": "Offer", "price": "914", "priceCurrency": "RUB"}})
+               + "</script><script type=\"application/ld+json\">"
+               + json.dumps({"@type": "BreadcrumbList", "itemListElement": []})
+               + "</script><meta property=\"og:title\" content=\"Термос Hitt\"></head><body><header>Меню сайта</header>"
+               "<main><h1>Термос Hitt 1 л</h1><p>Характеристики</p><p>Объём: 1 л</p><button>Купить</button></main>"
+               "<footer>Подвал</footer></body></html>")
+    SHELL = ("<html><head><title>Магазин</title></head><body><div id=\"app\"></div><script>setTimeout(() => {"
+             "document.getElementById('app').innerHTML = '<main><h1>Термостат SASIC</h1><p>' + 'описание '.repeat(40)"
+             " + '11 034 ₽</p></main>'}, 300)</script></body></html>")
+
+    async def asyncSetUp(self):
+        import os
+
+        chrome = os.environ.get("BRO_SITE_ROWS_CHROME")
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError:
+            async_playwright = None
+        if not chrome or async_playwright is None:
+            self.skipTest("set BRO_SITE_ROWS_CHROME to a Chromium binary, with Playwright installed")
+        self.playwright = await async_playwright().start()
+        self.browser = await self.playwright.chromium.launch(executable_path=chrome, args=["--no-sandbox"])
+        self.context = await self.browser.new_context()
+
+        async def serve(route):
+            url = route.request.url
+            if url.endswith("/robots.txt"):
+                return await route.fulfill(status=200, content_type="text/plain", body="User-agent: *")
+            pages = {"https://shop.example/product/1": self.PRODUCT, "https://app.example/item/2": self.SHELL}
+            await route.fulfill(status=200 if url in pages else 404, content_type="text/html; charset=utf-8",
+                                body=pages.get(url, "<html><main>404</main></html>"))
+
+        await self.context.route("**/*", serve)
+        self.page = await self.context.new_page()
+
+    async def asyncTearDown(self):
+        await self.browser.close()
+        await self.playwright.stop()
+
+    async def test_a_page_with_its_own_data_is_read_from_its_document_and_the_site_furniture_is_left_out(self):
+        holder = {}
+        item = await worker.site_item_on(self.page, "https://shop.example/product/1", holder)
+        self.assertEqual(holder["via"], "fetch")
+        self.assertEqual(item["title"], "Термос Hitt 1 л")
+        self.assertEqual(item["ld"], [{"@type": "Product", "name": "Термос Hitt 1 л", "offers.@type": "Offer",
+                                       "offers.price": "914", "offers.priceCurrency": "RUB"}])
+        self.assertEqual(item["meta"], {"og:title": "Термос Hitt"})
+        self.assertIn("Объём: 1 л", item["text"])
+        self.assertNotIn("Меню сайта", item["text"])
+        self.assertNotIn("Купить", item["text"])
+
+    async def test_an_apps_shell_is_drawn_and_read_once_its_text_is_there(self):
+        holder = {}
+        item = await worker.site_item_on(self.page, "https://app.example/item/2", holder)
+        self.assertEqual(holder["via"], "page")
+        self.assertEqual(item["title"], "Термостат SASIC")
+        self.assertIn("11 034 ₽", item["text"])
+
+    async def test_a_page_that_is_gone_is_no_item(self):
+        with self.assertRaises(worker.SiteOpFailure) as raised:
+            await worker.site_item_on(self.page, "https://shop.example/product/404", {})
+        self.assertEqual(raised.exception.reason, "moved")
 
 
 if __name__ == "__main__":

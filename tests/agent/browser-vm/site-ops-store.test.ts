@@ -227,6 +227,44 @@ describe("a workspace's site operations", { timeout: 30_000 }, () => {
     ]);
   });
 
+  it("keep the site's sort a run learned when a later run of the page did not sort, or a second city's merges it", async () => {
+    const { client, run } = await store(alice.workspaceId);
+    const sorted = {
+      ...trains,
+      page: `${trains.page}&sort=%sort%`,
+      inputs: { sort: { asc: "sort=price_asc" } },
+    };
+    await run.rememberSiteOperations(alice.workspaceId, [sorted]);
+    await run.rememberSiteOperations(alice.workspaceId, [
+      { ...trains, page: sorted.page },
+    ]);
+    const inputs = async () =>
+      (
+        await client.query<{ name: string; inputs: unknown }>(
+          "SELECT name, operation -> 'inputs' AS inputs FROM browser_site_operations"
+        )
+      ).rows;
+    expect(await inputs()).toEqual([
+      { inputs: { sort: { asc: "sort=price_asc" } }, name: trains.name },
+    ]);
+
+    // A later find that sorted the other way adds its own pair beside it.
+    await run.rememberSiteOperations(alice.workspaceId, [
+      {
+        ...sorted,
+        name: "www.poezd.ru/poezda/moskva/kazan/",
+        page: sorted.page.replace("sankt-peterburg", "kazan"),
+        inputs: { sort: { desc: "sort=price_desc" } },
+      },
+    ]);
+    expect(await inputs()).toEqual([
+      {
+        inputs: { sort: { asc: "sort=price_asc", desc: "sort=price_desc" } },
+        name: "www.poezd.ru/poezda/moskva/%word%/",
+      },
+    ]);
+  });
+
   it("stop being offered once two reads found the site changed, and give way to a run's new find", async () => {
     const { client, run } = await store("*");
     vi.spyOn(console, "info").mockImplementation(() => undefined);

@@ -443,9 +443,13 @@ const sortPairsSchema = z
  * What the site itself applies to its results beyond the template's page
  * (Pomerado's typed inputs, set the way the site's own controls set them):
  * the pairs that sort them by price, the keys that bound their price, and
- * the key of their page. Reviewed only (`knownSiteOperations`): each was
- * read back live on the stand, and Bro reads the order back again on every
- * read (`site-ops/inputs.ts`).
+ * the key of their page. A reviewed operation's (`knownSiteOperations`)
+ * were each read back live on the stand; a find learns the sort and the
+ * price bounds from a run's results page that came in order of price or
+ * within the bounds it was asked with (`site_learned_inputs` in
+ * browser-vm/worker/worker.py). Bro reads the order back on every read
+ * (`site-ops/inputs.ts`), and the worker keeps only the cards within the
+ * bounds an errand names.
  */
 const siteInputsSchema = z.strictObject({
   /** The page of the results: `first` is the number of the first one (0 on hh.ru). */
@@ -498,7 +502,7 @@ export const siteOperationSchema = z
       name: fieldPathSchema.min(1).optional(),
       price: fieldPathSchema.min(1).optional(),
     }),
-    /** What the site applies beyond the page: reviewed operations only. */
+    /** What the site applies beyond the page: a find's are its sort and price bounds. */
     inputs: siteInputsSchema.optional(),
     items: itemsSchema,
     name: z.string().min(1).max(160),
@@ -711,9 +715,34 @@ export function mergeSiteOperations(
   const page = `https://${one.host}${path}${keys.size > 0 ? `?${[...keys].join("&")}` : ""}`;
   return siteOperationSchema.safeParse({
     ...found,
+    inputs: mergeSiteInputs(kept.inputs, found.inputs),
     name: siteOperationName(page),
     page,
   }).data;
+}
+
+type SiteInputs = z.infer<typeof siteInputsSchema>;
+
+/**
+ * What a site applies, as two operations of one page know it: the newer's
+ * where it has one, the older's otherwise. A find learns the sort only from
+ * a run that sorted by price (`site_learned_inputs`), so a later run that
+ * did not would otherwise lose it.
+ */
+export function mergeSiteInputs(
+  older: SiteInputs | undefined,
+  newer: SiteInputs | undefined
+): SiteInputs | undefined {
+  if (older === undefined || newer === undefined) return newer ?? older;
+  const merged: SiteInputs = {};
+  const page = newer.page ?? older.page;
+  if (page !== undefined) merged.page = page;
+  const price = newer.price ?? older.price;
+  if (price !== undefined) merged.price = price;
+  if (older.sort !== undefined || newer.sort !== undefined) {
+    merged.sort = { ...older.sort, ...newer.sort };
+  }
+  return merged;
 }
 
 // A part of an address's path that a `loose` page may hold where its template

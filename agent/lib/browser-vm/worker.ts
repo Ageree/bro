@@ -852,6 +852,53 @@ export async function lookBrowserVmSite(
  */
 const siteLookTimeoutMs = 38_000;
 
+/**
+ * One result's own page read (`site_item` in browser-vm/worker/worker.py):
+ * its structured data (schema.org JSON-LD, flattened to `key.path: value`),
+ * its meta and its main text, cut short; or why there is none. A worker
+ * before 2026-10-26.4 has no `/v1/item` and answers 404.
+ */
+const itemReadSchema = z.discriminatedUnion("ok", [
+  z.object({
+    ld: z.array(z.record(z.string(), z.string())).max(4),
+    meta: z.record(z.string(), z.string()),
+    ms: z.number().nonnegative(),
+    ok: z.literal(true),
+    /** Where the page landed. */
+    page: z.string(),
+    text: z.string().max(4000),
+    title: z.string(),
+    via: z.enum(["fetch", "page"]),
+  }),
+  z.object({
+    ms: z.number().nonnegative(),
+    ok: z.literal(false),
+    reason: z.enum(siteReadFailures),
+  }),
+]);
+
+export type BrowserVmItemRead = z.infer<typeof itemReadSchema>;
+
+/**
+ * Read one result's own page, no model and no run: a vacancy's salary, a
+ * product's specs (`readItemsDirectly` in `site-ops/direct.ts`). In a tab of
+ * its own, beside whatever errand holds the browser.
+ */
+export async function readBrowserVmItem(
+  vm: BrowserVmTarget,
+  input: { readonly url: string }
+) {
+  return itemReadSchema.parse(
+    await request(vm, "POST", "/v1/item", {
+      body: input,
+      timeoutMs: itemReadTimeoutMs,
+    })
+  );
+}
+
+/** The worker answers an item's read within 34 s (`SITE_ITEM_S`, its slot and tab close). */
+const itemReadTimeoutMs = 38_000;
+
 /** A blank tab of its own for a keep-alive visit; its target id comes back. */
 export async function openBrowserVmWorkerTab(vm: BrowserVmTarget) {
   return tabSchema.parse(

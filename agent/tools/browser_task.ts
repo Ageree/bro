@@ -221,6 +221,8 @@ import {
 import { mentionsRecurringCharge } from "@agent/lib/browser-use/spend";
 import { siteNoteLine } from "@agent/lib/browser-use/site-notes";
 import {
+  itemReadNote,
+  readItemsDirectly,
   readSiteDirectly,
   siteApiPilot,
   siteReadNote,
@@ -4973,6 +4975,20 @@ async function runBrowserTask(
       siteApiPilot(scope) &&
       siteOpsPilot(scope)
     ) {
+      // A question about one result carries its link: its own page answers.
+      const item = await readItemsDirectly(scope, {
+        errand: sent,
+        sessionId: context.session.id,
+        site,
+      });
+      if (item !== undefined) {
+        return {
+          note: itemReadNote(item),
+          outcome: `${String(item.items.length)} of the site's own pages, read just now.`,
+          results: item.items,
+          status: "found",
+        };
+      }
       const read = await readSiteDirectly(scope, {
         errand: sent,
         note: siteNoteLine(scope, site),

@@ -11,6 +11,7 @@ import { knownSiteOperations } from "./known";
 import type * as z from "zod";
 import {
   type foundSiteOperationsSchema,
+  mergeSiteInputs,
   mergeSiteOperations,
   type siteOperationCallsSchema,
   sameSiteHost,
@@ -117,7 +118,11 @@ function standingIn(
   const same =
     JSON.stringify([find.items, find.fields]) ===
     JSON.stringify([known.items, known.fields]);
-  return { ...find, about: same ? known.about : undefined };
+  return {
+    ...find,
+    about: same ? known.about : undefined,
+    inputs: mergeSiteInputs(known.inputs, find.inputs),
+  };
 }
 
 /**
@@ -288,6 +293,16 @@ export async function rememberSiteOperations(
       }
     }
     if (reviewed.has(kept.name) && kept.name !== operation.name) continue;
+    // What the site applies stays learned: a run that did not sort or bound
+    // the price keeps what an earlier one learned of the page (`mergeSiteInputs`).
+    const earlier = rows.find(({ name }) => name === kept.name);
+    const before =
+      earlier === undefined
+        ? undefined
+        : siteOperationSchema.safeParse(earlier.operation).data;
+    if (before !== undefined) {
+      kept = { ...kept, inputs: mergeSiteInputs(before.inputs, kept.inputs) };
+    }
     // oxlint-disable-next-line eslint/no-await-in-loop -- A run finds one or two.
     await saveBrowserSiteOperation(workspaceId, {
       host: siteOperationHost(kept.page),

@@ -54,6 +54,7 @@ import {
   listBrowserVmWorkerFiles,
   lookBrowserVmSite,
   openBrowserVmWorkerTab,
+  readBrowserVmItem,
   readBrowserVmSite,
   readBrowserVmWorkerHealth,
   readBrowserVmWorkerRun,
@@ -752,6 +753,25 @@ export async function lookBrowserVmSiteDirectly(
 ) {
   return onSiteReadVm(workspaceId, async (vm) => lookBrowserVmSite(vm, input));
 }
+
+/**
+ * Read one result's own page in the workspace's own browser, no run
+ * (`readBrowserVmItem`). Null on a worker before `/v1/item`: the errand's
+ * start rolls the new worker out (`rollout.ts`).
+ */
+export async function readBrowserVmItemDirectly(
+  workspaceId: string,
+  input: Parameters<typeof readBrowserVmItem>[1]
+) {
+  return onSiteReadVm(workspaceId, async (vm) => {
+    const health = await readBrowserVmWorkerHealth(vm);
+    if (!browserVmWorkerAtLeast(health.worker, itemReadingWorker)) return null;
+    return readBrowserVmItem(vm, input);
+  });
+}
+
+/** The worker that reads an item's page (`/v1/item`). */
+const itemReadingWorker = "2026-10-26.4";
 
 async function onSiteReadVm<T>(
   workspaceId: string,

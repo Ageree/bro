@@ -629,6 +629,9 @@ vi.mock("@db/services/browser-vms", async (importOriginal) => ({
 }));
 vi.mock("@agent/lib/browser-vm/idle", () => ({ keepBrowserVmForErrand }));
 const siteApi = vi.hoisted(() => ({
+  readItemsDirectly: vi.fn<typeof siteDirect.readItemsDirectly>(() =>
+    Promise.resolve(undefined)
+  ),
   readSiteDirectly: vi.fn<typeof siteDirect.readSiteDirectly>(() =>
     Promise.resolve(undefined)
   ),
@@ -636,6 +639,7 @@ const siteApi = vi.hoisted(() => ({
 }));
 vi.mock("@agent/lib/browser-vm/site-ops/direct", async (importOriginal) => ({
   ...(await importOriginal<typeof siteDirect>()),
+  readItemsDirectly: siteApi.readItemsDirectly,
   readSiteDirectly: siteApi.readSiteDirectly,
   siteApiPilot: siteApi.siteApiPilot,
 }));
@@ -4048,6 +4052,43 @@ describe("browser_task on a workspace's own browser VM", () => {
     } finally {
       siteApi.siteApiPilot.mockReturnValue(false);
       siteApi.readSiteDirectly.mockResolvedValue(undefined);
+    }
+  });
+
+  it("answers a question about one result from its own page, before any search", async () => {
+    usesBrowserVm.mockResolvedValue(true);
+    vi.resetModules();
+    vi.stubEnv("BROWSER_SITE_OPS_WORKSPACES", "*");
+    siteApi.siteApiPilot.mockReturnValue(true);
+    const page = {
+      data: [{ "@type": "JobPosting", title: "Продакт-менеджер" }],
+      meta: {},
+      text: "Продакт-менеджер | 300 000 | ₽ | за месяц | на руки",
+      title: "Продакт-менеджер",
+      url: "https://hh.ru/vacancy/138625702",
+    };
+    siteApi.readItemsDirectly.mockResolvedValue({ items: [page] });
+    try {
+      const asked =
+        "Какая зарплата в вакансии https://hh.ru/vacancy/138625702 ?";
+      const found = await (
+        await resolvedBrowserTask([], asked)
+      ).execute(
+        {
+          action: "start",
+          personWants: "look",
+          site: "https://hh.ru",
+          task: asked,
+        },
+        toolContext("better-auth:alice")
+      );
+      expect(found).toMatchObject({ results: [page], status: "found" });
+      expect(JSON.stringify(found)).toContain("own pages");
+      expect(siteApi.readSiteDirectly).not.toHaveBeenCalled();
+      expect(createBrowserUseRun).not.toHaveBeenCalled();
+    } finally {
+      siteApi.siteApiPilot.mockReturnValue(false);
+      siteApi.readItemsDirectly.mockResolvedValue(undefined);
     }
   });
 
