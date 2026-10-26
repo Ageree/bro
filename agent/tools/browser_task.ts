@@ -1566,6 +1566,20 @@ const checkoutRouteLine =
 const formFieldsLine = `${maskedPhoneField}, type ${nationalDigits} and check that the field shows the number and the country you meant. When a city, street, address or pickup-point field opens a list of suggestions as you type, choose the matching entry from that list rather than leaving the typed text, and check that the field took it.`;
 
 /**
+ * The run has the person's details and none of them is a phone (it was given
+ * in the errand's words, or is missing): the number a page shows for the
+ * place or the shop is never the person's. A booking at «ДВ» (25.10) went
+ * out with the restaurant's own number in the form's phone field.
+ */
+function phoneGuardLine(
+  shares: boolean,
+  facts: string | undefined
+): string | undefined {
+  if (!shares || /^Phone:/mu.test(facts ?? "")) return undefined;
+  return "No phone number of the person's is saved. Use the phone the person gave in their own words above, if they gave one. Never type any other number into a phone field — least of all the one the page shows for the place, the shop or the site — and if a form wants a phone and there is none, stop with NEEDS: info naming the phone.";
+}
+
+/**
  * A sign-in the site offers to remember is one the profile keeps: «Запомнить
  * меня» turns a session cookie, which dies with the browser, into one that
  * outlives it, and «доверять этому устройству» spares the next code. The
@@ -1655,6 +1669,7 @@ export function composeBrowserTask(options: {
     (options.consent || own ? options.facts : address) === undefined
       ? undefined
       : formFieldsLine,
+    phoneGuardLine(Boolean(options.consent) || own, options.facts),
     credentialsLine(options.aliases, options.site),
     vaultCardLaterLine(options),
     // The account does not exist yet: nothing to check a sign-in against.
@@ -1890,6 +1905,7 @@ export function composeBrowserContinuation(options: {
     (options.consent || own ? options.facts : address) === undefined
       ? undefined
       : formFieldsLine,
+    phoneGuardLine(Boolean(options.consent) || own, options.facts),
     credentialsLine(options.aliases, options.site),
     vaultCardLaterLine(options),
     options.signUp?.begins === true
@@ -3488,7 +3504,7 @@ async function codeFromMail(
  * is given the person's details, and keeps the answer for every later errand.
  */
 const phoneNeededRefusal =
-  "Nothing was started: this errand types the user's details into a site's form, and the user's own phone number is not saved anywhere, so the run would have none to type. Ask the user once, in one short line, for the phone number to put in forms («Какой номер телефона указать? Запомню на будущее»). When they send it, save it as `phone` with the Personal Info update tool (when it is their own), and call browser_task again at once. If they gave a phone in this very conversation for this errand, pass it in personSaid or the errand as they wrote it.";
+  "Nothing was started: this errand types the user's details into a site's form, and the user's own phone number is not saved anywhere, so the run would have none to type. Ask the user once, in one short line, for the phone number to put in forms («Какой номер телефона указать? Запомню на будущее»). When they send it, save it as `phone` with the Personal Info update tool (when it is their own), and call browser_task again at once.";
 
 /** Whether the run is about to get the person's details and has no phone of theirs to type. */
 async function ownPhoneMissing(scope: AccessScope, words: readonly string[]) {
@@ -4855,6 +4871,17 @@ async function runBrowserTask(
       spoken.siteWords
     );
     const forPerson = byPerson || walled !== undefined;
+    // A run that is about to get the person's details and has no phone of
+    // theirs to type is not started: Bro asks for the number first. Before
+    // the consent, which spends the person's request for a direct purchase.
+    if (
+      byPerson &&
+      signUp === undefined &&
+      (input.personWants === "done" || actsForPerson(input)) &&
+      (await ownPhoneMissing(scope, spoken.typed))
+    ) {
+      throw new Error(phoneNeededRefusal);
+    }
     // Paying for an errand is asking for it to be done in one's name.
     const consent = await consentFromInput(
       input,
@@ -4874,16 +4901,6 @@ async function runBrowserTask(
             forPerson
           )
         : undefined;
-    // A run that gets the person's details and has no phone of theirs to type
-    // is not started: Bro asks for the number first.
-    if (
-      byPerson &&
-      signUp === undefined &&
-      sharesDetails(consent, staging) &&
-      (await ownPhoneMissing(scope, spoken.typed))
-    ) {
-      throw new Error(phoneNeededRefusal);
-    }
     // Their phone and email reach the run only with their details: without
     // them, the errand and the site the model wrote lose them too, here and
     // as stored.
@@ -5377,6 +5394,8 @@ async function runBrowserTask(
       confirmedNow !== undefined &&
       signUp === undefined &&
       !mail &&
+      input.allowPayment !== true &&
+      (input.submission?.chargeRub ?? 0) === 0 &&
       (await ownPhoneMissing(scope, [
         ...spoken.typed,
         ...quotedPersonWords(row.task, taskOrigin),

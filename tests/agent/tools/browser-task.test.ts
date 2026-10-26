@@ -1,3 +1,4 @@
+import { givesPhone } from "@agent/lib/browser-use/facts";
 import type { ModelMessage } from "ai";
 import type * as ai from "ai";
 import type * as settingsService from "@db/services/settings";
@@ -8546,6 +8547,15 @@ describe("browser_task takes an errand the person asked to be done to its last s
       );
 
       expect(task).toContain(stagedByPerson);
+      // Nothing is saved, so the run is told to type theirs and no other.
+      expect(task).toContain("No phone number of the person's is saved.");
+    });
+
+    it("reads a phone in their words, not a card number", () => {
+      expect(givesPhone(["мой номер +7 921 994-19-00"])).toBe(true);
+      expect(givesPhone(["8 (921) 994 19 00"])).toBe(true);
+      expect(givesPhone(["карта 4276 5501 0132 4310"])).toBe(false);
+      expect(givesPhone(["столик на 19:30 на пятерых"])).toBe(false);
     });
 
     it("is not asked for it where they only look", async () => {
