@@ -228,12 +228,33 @@ export function siteOperationHost(page: string) {
   return splitAddress(page)?.host ?? "";
 }
 
-/** Whether an operation's page is on the site (`https://www.tutu.ru` for `tutu.ru`). */
+/**
+ * Whether two hosts are one site: the same host, a leading `www.` aside, or
+ * one under the other — the site's city or section on a subdomain of its
+ * own (`blagoveschensk.hh.ru` for `hh.ru`, `auto.drom.ru` for `drom.ru`),
+ * as the worker's `site_same_place` reads a page that went there. Never two
+ * hosts beside each other: under .msk.ru or .co.uk those are a registry's.
+ */
+export function sameSiteHost(a: string, b: string) {
+  const one = siteOf(a);
+  const two = siteOf(b);
+  return (
+    one !== "" &&
+    two !== "" &&
+    (one === two || one.endsWith(`.${two}`) || two.endsWith(`.${one}`))
+  );
+}
+
+/**
+ * Whether an operation's page is on the site (`https://www.tutu.ru` for
+ * `tutu.ru`, `https://hh.ru` for `blagoveschensk.hh.ru`): an errand names
+ * the site, and the run that found the operation may have ended on its
+ * city's host.
+ */
 export function siteOperationOnSite(operation: SiteOperation, site: string) {
   const host = URL.parse(site)?.hostname;
   return (
-    host !== undefined &&
-    siteOf(host) === siteOf(siteOperationHost(operation.page))
+    host !== undefined && sameSiteHost(host, siteOperationHost(operation.page))
   );
 }
 
