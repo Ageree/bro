@@ -715,9 +715,11 @@ async function lookSite(
   });
   // The page is looked at only against its words: the worker checks that
   // its cards name them, and a search with none to check is the browser's.
-  const words = guess?.query?.trim() ?? "";
+  const words = clipWords(guess?.query?.trim() ?? "");
   const guessMs = Date.now() - began;
   if (guess?.search !== true || words === "") {
+    // Nothing of the site's was looked at: the next errand there may be a search.
+    looked.delete(key);
     console.info("[site-api] left to the browser", {
       guessMs,
       reason: guess?.search === true ? "no_words" : "no_search",
@@ -735,6 +737,7 @@ async function lookSite(
   const boxed = await lookWay(scope, key, host, { site: input.site, words });
   let look = boxed.look;
   let url = look === undefined ? undefined : input.site;
+  let { seen } = boxed;
   if (
     boxed.next &&
     named !== undefined &&
@@ -743,6 +746,7 @@ async function lookSite(
     const paged = await lookWay(scope, key, host, { url: named, words });
     look = paged.look;
     url = named;
+    seen ||= paged.seen;
   } else if (boxed.next && named === undefined && guess.url !== null) {
     console.info("[site-api] left to the browser", {
       guessMs,
@@ -751,6 +755,8 @@ async function lookSite(
       workspaceId: scope.workspaceId,
     });
   }
+  // A worker that cannot search yet saw nothing: the site waits for no one.
+  if (!seen) looked.delete(key);
   if (look === undefined || url === undefined) return undefined;
   const timing = {
     guessMs,
@@ -805,6 +811,21 @@ async function lookSite(
  */
 const namedLookBeforeMs = 20_000;
 
+/**
+ * The words a search through the site's box types at most (the worker's
+ * `SITE_SEARCH_WORDS`): longer ones are cut at a word, never refused.
+ */
+const searchWordsMax = 120;
+
+function clipWords(words: string) {
+  if (words.length <= searchWordsMax) return words;
+  const cut = words.slice(0, searchWordsMax + 1);
+  const space = cut.lastIndexOf(" ");
+  return (
+    space > 0 ? cut.slice(0, space) : cut.slice(0, searchWordsMax)
+  ).trim();
+}
+
 /** What a site's box that gave nothing leaves to the page the model named. */
 const boxMisses: ReadonlySet<string> = new Set([
   "no_box",
@@ -816,8 +837,9 @@ const boxMisses: ReadonlySet<string> = new Set([
  * One look of a first search (`lookSite`): its cards when it answered;
  * `next` when the page the model named may still be looked at — the site
  * showed no box, its box gave nothing for the words, or the worker cannot
- * search through it yet. A failure that is no fault of the site's gives the
- * site back (`looked`); one of the worker rests the workspace (`restAfter`).
+ * search through it yet; `seen` when the worker looked at the site at all. A
+ * failure that is no fault of the site's gives the site back (`looked`); one
+ * of the worker rests the workspace (`restAfter`).
  */
 async function lookWay(
   scope: AccessScope,
@@ -830,6 +852,7 @@ async function lookWay(
     { ok: true }
   >;
   readonly next: boolean;
+  readonly seen: boolean;
 }> {
   const via = "site" in way ? "box" : "page";
   const look = await lookBrowserVmSiteDirectly(scope.workspaceId, way).catch(
@@ -848,13 +871,13 @@ async function lookWay(
       return "thrown" as const;
     }
   );
-  if (look === "thrown") return { next: false };
+  if (look === "thrown") return { next: false, seen: true };
   // No browser to look with: the next errand may have one.
   if (look === undefined) {
     looked.delete(key);
-    return { next: false };
+    return { next: false, seen: true };
   }
-  if (look === null) return { next: true };
+  if (look === null) return { next: true, seen: false };
   if (!look.ok) {
     console.info("[site-api] left to the browser", {
       host,
@@ -863,9 +886,9 @@ async function lookWay(
       workspaceId: scope.workspaceId,
       workerMs: look.ms,
     });
-    return { next: via === "box" && boxMisses.has(look.reason) };
+    return { next: via === "box" && boxMisses.has(look.reason), seen: true };
   }
-  return { look, next: false };
+  return { look, next: false, seen: true };
 }
 
 /** How many of a looked page's cards go to the turn: each carries its whole text. */

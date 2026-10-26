@@ -9099,6 +9099,8 @@ SITE_SEARCH_SUBMIT_S = 4
 SITE_SEARCH_EVAL_S = 3  # one look into the page; a page that does not answer in it is not searched
 SITE_SEARCH_MARK = "data-bro-search"  # the box found, for Playwright to click and type into; removed on the next look
 SITE_SEARCH_GO = "data-bro-go"  # the form's own search button, when Enter sent nothing
+SITE_SEARCH_FORM_FIELDS = 3  # a form of the box's own: its submit button is sent with no search sign of its own
+SITE_SEARCH_POPUP_CLOSE_S = 2  # a tab the site opened from the search's (a link's target=_blank), closed at once
 SITE_SEARCH_BLANK_S = 4  # what a home page with next to no text gets to draw the site
 SITE_SEARCH_BLANK_TEXT = 200
 SITE_SEARCH_WAIT_S = 7  # what a home page with no box and no search button gets to draw its box
@@ -9242,7 +9244,15 @@ const judgeBox = (el) => {
   if (el.localName === 'textarea') score -= 1;
   return {el, score, signs, shown, readonly: el.readOnly || attr('aria-readonly') === 'true'};
 };
-const clearMark = (name) => { for (const el of deep(document, `[${name}]`)) el.removeAttribute(name); };"""
+const clearMark = (name) => { for (const el of deep(document, `[${name}]`)) el.removeAttribute(name); };
+// An address on the site's own host, one under it or above it: a fragment, a script's, a relative one are.
+const onSite = (href) => {
+  if (!href || /^(#|javascript:)/i.test(href.trim())) return true;
+  let host;
+  try { host = new URL(href, location.href).hostname; } catch (e) { return false; }
+  const bare = (h) => h.toLowerCase().replace(/^www\./, ''), a = bare(host), b = bare(location.hostname);
+  return a === b || a.endsWith('.' + b) || b.endsWith('.' + a);
+};"""
 
 # The site's search box, marked for Playwright (SITE_SEARCH_MARK): the best shown, writable one of those the page
 # calls a search; with none, how many such boxes it hides (a toggle opens them).
@@ -9259,7 +9269,8 @@ SITE_SEARCH_BOX_JS = r"""(arg) => {
 
 # What opens a hidden box: a shown button, link or icon that names a search (its label, title, class, icon's
 # symbol, short text), or a read-only box that only opens the real one; the best one marked (SITE_SEARCH_GO).
-# Skipped: one already clicked, one of another site, one that names a person's field or a voice or photo search.
+# Skipped: one already clicked, one of another site, one that names a person's field or a voice or photo search, a
+# submit button of a form that shows fields or holds values (it would send them: a route a travel site filled in).
 SITE_SEARCH_TOGGLE_JS = r"""(arg) => {
   /*LIB*/
   clearMark(arg.mark);
@@ -9274,8 +9285,14 @@ SITE_SEARCH_TOGGLE_JS = r"""(arg) => {
     const r = el.getBoundingClientRect();
     if (r.width > 520 || r.height > 120) continue;
     const href = el.getAttribute('href') || '';
-    if (href && /^https?:/i.test(href) && new URL(href, location.href).hostname.replace(/^www\./, '')
-        !== location.hostname.replace(/^www\./, '')) continue;
+    if (href && !onSite(href)) continue;
+    // A form's submit button sends what that form holds (a route the site filled in, a lead's phone): a toggle is
+    // only one whose form shows no field and holds no value a person would send.
+    const form = el.localName !== 'a' && (el.form || el.closest('form'));
+    if (form && (el.localName === 'input' ? /^(submit|image)$/i.test(el.getAttribute('type') || '')
+                 : el.localName === 'button' && ['', 'submit'].includes((el.getAttribute('type') || '').toLowerCase()))
+        && [...form.querySelectorAll('input:not([type=hidden]), textarea, select')]
+             .some((f) => seen(f, 8, 8) || (f.value && !/^(checkbox|radio|submit|button|image)$/i.test(f.type || '')))) continue;
     const use = [...raw.querySelectorAll('use')].map((u) => u.getAttribute('href') || u.getAttribute('xlink:href') || '').join(' ');
     const words = low([el.getAttribute('aria-label'), el.getAttribute('title'), raw.getAttribute('alt'),
                        el.getAttribute('placeholder'), (el.innerText || '').length <= 25 ? el.innerText : ''].join(' '));
@@ -9320,7 +9337,8 @@ SITE_SEARCH_FOCUS_JS = r"""(arg) => {
 }""".replace("/*LIB*/", SITE_SEARCH_LIB)
 
 # Where a person would click the marked box: its middle, scrolled into view, and what is there — the box itself
-# (`free`), a part of the box's own (`own`: within its four nearest ancestors), a layer over it (`covered`).
+# (`free`), a part of the box's own (`own`: within its four nearest ancestors, and no control), a layer over it or a
+# control of the page's (`covered`: never clicked).
 SITE_SEARCH_COVER_JS = r"""(arg) => {
   /*LIB*/
   const box = deep(document, `[${arg.mark}]`)[0];
@@ -9338,8 +9356,10 @@ SITE_SEARCH_COVER_JS = r"""(arg) => {
   if (at === box || box.contains(at)) return {state: 'free', x, y};
   let wrap = box;
   for (let i = 0; i < 4 && wrap.parentElement; i++) wrap = wrap.parentElement;
-  const link = at.closest('a[href]');
-  return {state: wrap.contains(at) && !(link && !link.contains(box)) ? 'own' : 'covered', x, y};
+  // A control there (a city's «Да», a link, a menu's item) is the page's own question, clicked never: covered.
+  const control = at.closest('a[href], button, [role=button], [role=menuitem], [role=option], [role=dialog], ' +
+                             'input, select, textarea, [onclick]');
+  return {state: wrap.contains(at) && !(control && !control.contains(box)) ? 'own' : 'covered', x, y};
 }""".replace("/*LIB*/", SITE_SEARCH_LIB)
 
 # The box's text now (a site that took no keys, or cleared them, has none of the words).
@@ -9349,42 +9369,50 @@ SITE_SEARCH_VALUE_JS = r"""(arg) => {
   return el ? String(el.value != null ? el.value : el.innerText || '') : null;
 }""".replace("/*LIB*/", SITE_SEARCH_LIB)
 
-# Sending the words when Enter sent nothing: the box's form's own search button marked for a click (SITE_SEARCH_GO),
-# else the form submitted as its button would; with no form, a search button beside the box (in its four nearest
-# ancestors) marked.
+# Sending the words when Enter sent nothing: a button the box's form or its four nearest ancestors call a search,
+# marked for a click (SITE_SEARCH_GO); in a small form of the box's own (SITE_SEARCH_FORM_FIELDS shown fields at most)
+# its submit button, or the form submitted as that button would. Never anything else: a whole page's one form (an old
+# ASP.NET site's) holds a login's, a cart's and an ad's buttons too, and the click is in the person's profile. A link
+# only on the site's own host.
 SITE_SEARCH_SUBMIT_JS = r"""(arg) => {
   /*LIB*/
   clearMark(arg.go);
   const box = deep(document, `[${arg.mark}]`)[0];
   if (!box) return 'gone';
   const NOT = /voice|голос|camera|photo|фото|image|картинк|clear|очист|reset|close|закры|отмен|cancel/;
-  const named = (el) => {
+  const signed = (el) => {
     const words = low([el.getAttribute('aria-label'), el.getAttribute('title'), el.getAttribute('value'),
                        (el.innerText || '').length <= 25 ? el.innerText : ''].join(' '));
     const marks = tokens([el.id, typeof el.className === 'string' ? el.className : '', dataWords(el),
                           [...el.querySelectorAll('use')].map((u) => u.getAttribute('href') || '').join(' ')].join(' '));
     if (NOT.test(words) || marks.some((t) => NOT.test(t))) return -1;
-    return (SEARCH_TEXT.test(words) ? 2 : 0) + (marks.some((t) => SEARCH_TOKEN.test(t)) ? 2 : 0)
-      + (el.getAttribute('type') === 'submit' ? 1 : 0);
+    return (SEARCH_TEXT.test(words) ? 2 : 0) + (marks.some((t) => SEARCH_TOKEN.test(t)) ? 2 : 0);
   };
-  const pick = (scope, needSign) => {
-    let best = null, bestScore = needSign ? 0 : -0.5;
+  const submits = (el) => el.localName === 'input' || (el.localName === 'button'
+    && ['', 'submit'].includes((el.getAttribute('type') || '').toLowerCase()));
+  const form = box.form || box.closest('form');
+  const small = !!form && [...form.querySelectorAll('input:not([type=hidden]), textarea, select')]
+    .filter((f) => seen(f, 8, 8)).length <= arg.fields;
+  const pick = (scope) => {
+    let best = null, bestScore = 0;
     for (const el of scope.querySelectorAll('button, input[type=submit], input[type=image], [role=button], a[href]')) {
-      if (el === box || !seen(el, 8, 8)) continue;
-      const score = named(el);
+      if (el === box || !seen(el, 8, 8) || (el.localName === 'a' && !onSite(el.getAttribute('href')))) continue;
+      // A search sign, or the small form's own submit button with no sign against it.
+      let score = signed(el);
+      if (score === 0 && small && el.closest('form') === form && submits(el)) score = 1;
       if (score > bestScore) { best = el; bestScore = score; }
     }
     return best;
   };
-  const form = box.form || box.closest('form');
   if (form) {
-    const button = pick(form, false);
+    const button = pick(form);
     if (button) { button.setAttribute(arg.go, '1'); return 'button'; }
+    if (!small) return 'none';
     try { form.requestSubmit(); } catch (e) { form.submit(); }
     return 'form';
   }
   for (let e = box.parentElement, i = 0; e && i < 4; e = e.parentElement, i++) {
-    const button = pick(e, true);
+    const button = pick(e);
     if (button) { button.setAttribute(arg.go, '1'); return 'button'; }
   }
   return 'none';
@@ -9414,12 +9442,24 @@ async def site_search_page(home, words, holder, recorder, until):
         holder["target"] = (await cdp.send("Target.getTargetInfo"))["targetInfo"]["targetId"]
         worker.visit_tabs.add(holder["target"])
     recorder.watch(page)
+    page.on("popup", site_search_popup)
     return await site_search_on(page, home, words, holder, until)
+
+
+def site_search_popup(popup):
+    """A tab the site opened from the search's (a toggle's or a form's target=_blank, a script's window.open): the
+    results are read in the search's own tab, and another tab of the person's browser left open would be a running
+    errand's to adopt (`follow_focus`) and its memory's to pay for. Closed at once."""
+    async def close():
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(popup.close(), SITE_SEARCH_POPUP_CLOSE_S)
+
+    asyncio.ensure_future(close())
 
 
 async def site_search_on(page, home, words, holder, until):
     """`site_search_page`'s search on a tab already open: `holder["ms"]` says how long each part took, `holder["box"]`
-    how the box was found, `holder["sent"]` how the words were sent, `holder["went"]` the addresses on the way."""
+    how the box was found, `holder["sent"]` how the words were sent."""
     phases = holder["ms"] = {}
     mark = time.monotonic()
 
@@ -9434,7 +9474,7 @@ async def site_search_on(page, home, words, holder, until):
     # The cards the home page already shows (a carousel of offers): the results are another list.
     before = await site_search_eval(page, CODE_CARDS_JS, SITE_LOOK_CARDS) or []
     homely = {card["text"] for card in before}
-    holder["box"] = await site_search_box(page, until)
+    holder["box"] = await site_search_box(page, home, until)
     lap("box")
     if holder["box"] is None:
         if await site_search_walled(page):
@@ -9443,8 +9483,7 @@ async def site_search_on(page, home, words, holder, until):
     left = page.url
     await site_search_type(page, words)
     lap("type")
-    holder["went"] = []
-    holder["sent"] = await site_search_send(page, left, until, holder["went"])
+    holder["sent"] = await site_search_send(page, left, until)
     if not site_same_place(home, page.url):
         raise SiteOpFailure("moved", "the search went to another site")
     lap("results")
@@ -9518,11 +9557,12 @@ async def site_search_walled(page):
     return len(text) <= CODE_WALL_TEXT and any(sign in seen for sign in CODE_WALL_SIGNS + SITE_SEARCH_REFUSED)
 
 
-async def site_search_box(page, until):
+async def site_search_box(page, home, until):
     """The site's search box marked in the page (SITE_SEARCH_MARK), or None: a shown one; else one a search button
     opens (SITE_SEARCH_TOGGLES of them clicked, each given SITE_SEARCH_TOGGLE_S); else, with no button either, one an
     app is still drawing (looked for again for SITE_SEARCH_WAIT_S: eapteka.ru's box comes ~8 s after its document
-    over the stand's exit). What found it: its signs, the toggles clicked."""
+    over the stand's exit). What found it: its signs, the toggles clicked. A toggle that took the page to another site
+    ends the search before a word is typed there."""
     tried, waits = [], time.monotonic() + SITE_SEARCH_WAIT_S
     while True:
         box = await site_search_eval(page, SITE_SEARCH_BOX_JS, {"mark": SITE_SEARCH_MARK})
@@ -9543,6 +9583,8 @@ async def site_search_box(page, until):
             with contextlib.suppress(Exception):
                 await page.wait_for_load_state("domcontentloaded", timeout=max(
                     500, (until - time.monotonic() - SITE_SEARCH_AFTER_BOX_S) * 1000))
+            if not site_same_place(home, page.url):
+                raise SiteOpFailure("moved", "a search button went to another site")
             continue
         if time.monotonic() >= waits:
             return None
@@ -9610,32 +9652,30 @@ async def site_search_type(page, words):
     await asyncio.sleep(0.4)
 
 
-async def site_search_send(page, left, until, went):
+async def site_search_send(page, left, until):
     """The words sent: Enter, and when the page neither went on nor started to for SITE_SEARCH_SUBMIT_S, the box's
     form's own button (or the form as it would be). Then the results' document loaded. How it went: `enter`,
-    `button`, `form`, or `none:…` (the page answered in place, or not at all); the addresses the page went through on
-    the way, into `went` (the search's own address first, before the site's redirects to a page of the words:
-    regard.ru's /catalog?search=… to a category of theirs)."""
+    `button`, `form`, or `none:…` (the page answered in place, or not at all). Enter only while a search box has the
+    focus."""
     going = {"at": None}
-
-    def arrived(frame):
-        with contextlib.suppress(Exception):
-            if frame == page.main_frame and (not went or went[-1] != frame.url):
-                went.append(frame.url)
 
     def navigating(request):
         with contextlib.suppress(Exception):
             if request.is_navigation_request() and request.frame == page.main_frame and going["at"] is None:
                 going["at"] = time.monotonic()
 
+    # Enter goes where the focus is: a layer the page opened after the typing (a city's question, a subscription's)
+    # gets no key of ours.
+    if await site_search_eval(page, SITE_SEARCH_FOCUS_JS, {"mark": SITE_SEARCH_MARK}) not in ("box", "moved"):
+        raise SiteOpFailure("no_box", "the search box lost the focus before the words were sent")
     page.on("request", navigating)
-    page.on("framenavigated", arrived)
     try:
         await page.keyboard.press("Enter")
         if await site_search_moved(page, left, going, until):
             how = "enter"
         else:
-            how = await site_search_eval(page, SITE_SEARCH_SUBMIT_JS, {"mark": SITE_SEARCH_MARK, "go": SITE_SEARCH_GO})
+            how = await site_search_eval(page, SITE_SEARCH_SUBMIT_JS, {
+                "mark": SITE_SEARCH_MARK, "go": SITE_SEARCH_GO, "fields": SITE_SEARCH_FORM_FIELDS})
             if how == "button":
                 with contextlib.suppress(Exception):
                     await page.locator(f"[{SITE_SEARCH_GO}]").first.click(timeout=SITE_SEARCH_CLICK_S * 1000)
@@ -9643,7 +9683,6 @@ async def site_search_send(page, left, until, went):
                 how = f"none:{how}"
     finally:
         page.remove_listener("request", navigating)
-        page.remove_listener("framenavigated", arrived)
     with contextlib.suppress(Exception):
         await page.wait_for_load_state("domcontentloaded", timeout=max(500, (until - time.monotonic() - 2) * 1000))
     return how
@@ -9688,105 +9727,6 @@ async def site_search_cards(page, home, homely, until):
         last = mark
         await asyncio.sleep(0.7)
     return best
-
-
-def site_search_where(url, words):
-    """Where the results' address holds the words searched for — `query:<key>`, `path:<n>` (as typed, or written in
-    latin letters: `path-latin:<n>`) or `fragment` —, or None: an address that holds them is a template of the site's
-    search (`site_template`'s %query%)."""
-    want = site_words(words)
-    if not want:
-        return None
-    parts = urllib.parse.urlsplit(url)
-    for encoding in ("utf-8", "cp1251"):  # an old site's form sends its own encoding (holodilnik.ru's cp1251)
-        for key, value in urllib.parse.parse_qsl(parts.query, keep_blank_values=True, encoding=encoding):
-            if want in site_words(value):
-                return f"query:{key}" + ("" if encoding == "utf-8" else f":{encoding}")
-    latin = site_latin(want)
-    for n, segment in enumerate(parts.path.split("/")):
-        decoded = site_words(urllib.parse.unquote_plus(segment))
-        if want in decoded:
-            return f"path:{n}"
-        if latin and latin in decoded.replace("-", " ").replace("_", " "):
-            return f"path-latin:{n}"
-    if parts.fragment and want in site_words(urllib.parse.unquote_plus(parts.fragment)):
-        return "fragment"
-    return None
-
-
-def site_search_results_only(recorder, home):
-    """The recorder's bodies of the results alone: the home page's own (its carousels' requests, the box's suggestions
-    as the words were typed) hold lists that name the results' items too, and an operation found in them would read
-    the home page (lenta.com's collections behind its home, found beside its search's on the stand, 26.10)."""
-    def at_home(url):
-        parts = urllib.parse.urlsplit(url or "")
-        return site_same_place(home, url) and parts.path.rstrip("/") == "" and not parts.query
-
-    recorder.bodies = [(entry, text) for entry, text in recorder.bodies if not at_home(entry["page"])]
-
-
-# A value of the results page's own query kept in its search template (`site_search_template`): a short word or
-# number of the site's (`type=products`, `isComplete=0`), never a value of the errand's or an id of the browser.
-SITE_SEARCH_LITERAL = re.compile(r"[A-Za-z0-9_.\-]{1,24}")
-
-
-def site_search_template(url, words):
-    """The results page's address as a template of the site's search, from a search through its box: the part that
-    holds the words `%query%` (`site_search_where`), every other part as the site wrote it — the person gave only the
-    words —, except a query value that is no short word of the site's (SITE_SEARCH_LITERAL), is named like a secret
-    (SENSITIVE_KEY) or names a stem of the words (an errand's value: dropped). None when the address does not hold
-    the words, or another part of its path names them (regard.ru's category picked by the words, its latin name in
-    the path): that page is the words' own, not the search's. With the encoding the site's form sent them in."""
-    where = site_search_where(url, words)
-    if where is None or where == "fragment":
-        return None
-    stems = {word[:4] for word in site_words(words).split() if len(word) >= 4}
-    stems |= {site_latin(stem)[:4] for stem in stems}
-    named = lambda text: any(stem and stem in site_words(text).replace("-", " ") for stem in stems)  # noqa: E731
-    parts = urllib.parse.urlsplit(url)
-    kind, _, rest = where.partition(":")
-    key, _, encoding = rest.partition(":")
-    segments = parts.path.split("/")
-    for n, segment in enumerate(segments):
-        if kind.startswith("path") and str(n) == key:
-            segments[n] = "%query%"
-        elif named(urllib.parse.unquote(segment)):
-            return None
-    query = []
-    for name, value in urllib.parse.parse_qsl(parts.query, keep_blank_values=True, encoding=encoding or "utf-8"):
-        if kind == "query" and name == key:
-            query.append(f"{urllib.parse.quote(name, safe='[]')}=%query%")
-        elif (SITE_KEY.fullmatch(name) and not SENSITIVE_KEY.search(name) and not named(value)
-              and (value == "" or SITE_SEARCH_LITERAL.fullmatch(value))):
-            query.append(f"{urllib.parse.quote(name, safe='[]')}={value}")
-    template = f"https://{(parts.hostname or '').lower()}{'/'.join(segments)}" + ("?" + "&".join(query) if query else "")
-    return {"page": template, "encoding": encoding or "utf-8"}
-
-
-def site_search_address(went, landed, words):
-    """The search's template from the addresses the results page went through (`site_search_send`'s `went`, then
-    where it landed): the first that makes one (`site_search_template`), the search's own before the site's page of
-    the words."""
-    return next((template for template in (site_search_template(url, words) for url in [*went, landed] if url)
-                 if template), None)
-
-
-def site_search_fill(template, words):
-    """A search template's page for other words, in the encoding the site's form sends."""
-    value = urllib.parse.quote(words, encoding=template["encoding"], safe="")
-    return template["page"].replace("%query%", value)
-
-
-SITE_LATIN = dict(zip("абвгдежзийклмнопрстуфхцчшщъыьэюя",
-                      ["a", "b", "v", "g", "d", "e", "zh", "z", "i", "y", "k", "l", "m", "n", "o", "p", "r", "s", "t",
-                       "u", "f", "h", "ts", "ch", "sh", "sch", "", "y", "", "e", "yu", "ya"]))
-
-
-def site_latin(words):
-    """Words in Russian as a site writes them in its addresses' latin letters (беспроводные → besprovodnye)."""
-    if not re.search("[а-я]", words):
-        return ""
-    return "".join(SITE_LATIN.get(ch, ch) for ch in words)
 
 
 # One result's own page read for Bro (`/v1/item`): a vacancy's salary, a product's specs, a book's annotation, with no

@@ -869,6 +869,31 @@ describe("Bro's own read of a site it has read before", () => {
       })
     ).toBeUndefined();
     expect(browser.lookBrowserVmSiteDirectly).toHaveBeenCalledTimes(3);
+    // Nothing of the site's was looked at — no words, then a worker that
+    // cannot search yet and no page named —: the next errand tries again,
+    // and a box that showed nothing holds the site.
+    const superjob = { ...site, site: "https://www.superjob.ru" };
+    model.generateText.mockClear();
+    model.generateText.mockResolvedValue({
+      output: { query: "сварщик", search: true, url: null },
+    });
+    browser.lookBrowserVmSiteDirectly.mockResolvedValueOnce(null);
+    expect(
+      await readSiteDirectly(scope, { ...superjob, sessionId: "t4a" })
+    ).toBeUndefined();
+    browser.lookBrowserVmSiteDirectly.mockResolvedValueOnce({
+      ms: 9000,
+      ok: false,
+      reason: "no_box",
+    });
+    expect(
+      await readSiteDirectly(scope, { ...superjob, sessionId: "t4b" })
+    ).toBeUndefined();
+    expect(
+      await readSiteDirectly(scope, { ...superjob, sessionId: "t4c" })
+    ).toBeUndefined();
+    expect(model.generateText).toHaveBeenCalledTimes(2);
+    expect(browser.lookBrowserVmSiteDirectly).toHaveBeenCalledTimes(5);
     // A worker that has no look rests every site of the workspace: the next
     // errand does not pay for the model or the call again.
     model.generateText.mockResolvedValue({
