@@ -25,11 +25,21 @@ psql_on SRC -v name="$NAME" -v since="$SINCE" -v lim="$LIMIT" <<'SQL'
 \pset format unaligned
 SELECT 'workspaces of that username: ' || count(DISTINCT workspace_id)
 FROM channel_identities WHERE channel = 'telegram' AND lower(username) = lower(:'name');
+-- Whether Bro has a phone to type for the person (yes or no, never the number).
+SELECT 'saved phone in Personal Info: ' || coalesce(bool_or(nullif(trim(p.phone), '') IS NOT NULL), false)
+FROM channel_identities c LEFT JOIN user_profiles p ON p.workspace_id = c.workspace_id
+WHERE c.channel = 'telegram' AND lower(c.username) = lower(:'name');
 SELECT E'\n=== ' || to_char(r.created_at, 'YYYY-MM-DD HH24:MI:SS') || ' status=' || r.status
        || ' site=' || coalesce(r.site, '-')
        || ' ended_on=' || coalesce(substring(v.final_url FROM '^[A-Za-z][A-Za-z0-9+.-]*://[^?#]*'), '-')
+       || E'\nFLAGS: started_by_person=' || coalesce(r.started_by_person::text, '-')
+       || ' delegated_by_person=' || r.delegated_by_person
+       || ' payment_allowed=' || r.payment_allowed
+       || ' retried_as=' || coalesce(r.retried_as_run_id, '-')
+       || E'\nSUBMISSION: ' || left(coalesce(r.submission::text, '-'), 700)
        || E'\nTASK: ' || left(regexp_replace(r.task, '\s+', ' ', 'g'), 1500)
        || E'\nOUTCOME: ' || left(coalesce(r.outcome, '-'), 3500)
+       || E'\nREPORT TO PERSON: ' || left(coalesce(r.report, '-'), 1500)
        || E'\nWORKER RESULT: ' || left(coalesce(v.result, '-'), 2500)
        || E'\nERROR: ' || left(coalesce(v.error, '-'), 600)
 FROM browser_runs r

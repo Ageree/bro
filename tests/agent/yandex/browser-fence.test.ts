@@ -66,7 +66,7 @@ vi.mock("@agent/lib/browser-use/cdp", async (original) => ({
 }));
 vi.mock("@agent/lib/browser-use/facts", async (original) => ({
   ...(await original<typeof browserFacts>()),
-  readOwnContacts: async () => ({ emails: [], phones: [] }),
+  readOwnContacts: async () => ({ emails: [], phones: ["+79990000001"] }),
   browserRunFacts: async () => ({
     addresses: [],
     details: undefined,

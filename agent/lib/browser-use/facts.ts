@@ -409,6 +409,17 @@ function phoneNumbers(phone: string) {
   );
 }
 
+/**
+ * Whether the words carry a whole phone number (ten to twelve digits in one
+ * run, however grouped; a card or a document number is longer): the person gave one themselves, for the form that asks for it.
+ */
+export function givesPhone(words: readonly string[]) {
+  return [...words.join("\n").matchAll(digitRunPattern)].some(([run]) => {
+    const length = run.normalize("NFKC").replaceAll(/\D/gu, "").length;
+    return length >= 10 && length <= 12;
+  });
+}
+
 /** The distinct numbers of the person's phone fields. */
 function ownPhoneNumbers(phones: readonly string[]) {
   return [...new Set(phones.flatMap(phoneNumbers))];
