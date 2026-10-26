@@ -2,12 +2,12 @@ import { NextResponse, type NextRequest } from "next/server";
 import {
   travelpayoutsDriveHeader,
   travelpayoutsDrivePages,
-} from "@app/_lib/travelpayouts";
+} from "@web/auth/travelpayouts";
 import { getAuthSession } from "@db/services/auth/session";
 
 /**
  * The request on to its page, telling the root layout whether the page
- * carries Travelpayouts Drive (`app/_lib/travelpayouts.ts`). A visitor's own
+ * carries Travelpayouts Drive (`web/auth/travelpayouts.ts`). A visitor's own
  * header of that name is dropped.
  */
 function onward(request: NextRequest) {

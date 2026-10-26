@@ -8,7 +8,7 @@ import styles from "../landing.module.css";
  * registered with Photon («This number didn't recognize yours»), and asking
  * for the sign-in code registers the phone. That link loads the page anew:
  * Travelpayouts Drive, which the landing carries, must not live on into
- * sign-in (`app/_lib/travelpayouts.ts`).
+ * sign-in (`web/auth/travelpayouts.ts`).
  */
 export function WriteBro({
   imessage,
@@ -44,6 +44,7 @@ export function WriteBro({
     <Button
       className={styles.primaryAction}
       nativeButton={false}
+      // oxlint-disable-next-line nextjs/no-html-link-for-pages -- a full page load, so Drive does not live on into sign-in
       render={<a aria-label="Написать бро" href="/sign-in" />}
     >
       Написать bro

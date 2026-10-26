@@ -1,7 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Geist, Source_Serif_4 } from "next/font/google";
 import { headers } from "next/headers";
-import { travelpayoutsDriveHeader } from "@app/_lib/travelpayouts";
+import { travelpayoutsDriveHeader } from "@web/auth/travelpayouts";
 import { accessScopeForUser } from "@shared/identity/access-scope";
 import { applicationOrigin } from "@shared/environment/origin";
 import { requestSession } from "@web/auth/request-scope";
@@ -26,7 +26,7 @@ const geist = Geist({
 // Travelpayouts Drive confirms the site by reading this snippet from the raw
 // HTML of its page. The tag sits in the document head so the check sees it
 // in the HTML the server sends, and only on the public pages
-// (`app/_lib/travelpayouts.ts`). `nowprocket` is an empty string so React
+// (`web/auth/travelpayouts.ts`). `nowprocket` is an empty string so React
 // emits the attribute.
 const travelpayoutsDrive = `
   (function () {

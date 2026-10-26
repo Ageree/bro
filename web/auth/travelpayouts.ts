@@ -4,7 +4,7 @@
  * server sends). It is someone else's script on the site's origin, so only
  * the public pages that hold nothing of a person carry it: not the chat, the
  * cabinet, sign-in, a payment's or a card's page. `proxy.ts` names such a
- * page to the root layout with this request header.
+ * page to the root layout (`app/layout.tsx`) with this request header.
  */
 export const travelpayoutsDriveHeader = "x-bro-travelpayouts-drive";
 

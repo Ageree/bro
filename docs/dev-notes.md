@@ -442,7 +442,7 @@ postgres:17-alpine`, Docker в облачной сессии есть; Google �
   (`isSessionOwned`) или строка `chats`: чужую сессию eve не отдаёт, пустой чат
   с полем ввода ничего бы не объяснил (`chat/[sessionId]/page.tsx`).
 - Travelpayouts Drive (26.10): скрипт emrldtp.cc, по которому TP подтверждает, что brobro.tech владельца, стоит в
-  `<head>` только на `/`, `/oferta` и `/privacy` (`app/_lib/travelpayouts.ts`, страницу называет заголовок из
+  `<head>` только на `/`, `/oferta` и `/privacy` (`web/auth/travelpayouts.ts`, страницу называет заголовок из
   `proxy.ts`): на одном origin с `/chat`, кабинетом, `/pay` (там вводят CVV) и `/card/<id>` чужой код читал бы
   страницу и звал API Бро от имени вошедшего. Ссылки с этих страниц в приложение — `<a>`, не `Link`: при
   клиентском переходе загруженный скрипт живёт дальше.
