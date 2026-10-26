@@ -241,6 +241,167 @@ const stateSchema = z.union([
   z.strictObject({ flight: z.literal("next") }),
 ]);
 
+/**
+ * A class a site wrote by hand (`product-card__name`, `tile-root`), not one
+ * its build generated: no token with a digit but a short number after a word
+ * (`col-6`) or `h1`–`h6`, no camelCase part of four letters or more without
+ * a vowel (styled-components' `knfjIn`), no token of two one-letter parts or
+ * more (`iNXzHE`). As `site_class_ok` in browser-vm/worker/worker.py; its
+ * learner also leaves out a page's families of short generated classes
+ * (tutu.ru's `eibe`, `dube`), which a selector alone does not show.
+ */
+function handWritten(name: string) {
+  if (!/^[A-Za-z][A-Za-z0-9_-]{1,59}$/u.test(name)) return false;
+  const tokens = name.split(/[-_]+/u).filter((token) => token !== "");
+  return (
+    tokens.length > 0 &&
+    tokens.every((token, index) => {
+      if (
+        /\d/u.test(token) &&
+        !(/^\d{1,2}$/u.test(token) && index > 0) &&
+        !/^h[1-6]$/u.test(token)
+      ) {
+        return false;
+      }
+      const parts = token.split(/(?=[A-Z])/u);
+      if (
+        parts.filter((part) => part.length === 1).length >= 2 &&
+        token !== token.toUpperCase()
+      ) {
+        return false;
+      }
+      return parts.every(
+        (part) =>
+          part.replaceAll(/\d/gu, "").length < 4 || /[aeiouy]/iu.test(part)
+      );
+    })
+  );
+}
+
+// Attributes whose value a site writes as its own word for a role: test
+// hooks, component names, schema.org. Any other is named by presence only.
+const roleAttributes = new Set([
+  "data-testid",
+  "data-test-id",
+  "data-test",
+  "data-qa",
+  "data-qa-id",
+  "data-marker",
+  "data-e2e",
+  "data-cy",
+  "data-auto",
+  "data-zone-name",
+  "data-widget",
+  "data-ti",
+  "data-name",
+  "data-mark",
+  "data-slot",
+  "data-component",
+  "data-role",
+  "data-block",
+  "itemprop",
+  "itemtype",
+  "role",
+]);
+
+const selectorAttribute = String.raw`\[(?:[a-z][a-z-]{1,40}|[a-z][a-z-]{1,40}="(?:[A-Za-z][A-Za-z_-]{1,39}|https?://schema\.org/[A-Za-z]{1,40})"|href\*="/[a-z-]{2,24}/")\]`;
+const selectorSimple = String.raw`(?::scope|[a-z][a-z0-9]{0,15})(?:\.[A-Za-z][A-Za-z0-9_-]{1,59})*(?:${selectorAttribute})*`;
+const simplePattern = new RegExp(`^${selectorSimple}$`, "u");
+const hasPattern = new RegExp(
+  `^(${selectorSimple}):has\\(> (${selectorSimple}(?: > ${selectorSimple}){0,3})\\)$`,
+  "u"
+);
+
+function simpleSelectorOk(part: string) {
+  if (!simplePattern.test(part)) return false;
+  const classes = [
+    ...part
+      .replaceAll(/\[[^\]]*\]/gu, "")
+      .matchAll(/\.([A-Za-z][A-Za-z0-9_-]*)/gu),
+  ].map((match) => match[1] ?? "");
+  if (!classes.every(handWritten)) return false;
+  return [...part.matchAll(/\[([a-z-]+)="([^"]*)"\]/gu)].every(
+    ([, name = "", value = ""]) =>
+      roleAttributes.has(name) &&
+      (value.startsWith("http") || handWritten(value))
+  );
+}
+
+/**
+ * A CSS selector of the site's own words (`site_selector_ok` in
+ * browser-vm/worker/worker.py): up to six compounds joined by " " or " > ";
+ * a compound is a tag (or `:scope`, first only), hand-written classes,
+ * attributes and at most one `:has(> …)`. An attribute is named by its
+ * presence, or with a value only as a role attribute whose value is a latin
+ * code word, or as a link's `href*="/word/"`. No other quote, no digit run,
+ * no letter of another alphabet: an errand's value cannot be written in it.
+ * The worker also drops an operation whose selector holds a latin word of
+ * its page's own address (the errand's), which the schema cannot know.
+ */
+function selectorOk(selector: string) {
+  if (selector.length > 200 || selector !== selector.trim()) return false;
+  const tokens = selector.split(/ (?![^()]*\))/u);
+  const parts = tokens.filter((token) => token !== ">");
+  if (
+    parts.length < 1 ||
+    parts.length > 6 ||
+    tokens.includes("") ||
+    tokens[0] === ">" ||
+    tokens.at(-1) === ">" ||
+    tokens.some((token, index) => token === ">" && tokens[index + 1] === ">")
+  ) {
+    return false;
+  }
+  return parts.every((part, index) => {
+    const has = hasPattern.exec(part);
+    const pieces = has
+      ? [has[1] ?? "", ...(has[2] ?? "").split(" > ")]
+      : [part];
+    return (
+      pieces.every(simpleSelectorOk) &&
+      !pieces.slice(1).some((piece) => piece.startsWith(":scope")) &&
+      !(index > 0 && part.startsWith(":scope"))
+    );
+  });
+}
+
+const selectorSchema = z
+  .string()
+  .max(200)
+  .refine(selectorOk, "a selector of the site's own words, never a value");
+
+const cellSchema = z.strictObject({
+  attribute: z
+    .union([
+      z.enum(["href", "title", "aria-label", "alt", "content"]),
+      z.string().regex(/^data-[a-z][a-z-]{1,30}$/u),
+    ])
+    .optional(),
+  selector: selectorSchema,
+});
+
+/**
+ * Results that are rows of the page's HTML (Pomerado's `readRows`,
+ * `site_op_rows` in browser-vm/worker/worker.py): the rows' selector and
+ * each field's selector inside a row, its text or an attribute. `render:
+ * false` reads the document fetched from a tab on the site; `true`, the
+ * page drawn with its pictures and fonts left out. `twins`: the page keeps
+ * a hidden copy of each row (kupibilet.ru's mobile tickets), and a row its
+ * name does not name is dropped. Its data is a list of `{name, price, link,
+ * text}`, so its `items` are [] and its fields those keys.
+ */
+const htmlSourceSchema = z.strictObject({
+  cells: z.strictObject({
+    link: cellSchema.optional(),
+    name: cellSchema,
+    price: cellSchema.optional(),
+  }),
+  kind: z.literal("html"),
+  render: z.boolean(),
+  rows: selectorSchema,
+  twins: z.literal(true).optional(),
+});
+
 const sourceSchema = z.discriminatedUnion("kind", [
   z.strictObject({
     kind: z.literal("document"),
@@ -254,6 +415,7 @@ const sourceSchema = z.discriminatedUnion("kind", [
       "the request's address, no query"
     ),
   }),
+  htmlSourceSchema,
 ]);
 
 export const siteOperationSchema = z
@@ -295,7 +457,20 @@ export const siteOperationSchema = z
     // for www.litres.ru, offers-api.tutu.ru for www.tutu.ru), never another site.
     const request = splitAddress(operation.source.url)?.host ?? "";
     return sameSiteHost(request, siteOperationHost(operation.page));
-  }, "the page's own site answers it");
+  }, "the page's own site answers it")
+  // An html operation's data is its rows as `{name, price, link, text}`,
+  // read as they are: its items are [] and its fields those keys.
+  .refine(
+    ({ fields, items, source }) =>
+      source.kind !== "html" ||
+      (items.length === 0 &&
+        same(fields.name, ["name"]) &&
+        (fields.price === undefined || same(fields.price, ["price"])) &&
+        (fields.link === undefined ||
+          fields.link === "page" ||
+          same(fields.link, { path: ["link"] }))),
+    "an html operation reads its rows' own cells"
+  );
 
 export type SiteOperation = z.infer<typeof siteOperationSchema>;
 
@@ -358,10 +533,12 @@ function siteOperationName(page: string) {
  * of a path is more than a key or an index, or its price is in hundredths.
  * An older worker reads no such state or step and answers `no_data`, which
  * would count against a sound operation; it reads a price in hundredths as
- * roubles. Undefined when any worker reads it.
+ * roubles; one from 26.10 again (`.2`) for an html operation, which an
+ * older worker does not read at all. Undefined when any worker reads it.
  */
 export function siteOperationWorker(operation: SiteOperation) {
   const { fields, items, source } = operation;
+  if (source.kind === "html") return rowsReadingWorker;
   const link = fields.link === "page" ? undefined : fields.link;
   const paths = [
     items,
@@ -381,6 +558,9 @@ export function siteOperationWorker(operation: SiteOperation) {
 }
 
 const stateReadingWorker = "2026-10-26.1";
+// The worker that reads a page's rows (`site_op_rows`): an older one leaves
+// an html operation out of a run's operations and refuses it in /v1/op.
+const rowsReadingWorker = "2026-10-26.2";
 
 export function siteOperationHost(page: string) {
   return splitAddress(page)?.host ?? "";

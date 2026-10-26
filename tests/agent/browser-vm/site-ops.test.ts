@@ -302,6 +302,108 @@ describe("a site's operation as Bro keeps it", () => {
     expect(siteOperationWorker(kazan)).toBeUndefined();
   });
 
+  it("reads a page's rows by the site's own hooks, never a build's hashed class or a value", () => {
+    // What the worker learned on the stand (26.10, `site_rows_operations`).
+    const labirint = {
+      fields: { link: { path: ["link"] }, name: ["name"], price: ["price"] },
+      items: [],
+      name: "www.labirint.ru/search/%id%/",
+      page: "https://www.labirint.ru/search/%id%/",
+      seen: { items: 60, matched: 0, of: 0 },
+      source: {
+        cells: {
+          link: { attribute: "href", selector: "a.product-card__img" },
+          name: { selector: "a.product-card__name" },
+          price: { attribute: "data-discount-price", selector: ":scope" },
+        },
+        kind: "html",
+        render: false,
+        rows: "div.product-card",
+      },
+    };
+    const twogis = {
+      fields: { link: { path: ["link"] }, name: ["name"] },
+      items: [],
+      name: "2gis.ru/moscow/search/%word%",
+      page: "https://2gis.ru/moscow/search/%word%",
+      seen: { items: 12, matched: 0, of: 0 },
+      source: {
+        cells: {
+          link: { attribute: "href", selector: 'a[href*="/firm/"]' },
+          name: { selector: 'a[href*="/firm/"]' },
+        },
+        kind: "html",
+        render: false,
+        rows: 'div:has(> div > div > a[href*="/firm/"])',
+      },
+    };
+    const tutu = {
+      fields: { link: "page", name: ["name"], price: ["price"] },
+      items: [],
+      name: "www.tutu.ru/poezda/%word%/%word%/",
+      page: "https://www.tutu.ru/poezda/%word%/%word%/?date=%date%&travelers=%number%",
+      seen: { items: 10, matched: 0, of: 0 },
+      source: {
+        cells: {
+          name: { selector: 'div[data-ti="train-name-badge"]' },
+          price: { selector: 'span[data-ti="first-price"]' },
+        },
+        kind: "html",
+        render: true,
+        rows: 'div[data-ti="offersList"] > div',
+        twins: true,
+      },
+    };
+    for (const operation of [labirint, twogis, tutu]) {
+      const kept = siteOperationSchema.parse(operation);
+      expect(kept).toEqual(operation);
+      // An older worker does not read an html operation at all.
+      expect(siteOperationWorker(kept)).toBe("2026-10-26.2");
+    }
+    const rows = (selector: string) => ({
+      ...labirint,
+      source: { ...labirint.source, rows: selector },
+    });
+    const name = (cell: { attribute?: string; selector: string }) => ({
+      ...labirint,
+      source: {
+        ...labirint.source,
+        cells: { ...labirint.source.cells, name: cell },
+      },
+    });
+    const refused = [
+      // A build's hashed classes: they change with every release.
+      rows("div.c0e_7"),
+      rows("div.x31de4314--8d758a--text"),
+      rows("div.knfjIn"),
+      name({ selector: "span.tsBody500Medium" }),
+      // A text value in a selector: what a card or a person says.
+      rows('div[title="Мастер и Маргарита"]'),
+      name({ selector: 'a[aria-label="Мастер и Маргарита"]' }),
+      // The errand's own words: a search in another alphabet, a number, a
+      // link by a part of its path that is a value.
+      rows('div[data-name="Гарри Поттер"]'),
+      rows('div[data-testid="iphone 15"]'),
+      rows('a[href*="/79217818876/"]'),
+      // Positions and anything beyond the grammar.
+      rows("li:nth-child(2)"),
+      rows("div:not(.ad)"),
+      rows('a[href^="/books/"]'),
+      rows("div > > a"),
+      name({ attribute: "onclick", selector: "a" }),
+      // Its data is its rows' cells as they are, never paths into data.
+      { ...labirint, items: ["rows"] },
+      { ...labirint, fields: { ...labirint.fields, name: ["title"] } },
+      {
+        ...labirint,
+        fields: { ...labirint.fields, link: { path: ["href"] } },
+      },
+    ];
+    for (const record of refused) {
+      expect(siteOperationSchema.safeParse(record).success).toBe(false);
+    }
+  });
+
   it("is the site's on its own host and the site's subdomains, never a neighbour's", () => {
     expect(siteOperationOnSite(kazan, "https://www.ostrovok.ru")).toBe(true);
     expect(siteOperationOnSite(kazan, "https://ostrovok.ru/hotel")).toBe(true);

@@ -10,6 +10,7 @@ import sys
 import time
 import types
 import unittest
+import unittest.mock
 import urllib.parse
 from pathlib import Path
 
@@ -931,6 +932,390 @@ class LookTest(DirectSetup):
         finally:
             worker.site_op_gate = None
         self.assertEqual((status, answer["ok"], answer["reason"]), (200, False, "failed"))
+
+
+# A labirint.ru search as an html operation finds it (26.10): its rows `div.product-card`, a fetched document.
+LABIRINT_PAGE = "https://www.labirint.ru/search/%D0%B3%D0%B0%D1%80%D1%80%D0%B8/"
+LABIRINT = {"name": "www.labirint.ru/search/%id%/", "page": "https://www.labirint.ru/search/%id%/",
+            "source": {"kind": "html", "render": False, "rows": "div.product-card",
+                       "cells": {"name": {"selector": "a.product-card__name"},
+                                 "price": {"selector": ":scope", "attribute": "data-discount-price"},
+                                 "link": {"selector": "a.product-card__img", "attribute": "href"}}},
+            "items": [], "fields": {"name": ["name"], "price": ["price"], "link": {"path": ["link"]}},
+            "seen": {"items": 60, "matched": 0, "of": 0}}
+BOOKS = [{"name": "Мастер и Маргарита", "price": "761", "link": "https://www.labirint.ru/books/595815/",
+          "text": "761 ₽ Мастер и Маргарита Булгаков Михаил АСТ"},
+         {"name": "Мастер и Маргарита. Роман", "price": "399", "link": "https://www.labirint.ru/books/942043/",
+          "text": "399 ₽ Мастер и Маргарита. Роман Булгаков"},
+         {"name": "Мастер-класс", "price": "1072", "link": "https://www.labirint.ru/books/893994/",
+          "text": "1 072 ₽ Мастер-класс"}]
+
+
+def rows_answer(items, status=200, landed=None, nameless=0):
+    """What SITE_ROWS_READ_JS (and the fetch around it) answers of a page's rows."""
+    return {"status": status, "landed": landed, "rows": "div.product-card" if items else None, "count": len(items),
+            "items": items, "nameless": nameless, "cells": LABIRINT["source"]["cells"] if items else {}}
+
+
+class RowsPage(Page):
+    """A page whose rows the reader reads (`fetched` for the fetch of a URL, `drawn` for the page as drawn)."""
+
+    def __init__(self, documents=None, fetched=None, drawn=None, **options):
+        super().__init__(documents or {}, **options)
+        self.rows_fetched, self.rows_drawn, self.reads = fetched or {}, drawn, []
+
+    async def evaluate(self, expression, argument=None):
+        if expression == worker.SITE_ROWS_FETCH_JS:
+            self.fetched.append(argument["url"])
+            answer = self.rows_fetched.get(argument["url"])
+            return answer | {"landed": answer.get("landed") or argument["url"]} if answer else \
+                rows_answer([], status=404, landed=argument["url"])
+        if expression == worker.SITE_ROWS_READ_JS:
+            self.reads.append(argument)
+            return self.rows_drawn or rows_answer([])
+        return await super().evaluate(expression, argument)
+
+
+class RowsGrammarTest(unittest.TestCase):
+    """The selectors of an html operation: the site's own words, never a value of the errand's."""
+
+    def test_a_selector_is_hooks_and_hand_written_classes_only(self):
+        for selector in ("div.product-card", "article.j-card-item", "div[data-name=\"Offers\"] > div",
+                         "span[data-mark=\"OfferTitle\"] span", "div:has(> div > div > a[href*=\"/firm/\"])",
+                         ":scope > div > div > a > span > span", "a[href*=\"/firm/\"]", ":scope",
+                         "div[data-ti=\"train-name-badge\"]", "meta[itemprop=\"name\"]", "div[data-product-id]",
+                         "div[itemtype=\"http://schema.org/Product\"]", "ul.grid-cols-5 > li[data-index]"):
+            self.assertTrue(worker.site_selector_ok(selector), selector)
+        for selector in (
+                "div.knfjIn a", "div.c0e_7", "span.tsBody500Medium", "div.x31de4314--8d758a--text",  # a build's hashes
+                "div[title=\"Мастер\"]", "div[data-testid=\"iphone 15\"]", "div[data-x=\"abc\"]",  # a text value
+                "a[href^=\"/\"]", "a[href*=\"/moscow1/\"]", "li:nth-child(2)", "div:not(.x)", "div  span", "div >",
+                "a[href*=\"/firm/\"] :scope", "div > > a", 5, None):
+            self.assertFalse(worker.site_selector_ok(selector), selector)
+
+    def test_an_operation_that_names_the_errands_word_is_none(self):
+        operation = json.loads(json.dumps(LABIRINT)) | {"page": "https://shop.ru/search/?q=%query%",
+                                                        "name": "shop.ru/search/"}
+        self.assertIsNotNone(worker.site_rows_clean(operation, "https://shop.ru/search/?q=bosch+drill"))
+        operation["source"]["rows"] = "div.brand-bosch"
+        self.assertIsNone(worker.site_rows_clean(operation, "https://shop.ru/search/?q=bosch+drill"))
+        operation["source"]["rows"] = "div.product-card"
+        self.assertIsNone(worker.site_rows_clean(operation, "https://shop.ru/search/?q=x", {"login": "product"}))
+
+    def test_only_a_well_formed_html_operation_is_kept(self):
+        self.assertEqual(list(worker.site_operations([LABIRINT])), [LABIRINT["name"]])
+        for change in ({"items": ["rows"]}, {"fields": {"name": ["title"]}},
+                       {"source": LABIRINT["source"] | {"rows": "div.c0e_7"}},
+                       {"source": LABIRINT["source"] | {"render": "no"}},
+                       {"source": LABIRINT["source"] | {"cells": {"price": {"selector": "span"}}}},
+                       {"source": LABIRINT["source"] | {"cells": {"name": {"selector": "a", "attribute": "onclick"}}}}):
+            self.assertEqual(worker.site_operations([LABIRINT | change]), {}, change)
+
+    def test_rows_are_cards_and_rows_without_a_name_are_none(self):
+        cards = worker.html_cards(LABIRINT, rows_answer(BOOKS), LABIRINT_PAGE)
+        self.assertEqual([(card["name"], card["price"], card["link"]) for card in cards],
+                         [(book["name"], book["price"], book["link"]) for book in BOOKS])
+        self.assertEqual(cards[0]["more"]["text"], BOOKS[0]["text"])
+        self.assertEqual(worker.site_number(cards[2]["price"]), 1072)
+        # A banner in the list is left out; more such rows than cards is a page the operation no longer reads.
+        self.assertEqual(len(worker.html_cards(LABIRINT, rows_answer(BOOKS, nameless=1), LABIRINT_PAGE)), 3)
+        with self.assertRaises(worker.SiteOpFailure) as failure:
+            worker.html_cards(LABIRINT, rows_answer(BOOKS[:1], nameless=2), LABIRINT_PAGE)
+        self.assertEqual(failure.exception.reason, "no_data")
+
+    def test_a_report_s_items_are_read_as_written(self):
+        report = "ITEMS: " + json.dumps([{"name": "A", "price": "1 000 ₽", "url": "https://x.ru/1"},
+                                         {"name": "Fee", "price": "50", "fee": True}], ensure_ascii=False)
+        self.assertEqual(worker.reported_items(report), [{"name": "A", "price": "1 000 ₽", "url": "https://x.ru/1"}])
+
+
+class RowsDirectTest(DirectSetup):
+    """POST /v1/op of an html operation: the rows of a fetched document, or of the page drawn."""
+
+    async def read(self, operation, url, **options):
+        response = await self.client.post("/v1/op", json={"operation": operation, "url": url, **options},
+                                          headers={"Authorization": f"Bearer {self.token}"})
+        return await response.json()
+
+    async def test_a_fetched_documents_rows_are_the_cards(self):
+        url = "https://www.labirint.ru/search/%D0%BC%D0%B0%D1%81%D1%82%D0%B5%D1%80/"
+        self.next_page = RowsPage(fetched={url: rows_answer(BOOKS)})
+        answer = await self.read(LABIRINT, url, sort="price_asc")
+        self.assertEqual((answer["ok"], answer["via"], answer["count"]), (True, "fetch", 3))
+        self.assertEqual([card["price"] for card in answer["cards"]], ["399", "761", "1072"])
+        self.assertEqual(self.pages[0].visited[1:], ["https://www.labirint.ru/robots.txt"])
+        self.assertEqual(self.pages[0].reads, [])  # never drawn
+
+    async def test_a_fetch_the_site_refuses_is_read_from_the_page_drawn_without_its_pictures(self):
+        url = "https://www.labirint.ru/search/%D0%BC%D0%B0%D1%81%D1%82%D0%B5%D1%80/"
+        self.next_page = RowsPage(fetched={url: rows_answer([], status=401)}, drawn=rows_answer(BOOKS))
+        answer = await self.read(LABIRINT, url)
+        self.assertEqual((answer["ok"], answer["via"], answer["count"]), (True, "page", 3))
+        self.assertIn("Network.setBlockedURLs", self.pages[0].visited)
+        # A page that went elsewhere is no read of this one; a drawn page with no rows has none.
+        self.next_page = RowsPage(fetched={url: rows_answer(BOOKS, landed="https://www.labirint.ru/")})
+        self.assertEqual((await self.read(LABIRINT, url))["reason"], "moved")
+        self.next_page = RowsPage(fetched={url: rows_answer([], status=200)}, drawn=rows_answer([]))
+        with unittest.mock.patch.object(worker, "SITE_ROWS_DRAWN_S", 0.3):
+            self.assertEqual((await self.read(LABIRINT, url))["reason"], "no_data")
+
+    async def test_a_drawn_operation_is_never_fetched(self):
+        drawn = json.loads(json.dumps(LABIRINT))
+        drawn["source"]["render"] = True
+        url = "https://www.labirint.ru/search/%D0%BC%D0%B0%D1%81%D1%82%D0%B5%D1%80/"
+        self.next_page = RowsPage(drawn=rows_answer(BOOKS))
+        answer = await self.read(drawn, url)
+        self.assertEqual((answer["ok"], answer["via"], answer["count"]), (True, "page", 3))
+        self.assertEqual(self.pages[0].fetched, [])
+
+
+class RowsLearnTest(DirectSetup):
+    """Learning an html operation: in a look when no data of the site's holds its cards, at a run's end on its tab."""
+
+    LEARNED = {"rows": [{"sel": "div.product-card", "rank": 0.8, "n": 3}], "matched": 0, "of": 0,
+               "fields": {"name": [{"selector": "a.product-card__name"}],
+                          "price": [{"selector": ":scope", "attribute": "data-discount-price"}],
+                          "link": [{"selector": "a.product-card__img", "attribute": "href"}]}}
+
+    async def asyncSetUp(self):
+        from unittest import mock
+
+        await super().asyncSetUp()
+        self.enterContext(mock.patch.object(worker, "SITE_LOOK_CARDS_S", 0.05))
+
+    def page(self, url, document):
+        test = self
+
+        class Learning(RowsPage):
+            async def evaluate(self, expression, argument=None):
+                if expression == worker.SITE_ROWS_LEARN_JS:
+                    test.learned_with = argument
+                    return test.LEARNED
+                if expression == worker.SITE_ROWS_READ_JS and argument.get("html") is not None:
+                    test.parsed = argument["html"]
+                return await super().evaluate(expression, argument)
+
+        page = Learning({url: document}, drawn=rows_answer(BOOKS), requests=[Document(url, document)])
+        page.cards = [{"title": book["name"], "text": book["text"], "links": [book["link"]], "image": None}
+                      for book in BOOKS]
+        return page
+
+    async def test_a_look_learns_the_rows_of_a_page_whose_data_holds_no_cards(self):
+        url = "https://www.labirint.ru/search/%D0%BC%D0%B0%D1%81%D1%82%D0%B5%D1%80/"
+        document = "<html><body>" + "<div class=product-card></div>" * 3 + "</body></html>"
+        self.next_page = self.page(url, document)
+        response = await self.client.post("/v1/look", json={"url": url, "words": "мастер"},
+                                          headers={"Authorization": f"Bearer {self.token}"})
+        answer = await response.json()
+        self.assertTrue(answer["ok"])
+        [operation] = answer["operations"]
+        self.assertEqual(operation["source"], {"kind": "html", "render": False, "rows": "div.product-card",
+                                               "cells": LABIRINT["source"]["cells"]})
+        self.assertEqual((operation["items"], operation["fields"]), ([], LABIRINT["fields"]))
+        self.assertEqual(self.learned_with["options"], [])  # the look's own cards' titles are no report
+        self.assertEqual(self.parsed, document)  # settled against the document the page came with
+
+    async def test_a_look_whose_data_holds_the_cards_learns_no_rows(self):
+        url = "https://hh.ru/search/vacancy?text=менеджер&area=1"
+        self.learned_with = None
+        page = self.page(url, HH_DOCUMENT)
+        page.cards = [LookTest.card(None, vacancy) for vacancy in VACANCIES]
+        self.next_page = page
+        response = await self.client.post("/v1/look", json={"url": url, "words": "менеджер"},
+                                          headers={"Authorization": f"Bearer {self.token}"})
+        [operation] = (await response.json())["operations"]
+        self.assertEqual(operation["source"]["kind"], "document")
+        self.assertIsNone(self.learned_with)
+
+    async def test_a_runs_end_learns_from_its_report_on_its_last_tab_and_never_raises(self):
+        from unittest import mock
+
+        url = "https://www.labirint.ru/search/%D0%BC%D0%B0%D1%81%D1%82%D0%B5%D1%80/"
+        recorder = worker.SiteTraffic()
+        recorder.entries.append({"url": url, "type": "document"})
+        recorder.bodies.append(({"url": url, "type": "document", "page": url}, "<html>doc</html>"))
+        session = types.SimpleNamespace(tab="T1", sensitive_data=None)
+        report = "ITEMS: " + json.dumps([{"name": b["name"], "price": b["price"] + " ₽", "url": b["link"]}
+                                         for b in BOOKS], ensure_ascii=False)
+        calls = []
+
+        async def targets():
+            return [{"id": "T1", "url": url, "webSocketDebuggerUrl": "ws://tab"}]
+
+        async def learn(evaluate, page_url, items, document, secrets, seconds):
+            calls.append((page_url, items, document, seconds))
+            return [LABIRINT]
+
+        self.enterContext(mock.patch.object(worker, "page_targets", targets))
+        self.enterContext(mock.patch.object(worker, "site_rows_operations", learn))
+        self.assertEqual(await worker.run_rows_operations(session, recorder, report, 4), [LABIRINT])
+        self.assertEqual(calls[0][:3], (url, [{"name": b["name"], "price": b["price"] + " ₽", "url": b["link"]}
+                                              for b in BOOKS], "<html>doc</html>"))
+        # One item, no tab, no time left, or a page whose requests the run never wrote down: nothing learned.
+        one = "ITEMS: " + json.dumps([{"name": "A", "price": "1", "url": url}])
+        self.assertEqual(await worker.run_rows_operations(session, recorder, one, 4), [])
+        self.assertEqual(await worker.run_rows_operations(types.SimpleNamespace(tab=None), recorder, report, 4), [])
+        self.assertEqual(await worker.run_rows_operations(session, recorder, report, 0.2), [])
+        self.assertEqual(await worker.run_rows_operations(session, worker.SiteTraffic(), report, 4), [])
+        self.assertEqual(len(calls), 1)
+
+        async def broken():
+            raise RuntimeError("Chrome is gone")
+
+        self.enterContext(mock.patch.object(worker, "page_targets", broken))
+        self.assertEqual(await worker.run_rows_operations(session, recorder, report, 4), [])
+
+    async def test_learning_that_fails_in_the_page_gives_none(self):
+        async def failing(expression, argument=None):
+            raise RuntimeError("Execution context was destroyed")
+
+        self.assertEqual(await worker.site_rows_operations(failing, LABIRINT_PAGE, None, None, None, 2), [])
+
+        async def nothing(expression, argument=None):
+            return {"error": "no group of cards"}
+
+        self.assertEqual(await worker.site_rows_operations(nothing, LABIRINT_PAGE, None, None, None, 2), [])
+
+
+
+SHOP = """<!doctype html><html><head><meta charset=utf-8><title>Поиск</title></head><body>
+<header><nav class="menu"><a href="/catalog/">Каталог</a><a href="/help/">Помощь</a><a href="/cart/">Корзина</a></nav></header>
+<main><div class="search-results x9k2_7">%s<div class="product-card promo-banner" data-product-id>
+<a class="product-card__img" href="/promo/"><img alt=""></a><div class="banner-text">Скидки недели на всё, успейте купить</div>
+</div></div></main></body></html>"""
+
+
+def shop_card(number, name, price, old=None):
+    old_price = f'<del class="product-card__old">{old:,} ₽</del>'.replace(",", " ") if old else ""
+    return (f'<div class="product-card c0e_7" data-product-id="{number}"><a class="product-card__img" href="/product/{number}/">'
+            f'<img alt="{name}"></a><div class="product-card__price">{old_price}'
+            f'<span class="product-card__price-current">{price:,} ₽</span></div>'.replace(",", " ")
+            + f'<a class="product-card__name" href="/product/{number}/">{name}</a>'
+              f'<span class="product-card__rating">4,8 · 120 оценок</span><a class="product-card__brand" href="/brand/x/">Бренд</a></div>')
+
+
+SHOP_DRILLS = SHOP % "".join(shop_card(*card) for card in [
+    (101, "Дрель ударная Makita HP1630", 7390, 8200), (102, "Дрель Интерскол Д-16/1050Р2", 6990, None),
+    (103, "Дрель Bosch GSB 13 RE", 5490, 6100), (104, "Дрель-шуруповёрт Зубр", 3190, None)])
+SHOP_SAWS = SHOP % "".join(shop_card(*card) for card in [
+    (201, "Пила циркулярная Makita HS7601", 9990, None), (202, "Пила торцовочная Зубр", 12490, 13900),
+    (203, "Электролобзик Bosch PST 650", 4890, None)])
+# 2gis.ru: no class a person wrote, the firm's link is the card's only hook.
+MAP = """<!doctype html><html><head><meta charset=utf-8></head><body><div class="_awwm2v">%s</div></body></html>"""
+MAP_CARDS = "".join(
+    f'<div><div class="_1kf6gff"><div class="_zjunba"><a class="_1rehek" href="/moscow/firm/7000000{n}"><span>{name}</span></a></div>'
+    f'<div class="_1idnaau">Кофейня · {street}</div></div></div>'
+    for n, name, street in [(1, "Здрасте", "Крымская набережная, 10"), (2, "Comme à Paris", "Ленинградский проспект, 36"),
+                            (3, "Миндальное настроение", "Дубравная улица, 34"), (4, "Humbl cookies", "Тверской бульвар, 27")])
+# tutu.ru: the document has an empty list, the page's script draws the trains into it.
+TRAINS = """<!doctype html><html><head><meta charset=utf-8></head><body><div data-ti="offersList"></div><script>
+const list = document.querySelector('[data-ti="offersList"]');
+for (const [name, time, price] of [['022А Ночной экспресс', '00:20', '6 047'], ['016А Арктика', '00:28', '2 664'],
+                                   ['057М', '01:00', '2 835'], ['060Г Волга', '01:28', '3 425']]) {
+  const row = document.createElement('div');
+  row.innerHTML = '<div data-ti="train-name-badge"><span class="mhcs">' + name + '</span></div><p data-ti="departure-time">'
+    + time + '</p><span data-ti="first-price">от ' + price + ' ₽</span><span class="dmcs1">924 отзыва</span>';
+  list.append(row);
+}
+</script></body></html>"""
+
+
+class RowsChromeTest(unittest.IsolatedAsyncioTestCase):
+    """The rows' learner and reader in a real Chromium, on small pages like the sites' (no network): set
+    BRO_SITE_ROWS_CHROME to a Chromium binary (a cloud session's /opt/pw-browsers/chromium) with Playwright
+    installed; CI skips it."""
+
+    PAGES = {"https://shop.example/search/?q=drel": SHOP_DRILLS, "https://shop.example/search/?q=pila": SHOP_SAWS,
+             "https://maps.example/moscow/search/kofe": MAP % MAP_CARDS,
+             "https://maps.example/moscow/search/pizza": MAP % MAP_CARDS.replace("Здрасте", "Додо Пицца"),
+             "https://trains.example/poezda/Moskva/Kazan/": TRAINS}
+
+    async def asyncSetUp(self):
+        import os
+
+        chrome = os.environ.get("BRO_SITE_ROWS_CHROME")
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError:
+            async_playwright = None
+        if not chrome or async_playwright is None:
+            self.skipTest("set BRO_SITE_ROWS_CHROME to a Chromium binary, with Playwright installed")
+        self.playwright = await async_playwright().start()
+        self.browser = await self.playwright.chromium.launch(executable_path=chrome, args=["--no-sandbox"])
+        self.context = await self.browser.new_context()
+
+        async def serve(route):
+            url = route.request.url
+            if url.endswith("/robots.txt"):
+                return await route.fulfill(status=200, content_type="text/plain", body="User-agent: *")
+            body = self.PAGES.get(url)
+            await route.fulfill(status=200 if body else 404, content_type="text/html; charset=utf-8",
+                                body=body or "<html>404</html>")
+
+        await self.context.route("**/*", serve)
+
+    async def asyncTearDown(self):
+        await self.browser.close()
+        await self.playwright.stop()
+
+    async def learn(self, url, items=None):
+        page = await self.context.new_page()
+        await page.goto(url)
+        operations = await worker.site_rows_operations(worker.page_evaluator(page), page.url, items, self.PAGES[url],
+                                                       None, 5)
+        await page.close()
+        return operations
+
+    async def read(self, operation, url):
+        page = await self.context.new_page()
+        try:
+            data = await worker.site_op_rows(page, operation, url)
+            return worker.site_cards(operation, data, url)
+        finally:
+            await page.close()
+
+    async def test_a_shop_page_learns_its_cards_by_their_hooks_and_reads_another_search_fetched(self):
+        [operation] = await self.learn("https://shop.example/search/?q=drel")
+        self.assertEqual(operation["page"], "https://shop.example/search/?q=%query%")
+        source = operation["source"]
+        self.assertFalse(source["render"])
+        self.assertIn(source["rows"], ("div.product-card", "div[data-product-id]"))
+        self.assertEqual(source["cells"]["name"], {"selector": "a.product-card__name"})
+        self.assertEqual(source["cells"]["price"], {"selector": "span.product-card__price-current"})
+        self.assertNotIn("c0e_7", json.dumps(source))
+        cards = await self.read(operation, "https://shop.example/search/?q=pila")
+        self.assertEqual([(card["name"], card["price"], card["link"]) for card in cards], [
+            ("Пила циркулярная Makita HS7601", "9 990 ₽", "https://shop.example/product/201/"),
+            ("Пила торцовочная Зубр", "12 490 ₽", "https://shop.example/product/202/"),
+            ("Электролобзик Bosch PST 650", "4 890 ₽", "https://shop.example/product/203/")])
+
+    async def test_a_runs_report_names_the_fields_it_reported(self):
+        items = [{"name": "Дрель Интерскол Д-16/1050Р2", "price": "6 990 ₽", "url": "https://shop.example/product/102/"},
+                 {"name": "Дрель Bosch GSB 13 RE", "price": "5 490 ₽", "url": "https://shop.example/product/103/"}]
+        [operation] = await self.learn("https://shop.example/search/?q=drel", items)
+        self.assertEqual(operation["seen"]["matched"], 2)
+        self.assertEqual(operation["source"]["cells"]["price"], {"selector": "span.product-card__price-current"})
+        # A report that names nothing on the page learns nothing.
+        self.assertEqual(await self.learn("https://shop.example/search/?q=drel",
+                                          [{"name": "Ноутбук", "price": "50 000 ₽", "url": "https://x.example/1"},
+                                           {"name": "Планшет", "price": "30 000 ₽", "url": "https://x.example/2"}]), [])
+
+    async def test_a_page_without_a_hand_written_class_is_read_by_its_cards_links(self):
+        [operation] = await self.learn("https://maps.example/moscow/search/kofe")
+        self.assertEqual(operation["source"]["rows"], 'div:has(> div > div > a[href*="/firm/"])')
+        self.assertNotIn("moscow", json.dumps(operation["source"]))
+        cards = await self.read(operation, "https://maps.example/moscow/search/pizza")
+        self.assertEqual([card["name"] for card in cards][:2], ["Додо Пицца", "Comme à Paris"])
+        self.assertEqual(cards[0]["link"], "https://maps.example/moscow/firm/70000001")
+
+    async def test_rows_only_the_page_draws_are_read_drawn(self):
+        [operation] = await self.learn("https://trains.example/poezda/Moskva/Kazan/")
+        self.assertTrue(operation["source"]["render"])
+        self.assertEqual(operation["source"]["cells"]["name"], {"selector": 'div[data-ti="train-name-badge"]'})
+        self.assertEqual(operation["fields"]["link"], "page")
+        cards = await self.read(operation, "https://trains.example/poezda/Moskva/Kazan/")
+        self.assertEqual([(card["name"], card["price"]) for card in cards][:2],
+                         [("022А Ночной экспресс", "от 6 047 ₽"), ("016А Арктика", "от 2 664 ₽")])
 
 
 if __name__ == "__main__":
