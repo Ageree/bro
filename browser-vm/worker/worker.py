@@ -93,7 +93,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-10-26.8"
+VERSION = "2026-10-27.1"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -8900,7 +8900,7 @@ SITE_OP_CLOSE_S = 5
 # errand waits behind a look that finds nothing, so less than a direct read's —, of that what is left for learning
 # the operation once the cards are in, how long a look waits for a slot, how long its cards may take to draw, and
 # how many go back. With the tab's close (SITE_OP_CLOSE_S twice) a look answers within 34 s at the very worst;
-# Bro waits 38 (`siteLookTimeoutMs`).
+# Bro waits 38 (`siteLookTimeoutMs`). A search through the site's box has its own sum, below (SITE_SEARCH_S).
 SITE_LOOK_S = 20
 SITE_LOOK_LEARN_S = 5
 SITE_LOOK_GATE_S = 4
@@ -9006,7 +9006,12 @@ async def site_look(request):
         until = deadline - SITE_LOOK_LEARN_S
         drawn = (site_search_page(home, words.strip(), holder, recorder, until) if search
                  else site_look_page(url, holder, recorder, until))
-        cards = await asyncio.wait_for(drawn, until - time.monotonic() + 1)
+        try:
+            cards = await asyncio.wait_for(drawn, until - time.monotonic() + 1)
+        except asyncio.TimeoutError:
+            # Cut at the deadline: the journal says in which phase (never the words or an address).
+            log.info("site look %s: out of time in %s", parts.hostname, holder.get("phase") or "start")
+            raise
         if len(cards) < 3:
             raise SiteOpFailure("empty", "the page shows no list of results")
         if not site_look_answers(words, cards):
@@ -9108,9 +9113,14 @@ async def site_look_page(url, holder, recorder, until):
 # its header (SITE_SEARCH_SETTLE_S); the box, past at most SITE_SEARCH_TOGGLES search buttons that open it; the words
 # keyed at SITE_SEARCH_KEY_MS a key; the page that answers Enter (or the form's own button) within SITE_SEARCH_SUBMIT_S;
 # its cards as a look reads them.
-SITE_SEARCH_S = 18  # past it the operation's learning (SITE_LOOK_LEARN_S), the slot and the tab's close: Bro waits 44 s
+# The sum of a search, worst case: the slot (SITE_LOOK_GATE_S, 4 s) + SITE_SEARCH_S (26) + the operation's learning
+# (SITE_LOOK_LEARN_S, 5) + the tab and the browser's close (SITE_OP_CLOSE_S twice, 10) = 45 s; Bro waits 52
+# (`siteSearchTimeoutMs`). The phases share SITE_SEARCH_S by deadline, not by a cut of the whole search at 18 s: a home
+# page that takes 14 s over a slow exit (hoff.ru, pleer.ru, 366.ru on the prod exit, 26.10: all three `failed` at
+# 19.0 s) leaves the box, the words and the results the rest. What is doomed still ends at once (a check, no box).
+SITE_SEARCH_S = 26
 SITE_SEARCH_WORDS = 120  # the words a search types at most
-SITE_SEARCH_HOME_S = 9
+SITE_SEARCH_HOME_S = 14
 SITE_SEARCH_SETTLE_S = 1.2
 SITE_SEARCH_TOGGLES = 2
 SITE_SEARCH_TOGGLE_S = 1.0
@@ -9490,8 +9500,11 @@ async def site_search_on(page, home, words, holder, until):
         phases[name] = round((now - mark) * 1000)
         mark = now
 
+    # The phase in progress, for a search cut at its deadline to name (`site_look`).
+    holder["phase"] = "home"
     await site_search_home(page, home, until)
     lap("home")
+    holder["phase"] = "box"
     # The cards the home page already shows (a carousel of offers): the results are another list.
     before = await site_search_eval(page, CODE_CARDS_JS, SITE_LOOK_CARDS) or []
     homely = {card["text"] for card in before}
@@ -9502,12 +9515,15 @@ async def site_search_on(page, home, words, holder, until):
             raise SiteOpFailure("blocked", "the home page is a check or a refusal of this browser")
         raise SiteOpFailure("no_box", "the home page shows no search box")
     left = page.url
+    holder["phase"] = "type"
     await site_search_type(page, words)
     lap("type")
+    holder["phase"] = "results"
     holder["sent"] = await site_search_send(page, left, until)
     if not site_same_place(home, page.url):
         raise SiteOpFailure("moved", "the search went to another site")
     lap("results")
+    holder["phase"] = "cards"
     cards = await site_search_cards(page, home, homely, until)
     lap("cards")
     return cards
