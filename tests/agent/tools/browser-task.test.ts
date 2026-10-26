@@ -8587,6 +8587,28 @@ describe("browser_task takes an errand the person asked to be done to its last s
       ).rejects.toThrow("phone number is not saved anywhere");
     });
 
+    it("is asked for it on a follow-up too, when they say «пиши мой номер»", async () => {
+      // The words most likely answer Bro's report, so they come on a continue.
+      const said = "На 19.30, пиши мой номер";
+      readBrowserRunForScope.mockResolvedValue(
+        browserRunRow(new Date(), "Needs: info")
+      );
+      const tool = await resolvedBrowserTask([], said);
+
+      await expect(
+        tool.execute(
+          {
+            action: "continue",
+            personSaid: said,
+            personWants: "look",
+            runId,
+            task: "Забронировать на 19:30",
+          },
+          toolContext("better-auth:alice", "photon-imessage")
+        )
+      ).rejects.toThrow("phone number is not saved anywhere");
+    });
+
     it("is not asked for it where they only look", async () => {
       const task = await startFor(
         "найди, где поужинать в пятницу",
