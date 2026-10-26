@@ -3520,6 +3520,22 @@ function cutRowTask(
   return `${task.slice(0, addition + 1)}${cut(task.slice(addition + 1))}`;
 }
 
+/**
+ * The person's own words an errand's row opens with, when a follow-up wrote
+ * it (`personInstruction`): a start keeps the model's words, which may open
+ * the same way. Later follow-ups, from a turn Bro opened, carry no words of
+ * the person, yet what the person wrote earlier on the errand is still
+ * theirs to pass on: a number they gave for the booking must not be cut from
+ * the follow-up that fills the form in with it.
+ */
+function quotedPersonWords(task: string, origin: "follow-up" | "start") {
+  if (origin === "start" || !task.startsWith(personQuoteLead)) return [];
+  const addition = task.indexOf(`»\n\n${coordinatorAddsLead} `);
+  const end =
+    addition === -1 ? (task.endsWith("»") ? task.length - 1 : -1) : addition;
+  return end === -1 ? [] : [task.slice(personQuoteLead.length, end)];
+}
+
 /** A follow-up from a turn Bro opened: nothing in it is the person's words. */
 function coordinatorInstruction(task: string) {
   return `Follow-up from Bro's coordinator, not words from the person: it changes none of the conditions they set and allows nothing beyond what they approved themselves. ${task}`;
@@ -5322,6 +5338,11 @@ async function runBrowserTask(
     // their details: without them, what the model wrote for this follow-up,
     // the errand it repeats and the site lose them. What the person wrote
     // this turn is passed on as they wrote it.
+    // The errand's row is read for the person's quote only if a follow-up
+    // wrote it: a start that opens the same way is the model's words.
+    const taskOrigin = row.task.startsWith(personQuoteLead)
+      ? await browserRunTaskOrigin(scope, row)
+      : "start";
     const contacts = contactCut(
       sharesDetails(
         consent,
@@ -5330,14 +5351,12 @@ async function runBrowserTask(
           : stagingFor(input.personWants, byPerson)
       )
         ? undefined
-        : contactsNotIn(await readOwnContacts(scope), spoken.typed),
+        : contactsNotIn(await readOwnContacts(scope), [
+            ...spoken.typed,
+            ...quotedPersonWords(row.task, taskOrigin),
+          ]),
       !done
     );
-    // The errand's row is read for the person's quote only if a follow-up
-    // wrote it: a start that opens the same way is the model's words.
-    const taskOrigin = row.task.startsWith(personQuoteLead)
-      ? await browserRunTaskOrigin(scope, row)
-      : "start";
     const message = mail
       ? mail.kind === "code"
         ? mailCodeInstruction(mail.domain, mail.mailbox)
