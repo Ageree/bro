@@ -1634,5 +1634,133 @@ class ItemChromeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(raised.exception.reason, "moved")
 
 
+class SiteSearchTest(unittest.TestCase):
+    """What a search through a site's own box learns of its results page's address (`site_search_template`), and the
+    home pages it does not search (`site_search_checked`)."""
+
+    def test_the_results_address_becomes_the_sites_search_with_the_words_as_its_query(self):
+        words = "беспроводные наушники"
+        self.assertEqual(
+            worker.site_search_template(
+                "https://www.shop.example/search/?q=%D0%B1%D0%B5%D1%81%D0%BF%D1%80%D0%BE%D0%B2%D0%BE%D0%B4%D0%BD%D1%8B"
+                "%D0%B5+%D0%BD%D0%B0%D1%83%D1%88%D0%BD%D0%B8%D0%BA%D0%B8&type=products&sid=8f3a9c2d41e7&token=abc",
+                words),
+            {"page": "https://www.shop.example/search/?q=%query%&type=products", "encoding": "utf-8"})
+        # An old site's form sends its own encoding; the words in the path are a template's part too.
+        cp1251 = urllib.parse.quote(words, encoding="cp1251")
+        self.assertEqual(worker.site_search_template(f"https://old.example/search/?search={cp1251}", words),
+                         {"page": "https://old.example/search/?search=%query%", "encoding": "cp1251"})
+        self.assertEqual(
+            worker.site_search_template("https://lenta.example/search/" + urllib.parse.quote(words) + "/", words)["page"],
+            "https://lenta.example/search/%query%/")
+        # A page of the words' own (a category picked by them, its latin name in the path) is no search.
+        self.assertIsNone(worker.site_search_template(
+            "https://www.regard.example/catalog/1234/besprovodnye-naushniki?search=" + urllib.parse.quote(words), words))
+        self.assertIsNone(worker.site_search_template("https://shop.example/catalog/", words))
+        # The search's own address before the site's redirect to such a page is its template.
+        went = ["https://www.regard.example/catalog?search=" + urllib.parse.quote(words),
+                "https://www.regard.example/catalog/1234/besprovodnye-naushniki"]
+        self.assertEqual(worker.site_search_address(went, went[-1], words)["page"],
+                         "https://www.regard.example/catalog?search=%query%")
+
+    def test_a_home_page_that_went_to_the_sites_check_is_not_searched(self):
+        home = "https://shop.example/"
+        self.assertFalse(worker.site_search_checked(home, "https://shop.example/"))
+        self.assertFalse(worker.site_search_checked(home, "https://shop.example/moscow/"))
+        self.assertTrue(worker.site_search_checked(home, "https://shop.example/xpvnsulc/?back_location=https%3A%2F%2Fshop.example%2F"))
+        self.assertTrue(worker.site_search_checked(home, "https://shop.example/showcaptcha?retpath=x"))
+
+
+class SearchChromeTest(unittest.IsolatedAsyncioTestCase):
+    """A search through a site's own box as `/v1/look` makes it, in a real Chromium (no network): set
+    BRO_SITE_ROWS_CHROME as for RowsChromeTest; CI skips it."""
+
+    # A home page with a sign-in form beside the search: its email field is never typed into.
+    HOME = ("<html><head><title>Магазин</title></head><body><header>"
+            "<form class=\"login\" action=\"/login\"><input type=\"email\" name=\"email\" placeholder=\"Почта\">"
+            "<input type=\"password\" name=\"password\"></form>"
+            "<form action=\"/search/\" role=\"search\"><input name=\"q\" placeholder=\"Поиск по магазину\">"
+            "<button type=\"submit\">Найти</button></form></header><main>" + "<p>Магазин бытовой техники</p>" * 20
+            + "</main></body></html>")
+    # A home page whose box only a search button shows.
+    HIDDEN = ("<html><body><header><button class=\"header-search-toggle\" aria-label=\"Поиск\" onclick=\""
+              "document.getElementById('f').style.display='block'\">🔍</button>"
+              "<form id=\"f\" action=\"/search/\" style=\"display:none\"><input type=\"search\" name=\"text\"></form>"
+              "</header><main>" + "<p>Каталог товаров</p>" * 20 + "</main></body></html>")
+    # A realty site's form: a city and a price, no search box.
+    FORM = ("<html><body><form action=\"/flats/\"><input name=\"city\" placeholder=\"Город\">"
+            "<input name=\"price_to\" placeholder=\"до\" inputmode=\"numeric\"><button>Показать</button></form>"
+            "<main>" + "<p>Квартиры</p>" * 20 + "</main></body></html>")
+
+    @staticmethod
+    def results(words):
+        cards = "".join(f"<li class=\"card\"><a href=\"/item/{n}\">{words} модель {n}</a><span>{1000 + n} ₽</span></li>"
+                        for n in range(12))
+        return f"<html><body><main><h1>Результаты</h1><ul>{cards}</ul></main></body></html>"
+
+    async def asyncSetUp(self):
+        import os
+
+        chrome = os.environ.get("BRO_SITE_ROWS_CHROME")
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError:
+            async_playwright = None
+        if not chrome or async_playwright is None:
+            self.skipTest("set BRO_SITE_ROWS_CHROME to a Chromium binary, with Playwright installed")
+        self.playwright = await async_playwright().start()
+        self.browser = await self.playwright.chromium.launch(executable_path=chrome, args=["--no-sandbox"])
+        self.context = await self.browser.new_context()
+        self.logins = []
+
+        async def serve(route):
+            parts = urllib.parse.urlsplit(route.request.url)
+            if parts.path.startswith("/login"):
+                self.logins.append(route.request.url)
+            query = dict(urllib.parse.parse_qsl(parts.query))
+            if parts.path == "/search/":
+                body = self.results(query.get("q") or query.get("text") or "")
+            else:
+                body = {"shop.example": self.HOME, "hidden.example": self.HIDDEN,
+                        "flats.example": self.FORM}.get(parts.hostname, "<html><main>404</main></html>")
+            await route.fulfill(status=200, content_type="text/html; charset=utf-8", body=body)
+
+        await self.context.route("**/*", serve)
+        self.page = await self.context.new_page()
+
+    async def asyncTearDown(self):
+        await self.browser.close()
+        await self.playwright.stop()
+
+    async def search(self, host, words):
+        holder = {}
+        until = time.monotonic() + worker.SITE_SEARCH_S
+        cards = await worker.site_search_on(self.page, f"https://{host}/", words, holder, until)
+        return cards, holder
+
+    async def test_the_words_go_into_the_sites_search_box_and_never_into_another_field(self):
+        cards, holder = await self.search("shop.example", "чайник")
+        self.assertIn("name", holder["box"]["signs"])
+        self.assertEqual(urllib.parse.urlsplit(self.page.url).path, "/search/")
+        self.assertTrue(worker.site_look_answers("чайник", cards))
+        self.assertEqual(await self.page.evaluate("document.querySelector('[name=email]') ? 1 : 0"), 0)
+        self.assertEqual(self.logins, [])
+        self.assertEqual(worker.site_search_address(holder["went"], self.page.url, "чайник")["page"],
+                         "https://shop.example/search/?q=%query%")
+
+    async def test_a_box_a_search_button_shows_is_opened_first(self):
+        cards, holder = await self.search("hidden.example", "утюг")
+        self.assertEqual(holder["box"]["toggles"], 1)
+        self.assertTrue(worker.site_look_answers("утюг", cards))
+
+    async def test_a_site_with_only_its_own_form_is_not_typed_into(self):
+        with unittest.mock.patch.object(worker, "SITE_SEARCH_WAIT_S", 1):
+            with self.assertRaises(worker.SiteOpFailure) as raised:
+                await self.search("flats.example", "двушка")
+        self.assertEqual(raised.exception.reason, "no_box")
+        self.assertEqual(await self.page.evaluate("[...document.querySelectorAll('input')].map((e) => e.value)"),
+                         ["", ""])
+
+
 if __name__ == "__main__":
     unittest.main()
