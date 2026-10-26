@@ -503,9 +503,10 @@ class LiveLocation(BridgeCase):
         self.eve.script[1] = [404]
         self.telegram.add(live_edit(1, 5, 55.75), message(2, 5))
         bridge = self.start(self.settings(TG_BRIDGE_LIVE_LOCATION="on"))
-        self.assertTrue(wait_for(lambda: self.saved() == {"offset": 3, "done": []}))
+        # The state file is written before the counter goes up (`_complete`): wait for both.
+        self.assertTrue(wait_for(lambda: self.saved() == {"offset": 3, "done": []}
+                                 and bridge.counters["liveDropped"] == 1))
         self.assertEqual(self.eve.seen.count(1), 1)
-        self.assertEqual(bridge.counters["liveDropped"], 1)
         self.assertEqual(bridge.counters["deliveryRetries"], 0)
         self.assertEqual(self.eve.taken_ids(), [2])
 
