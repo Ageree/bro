@@ -12,6 +12,19 @@ const started = z.object({
   session: z.object({ id: z.string() }),
 });
 
+function describeSocketError(event: { message: string; error?: unknown }) {
+  const parts: string[] = [];
+  let current: unknown = event.error;
+  for (let depth = 0; current instanceof Error && depth < 3; depth += 1) {
+    const code = "code" in current ? String(current.code) : "";
+    parts.push(
+      `${current.name}${code ? ` ${code}` : ""} ${current.message}`.trim()
+    );
+    current = current.cause;
+  }
+  return parts.join(" <- ") || event.message || "no reason given";
+}
+
 export async function openLiveSession(options: {
   apiKey: string;
   proxyUrl?: string;
@@ -42,7 +55,13 @@ export async function openLiveSession(options: {
       );
     }, startTimeoutMs);
     socket.addEventListener("error", (event) => {
-      reject(new Error(`GPT-Live connection failed: ${event.message}`));
+      // undici's error event often has an empty `message`; the reason (refused tunnel, TLS, 4xx on the upgrade)
+      // lives in `error` and its `cause`, and the "not ready" line of the log is the only trace of it.
+      reject(
+        new Error(
+          `GPT-Live connection failed: ${describeSocketError(event)}`
+        )
+      );
     });
     socket.addEventListener("close", (event) => {
       reject(
