@@ -121,7 +121,7 @@ describe("a line stuck before its SIP exists", () => {
     const row = {
       ...numberRow("sip-creating", "provisioning"),
       numberId: "74950000001",
-      updatedAt: new Date(Date.now() - minutes * 60_000),
+      createdAt: new Date(Date.now() - minutes * 60_000),
     };
     claimRow(row);
     return row;

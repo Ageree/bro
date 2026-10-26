@@ -129,8 +129,8 @@
   человек?», держит звонок до лимита 10 мин и тратит кредиты: `end_call` нет (см. выше).
 - Линия застряла на `sip-creating` (26.10, Света): номер куплен 25.10, SIP в Exolve не появился, `phone_numbers` — `uncertain`/
   `sip-creating`, звонков в `phone_calls` ни одного (`phone-call` без `sipId` пишет `uncertain` и не звонит). Прежний
-  код такую строку не повторял («SIP creation is ambiguous»); теперь `activatePhone` через 30 минут без SIP в
-  `GetSIPList` создаёт его снова, а причину остановки пишет `[phone] activation stopped`. Все линии сразу —
+  код такую строку не повторял («SIP creation is ambiguous»); теперь `activatePhone` через час после покупки без SIP в
+  `GetSIPList` создаёт его снова, а причину остановки пишет `[phone] activation stopped`. Возраст считается по `created_at`, не `updated_at`: захват заявки сам обновляет вторую (первая версия 26.10 из-за этого не сработала). Все линии сразу —
   `host.py ops NAME phone-lines.sh`, одного человека — `person-calls.sh`. Исходящий GPT-Live требует лишь `sipId`:
   ключи ElevenLabs нужны только запасному пути. Баланс OpenAI ниже нуля 26.10 тоже давал «линия не поднялась» (пустая причина сокета).
 - Бро ↔ Бро (`docs/bro-to-bro.md`): данные и переходы — `db/services/bro-to-bro/`.
