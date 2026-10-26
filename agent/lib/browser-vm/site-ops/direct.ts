@@ -897,6 +897,7 @@ async function widen(
     return;
   }
   await saveBrowserSiteOperation(workspaceId, {
+    adopted: row.adopted,
     host: siteOperationHost(wider.page),
     name: wider.name,
     operation: wider,

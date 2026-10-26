@@ -1,0 +1,1 @@
+ALTER TABLE "browser_site_operations" ADD COLUMN "adopted" boolean DEFAULT false NOT NULL;

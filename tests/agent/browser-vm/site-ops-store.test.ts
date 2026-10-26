@@ -8,6 +8,8 @@ import { clearBrowserVmSettings } from "../../helpers/browser-vm";
 const databases: PGlite[] = [];
 const alice = { userId: "better-auth:alice", workspaceId: "personal:alice" };
 const bob = { userId: "better-auth:bob", workspaceId: "personal:bob" };
+const carol = { userId: "better-auth:carol", workspaceId: "personal:carol" };
+const dave = { userId: "better-auth:dave", workspaceId: "personal:dave" };
 
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -30,9 +32,12 @@ async function applyMigrations(database: PGlite) {
   /* oxlint-enable eslint/no-await-in-loop */
 }
 
-async function store(pilot: string) {
+async function store(pilot: string, shared?: string) {
   vi.resetModules();
   vi.stubEnv("BROWSER_SITE_OPS_WORKSPACES", pilot);
+  if (shared !== undefined) {
+    vi.stubEnv("BROWSER_SITE_SHARED_WORKSPACES", shared);
+  }
   const client = new PGlite();
   databases.push(client);
   await applyMigrations(client);
@@ -46,6 +51,8 @@ async function store(pilot: string) {
   vi.spyOn(Database, "db", "get").mockReturnValue(database);
   await scope.ensureScope(alice);
   await scope.ensureScope(bob);
+  await scope.ensureScope(carol);
+  await scope.ensureScope(dave);
   return { client, run };
 }
 
@@ -103,6 +110,108 @@ describe("a workspace's site operations", { timeout: 30_000 }, () => {
         (operation) => operation.name
       )
     ).toEqual(["hh.ru/search/vacancy"]);
+  });
+
+  it("go to the shared pilot's workspaces once runs of two workspaces found them apart, each keeping its own health", async () => {
+    const { client, run } = await store("*", carol.workspaceId);
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const offered = async (scope: { readonly workspaceId: string }) =>
+      (await run.siteOperationsFor(scope.workspaceId, "https://poezd.ru")).map(
+        (operation) => operation.name
+      );
+    await run.rememberSiteOperations(alice.workspaceId, [trains]);
+    // One workspace's find, however often it read the site, may be of a
+    // page one person alone sees: nobody else gets it.
+    await run.noteSiteOperationRead(alice.workspaceId, trains.name, {
+      direct: true,
+      ok: true,
+    });
+    expect(await offered(carol)).toEqual([]);
+    await run.rememberSiteOperations(bob.workspaceId, [trains]);
+    expect(await offered(carol)).toEqual([trains.name]);
+    // Out of the shared pilot, never.
+    expect(await offered(dave)).toEqual([]);
+    // Carol's reads of it are hers: two that found the site changed stop it
+    // for her alone.
+    for (const _ of [1, 2]) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Reads are noted in their order.
+      await run.noteSiteOperationRead(carol.workspaceId, trains.name, {
+        fit: "exact",
+        ok: false,
+        reason: "no_data",
+      });
+    }
+    expect(await offered(carol)).toEqual([]);
+    expect(await offered(alice)).toEqual([trains.name]);
+    const rows = await client.query<{
+      adopted: boolean;
+      failures: number;
+      runs: number;
+      workspace_id: string;
+    }>(
+      "SELECT workspace_id, runs, adopted, failures FROM browser_site_operations ORDER BY workspace_id"
+    );
+    expect(rows.rows).toEqual([
+      {
+        adopted: false,
+        failures: 0,
+        runs: 1,
+        workspace_id: alice.workspaceId,
+      },
+      { adopted: false, failures: 0, runs: 1, workspace_id: bob.workspaceId },
+      { adopted: true, failures: 2, runs: 0, workspace_id: carol.workspaceId },
+    ]);
+  });
+
+  it("stay on the errand's very host, never count a workspace that got them from others, and give way to its own", async () => {
+    const { run } = await store("*", "*");
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const offered = async (
+      scope: { readonly workspaceId: string },
+      site: string
+    ) =>
+      (await run.siteOperationsFor(scope.workspaceId, site)).map(
+        (operation) => operation.name
+      );
+    const cars = {
+      ...trains,
+      name: "auto.drom.ru/kia/rio/",
+      page: "https://auto.drom.ru/kia/rio/",
+      source: { ...trains.source, url: "https://auto.drom.ru/api/bulls" },
+    };
+    await run.rememberSiteOperations(alice.workspaceId, [cars]);
+    await run.rememberSiteOperations(bob.workspaceId, [cars]);
+    // A host above the errand's (or below it) is another site: a company's
+    // own subdomain is no answer to its platform's errand.
+    expect(await offered(carol, "https://drom.ru")).toEqual([]);
+    expect(await offered(carol, "https://auto.drom.ru")).toEqual([cars.name]);
+    // Carol's run reads it through op() and finds it: her row is no find
+    // of her own. Once Alice's copy stops reading the site, Bob's alone is
+    // left, and Dave gets nothing.
+    await run.rememberSiteOperations(carol.workspaceId, [cars], "run-carol", [
+      { fit: "exact", name: cars.name, ok: true },
+    ]);
+    for (const _ of [1, 2]) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Reads are noted in their order.
+      await run.noteSiteOperationRead(alice.workspaceId, cars.name, {
+        fit: "exact",
+        ok: false,
+        reason: "no_data",
+      });
+    }
+    expect(await offered(dave, "https://auto.drom.ru")).toEqual([]);
+    // A workspace that reads an operation of its own on the host gets none
+    // of others' there.
+    await run.rememberSiteOperations(alice.workspaceId, [trains]);
+    await run.rememberSiteOperations(bob.workspaceId, [trains]);
+    const moved = {
+      ...trains,
+      name: "www.poezd.ru/raspisanie/",
+      page: "https://www.poezd.ru/raspisanie/?from=%query%",
+    };
+    await run.rememberSiteOperations(dave.workspaceId, [moved]);
+    expect(await offered(dave, "https://www.poezd.ru")).toEqual([moved.name]);
+    expect(await offered(carol, "https://www.poezd.ru")).toEqual([trains.name]);
   });
 
   it("give a reviewed operation over the workspace's own find of its page or host", async () => {
