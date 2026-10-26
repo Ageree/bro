@@ -1179,7 +1179,7 @@ const browserRefusal = (text: string) => ({
     toolName: "browser_task",
   },
   sequence: 0,
-  status: "completed" as const,
+  status: "failed" as const,
   stepIndex: 0,
   turnId: "turn-1",
 });

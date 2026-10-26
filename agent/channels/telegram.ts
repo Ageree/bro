@@ -36,8 +36,10 @@ import { capabilityTipContext } from "@agent/lib/capability-tips";
 import { crossChannelRecap } from "@agent/lib/conversation/recap";
 import {
   asksForPhoneButton,
+  contactAsked,
   contactButtonMarkup,
   contactButtonPrompt,
+  showContactButton,
   telegramContact,
 } from "@agent/lib/contact-share/telegram";
 import { firstContactContext, ownerTelegram } from "@agent/lib/first-contact";
@@ -61,7 +63,7 @@ import {
   telegramLocation,
 } from "@agent/lib/location/telegram";
 import { locationPilot } from "@db/services/location";
-import { patchUserProfile } from "@db/services/user-profile";
+import { patchUserProfile, readUserProfile } from "@db/services/user-profile";
 import { pdfByteCap } from "@agent/lib/inbound-media/media-type";
 import {
   prepareAttachmentDelivery,
@@ -323,7 +325,10 @@ export default telegramChannel({
 
       // The refusal that wants the person's own phone (`browser_task`): the
       // contact button goes under Bro's question, so a tap replaces typing.
-      if (asksForPhoneButton(event.result)) {
+      if (
+        asksForPhoneButton(event.result) &&
+        showContactButton(context.telegram.chatId, event.turnId)
+      ) {
         await context.telegram.post({
           reply_markup: contactButtonMarkup,
           text: contactButtonPrompt,
@@ -600,6 +605,23 @@ export default telegramChannel({
       locationArrived(message.chat.id);
       noteInbound(context.telegram.chatId, message.raw, receivedAt);
       if (contact.kind === "own") {
+        // The button's answer, or a card sent while no number is saved,
+        // becomes the phone for forms; a card sent unasked beside a saved
+        // number never replaces what the person chose.
+        const saved = (await readUserProfile(scope)).phone;
+        const replaces = saved !== null && saved !== contact.phone;
+        if (replaces && !contactAsked(message.chat.id)) {
+          return {
+            auth: sessionAuth,
+            context: [
+              ...(await firstContactContext(scope)),
+              `Человек прислал карточку со своим номером ${contact.phone}, но для форм уже сохранён другой. Ничего не менялось: спроси одной строкой, заменить ли номер.`,
+            ],
+            message: inboundTurn("", [
+              { kind: "note", text: "[прислал свою карточку контакта]" },
+            ]).message,
+          };
+        }
         try {
           await patchUserProfile(scope, { phone: contact.phone });
         } catch (error) {
@@ -615,20 +637,25 @@ export default telegramChannel({
           auth: sessionAuth,
           context: [
             ...(await firstContactContext(scope)),
-            "Человек поделился своим номером кнопкой Telegram (номер проверен самим Telegram) и он сохранён как телефон для форм. Если он делился им, потому что поручение ждало номер, повтори это поручение сейчас; иначе коротко подтверди, что запомнил.",
+            "Человек поделился своим номером кнопкой Telegram (номер проверен самим Telegram), и он сохранён как телефон для форм. Если поручение ждало номер, вызови browser_task снова; если ему нужно «да» человека, спроси его одной строкой. Иначе коротко подтверди, что запомнил.",
           ],
           message: inboundTurn("", [
             { kind: "note", text: "[поделился своим номером]" },
           ]).message,
         };
       }
+      // Someone else's card is data about a third person, not words the
+      // person typed: the number and name go as a context line, so no form
+      // reads the number as the person's own.
       return {
         auth: sessionAuth,
-        context: await firstContactContext(scope),
-        message: inboundTurn(
-          `Контакт${contact.name ? ` ${contact.name}` : ""}: ${contact.phone}`,
-          []
-        ).message,
+        context: [
+          ...(await firstContactContext(scope)),
+          `Человек прислал карточку контакта${contact.name ? ` «${contact.name}»` : ""} с номером ${contact.phone}. Это номер другого человека, не его собственный.`,
+        ],
+        message: inboundTurn("", [
+          { kind: "note", text: "[прислал контакт другого человека]" },
+        ]).message,
       };
     }
     // A plain text: the tool router's question about it goes now, while the

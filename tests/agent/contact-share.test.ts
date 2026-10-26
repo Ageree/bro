@@ -51,3 +51,16 @@ describe("telegramContact", () => {
     ).toBeUndefined();
   });
 });
+
+describe("contact button state", () => {
+  it("shows the button once per turn and remembers it for ten minutes", async () => {
+    const { contactAsked, showContactButton } =
+      await import("@agent/lib/contact-share/telegram");
+    expect(contactAsked("9")).toBe(false);
+    expect(showContactButton("9", "turn_1", 0)).toBe(true);
+    expect(showContactButton("9", "turn_1", 1)).toBe(false);
+    expect(contactAsked("9", 9 * 60_000)).toBe(true);
+    expect(contactAsked("9", 11 * 60_000)).toBe(false);
+    expect(showContactButton("9", "turn_2", 2)).toBe(true);
+  });
+});

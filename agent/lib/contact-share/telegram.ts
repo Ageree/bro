@@ -88,3 +88,39 @@ export function telegramContact(
     )?.slice(0, 80) ?? "";
   return { kind: "other", name, phone };
 }
+
+/** A card this soon after the button was shown is the button's answer. */
+const askedForMs = 10 * 60_000;
+/** Chats this instance remembers; the oldest go first. */
+const rememberedChats = 500;
+/** Chats shown the button, by chat id: the turn that showed it and when. */
+const shown = new Map<
+  string,
+  { readonly at: number; readonly turnId: string }
+>();
+
+/**
+ * Whether the button goes under this refusal: once per turn, because the
+ * refusal itself tells the model to call `browser_task` again and a second
+ * refusal would post the same keyboard twice.
+ */
+export function showContactButton(
+  chatId: string,
+  turnId: string,
+  now = Date.now()
+) {
+  if (shown.get(chatId)?.turnId === turnId) return false;
+  shown.delete(chatId);
+  shown.set(chatId, { at: now, turnId });
+  for (const oldest of shown.keys()) {
+    if (shown.size <= rememberedChats) break;
+    shown.delete(oldest);
+  }
+  return true;
+}
+
+/** Whether the chat was shown the button in the last 10 minutes. */
+export function contactAsked(chatId: string, now = Date.now()) {
+  const at = shown.get(chatId)?.at;
+  return at !== undefined && now - at <= askedForMs;
+}
