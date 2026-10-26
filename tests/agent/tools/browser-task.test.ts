@@ -8512,6 +8512,17 @@ describe("browser_task takes an errand the person asked to be done to its last s
     return String(createBrowserUseRun.mock.calls[0]?.[0].task);
   }
 
+  it("stages an errand with their details when they say «пиши мой номер», even read as a look", async () => {
+    const task = await startFor(
+      "На 19.30, пиши мой номер",
+      "Забронировать столик в ДВ на 19:30",
+      "look"
+    );
+
+    expect(task).toContain(stagedByPerson);
+    expect(task).toContain("Phone: +79990000002");
+  });
+
   describe("a person with no phone of their own saved", () => {
     // 25.10, a table at «ДВ»: a Telegram account has no phone, the run typed
     // the venue's own number and the site kept its button locked.
@@ -8556,6 +8567,24 @@ describe("browser_task takes an errand the person asked to be done to its last s
       expect(givesPhone(["8 (921) 994 19 00"])).toBe(true);
       expect(givesPhone(["карта 4276 5501 0132 4310"])).toBe(false);
       expect(givesPhone(["столик на 19:30 на пятерых"])).toBe(false);
+    });
+
+    it("is asked for it when they say «пиши мой номер», whatever the model read", async () => {
+      // 25.10: «На 19.30, пиши мой номер» came as a look, and the run went to
+      // the form with no phone to type.
+      const tool = await resolvedBrowserTask([], "На 19.30, пиши мой номер");
+
+      await expect(
+        tool.execute(
+          {
+            action: "start",
+            personWants: "look",
+            site: "https://yandex.ru",
+            task: "Забронировать столик в ДВ на 19:30",
+          },
+          toolContext("better-auth:alice", "photon-imessage")
+        )
+      ).rejects.toThrow("phone number is not saved anywhere");
     });
 
     it("is not asked for it where they only look", async () => {

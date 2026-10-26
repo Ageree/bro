@@ -127,6 +127,7 @@ import {
   type StandingAction,
   wholeRubles,
 } from "@shared/spending/limit";
+import { putsOwnPhoneInForms } from "@agent/lib/browser-use/own-phone-words";
 import type { AccessScope } from "@shared/identity/access-scope";
 import {
   browserRunFacts,
@@ -4804,7 +4805,7 @@ const yandexAfishaWords = /(?<!\p{L})яндекс[\s.-]*афиш|afisha\.yandex/
  * does not make it so.
  */
 async function runBrowserTask(
-  input: z.infer<typeof signUpInputSchema>,
+  call: z.infer<typeof signUpInputSchema>,
   context: ToolContext,
   heard: readonly string[],
   turn: PersonTurn,
@@ -4813,6 +4814,12 @@ async function runBrowserTask(
   const { conversation, scope } = conversationTarget(context);
   const spoken = turnWords(context, turn);
   const { personTurn: byPerson, words } = spoken;
+  // «Пиши мой номер» asks for the errand to be done with their details,
+  // whatever the model read in it: it is staged, nothing is submitted.
+  const input =
+    byPerson && call.personWants === "look" && putsOwnPhoneInForms(spoken.typed)
+      ? { ...call, personWants: "done" as const }
+      : call;
 
   if (input.action === "start") {
     const errand = z
