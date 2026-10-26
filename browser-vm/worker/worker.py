@@ -2243,18 +2243,25 @@ async def run_rows_operations(session, recorder, report, seconds):
     """At a run's end with no data of the site's behind its report: the rows of its last page, learned from the
     report's options in the session's tab (`site_rows_operations`), in what is left of the find's `seconds`. Never
     raises: the run's outcome waits on it."""
+    began = time.monotonic()
     items = reported_items(report)
     if len(items) < 2 or not session.tab or seconds < SITE_ROWS_MIN_S:
         return []
     try:
         target = next((t for t in await page_targets() if t["id"] == session.tab), None)
         url = (target or {}).get("url") or ""
-        # The page is one of the site's whose requests the run wrote down, not a page it never recorded.
-        if target is None or not url.startswith("https://") or not any(
-                same_host(entry["url"], url) for entry in recorder.entries):
+        # The page is one of the site's whose requests the run wrote down, not a page it never recorded, and a list
+        # of results, not a cart or an order a follow-up went on to.
+        if target is None or not url.startswith("https://") or SITE_ROWS_NOT_RESULTS.search(
+                urllib.parse.urlsplit(url).path) or not any(same_host(entry["url"], url) for entry in recorder.entries):
             return []
-        return await site_rows_operations(cdp_evaluator(target["webSocketDebuggerUrl"], seconds), url, items,
-                                          recorder_document(recorder, url), session.sensitive_data, seconds)
+        # The report's options of this site only: the page's own scripts can read what a call hands it.
+        items = [item for item in items if not item["url"] or site_same_place(url, item["url"])]
+        left = seconds - (time.monotonic() - began)
+        if len(items) < 2 or left < SITE_ROWS_MIN_S:
+            return []
+        return await site_rows_operations(cdp_evaluator(target["webSocketDebuggerUrl"], left), url, items,
+                                          recorder_document(recorder, url), session.sensitive_data, left)
     except Exception as error:
         log.info("site rows at a run's end: %s", type(error).__name__)
         return []
@@ -2744,6 +2751,11 @@ def site_rows_clean(operation, page_url, secrets=None):
     return operation
 
 
+# A page past the results — a cart, a checkout, an order, an account —, where a run's end learns no rows.
+SITE_ROWS_NOT_RESULTS = re.compile(r"cart|basket|korzina|checkout|order|payment|pay/|account|profile|lk/|personal|"
+                                   r"login|auth|signin", re.I)
+
+
 def reported_items(text):
     """The options a report names on its ITEMS line as it writes them: name, price, link (`reported_options`)."""
     for line in (text or "").splitlines():
@@ -2776,9 +2788,11 @@ def cdp_evaluator(websocket_url, seconds=SITE_ROWS_EVALUATE_S):
     return evaluate
 
 
-async def site_rows_read(evaluate, rows, cells, html=None, url=None, keep=False, kept=False, twins=False):
+async def site_rows_read(evaluate, rows, cells, html=None, url=None, keep=False, kept=False, twins=False, least=3):
+    """The rows the selectors read: at least `least` of them (a replay's one), or none."""
     return await evaluate(SITE_ROWS_READ_JS, {"rows": rows, "cells": cells, "html": html, "url": url,
-                                              "limit": SITE_OP_ARRAY, "keep": keep, "kept": kept, "twins": twins})
+                                              "limit": SITE_OP_ARRAY, "keep": keep, "kept": kept, "twins": twins,
+                                              "least": least})
 
 
 async def site_rows_settle(evaluate, learned, html, url):
@@ -2851,6 +2865,10 @@ async def site_rows_operations(evaluate, url, items=None, document=None, secrets
     except Exception as error:
         log.info("site rows %s: %s", urllib.parse.urlsplit(url).hostname, type(error).__name__)
         return []
+    finally:
+        # The parsed document settling kept in the page goes: a page's global for as long as the tab lives otherwise.
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(evaluate("() => { delete globalThis.__broRowsDoc; }"), 2)
     log.info("site rows %s: %s, %d ms", urllib.parse.urlsplit(url).hostname,
              "render" if operation and operation["source"]["render"] else "fetch" if operation else "none",
              round((time.monotonic() - began) * 1000))
@@ -2874,11 +2892,6 @@ def site_rows_data(answer):
     return [{key: value for key, value in item.items() if value is not None} for item in items]
 
 
-def html_cards(operation, answer, url):
-    """A read's rows as cards, by `site_cards` as any operation's data."""
-    return site_cards(operation, site_rows_data(answer), url)
-
-
 async def site_op_rows_fetched(page, operation, url):
     """An html operation's rows from its results document fetched by a tab on the site (its robots.txt first, as
     `site_op_fetched`) and parsed in the page: the document never drawn, its text never leaving the page."""
@@ -2892,7 +2905,7 @@ async def site_op_rows_fetched(page, operation, url):
     source = operation["source"]
     answer = await asyncio.wait_for(page.evaluate(SITE_ROWS_FETCH_JS, {
         "url": url, "rows": source["rows"], "cells": source["cells"], "limit": SITE_OP_ARRAY,
-        "twins": bool(source.get("twins"))}), SITE_OP_FETCH_S)
+        "twins": bool(source.get("twins")), "least": 1}), SITE_OP_FETCH_S)
     if answer["status"] in SITE_GONE:
         raise site_status_failure(answer["status"], "the page")
     if not site_same_path(url, answer["landed"]):
@@ -2916,7 +2929,7 @@ async def site_op_rows_drawn(page, operation, url, seconds=SITE_ROWS_DRAWN_S, lo
         if response is not None and not site_same_path(url, response.url):
             raise SiteOpFailure("moved", "the page answered from another address: open it instead")
     began = time.monotonic()
-    deadline, last, answer = began + seconds, None, None
+    deadline, last, answer, steady = began + seconds, None, None, 0
     while time.monotonic() < deadline:
         # A page the site turned away (its document's 401, 403…) that shows no rows soon shows none.
         if (response is not None and response.status in SITE_BLOCKED and time.monotonic() - began > SITE_ROWS_BLOCKED_S
@@ -2924,10 +2937,13 @@ async def site_op_rows_drawn(page, operation, url, seconds=SITE_ROWS_DRAWN_S, lo
             break
         with contextlib.suppress(Exception):
             answer = await site_rows_read(page_evaluator(page), source["rows"], source["cells"], None, url,
-                                          twins=bool(source.get("twins")))
+                                          twins=bool(source.get("twins")), least=1)
             named = sum(1 for item in answer["items"] if item.get("name"))
-            if answer["rows"] is not None and named >= 3:
-                if last == (answer["count"], named):
+            if answer["rows"] is not None and named >= 1:
+                # The same rows twice in a row are the page's; one or two of them, three times (a page still drawing
+                # shows its first row before the rest).
+                steady = steady + 1 if last == (answer["count"], named) else 0
+                if steady >= (1 if named >= 3 else 2):
                     break
                 last = (answer["count"], named)
         await asyncio.sleep(SITE_ROWS_POLL_S)
@@ -2935,6 +2951,13 @@ async def site_op_rows_drawn(page, operation, url, seconds=SITE_ROWS_DRAWN_S, lo
         status = response.status if response is not None else None
         if status in SITE_BLOCKED:
             raise site_status_failure(status, "the page")
+        # A page that shows no list of results at all is a search with none (no count against the operation); one
+        # that shows a list the selectors miss is a site that changed.
+        cards = []
+        with contextlib.suppress(Exception):
+            cards = await page.evaluate(CODE_CARDS_JS, 10)
+        if len(cards) < 3:
+            raise SiteOpFailure("empty", "the page shows no results")
         raise SiteOpFailure("no_data", "the page drew no rows where the operation reads them")
     if not site_same_path(url, page.url):
         raise SiteOpFailure("moved", "the page went to another address: open it instead")
@@ -2975,9 +2998,11 @@ async def site_op_rows_document(page, operation, url, seconds=None):
         if not site_same_path(url, response.url):
             raise SiteOpFailure("moved", "the page answered from another address: open it instead")
         answer = await site_rows_read(page_evaluator(page), source["rows"], source["cells"], await response.text(),
-                                      url, twins=bool(source.get("twins")))
+                                      url, twins=bool(source.get("twins")), least=1)
         if answer["rows"] is not None:
             return site_rows_data(answer)
+        if response.status in SITE_BLOCKED:
+            raise site_status_failure(response.status, "the page")
         return await site_op_rows_drawn(page, operation, url, SITE_ROWS_DRAWN_S, goto=False)
     return await site_op_rows_drawn(page, operation, url, SITE_ROWS_DRAWN_S, seconds)
 
@@ -4867,13 +4892,14 @@ SITE_ROWS_READ = r"""(arg) => {
     let M;
     try { M = [...doc.querySelectorAll(sel)]; } catch (e) { continue; }
     if (drawn) M = M.filter(shown);
-    if (M.length < 3) continue;
+    const least = arg.least || 3;  // a replay takes a narrow search's one or two rows; learning wants three
+    if (M.length < least) continue;
     // a page that keeps a hidden twin of each card (kupibilet's mobile copy): the rows are those its name names, at
     // least four in ten of them (the shown copies)
     const all = M;
     for (const field of list((arg.cells || {}).name)) {
       const R = arg.twins ? all.filter((r) => cell(r, field)) : all;
-      if (R.length < Math.max(3, arg.twins ? Math.ceil(all.length * 0.4) : 3)) continue;
+      if (R.length < Math.max(least, arg.twins ? Math.ceil(all.length * 0.4) : least)) continue;
       const present = R.slice(0, 30).map((r) => cell(r, field)).filter((v) => v).length;
       if (present >= Math.ceil(Math.min(30, R.length) * 0.6)) { out.cells.name = field; M = R; break; }
     }
@@ -8357,7 +8383,10 @@ async def session_message(request):
     # run forgot the session's own, and the follow-up would run unrouted, its hidden reasoning back on.
     run, _ = await worker.start_run({"id": body.get("runId") or f"{session.id[:40]}-{uuid.uuid4().hex[:12]}",
                                      "sessionId": session.id, "task": text, "llm": llm,
-                                     **{k: v for k, v in session.options.items() if v is not None},
+                                     # A follow-up may go on to a cart or an order: it records no site's
+                                     # requests (`siteTraffic`) a find's run would.
+                                     **{k: v for k, v in session.options.items()
+                                        if v is not None and k != "siteTraffic"},
                                      **({"tuning": body["tuning"]} if "tuning" in body else {})})
     return web.json_response({"sessionId": session.id, "status": "started", "runId": run.id})
 

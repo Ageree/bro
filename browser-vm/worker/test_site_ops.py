@@ -1044,15 +1044,15 @@ class RowsGrammarTest(unittest.TestCase):
             self.assertEqual(worker.site_operations([LABIRINT | change]), {}, change)
 
     def test_rows_are_cards_and_rows_without_a_name_are_none(self):
-        cards = worker.html_cards(LABIRINT, rows_answer(BOOKS), LABIRINT_PAGE)
+        cards = worker.site_cards(LABIRINT, worker.site_rows_data(rows_answer(BOOKS)), LABIRINT_PAGE)
         self.assertEqual([(card["name"], card["price"], card["link"]) for card in cards],
                          [(book["name"], book["price"], book["link"]) for book in BOOKS])
         self.assertEqual(cards[0]["more"]["text"], BOOKS[0]["text"])
         self.assertEqual(worker.site_number(cards[2]["price"]), 1072)
         # A banner in the list is left out; more such rows than cards is a page the operation no longer reads.
-        self.assertEqual(len(worker.html_cards(LABIRINT, rows_answer(BOOKS, nameless=1), LABIRINT_PAGE)), 3)
+        self.assertEqual(len(worker.site_cards(LABIRINT, worker.site_rows_data(rows_answer(BOOKS, nameless=1)), LABIRINT_PAGE)), 3)
         with self.assertRaises(worker.SiteOpFailure) as failure:
-            worker.html_cards(LABIRINT, rows_answer(BOOKS[:1], nameless=2), LABIRINT_PAGE)
+            worker.site_cards(LABIRINT, worker.site_rows_data(rows_answer(BOOKS[:1], nameless=2)), LABIRINT_PAGE)
         self.assertEqual(failure.exception.reason, "no_data")
 
     def test_a_report_s_items_are_read_as_written(self):
@@ -1087,9 +1087,18 @@ class RowsDirectTest(DirectSetup):
         # A page that went elsewhere is no read of this one; a drawn page with no rows has none.
         self.next_page = RowsPage(fetched={url: rows_answer(BOOKS, landed="https://www.labirint.ru/")})
         self.assertEqual((await self.read(LABIRINT, url))["reason"], "moved")
+        # A drawn page with no rows: a search with no results when it shows no list (no count against the
+        # operation), a changed site when it shows a list the selectors miss.
         self.next_page = RowsPage(fetched={url: rows_answer([], status=200)}, drawn=rows_answer([]))
         with unittest.mock.patch.object(worker, "SITE_ROWS_DRAWN_S", 0.3):
+            self.assertEqual((await self.read(LABIRINT, url))["reason"], "empty")
+        self.next_page = RowsPage(fetched={url: rows_answer([], status=200)}, drawn=rows_answer([]))
+        self.next_page.cards = [{"title": f"Книга {n}", "text": "", "links": []} for n in range(5)]
+        with unittest.mock.patch.object(worker, "SITE_ROWS_DRAWN_S", 0.3):
             self.assertEqual((await self.read(LABIRINT, url))["reason"], "no_data")
+        # One result of a narrow search is the search's answer.
+        self.next_page = RowsPage(fetched={url: rows_answer(BOOKS[:1])})
+        self.assertEqual((await self.read(LABIRINT, url))["count"], 1)
 
     async def test_a_drawn_operation_is_never_fetched(self):
         drawn = json.loads(json.dumps(LABIRINT))
@@ -1190,6 +1199,20 @@ class RowsLearnTest(DirectSetup):
         self.assertEqual(await worker.run_rows_operations(session, recorder, report, 0.2), [])
         self.assertEqual(await worker.run_rows_operations(session, worker.SiteTraffic(), report, 4), [])
         self.assertEqual(len(calls), 1)
+        # Another site's options never go into the page (its scripts can read them); a page past the results — a
+        # cart a follow-up went on to — is learned nothing from.
+        mixed = "ITEMS: " + json.dumps([{"name": "Дрель", "price": "5 000 ₽", "url": "https://other.ru/p/1"}]
+                                       + [{"name": b["name"], "price": b["price"], "url": b["link"]} for b in BOOKS])
+        await worker.run_rows_operations(session, recorder, mixed, 4)
+        self.assertNotIn("Дрель", json.dumps(calls[-1][1], ensure_ascii=False))
+
+        async def cart():
+            return [{"id": "T1", "url": "https://www.labirint.ru/cart/", "webSocketDebuggerUrl": "ws://tab"}]
+
+        with mock.patch.object(worker, "page_targets", cart):
+            recorder.entries.append({"url": "https://www.labirint.ru/cart/", "type": "document"})
+            self.assertEqual(await worker.run_rows_operations(session, recorder, report, 4), [])
+        self.assertEqual(len(calls), 2)
 
         async def broken():
             raise RuntimeError("Chrome is gone")
