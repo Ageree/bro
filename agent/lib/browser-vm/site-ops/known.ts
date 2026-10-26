@@ -26,6 +26,11 @@ import type { SiteOperation } from "./operation";
  * rows are read from the results document by the site's own hooks (the
  * worker's look, 26.10), each read live again on the stand; labirint.ru
  * writes the search's words in its path.
+ *
+ * `inputs` are what each site sorted, bounded and paged by itself on the
+ * stand (26.10, read back live): a price order over its whole search where
+ * a sort here sees its first page only. wildberries.ru's `page` and
+ * labirint.ru's (which drops its order) are left out; litres.ru took none.
  */
 export const knownSiteOperations: readonly SiteOperation[] = [
   {
@@ -37,6 +42,10 @@ export const knownSiteOperations: readonly SiteOperation[] = [
       price: ["compensation", "from"],
     },
     items: ["vacancySearchResult", "vacancies"],
+    inputs: {
+      page: { first: 0, key: "page" },
+      sort: { desc: "order_by=salary_desc" },
+    },
     name: "hh.ru/search/vacancy",
     page: "https://hh.ru/search/vacancy?text=%query%&area=%number%&salary=%number%&only_with_salary=%flag%",
     seen: { items: 50, matched: 5, of: 6 },
@@ -58,6 +67,7 @@ export const knownSiteOperations: readonly SiteOperation[] = [
       price: ["price"],
     },
     items: ["map_hotels"],
+    inputs: { sort: { asc: "sort=price.asc" } },
     name: "ostrovok.ru/hotel/%word%/%word%/",
     page: "https://ostrovok.ru/hotel/%word%/%word%/?dates=%date%&guests=%number%&sort=%sort%&type_group=%word%&reviews_rating=%number%",
     seen: { items: 2676, matched: 3, of: 3 },
@@ -83,6 +93,11 @@ export const knownSiteOperations: readonly SiteOperation[] = [
       ],
     },
     items: ["items"],
+    inputs: {
+      page: { first: 1, key: "page" },
+      price: { decimals: 3, range: "currency_price", unit: "rub" },
+      sort: { asc: "sorting=price", desc: "sorting=price_desc" },
+    },
     name: "www.ozon.ru/search/",
     page: "https://www.ozon.ru/search/?text=%query%&deny_category_prediction=%flag%",
     seen: { items: 8, matched: 4, of: 4 },
@@ -105,6 +120,10 @@ export const knownSiteOperations: readonly SiteOperation[] = [
       price: ["sizes", 0, "price", "product"],
     },
     items: ["products"],
+    inputs: {
+      price: { decimals: 0, range: "priceU", unit: "kop" },
+      sort: { asc: "sort=priceup", desc: "sort=pricedown" },
+    },
     name: "www.wildberries.ru/catalog/%id%/search.aspx",
     page: "https://www.wildberries.ru/catalog/%id%/search.aspx?search=%query%",
     seen: { items: 100, matched: 5, of: 5 },
@@ -180,6 +199,13 @@ export const knownSiteOperations: readonly SiteOperation[] = [
       "price is the price with the site's discount, in roubles; a book's other editions are results of their own",
     fields: { link: { path: ["link"] }, name: ["name"], price: ["price"] },
     items: [],
+    inputs: {
+      price: { max: "price_max", min: "price_min" },
+      sort: {
+        asc: "order=price&way=forward",
+        desc: "order=price&way=back",
+      },
+    },
     name: "www.labirint.ru/search/%query%/",
     page: "https://www.labirint.ru/search/%query%/",
     seen: { items: 60, matched: 4, of: 4 },
@@ -199,6 +225,10 @@ export const knownSiteOperations: readonly SiteOperation[] = [
       "price is the shop's price in Moscow, in roubles, as the site writes it",
     fields: { link: { path: ["link"] }, name: ["name"], price: ["price"] },
     items: [],
+    inputs: {
+      page: { first: 1, key: "p" },
+      sort: { asc: "sort=price_asc", desc: "sort=price" },
+    },
     name: "moscow.petrovich.ru/search/",
     page: "https://moscow.petrovich.ru/search/?q=%query%",
     seen: { items: 20, matched: 3, of: 3 },

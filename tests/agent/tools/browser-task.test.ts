@@ -3995,6 +3995,9 @@ describe("browser_task on a workspace's own browser VM", () => {
       cards: [vacancy],
       count: 50,
       from: "data",
+      more: true,
+      order: "relevance",
+      page: 0,
       url: "https://hh.ru/search/vacancy?text=продакт-менеджер&area=1",
     });
     try {

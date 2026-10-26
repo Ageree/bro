@@ -418,6 +418,67 @@ const sourceSchema = z.discriminatedUnion("kind", [
   htmlSourceSchema,
 ]);
 
+// A site's own token for its order (`price`, `priceup`, `price.asc`, `1`):
+// a word of its addresses, never a person's value.
+const inputToken = /^[A-Za-z0-9_.-]{1,24}$/u;
+
+/** The query pairs that make the site sort its results (`sorting=price`, `order=price&way=forward`). */
+const sortPairsSchema = z
+  .string()
+  .max(80)
+  .refine(
+    (pairs) =>
+      pairs.split("&").every((pair) => {
+        const [key = "", value = "", ...rest] = pair.split("=");
+        return (
+          rest.length === 0 &&
+          plainKey.safeParse(key).success &&
+          inputToken.test(value)
+        );
+      }),
+    "the site's own keys and tokens"
+  );
+
+/**
+ * What the site itself applies to its results beyond the template's page
+ * (Pomerado's typed inputs, set the way the site's own controls set them):
+ * the pairs that sort them by price, the keys that bound their price, and
+ * the key of their page. Reviewed only (`knownSiteOperations`): each was
+ * read back live on the stand, and Bro reads the order back again on every
+ * read (`site-ops/inputs.ts`).
+ */
+const siteInputsSchema = z.strictObject({
+  /** The page of the results: `first` is the number of the first one (0 on hh.ru). */
+  page: z
+    .strictObject({
+      first: z.union([z.literal(0), z.literal(1)]),
+      key: plainKey,
+    })
+    .optional(),
+  /**
+   * A price bound in roubles: the site's key for each end, or one key for
+   * both as `<min>;<max>` (ozon.ru's `1500.000;3000.000`, wildberries.ru's
+   * kopecks).
+   */
+  price: z
+    .union([
+      z.strictObject({ max: plainKey.optional(), min: plainKey.optional() }),
+      z.strictObject({
+        decimals: z.union([z.literal(0), z.literal(3)]),
+        range: plainKey,
+        unit: z.enum(["rub", "kop"]),
+      }),
+    ])
+    .optional(),
+  /** The pairs that sort the results by price: cheapest first, dearest first. */
+  sort: z
+    .strictObject({
+      asc: sortPairsSchema.optional(),
+      desc: sortPairsSchema.optional(),
+    })
+    .optional(),
+});
+
 export const siteOperationSchema = z
   .strictObject({
     /**
@@ -437,6 +498,8 @@ export const siteOperationSchema = z
       name: fieldPathSchema.min(1).optional(),
       price: fieldPathSchema.min(1).optional(),
     }),
+    /** What the site applies beyond the page: reviewed operations only. */
+    inputs: siteInputsSchema.optional(),
     items: itemsSchema,
     name: z.string().min(1).max(160),
     page: templateSchema(false),
