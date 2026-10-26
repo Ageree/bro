@@ -312,10 +312,30 @@ async function readSite(
   }
 ): Promise<SiteDirectRead | undefined> {
   const began = Date.now();
-  if (servedRecently(input.sessionId, input.site, began)) return undefined;
-  if (rests(scope.workspaceId, input.site, began)) return undefined;
+  const host = hostOf(input.site);
+  const skipped = servedRecently(input.sessionId, input.site, began)
+    ? "served"
+    : rests(scope.workspaceId, input.site, began)
+      ? "resting"
+      : undefined;
+  if (skipped !== undefined) {
+    console.info("[site-api] left to the browser", {
+      host,
+      reason: skipped,
+      workspaceId: scope.workspaceId,
+    });
+    return undefined;
+  }
   const operations = await siteOperationsFor(scope.workspaceId, input.site);
-  if (operations.length === 0) return lookSite(scope, input, began);
+  if (operations.length === 0) {
+    if (siteColdPilot(scope)) return lookSite(scope, input, began);
+    console.info("[site-api] left to the browser", {
+      host,
+      reason: "unknown_site",
+      workspaceId: scope.workspaceId,
+    });
+    return undefined;
+  }
   const fill = await fillSiteRead(scope, { ...input, operations }).catch(
     (cause: unknown) => {
       console.warn("[site-api] the errand was not filled", {
@@ -336,9 +356,20 @@ async function readSite(
       : siteReadFit(operation, url);
   const fillMs = Date.now() - began;
   if (operation === undefined || url === undefined || fit === undefined) {
+    // What the fill made of the offered pages, never the address it wrote:
+    // that holds the errand's words.
     console.info("[site-api] left to the browser", {
+      chose: fill?.operation ?? null,
       fillMs,
-      reason: operation === undefined ? "no_operation" : "address",
+      filled: filled !== undefined,
+      host,
+      offered: operations.map(({ name }) => name),
+      reason:
+        operation === undefined
+          ? "no_operation"
+          : url === undefined
+            ? "address"
+            : "fit",
       workspaceId: scope.workspaceId,
     });
     return undefined;
@@ -422,8 +453,14 @@ async function lookSite(
   input: Parameters<typeof readSite>[1],
   began: number
 ): Promise<SiteDirectRead | undefined> {
-  if (!siteColdPilot(scope)) return undefined;
-  if (lookedRecently(scope.workspaceId, input.site, began)) return undefined;
+  if (lookedRecently(scope.workspaceId, input.site, began)) {
+    console.info("[site-api] left to the browser", {
+      host: hostOf(input.site),
+      reason: "looked",
+      workspaceId: scope.workspaceId,
+    });
+    return undefined;
+  }
   // Taken before anything is awaited, so two starts of one step look once;
   // given back when the look failed for no fault of the site's.
   const key = `${scope.workspaceId}|${hostOf(input.site)}`;
