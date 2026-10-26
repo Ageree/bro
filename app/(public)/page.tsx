@@ -48,10 +48,12 @@ export default function Page() {
           <Link className={styles.wordmark} href="/">
             bro.
           </Link>
+          {/* A full page load: Travelpayouts Drive, which the landing
+              carries, must not live on into sign-in and the cabinet. */}
           <Button
             className={styles.navAction}
             nativeButton={false}
-            render={<Link href="/sign-in" />}
+            render={<a href="/sign-in" />}
           >
             Кабинет
           </Button>

@@ -135,6 +135,28 @@ describe("auth proxy matcher", () => {
     expect(getAuthSession).not.toHaveBeenCalled();
   });
 
+  it("tells the layout to carry Travelpayouts Drive on the public pages only", async () => {
+    const drive = async (path: string, headers?: HeadersInit) =>
+      (
+        await proxy(new NextRequest(`https://example.com${path}`, { headers }))
+      ).headers.get("x-middleware-request-x-bro-travelpayouts-drive");
+
+    for (const path of ["/", "/oferta", "/privacy"]) {
+      expect(await drive(path)).toBe("1");
+    }
+    for (const path of ["/sign-in", `/card/${"A".repeat(43)}`, "/pay/x"]) {
+      expect(await drive(path)).toBeNull();
+    }
+    // A visitor's own header does not put it on another page.
+    expect(
+      await drive("/sign-in", { "x-bro-travelpayouts-drive": "1" })
+    ).toBeNull();
+    mocks.getAuthSession.mockResolvedValue({
+      user: { id: "user-1", phoneNumber: "+79990000000" },
+    });
+    expect(await drive("/chat")).toBeNull();
+  });
+
   it("allows the schedule dispatcher without a browser session in development", async () => {
     const response = await proxy(
       new NextRequest("http://localhost:3000/eve/v1/dev/schedules/dynamic")
