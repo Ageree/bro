@@ -116,6 +116,39 @@ describe("activating a quoted number", () => {
   });
 });
 
+describe("a line stuck before its SIP exists", () => {
+  const stuck = (minutes: number) => {
+    const row = {
+      ...numberRow("sip-creating", "provisioning"),
+      numberId: "74950000001",
+      updatedAt: new Date(Date.now() - minutes * 60_000),
+    };
+    claimRow(row);
+    return row;
+  };
+
+  it("tries the SIP again once the stage has sat for a while with no SIP at the carrier", async () => {
+    const row = stuck(120);
+    const calls = exolveFetch({
+      ...preflight(),
+      "/number/customer/v1/GetList": ownedList(["74950000001"]),
+      "/number/customer/v1/GetSIPList": () => ({ body: { sips: [] } }),
+    });
+    await activatePhone(scope, row.id);
+    expect(calls).toContain("/sip/v1/Create");
+  });
+
+  it("leaves a SIP creation that has just been sent alone", async () => {
+    const row = stuck(2);
+    const calls = exolveFetch({
+      "/number/customer/v1/GetSIPList": () => ({ body: { sips: [] } }),
+    });
+    const result = await activatePhone(scope, row.id);
+    expect(result.state).toBe("uncertain");
+    expect(calls).not.toContain("/sip/v1/GetFees");
+  });
+});
+
 describe("automatic allocation", () => {
   it("quotes a number no other workspace holds", async () => {
     const now = new Date();

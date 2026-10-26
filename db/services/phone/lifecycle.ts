@@ -16,6 +16,8 @@ import * as elevenlabs from "@shared/phone/elevenlabs";
 import { PhonePreflightError } from "@shared/phone/errors";
 import { domesticPhoneSchema } from "@shared/phone/policy";
 
+const sipCreationSettleMs = 30 * 60_000;
+
 export async function activatePhone(
   scope: AccessScope,
   quoteId: string,
@@ -74,7 +76,13 @@ export async function activatePhone(
       const sip = await exolve.findSip(numberId);
       if (sip) await update({ sipId: sip.sipId, stage: "sip-ready" });
       else {
-        if (row.stage !== "owned")
+        // A line left at `sip-creating` with no SIP at the carrier for a while never got its SIP (26.10: a number
+        // bought on 25.10 sat there for a day, and no call could ever be placed from it); the SIP list is checked
+        // above, and `createSip` checks the inventory again before it creates anything.
+        const stuckCreating =
+          row.stage === "sip-creating" &&
+          Date.now() - row.updatedAt.getTime() > sipCreationSettleMs;
+        if (row.stage !== "owned" && !stuckCreating)
           throw new Error(
             "SIP creation is ambiguous; operator reconciliation is required."
           );
@@ -169,6 +177,10 @@ export async function activatePhone(
     await update({ ...verified, stage: "ready", state: "active" }, true);
     return row;
   } catch (error) {
+    console.warn("[phone] activation stopped", {
+      stage: row.stage,
+      reason: error instanceof Error ? error.message : "unknown",
+    });
     if (error instanceof PhonePreflightError && retryStage !== null) {
       await update(
         {
