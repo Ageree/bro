@@ -93,7 +93,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-10-26.4"
+VERSION = "2026-10-26.5"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -8944,19 +8944,27 @@ async def site_look(request):
     engine's cards() reads them, and — Pomerado's minter without its model — the site's own requests written down
     on the way and the operation behind the cards found in them (`SiteTraffic.operations` over a report made of the
     cards), so the next search there is a direct read. A page that is not the site's results for the words (a 404,
-    a redirect home, an anti-bot check, cards that name none of the words) gives no cards: the errand goes on."""
+    a redirect home, an anti-bot check, cards that name none of the words) gives no cards: the errand goes on. With a
+    site and words and no address, the results page is the one the site's own box gives the words
+    (`site_search_page`): on the stand (26.10) 12–13 of 21 sites it reached, against 4–7 of 20 for a model's guess of
+    the address."""
     global site_op_gate
     authorize(request)
     body = await request.json()
-    url, words = body.get("url"), body.get("words")
-    parts = urllib.parse.urlsplit(url) if isinstance(url, str) else None
+    url, words, site = body.get("url"), body.get("words"), body.get("site")
+    # No page named, a site and words: a search through the site's own box (`site_search_page`).
+    search = url is None and isinstance(site, str)
+    address = site if search else url
+    parts = urllib.parse.urlsplit(address) if isinstance(address, str) else None
     try:
         port = parts.port if parts is not None else None
     except ValueError:
         port = -1
     if (parts is None or parts.scheme != "https" or not parts.hostname or port is not None or parts.username
-            or code_prohibited(url) or not isinstance(words, (str, type(None)))):
+            or code_prohibited(address) or not isinstance(words, (str, type(None)))):
         raise web.HTTPBadRequest(text="url must be an https results page of a site")
+    if search and (not (words or "").strip() or len(words) > SITE_SEARCH_WORDS):
+        raise web.HTTPBadRequest(text="a search through the site's box needs its words")
     if not code_engine_available():
         raise web.HTTPNotImplemented(text=json.dumps({"error": "this root cannot read a site directly"}),
                                      content_type="application/json")
@@ -8972,17 +8980,22 @@ async def site_look(request):
         return web.json_response({"ok": False, "reason": "failed", "ms": round((time.monotonic() - began) * 1000)})
     holder = {"page": None}
     recorder = SiteTraffic()
-    deadline = time.monotonic() + SITE_LOOK_S
+    home = f"https://{parts.hostname}/"
+    deadline = time.monotonic() + (SITE_SEARCH_S + SITE_LOOK_LEARN_S if search else SITE_LOOK_S)
     try:
         # The page gets what learning leaves; it stops drawing cards at its own deadline and keeps those it has.
         until = deadline - SITE_LOOK_LEARN_S
-        cards = await asyncio.wait_for(site_look_page(url, holder, recorder, until), until - time.monotonic() + 1)
+        drawn = (site_search_page(home, words.strip(), holder, recorder, until) if search
+                 else site_look_page(url, holder, recorder, until))
+        cards = await asyncio.wait_for(drawn, until - time.monotonic() + 1)
         if len(cards) < 3:
             raise SiteOpFailure("empty", "the page shows no list of results")
         if not site_look_answers(words, cards):
             raise SiteOpFailure("unanswered", "the page's results do not answer the words they were asked for")
         with contextlib.suppress(asyncio.TimeoutError):
             await asyncio.wait_for(recorder.settle(), max(0.1, min(3, deadline - time.monotonic() - 1.5)))
+        if search:
+            site_search_results_only(recorder, home)
         operations = await site_operations_found(recorder, site_look_report(cards), None,
                                                  max(0.5, deadline - time.monotonic() - 0.5))
         # No data of the site's holds the cards: their rows, learned from the cards' own structure (a look's report
@@ -9000,23 +9013,25 @@ async def site_look(request):
         cards, operations, reason = None, [], "failed"
         log.info("site look failed: %s", type(error).__name__)
     finally:
-        landed = holder["page"].url if holder["page"] is not None and not holder["page"].is_closed() else url
+        landed = holder["page"].url if holder["page"] is not None and not holder["page"].is_closed() else address
         try:
             await site_op_close(holder)
         finally:
             site_op_gate.release()
     ms = round((time.monotonic() - began) * 1000)
+    via = "box" if search else "page"
     if cards is None:
-        log.info("site look %s: %s, %d ms", parts.hostname, reason, ms)
-        return web.json_response({"ok": False, "reason": reason, "ms": ms})
+        log.info("site look %s (%s): %s, %d ms %s", parts.hostname, via, reason, ms, holder.get("ms") or "")
+        return web.json_response({"ok": False, "reason": reason, "ms": ms, "via": via})
     # Only a link on the page's own host, https: a card's first link can be an ad's, a tracker's or a seller's.
     picked = [{"title": card.get("title") or "", "text": card.get("text", "")[:SITE_OP_FIELD_CHARS * 3],
                "link": next((link for link in card.get("links") or []
                              if link.startswith("https://") and site_same_place(landed, link)), None)}
               for card in cards[:SITE_LOOK_CARDS]]
-    log.info("site look %s: %d cards, %d operations, %d ms", parts.hostname, len(cards), len(operations), ms)
+    log.info("site look %s (%s): %d cards, %d operations, %d ms %s", parts.hostname, via, len(cards), len(operations),
+             ms, holder.get("ms") or "")
     return web.json_response({"ok": True, "cards": picked, "count": len(cards), "operations": operations,
-                              "page": landed, "ms": ms})
+                              "page": landed, "ms": ms, "via": via})
 
 
 async def site_look_page(url, holder, recorder, until):
@@ -9062,6 +9077,655 @@ async def site_look_page(url, holder, recorder, until):
         await asyncio.sleep(0.7)
     if not best and status in SITE_BLOCKED:
         raise site_status_failure(status, "the page")
+    return best
+
+
+# A first search on a site through its own search box (`/v1/look` with a site and words, no address): its home page
+# opened, its box found by what the page says of it (no model), the words typed into it as a person types them and
+# sent, and the results page that comes read as a look's. Bro learns the results page's address and the operation
+# behind its cards from it. All of it within SITE_SEARCH_S: the home's document (SITE_SEARCH_HOME_S) and a moment for
+# its header (SITE_SEARCH_SETTLE_S); the box, past at most SITE_SEARCH_TOGGLES search buttons that open it; the words
+# keyed at SITE_SEARCH_KEY_MS a key; the page that answers Enter (or the form's own button) within SITE_SEARCH_SUBMIT_S;
+# its cards as a look reads them.
+SITE_SEARCH_S = 18  # past it the operation's learning (SITE_LOOK_LEARN_S), the slot and the tab's close: Bro waits 44 s
+SITE_SEARCH_WORDS = 120  # the words a search types at most
+SITE_SEARCH_HOME_S = 9
+SITE_SEARCH_SETTLE_S = 1.2
+SITE_SEARCH_TOGGLES = 2
+SITE_SEARCH_TOGGLE_S = 1.0
+SITE_SEARCH_CLICK_S = 1.5
+SITE_SEARCH_KEY_MS = 35
+SITE_SEARCH_SUBMIT_S = 4
+SITE_SEARCH_EVAL_S = 3  # one look into the page; a page that does not answer in it is not searched
+SITE_SEARCH_MARK = "data-bro-search"  # the box found, for Playwright to click and type into; removed on the next look
+SITE_SEARCH_GO = "data-bro-go"  # the form's own search button, when Enter sent nothing
+SITE_SEARCH_FORM_FIELDS = 3  # a form of the box's own: its submit button is sent with no search sign of its own
+SITE_SEARCH_POPUP_CLOSE_S = 2  # a tab the site opened from the search's (a link's target=_blank), closed at once
+SITE_SEARCH_BLANK_S = 4  # what a home page with next to no text gets to draw the site
+SITE_SEARCH_BLANK_TEXT = 200
+SITE_SEARCH_WAIT_S = 7  # what a home page with no box and no search button gets to draw its box
+SITE_SEARCH_AFTER_BOX_S = 7  # what the typing, the sending and the results need once the box is found
+SITE_SEARCH_FOCUS_S = 5  # what a box gets to take the focus (an app that has not started yet)
+# A home page's address that is a check of the site's: a captcha or a challenge by name.
+SITE_SEARCH_CHECK = re.compile(r"captcha|challenge|antibot|anti-bot|robot", re.I)
+# A short page's words that refuse this browser, beside an anti-bot check's (CODE_WALL_SIGNS).
+SITE_SEARCH_REFUSED = ("forbidden", "vpn", "недоступн", "not a bot", "you are a bot", "blocked", "заблокирован",
+                       "доступ запрещ", "captcha", "капча", "robot")
+SITE_SEARCH_DRAWN_JS = """() => [document.body ? document.body.innerText.length : 0,
+  [...document.querySelectorAll('input:not([type=hidden]), textarea')].filter((e) => e.getBoundingClientRect().width > 0).length]"""
+
+# What tells a box or a button that opens one, and what tells a field of a person's or an errand's details that is
+# never typed into (a login's, a subscription's, a city or address picker's, a promo code's, a date's). The page's
+# own words for it: its attributes split into tokens (camelCase and separators), its placeholder, label and title.
+SITE_SEARCH_LIB = r"""const clean = (s) => String(s == null ? '' : s).replace(/\s+/g, ' ').trim();
+const low = (s) => clean(s).toLowerCase().replace(/ё/g, 'е');
+const tokens = (s) => String(s || '').replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-zа-яё0-9]+/).filter(Boolean);
+const deep = (root, selector, out = []) => {
+  for (const el of root.querySelectorAll(selector)) out.push(el);
+  for (const el of root.querySelectorAll('*')) if (el.shadowRoot) deep(el.shadowRoot, selector, out);
+  return out;
+};
+// A search in words: the page's text for a box or its button, and its attributes' tokens.
+const SEARCH_TEXT = /поиск|искать|найти|найдите|ищу|ищете|search|find|lookup/;
+const SEARCH_TOKEN = /^(search\w*|\w*search|query|poisk|find|lookup|suggest\w*|keywords?|fulltext|loupe|lupa|magnif\w*)$/;
+const NAME_EXACT = /^(q|s|k|w|st|qt|ft|kw|text|term|query|search|find|poisk|keywords?|searchtext|searchquery|searchstring|searchterm|search[_-](text|query|string|term|input)|query[_-]text|fulltext|searchinput)$/;
+// A box that only hints at a search (a catalogue's placeholder): counts with a sign, not alone.
+const HINT_TEXT = /например|товар|бренд|артикул|что вы хотите|что ищ|я ищу|книг|автор|назван|модель/;
+// Never typed into: a person's details, a login, a city or address picker, a date, a promo code, a filter's bound.
+const BAD_TOKENS = new Set(['email', 'mail', 'phone', 'tel', 'telephone', 'mobile', 'password', 'pass', 'passwd',
+  'pwd', 'login', 'username', 'user', 'city', 'town', 'address', 'addr', 'street', 'house', 'location', 'geo', 'region',
+  'metro', 'district', 'promo', 'promocode', 'coupon', 'voucher', 'subscribe', 'subscription', 'newsletter',
+  'comment', 'review', 'captcha', 'zip', 'zipcode', 'postal', 'postcode', 'cvv', 'cvc', 'card', 'birth', 'birthday',
+  'surname', 'firstname', 'lastname', 'fio', 'fullname', 'message', 'otp', 'sms', 'code', 'delivery',
+  'destination', 'departure', 'arrival', 'from', 'where', 'date', 'checkin', 'checkout', 'guests', 'qty',
+  'quantity', 'amount', 'price', 'cost', 'min', 'max', 'passport', 'snils', 'inn', 'name']);
+const BAD_CLASS = new Set(['email', 'mail', 'phone', 'tel', 'password', 'login', 'city', 'address', 'location', 'geo',
+  'promo', 'promocode', 'coupon', 'subscribe', 'newsletter', 'comment', 'review', 'captcha', 'region', 'metro',
+  'delivery', 'destination', 'otp', 'sms', 'date', 'datepicker', 'calendar']);
+// A filter's bound (a price's «от», «до») and a picker's own filter of its options (select2's, choices'): no site search.
+const BOUND = /^(от|до|from|to|min|max|\d[\d\s]*)$/;
+const PICKER = new Set(['select2', 'choices', 'chosen', 'selectize', 'multiselect', 'listbox', 'picker']);
+const RU = (w) => `(?:^|[^а-яё])${w}`;  // a Russian word's start: JS's \b is latin only
+const BAD_TEXT = new RegExp(['e-?mail', 'почт', 'телефон', 'парол', 'password', 'логин', 'login', 'город', 'населенн',
+  'адрес', 'address', 'улиц', 'street', 'метро', 'район', 'регион', 'промо', 'купон', 'coupon', 'подписк', 'subscribe',
+  'рассылк', 'newsletter', 'коммент', 'отзыв', 'review', 'captcha', 'капч', 'индекс', 'postal', 'zip', 'cvv', 'cvc',
+  'номер карты', 'card number', 'рожден', 'фамил', RU('имя'), 'your name', 'отчеств', 'сообщени', 'message',
+  'вопрос', 'код из', 'код подтвержд', 'sms', 'смс', RU('куда'), RU('откуда'), 'where to', 'destination', 'заезд',
+  'выезд', 'check-in', 'check-out', 'гостей', RU('дата'), RU('date'), 'количеств', 'цена от', 'цена до',
+  'price from', 'price to', 'станци', 'вокзал', 'аэропорт', 'option', 'выбер', 'выбрать'].join('|'));
+const shownStyle = (el) => {
+  for (let e = el; e && e.nodeType === 1; e = e.parentElement) {
+    const st = getComputedStyle(e);
+    if (st.visibility === 'hidden' || st.display === 'none' || parseFloat(st.opacity) < 0.05) return false;
+  }
+  return true;
+};
+const seen = (el, minW = 24, minH = 10) => {
+  const r = el.getBoundingClientRect();
+  return r.width >= minW && r.height >= minH && r.bottom > 0 && r.right > 0 && r.left < innerWidth && shownStyle(el);
+};
+const onTop = (el) => {
+  const r = el.getBoundingClientRect();
+  const x = r.left + r.width / 2, y = r.top + r.height / 2;
+  if (y < 0 || y > innerHeight || x < 0 || x > innerWidth) return false;
+  const at = document.elementFromPoint(x, y);
+  return !!at && (at === el || el.contains(at) || at.contains(el) || (at.shadowRoot && at.shadowRoot.contains(el)));
+};
+const topBand = (el) => !!el.closest('header, [role=banner], nav') || el.getBoundingClientRect().top < 260;
+const dataWords = (el) => [...el.attributes].filter((a) => a.name.startsWith('data-') && a.value.length <= 80)
+  .map((a) => a.value).join(' ');
+const ancestorWords = (el, levels) => {
+  const out = [];
+  for (let e = el.parentElement, i = 0; e && i < levels; e = e.parentElement, i++) {
+    out.push(e.id || '', typeof e.className === 'string' ? e.className : '', e.getAttribute('data-testid') || '',
+             e.getAttribute('data-qa') || '', e.getAttribute('role') || '');
+  }
+  return tokens(out.join(' '));
+};
+const labelText = (el) => {
+  const parts = [...(el.labels || [])].map((l) => l.innerText);
+  for (const id of (el.getAttribute('aria-labelledby') || '').split(/\s+/).filter(Boolean)) {
+    const l = document.getElementById(id);
+    if (l) parts.push(l.innerText);
+  }
+  return parts.join(' ');
+};
+const textLike = (el) => {
+  if (el.localName === 'textarea') return true;
+  if (el.localName !== 'input') return el.isContentEditable;
+  return ['', 'text', 'search'].includes((el.getAttribute('type') || '').toLowerCase());
+};
+// A form of a person's details: a small one with a password, an email or a phone in it (a whole page's one form,
+// an old ASP.NET site's, holds the search box too and is not one).
+const detailsForm = (el) => {
+  const form = el.form || el.closest('form');
+  if (!form) return false;
+  const fields = form.querySelectorAll('input:not([type=hidden]), textarea, select');
+  return fields.length <= 6 && !!form.querySelector('input[type=password], input[type=email], input[type=tel], ' +
+    'input[autocomplete*=email], input[autocomplete*=tel], input[autocomplete*=password]');
+};
+// A box's verdict: null when it is no search box (not text, disabled, a person's field), else its score and signs.
+const judgeBox = (el) => {
+  if (!textLike(el) || el.disabled) return null;
+  const attr = (n) => el.getAttribute(n) || '';
+  const text = low([attr('placeholder'), attr('aria-label'), attr('title'), attr('data-placeholder'),
+                    labelText(el)].join(' '));
+  const own = tokens([attr('name'), attr('id'), attr('autocomplete'), dataWords(el)].join(' '));
+  const classes = tokens(typeof el.className === 'string' ? el.className : '');
+  if (own.some((t) => BAD_TOKENS.has(t)) || classes.some((t) => BAD_CLASS.has(t)) || BAD_TEXT.test(text)
+      || BOUND.test(low(attr('placeholder'))) || /numeric|decimal|tel|email/.test(attr('inputmode'))
+      || ancestorWords(el, 4).some((t) => PICKER.has(t)) || el.closest('[role=listbox], [role=dialog] [role=listbox]')
+      || detailsForm(el)) return null;
+  const signs = [], form = el.form || el.closest('form');
+  let score = 0;
+  const sign = (name, points) => { signs.push(name); score += points; };
+  if ((attr('type') || '').toLowerCase() === 'search') sign('type', 5);
+  if (attr('role') === 'searchbox') sign('role', 5);
+  if (/search/i.test(attr('inputmode') + attr('enterkeyhint'))) sign('keyhint', 3);
+  if (el.closest('[role=search]')) sign('landmark', 3);
+  if (form && (/search|poisk|find|[?&]q=|query/i.test(form.getAttribute('action') || '')
+               || tokens([form.id, form.className, form.getAttribute('role'), form.getAttribute('name')].join(' '))
+                 .some((t) => SEARCH_TOKEN.test(t)))) sign('form', 3);
+  if ([attr('name'), attr('id')].some((v) => NAME_EXACT.test(v.toLowerCase()))) sign('name', 4);
+  else if (own.some((t) => SEARCH_TOKEN.test(t))) sign('attr', 3);
+  if (SEARCH_TEXT.test(text)) sign('text', 4);
+  if (classes.some((t) => SEARCH_TOKEN.test(t))) sign('class', 2);
+  if (!signs.length) return null;
+  if (ancestorWords(el, 4).some((t) => SEARCH_TOKEN.test(t))) sign('near', 1);
+  if (HINT_TEXT.test(text)) sign('hint', 1);
+  if (attr('role') === 'combobox' || attr('aria-autocomplete')) sign('combo', 1);
+  const shown = seen(el, 40, 12);
+  if (shown) {
+    if (topBand(el)) score += 1.5;
+    if (el.getBoundingClientRect().width >= 200) score += 1;
+    if (onTop(el)) score += 1;
+    if (el.getBoundingClientRect().top > 2 * innerHeight) score -= 3;
+  }
+  if (el.localName === 'textarea') score -= 1;
+  return {el, score, signs, shown, readonly: el.readOnly || attr('aria-readonly') === 'true'};
+};
+const clearMark = (name) => { for (const el of deep(document, `[${name}]`)) el.removeAttribute(name); };
+// An address on the site's own host, one under it or above it: a fragment, a script's, a relative one are.
+const onSite = (href) => {
+  if (!href || /^(#|javascript:)/i.test(href.trim())) return true;
+  let host;
+  try { host = new URL(href, location.href).hostname; } catch (e) { return false; }
+  const bare = (h) => h.toLowerCase().replace(/^www\./, ''), a = bare(host), b = bare(location.hostname);
+  return a === b || a.endsWith('.' + b) || b.endsWith('.' + a);
+};"""
+
+# The site's search box, marked for Playwright (SITE_SEARCH_MARK): the best shown, writable one of those the page
+# calls a search; with none, how many such boxes it hides (a toggle opens them).
+SITE_SEARCH_BOX_JS = r"""(arg) => {
+  /*LIB*/
+  clearMark(arg.mark);
+  const all = deep(document, 'input, textarea, [contenteditable="true"], [contenteditable=""]').map(judgeBox).filter(Boolean);
+  const boxes = all.filter((b) => b.shown && !b.readonly).sort((a, b) => b.score - a.score);
+  if (!boxes.length) return {found: false, hidden: all.filter((b) => !b.shown).length,
+                             readonly: all.filter((b) => b.shown && b.readonly).length};
+  boxes[0].el.setAttribute(arg.mark, '1');
+  return {found: true, score: boxes[0].score, signs: boxes[0].signs, others: boxes.length - 1};
+}""".replace("/*LIB*/", SITE_SEARCH_LIB)
+
+# What opens a hidden box: a shown button, link or icon that names a search (its label, title, class, icon's
+# symbol, short text), or a read-only box that only opens the real one; the best one marked (SITE_SEARCH_GO).
+# Skipped: one already clicked, one of another site, one that names a person's field or a voice or photo search, a
+# submit button of a form that shows fields or holds values (it would send them: a route a travel site filled in).
+SITE_SEARCH_TOGGLE_JS = r"""(arg) => {
+  /*LIB*/
+  clearMark(arg.mark);
+  const OTHER = /voice|голос|camera|photo|фото|image|картинк|изображ|catalog|каталог|clear|очист|reset|close|закры/;
+  const best = [];
+  const clickable = 'button, a[href], [role=button], label, [tabindex], [onclick]';
+  const pool = new Set(deep(document, clickable + ', svg, img, i, span, div[class*=earch i], input[readonly]'));
+  for (const raw of pool) {
+    const el = raw.localName === 'input' ? raw : (raw.closest(clickable) || raw);
+    if (arg.tried.includes(el.getAttribute(arg.seen) || '')) continue;
+    if (!seen(el, 12, 12)) continue;
+    const r = el.getBoundingClientRect();
+    if (r.width > 520 || r.height > 120) continue;
+    const href = el.getAttribute('href') || '';
+    if (href && !onSite(href)) continue;
+    // A form's submit button sends what that form holds (a route the site filled in, a lead's phone): a toggle is
+    // only one whose form shows no field and holds no value a person would send.
+    const form = el.localName !== 'a' && (el.form || el.closest('form'));
+    if (form && (el.localName === 'input' ? /^(submit|image)$/i.test(el.getAttribute('type') || '')
+                 : el.localName === 'button' && ['', 'submit'].includes((el.getAttribute('type') || '').toLowerCase()))
+        && [...form.querySelectorAll('input:not([type=hidden]), textarea, select')]
+             .some((f) => seen(f, 8, 8) || (f.value && !/^(checkbox|radio|submit|button|image)$/i.test(f.type || '')))) continue;
+    const use = [...raw.querySelectorAll('use')].map((u) => u.getAttribute('href') || u.getAttribute('xlink:href') || '').join(' ');
+    const words = low([el.getAttribute('aria-label'), el.getAttribute('title'), raw.getAttribute('alt'),
+                       el.getAttribute('placeholder'), (el.innerText || '').length <= 25 ? el.innerText : ''].join(' '));
+    const marks = tokens([el.id, typeof el.className === 'string' ? el.className : '', dataWords(el), raw.id,
+                          typeof raw.className === 'string' ? raw.className : (raw.className && raw.className.baseVal) || '',
+                          use, raw.getAttribute('src') || '', href.split('?')[0]].join(' '));
+    if (OTHER.test(words) || marks.some((t) => OTHER.test(t)) || BAD_TEXT.test(words)
+        || marks.some((t) => BAD_CLASS.has(t))) continue;
+    let score = 0;
+    if (SEARCH_TEXT.test(words)) score += 4;
+    if (marks.some((t) => SEARCH_TOKEN.test(t))) score += 3;
+    if (!score) continue;
+    if (raw.localName === 'input') score += 2;
+    if (topBand(el)) score += 2;
+    if (r.width <= 64 && r.height <= 64) score += 1;
+    if (onTop(el)) score += 1;
+    if (el.closest('footer')) score -= 4;
+    best.push({el, score});
+  }
+  best.sort((a, b) => b.score - a.score);
+  if (!best.length) return {found: false};
+  const id = String(arg.tried.length + 1);
+  best[0].el.setAttribute(arg.mark, '1');
+  best[0].el.setAttribute(arg.seen, id);
+  return {found: true, id, score: best[0].score, tag: best[0].el.localName};
+}""".replace("/*LIB*/", SITE_SEARCH_LIB)
+
+# Where the keys go after the box's click: the box itself, another box the page calls a search that it moved the
+# focus to (a search that opens in its own layer), or nowhere that may be typed into.
+SITE_SEARCH_FOCUS_JS = r"""(arg) => {
+  /*LIB*/
+  let a = document.activeElement;
+  while (a && a.shadowRoot && a.shadowRoot.activeElement) a = a.shadowRoot.activeElement;
+  if (!a || a === document.body) return 'none';
+  if (a.hasAttribute(arg.mark)) return 'box';
+  // The page moved the focus on our click to a box of its own (a search that opens in a layer): one it calls a
+  // search as judgeBox would, never a plain field of a layer (a login's code, a person's name).
+  if (!judgeBox(a) || a.readOnly) return 'wrong';
+  clearMark(arg.mark);
+  a.setAttribute(arg.mark, '1');
+  return 'moved';
+}""".replace("/*LIB*/", SITE_SEARCH_LIB)
+
+# Where a person would click the marked box: its middle, scrolled into view, and what is there — the box itself
+# (`free`), a part of the box's own (`own`: within its four nearest ancestors, and no control), a layer over it or a
+# control of the page's (`covered`: never clicked).
+SITE_SEARCH_COVER_JS = r"""(arg) => {
+  /*LIB*/
+  const box = deep(document, `[${arg.mark}]`)[0];
+  if (!box) return {state: 'gone'};
+  let r = box.getBoundingClientRect();
+  if (r.top < 0 || r.bottom > innerHeight) { box.scrollIntoView({block: 'center'}); r = box.getBoundingClientRect(); }
+  const x = r.left + Math.min(r.width / 2, 60), y = r.top + r.height / 2;
+  let at = document.elementFromPoint(x, y);
+  while (at && at.shadowRoot && at.shadowRoot.elementFromPoint) {
+    const inner = at.shadowRoot.elementFromPoint(x, y);
+    if (!inner || inner === at) break;
+    at = inner;
+  }
+  if (!at) return {state: 'off'};
+  if (at === box || box.contains(at)) return {state: 'free', x, y};
+  let wrap = box;
+  for (let i = 0; i < 4 && wrap.parentElement; i++) wrap = wrap.parentElement;
+  // A control there (a city's «Да», a link, a menu's item) is the page's own question, clicked never: covered.
+  const control = at.closest('a[href], button, [role=button], [role=menuitem], [role=option], [role=dialog], ' +
+                             'input, select, textarea, [onclick]');
+  return {state: wrap.contains(at) && !(control && !control.contains(box)) ? 'own' : 'covered', x, y};
+}""".replace("/*LIB*/", SITE_SEARCH_LIB)
+
+# The box's text now (a site that took no keys, or cleared them, has none of the words).
+SITE_SEARCH_VALUE_JS = r"""(arg) => {
+  /*LIB*/
+  const el = deep(document, `[${arg.mark}]`)[0];
+  return el ? String(el.value != null ? el.value : el.innerText || '') : null;
+}""".replace("/*LIB*/", SITE_SEARCH_LIB)
+
+# Sending the words when Enter sent nothing: a button the box's form or its four nearest ancestors call a search,
+# marked for a click (SITE_SEARCH_GO); in a small form of the box's own (SITE_SEARCH_FORM_FIELDS shown fields at most)
+# its submit button, or the form submitted as that button would. Never anything else: a whole page's one form (an old
+# ASP.NET site's) holds a login's, a cart's and an ad's buttons too, and the click is in the person's profile. A link
+# only on the site's own host.
+SITE_SEARCH_SUBMIT_JS = r"""(arg) => {
+  /*LIB*/
+  clearMark(arg.go);
+  const box = deep(document, `[${arg.mark}]`)[0];
+  if (!box) return 'gone';
+  const NOT = /voice|голос|camera|photo|фото|image|картинк|clear|очист|reset|close|закры|отмен|cancel/;
+  const signed = (el) => {
+    const words = low([el.getAttribute('aria-label'), el.getAttribute('title'), el.getAttribute('value'),
+                       (el.innerText || '').length <= 25 ? el.innerText : ''].join(' '));
+    const marks = tokens([el.id, typeof el.className === 'string' ? el.className : '', dataWords(el),
+                          [...el.querySelectorAll('use')].map((u) => u.getAttribute('href') || '').join(' ')].join(' '));
+    if (NOT.test(words) || marks.some((t) => NOT.test(t))) return -1;
+    return (SEARCH_TEXT.test(words) ? 2 : 0) + (marks.some((t) => SEARCH_TOKEN.test(t)) ? 2 : 0);
+  };
+  const submits = (el) => el.localName === 'input' || (el.localName === 'button'
+    && ['', 'submit'].includes((el.getAttribute('type') || '').toLowerCase()));
+  const form = box.form || box.closest('form');
+  const small = !!form && [...form.querySelectorAll('input:not([type=hidden]), textarea, select')]
+    .filter((f) => seen(f, 8, 8)).length <= arg.fields;
+  const pick = (scope) => {
+    let best = null, bestScore = 0;
+    for (const el of scope.querySelectorAll('button, input[type=submit], input[type=image], [role=button], a[href]')) {
+      if (el === box || !seen(el, 8, 8) || (el.localName === 'a' && !onSite(el.getAttribute('href')))) continue;
+      // A search sign, or the small form's own submit button with no sign against it.
+      let score = signed(el);
+      if (score === 0 && small && el.closest('form') === form && submits(el)) score = 1;
+      if (score > bestScore) { best = el; bestScore = score; }
+    }
+    return best;
+  };
+  if (form) {
+    const button = pick(form);
+    if (button) { button.setAttribute(arg.go, '1'); return 'button'; }
+    if (!small) return 'none';
+    try { form.requestSubmit(); } catch (e) { form.submit(); }
+    return 'form';
+  }
+  for (let e = box.parentElement, i = 0; e && i < 4; e = e.parentElement, i++) {
+    const button = pick(e);
+    if (button) { button.setAttribute(arg.go, '1'); return 'button'; }
+  }
+  return 'none';
+}""".replace("/*LIB*/", SITE_SEARCH_LIB)
+
+
+async def site_search_eval(page, script, arg):
+    """One of the search's scripts in the page, within SITE_SEARCH_EVAL_S; None when the page did not answer (it went
+    on to another document meanwhile, or hangs)."""
+    try:
+        return await asyncio.wait_for(page.evaluate(script, arg), SITE_SEARCH_EVAL_S)
+    except Exception:
+        return None
+
+
+async def site_search_page(home, words, holder, recorder, until):
+    """The cards of a site's results for `words`, searched for through the site's own box in a visit's tab
+    (`site_look_page`'s), its requests written down from the home page on, by `until` (monotonic)."""
+    from playwright.async_api import async_playwright
+
+    holder["pw"] = await async_playwright().start()
+    browser = await holder["pw"].chromium.connect_over_cdp(CDP_HTTP)
+    await site_keep_run_downloads(browser)
+    page = holder["page"] = await browser.contexts[0].new_page()
+    with contextlib.suppress(Exception):
+        cdp = await page.context.new_cdp_session(page)
+        holder["target"] = (await cdp.send("Target.getTargetInfo"))["targetInfo"]["targetId"]
+        worker.visit_tabs.add(holder["target"])
+    recorder.watch(page)
+    page.on("popup", site_search_popup)
+    return await site_search_on(page, home, words, holder, until)
+
+
+def site_search_popup(popup):
+    """A tab the site opened from the search's (a toggle's or a form's target=_blank, a script's window.open): the
+    results are read in the search's own tab, and another tab of the person's browser left open would be a running
+    errand's to adopt (`follow_focus`) and its memory's to pay for. Closed at once."""
+    async def close():
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(popup.close(), SITE_SEARCH_POPUP_CLOSE_S)
+
+    asyncio.ensure_future(close())
+
+
+async def site_search_on(page, home, words, holder, until):
+    """`site_search_page`'s search on a tab already open: `holder["ms"]` says how long each part took, `holder["box"]`
+    how the box was found, `holder["sent"]` how the words were sent."""
+    phases = holder["ms"] = {}
+    mark = time.monotonic()
+
+    def lap(name):
+        nonlocal mark
+        now = time.monotonic()
+        phases[name] = round((now - mark) * 1000)
+        mark = now
+
+    await site_search_home(page, home, until)
+    lap("home")
+    # The cards the home page already shows (a carousel of offers): the results are another list.
+    before = await site_search_eval(page, CODE_CARDS_JS, SITE_LOOK_CARDS) or []
+    homely = {card["text"] for card in before}
+    holder["box"] = await site_search_box(page, home, until)
+    lap("box")
+    if holder["box"] is None:
+        if await site_search_walled(page):
+            raise SiteOpFailure("blocked", "the home page is a check or a refusal of this browser")
+        raise SiteOpFailure("no_box", "the home page shows no search box")
+    left = page.url
+    await site_search_type(page, words)
+    lap("type")
+    holder["sent"] = await site_search_send(page, left, until)
+    if not site_same_place(home, page.url):
+        raise SiteOpFailure("moved", "the search went to another site")
+    lap("results")
+    cards = await site_search_cards(page, home, homely, until)
+    lap("cards")
+    return cards
+
+
+async def site_search_home(page, home, until):
+    """The site's home page opened, and a moment for its scripts to draw its header. No search on one that turns the
+    browser away (a status of 400 or more, a redirect to a check that names the page back, a page that never draws
+    more than a spinner) or goes to another site. A document still loading at SITE_SEARCH_HOME_S over a slow exit is
+    searched as far as it came."""
+    load = max(1.0, min(SITE_SEARCH_HOME_S, until - time.monotonic() - 1))
+    try:
+        response = await page.goto(home, wait_until="domcontentloaded", timeout=load * 1000)
+    except Exception as error:
+        # An error status with no page (Chrome's ERR_HTTP_RESPONSE_CODE_FAILURE: trudvsem.ru's 460 for the stand's
+        # exit) turns the browser away; a document still coming is searched as far as it came; nothing at all is a
+        # site this exit does not reach.
+        if "ERR_HTTP_RESPONSE_CODE_FAILURE" in str(error):
+            raise SiteOpFailure("blocked", "the home page answered an error") from None
+        if "Timeout" not in type(error).__name__ or not page.url.startswith("https://"):
+            raise SiteOpFailure("failed", "the home page did not come") from None
+        response = None
+    status = response.status if response is not None else None
+    if status is not None and status >= 400:
+        raise SiteOpFailure("failed" if status in SITE_GONE else "blocked", f"the home page answered {status}")
+    if not site_same_place(home, page.url):
+        raise SiteOpFailure("moved", "the home page went to another site")
+    if site_search_checked(home, page.url):
+        raise SiteOpFailure("blocked", "the home page went to the site's check")
+    await asyncio.sleep(SITE_SEARCH_SETTLE_S)
+    # A page with next to no text and no field shown yet is an app still drawing, or a check that lets the browser
+    # through by itself: given SITE_SEARCH_BLANK_S more; one that stays so is the check (onlinetrade.ru's and
+    # lamoda.ru's spinners for the stand's exit, 26.10).
+    ends = time.monotonic() + min(SITE_SEARCH_BLANK_S, until - time.monotonic() - 8)
+    while True:
+        drawn = await site_search_eval(page, SITE_SEARCH_DRAWN_JS, None)
+        if drawn is not None and (drawn[0] >= SITE_SEARCH_BLANK_TEXT or drawn[1]):
+            break
+        if time.monotonic() >= ends:
+            raise SiteOpFailure("blocked", "the home page never drew the site")
+        await asyncio.sleep(0.5)
+    if not site_same_place(home, page.url) or site_search_checked(home, page.url):
+        raise SiteOpFailure("blocked", "the home page went to the site's check")
+
+
+def site_search_checked(home, landed):
+    """Whether the home page went on to a check of the site's rather than the site: another path whose query names
+    the page asked for back (`?back_location=https://…`), or a captcha or challenge by name."""
+    parts = urllib.parse.urlsplit(landed)
+    if parts.path.rstrip("/") == "" and not parts.query:
+        return False
+    for key, value in urllib.parse.parse_qsl(parts.query, keep_blank_values=True):
+        if SITE_SEARCH_CHECK.search(key) or SITE_SEARCH_CHECK.search(value) or (
+                value.startswith("http") and site_same_place(home, value)):
+            return True
+    return bool(SITE_SEARCH_CHECK.search(parts.path))
+
+
+async def site_search_walled(page):
+    """Whether the page is a refusal of this browser rather than the site: little text, and a check's or a refusal's
+    words in it (CODE_WALL_SIGNS and SITE_SEARCH_REFUSED: «Forbidden», «VPN», «страница недоступна»)."""
+    try:
+        title, text = await asyncio.wait_for(page.evaluate(
+            "() => [document.title, document.body ? document.body.innerText.slice(0, 4000) : '']"), CODE_WALL_READ_S)
+    except Exception:
+        return False
+    seen = f"{title}\n{text}".lower()
+    return len(text) <= CODE_WALL_TEXT and any(sign in seen for sign in CODE_WALL_SIGNS + SITE_SEARCH_REFUSED)
+
+
+async def site_search_box(page, home, until):
+    """The site's search box marked in the page (SITE_SEARCH_MARK), or None: a shown one; else one a search button
+    opens (SITE_SEARCH_TOGGLES of them clicked, each given SITE_SEARCH_TOGGLE_S); else, with no button either, one an
+    app is still drawing (looked for again for SITE_SEARCH_WAIT_S: eapteka.ru's box comes ~8 s after its document
+    over the stand's exit). What found it: its signs, the toggles clicked. A toggle that took the page to another site
+    ends the search before a word is typed there."""
+    tried, waits = [], time.monotonic() + SITE_SEARCH_WAIT_S
+    while True:
+        box = await site_search_eval(page, SITE_SEARCH_BOX_JS, {"mark": SITE_SEARCH_MARK})
+        if box and box.get("found"):
+            return {**box, "toggles": len(tried)}
+        if time.monotonic() >= until - SITE_SEARCH_AFTER_BOX_S:
+            return None
+        toggle = None
+        if len(tried) < SITE_SEARCH_TOGGLES:
+            toggle = await site_search_eval(page, SITE_SEARCH_TOGGLE_JS, {
+                "mark": SITE_SEARCH_GO, "seen": "data-bro-tried", "tried": tried})
+        if toggle and toggle.get("found"):
+            tried.append(toggle["id"])
+            with contextlib.suppress(Exception):
+                await page.locator(f"[{SITE_SEARCH_GO}]").first.click(timeout=SITE_SEARCH_CLICK_S * 1000)
+            await asyncio.sleep(SITE_SEARCH_TOGGLE_S)
+            # A toggle that is a link to the site's search page: its document first.
+            with contextlib.suppress(Exception):
+                await page.wait_for_load_state("domcontentloaded", timeout=max(
+                    500, (until - time.monotonic() - SITE_SEARCH_AFTER_BOX_S) * 1000))
+            if not site_same_place(home, page.url):
+                raise SiteOpFailure("moved", "a search button went to another site")
+            continue
+        if time.monotonic() >= waits:
+            return None
+        await asyncio.sleep(0.5)
+
+
+async def site_search_focus(page):
+    """The marked box given the focus as a person gives it: a click at its middle, when what is there is the box or
+    a part of its own (a placeholder the site draws over it: lenta.com's); Escape first when a layer the page put
+    over it covers it (a city's question: apteka.ru's), and the box focused by itself when one still does; a box the
+    page drew anew meanwhile (an app's hydration replacing the server's) found again. Whether a box the page calls a
+    search has the focus now (SITE_SEARCH_FOCUS_JS): nothing is typed otherwise. Tried again for SITE_SEARCH_FOCUS_S:
+    a box the server drew takes no click until the app behind it has started (lenta.com's, 2–4 s over the stand's
+    exit)."""
+    ends = time.monotonic() + SITE_SEARCH_FOCUS_S
+    while True:
+        cover = await site_search_eval(page, SITE_SEARCH_COVER_JS, {"mark": SITE_SEARCH_MARK})
+        if cover and cover["state"] == "covered":
+            await page.keyboard.press("Escape")
+            await asyncio.sleep(0.3)
+            cover = await site_search_eval(page, SITE_SEARCH_COVER_JS, {"mark": SITE_SEARCH_MARK})
+        if cover and cover["state"] in ("free", "own"):
+            await page.mouse.click(cover["x"], cover["y"])
+        elif cover and cover["state"] != "gone":
+            with contextlib.suppress(Exception):
+                await page.locator(f"[{SITE_SEARCH_MARK}]").first.focus(timeout=SITE_SEARCH_CLICK_S * 1000)
+        await asyncio.sleep(0.3)
+        focus = await site_search_eval(page, SITE_SEARCH_FOCUS_JS, {"mark": SITE_SEARCH_MARK})
+        if focus in ("box", "moved"):
+            return True
+        if time.monotonic() >= ends:
+            return False
+        await asyncio.sleep(0.4)
+        again = await site_search_eval(page, SITE_SEARCH_BOX_JS, {"mark": SITE_SEARCH_MARK})
+        if not again or not again.get("found"):
+            return False
+
+
+async def site_search_type(page, words):
+    """The words typed into the marked box as a person types them (`site_search_focus`), what it held cleared first,
+    then key by key: sites that read their own key events take no `fill`. A box that ends up without the words (the
+    page drew it anew under the keys) has them inserted once, if a search box still has the focus."""
+    if not await site_search_focus(page):
+        raise SiteOpFailure("no_box", "the search box would not take the focus")
+    await page.keyboard.press("Control+A")
+    await page.keyboard.press("Backspace")
+    await page.keyboard.type(words, delay=SITE_SEARCH_KEY_MS)
+    await asyncio.sleep(0.2)
+    for _ in range(2):
+        value = await site_search_eval(page, SITE_SEARCH_VALUE_JS, {"mark": SITE_SEARCH_MARK})
+        if value is not None and site_words(words) in site_words(value):
+            break
+        focus = await site_search_eval(page, SITE_SEARCH_FOCUS_JS, {"mark": SITE_SEARCH_MARK})
+        if focus not in ("box", "moved"):
+            raise SiteOpFailure("no_box", "the search box lost the focus while typing")
+        value = await site_search_eval(page, SITE_SEARCH_VALUE_JS, {"mark": SITE_SEARCH_MARK})
+        if value is not None and site_words(words) in site_words(value):
+            break
+        await page.keyboard.press("Control+A")
+        await page.keyboard.insert_text(words)
+        await asyncio.sleep(0.2)
+    else:
+        raise SiteOpFailure("no_box", "the search box would not hold the words")
+    # A box that suggests as one types sends what it holds once its own wait for the keys is over.
+    await asyncio.sleep(0.4)
+
+
+async def site_search_send(page, left, until):
+    """The words sent: Enter, and when the page neither went on nor started to for SITE_SEARCH_SUBMIT_S, the box's
+    form's own button (or the form as it would be). Then the results' document loaded. How it went: `enter`,
+    `button`, `form`, or `none:…` (the page answered in place, or not at all). Enter only while a search box has the
+    focus."""
+    going = {"at": None}
+
+    def navigating(request):
+        with contextlib.suppress(Exception):
+            if request.is_navigation_request() and request.frame == page.main_frame and going["at"] is None:
+                going["at"] = time.monotonic()
+
+    # Enter goes where the focus is: a layer the page opened after the typing (a city's question, a subscription's)
+    # gets no key of ours.
+    if await site_search_eval(page, SITE_SEARCH_FOCUS_JS, {"mark": SITE_SEARCH_MARK}) not in ("box", "moved"):
+        raise SiteOpFailure("no_box", "the search box lost the focus before the words were sent")
+    page.on("request", navigating)
+    try:
+        await page.keyboard.press("Enter")
+        if await site_search_moved(page, left, going, until):
+            how = "enter"
+        else:
+            how = await site_search_eval(page, SITE_SEARCH_SUBMIT_JS, {
+                "mark": SITE_SEARCH_MARK, "go": SITE_SEARCH_GO, "fields": SITE_SEARCH_FORM_FIELDS})
+            if how == "button":
+                with contextlib.suppress(Exception):
+                    await page.locator(f"[{SITE_SEARCH_GO}]").first.click(timeout=SITE_SEARCH_CLICK_S * 1000)
+            if how not in ("button", "form") or not await site_search_moved(page, left, going, until):
+                how = f"none:{how}"
+    finally:
+        page.remove_listener("request", navigating)
+    with contextlib.suppress(Exception):
+        await page.wait_for_load_state("domcontentloaded", timeout=max(500, (until - time.monotonic() - 2) * 1000))
+    return how
+
+
+async def site_search_moved(page, left, going, until):
+    """Whether the page went on from the address `left` (its fragment aside): a new document, or the history's own
+    push as an app's results page comes. Waited for SITE_SEARCH_SUBMIT_S, and for as long as `until` allows once a
+    new document has been asked for (`going`): over a slow exit a form's answer comes seconds after Enter
+    (holodilnik.ru's)."""
+    def place(url):
+        return urllib.parse.urldefrag(url)[0].rstrip("/")
+
+    ends = time.monotonic() + SITE_SEARCH_SUBMIT_S
+    while place(page.url) == place(left):
+        if time.monotonic() >= (until - 3 if going["at"] is not None else min(ends, until - 3)):
+            return False
+        await asyncio.sleep(0.15)
+    return True
+
+
+async def site_search_cards(page, home, homely, until):
+    """The results' cards as `site_look_page` reads them (CODE_CARDS_JS until they stop changing, SITE_LOOK_CARDS_S at
+    most), a list the home page already showed aside."""
+    began, best, last = time.monotonic(), [], None
+    while True:
+        now = await site_search_eval(page, CODE_CARDS_JS, SITE_LOOK_CARDS)
+        if now is None:
+            if time.monotonic() >= until - 1.5:
+                break
+            await asyncio.sleep(0.7)
+            if not site_same_place(home, page.url):
+                raise SiteOpFailure("moved", "the search went to another site") from None
+            continue
+        if now and now[0]["text"] in homely:
+            now = []
+        mark = (len(now), now[0]["text"] if now else "")
+        best = now if len(now) >= len(best) else best
+        if ((mark == last and len(now) >= 5) or time.monotonic() - began >= SITE_LOOK_CARDS_S
+                or time.monotonic() >= until - 0.7):
+            break
+        last = mark
+        await asyncio.sleep(0.7)
     return best
 
 

@@ -65,12 +65,13 @@ export function siteApiPilot(scope: { readonly workspaceId: string }) {
 
 /**
  * The first search on a site with no operation yet (BROWSER_SITE_COLD_WORKSPACES,
- * inside the pilot above): a model names the site's results page for the
- * errand, the worker opens it in a tab of its own and reads its cards, and
- * the operation behind them is kept on the way (`/v1/look`) — no errand
- * first. On the stand (25.10, 20 sites) 8 answered right in 4–10 s and 6
- * left an operation; the rest named no page (1.2–1.8 s) or a page that
- * did not answer (up to 14 s), and their errand went on as it would have.
+ * inside the pilot above): a model reads the errand's words, the worker
+ * types them into the site's own search box in a tab of its own (or opens
+ * the results page the model named) and reads its cards, and the operation
+ * behind them is kept on the way (`/v1/look`) — no errand first. On the
+ * stand (26.10) the box answered 12–13 of the 21 sites it reached in 7–17 s,
+ * against 4–7 of 20 for a named page (25.10); the rest went on as the
+ * errand it was.
  */
 export function siteColdPilot(scope: { readonly workspaceId: string }) {
   const listed = env.BROWSER_SITE_COLD_WORKSPACES ?? [];
@@ -150,13 +151,14 @@ const fillTimeoutMs = 8_000;
 
 const guessSchema = z.object({
   query: z.string().nullable(),
+  search: z.boolean().nullable(),
   url: z.string().nullable(),
 });
 
-const guessInstructions = `You name a website's own search-results page for an errand. You get the errand, today's date, the site, and its note when there is one.
-Write the address of the site's results page that shows what the errand looks for, with its query, filters and sort written the way this site writes them in its own addresses — the page a person lands on after searching the site. Use only what you know of this site's addresses; when you do not know how it writes them, answer url null rather than guess.
-Answer url null as well when the errand is not a search for options: it asks for something to be booked, bought, sent or signed in to, or for a detail only one item's own page has.
-Answer JSON only: {"url": the address or null, "query": the words naming what is searched for — the item, the job, the make and model, as each result should name it —, never a place, a date, a price, a count or the site's name, or null}.`;
+const guessInstructions = `You read an errand for a website and name what to search the site for. You get the errand, today's date, the site, and its note when there is one.
+The errand is a search when it asks to find, pick, choose, compare or show options on the site; whatever else it adds (a rating to check, things to leave out, a screenshot, other sites to try) does not change that. It is no search when it asks for something to be booked, bought, sent or signed in to, or for a detail only one item's own page has.
+For a search, write the words to type into the site's own search box — the item, the job, the make and model, as each result should name it —, never a place, a date, a price, a count or the site's name. And when you know how this site writes its results pages' addresses, the address of the one that shows what the errand looks for, with its query, filters and sort written the way this site writes them — the page a person lands on after searching the site; when you do not know, url null rather than a guess.
+Answer JSON only: {"search": true or false, "query": the words or null, "url": the address or null}.`;
 
 /**
  * The site's results page for an errand on a site Bro has no operation for,
@@ -711,71 +713,73 @@ async function lookSite(
     looked.delete(key);
     return undefined;
   });
-  const url = onSite(input.site, guess?.url ?? null);
   // The page is looked at only against its words: the worker checks that
-  // its cards name them, and a page with none to check is the browser's.
-  const words = guess?.query?.trim() ?? "";
+  // its cards name them, and a search with none to check is the browser's.
+  const words = clipWords(guess?.query?.trim() ?? "");
   const guessMs = Date.now() - began;
-  if (url === undefined || words === "") {
+  if (guess?.search !== true || words === "") {
+    // Nothing of the site's was looked at: the next errand there may be a search.
+    looked.delete(key);
     console.info("[site-api] left to the browser", {
       guessMs,
-      reason:
-        guess?.url === null
-          ? "no_page"
-          : url === undefined
-            ? "address"
-            : "no_words",
+      reason: guess?.search === true ? "no_words" : "no_search",
       workspaceId: scope.workspaceId,
     });
     return undefined;
   }
-  const look = await lookBrowserVmSiteDirectly(scope.workspaceId, {
-    url,
-    words,
-  }).catch((cause: unknown) => {
-    console.warn("[site-api] the look did not go through", {
-      name: cause instanceof Error ? cause.name : "unknown",
-      status: cause instanceof BrowserVmWorkerError ? cause.status : null,
+  // The site's own search box first, the page the model named after it: on
+  // the stand (26.10) the box gave 12–13 of the 21 sites it reached their
+  // results in 7–17 s, the named page 4–7 of 20 (25.10). The named page is
+  // looked at when the site shows no box, or its box gave nothing for the
+  // words, and the errand has not waited too long for it already.
+  const named = onSite(input.site, guess.url);
+  const host = hostOf(input.site);
+  const boxed = await lookWay(scope, key, host, { site: input.site, words });
+  let look = boxed.look;
+  let url = look === undefined ? undefined : input.site;
+  let { seen } = boxed;
+  if (
+    boxed.next &&
+    named !== undefined &&
+    Date.now() - began < namedLookBeforeMs
+  ) {
+    const paged = await lookWay(scope, key, host, { url: named, words });
+    look = paged.look;
+    url = named;
+    seen ||= paged.seen;
+  } else if (boxed.next && named === undefined && guess.url !== null) {
+    console.info("[site-api] left to the browser", {
+      guessMs,
+      host: hostOf(input.site),
+      reason: "address",
+      workspaceId: scope.workspaceId,
     });
-    // A refused address would be refused again; anything else was not the
-    // site's answer.
-    if (!(cause instanceof BrowserVmWorkerError && cause.status === 400)) {
-      looked.delete(key);
-    }
-    restAfter(scope.workspaceId, hostOf(input.site), cause);
-    return undefined;
-  });
+  }
+  // A worker that cannot search yet saw nothing: the site waits for no one.
+  if (!seen) looked.delete(key);
+  if (look === undefined || url === undefined) return undefined;
   const timing = {
     guessMs,
-    host: hostOf(url),
+    host: hostOf(input.site),
     lookMs: Date.now() - began - guessMs,
     workspaceId: scope.workspaceId,
   };
-  if (look === undefined) {
-    // No browser to look with: the next errand may have one.
-    looked.delete(key);
-    return undefined;
-  }
-  if (!look.ok) {
-    console.info("[site-api] left to the browser", {
-      ...timing,
-      reason: look.reason,
-    });
-    return undefined;
-  }
   console.info("[site-api] looked", {
     ...timing,
     cards: look.cards.length,
     operations: look.operations.length,
+    via: look.via ?? "page",
     workerMs: look.ms,
   });
+  // Where the page landed, when that is still the site's.
+  const landed = onSite(input.site, look.page) ?? url;
   served.set(servedKey(input.sessionId, input.site), {
     ask: { page: 0, priceMax: null, priceMin: null, sort: "site" },
     at: Date.now(),
     links: [],
     operation: "",
     page: 0,
-    search: url,
+    search: landed,
     sort: "site",
   });
   // The cards are the person's whatever keeping the operation does.
@@ -797,9 +801,94 @@ async function lookSite(
     more: false,
     order: "page",
     page: 0,
-    // Where the page landed, when that is still the site's.
-    url: onSite(input.site, look.page) ?? url,
+    url: landed,
   };
+}
+
+/**
+ * How long a first search may have taken before the page the model named is
+ * looked at after the site's box: the errand waits behind both.
+ */
+const namedLookBeforeMs = 20_000;
+
+/**
+ * The words a search through the site's box types at most (the worker's
+ * `SITE_SEARCH_WORDS`): longer ones are cut at a word, never refused.
+ */
+const searchWordsMax = 120;
+
+function clipWords(words: string) {
+  if (words.length <= searchWordsMax) return words;
+  const cut = words.slice(0, searchWordsMax + 1);
+  const space = cut.lastIndexOf(" ");
+  return (
+    space > 0 ? cut.slice(0, space) : cut.slice(0, searchWordsMax)
+  ).trim();
+}
+
+/** What a site's box that gave nothing leaves to the page the model named. */
+const boxMisses: ReadonlySet<string> = new Set([
+  "no_box",
+  "unanswered",
+  "empty",
+]);
+
+/**
+ * One look of a first search (`lookSite`): its cards when it answered;
+ * `next` when the page the model named may still be looked at — the site
+ * showed no box, its box gave nothing for the words, or the worker cannot
+ * search through it yet; `seen` when the worker looked at the site at all. A
+ * failure that is no fault of the site's gives the site back (`looked`); one
+ * of the worker rests the workspace (`restAfter`).
+ */
+async function lookWay(
+  scope: AccessScope,
+  key: string,
+  host: string,
+  way: Parameters<typeof lookBrowserVmSiteDirectly>[1]
+): Promise<{
+  readonly look?: Extract<
+    NonNullable<Awaited<ReturnType<typeof lookBrowserVmSiteDirectly>>>,
+    { ok: true }
+  >;
+  readonly next: boolean;
+  readonly seen: boolean;
+}> {
+  const via = "site" in way ? "box" : "page";
+  const look = await lookBrowserVmSiteDirectly(scope.workspaceId, way).catch(
+    (cause: unknown) => {
+      console.warn("[site-api] the look did not go through", {
+        name: cause instanceof Error ? cause.name : "unknown",
+        status: cause instanceof BrowserVmWorkerError ? cause.status : null,
+        via,
+      });
+      // A refused address would be refused again; anything else was not the
+      // site's answer.
+      if (!(cause instanceof BrowserVmWorkerError && cause.status === 400)) {
+        looked.delete(key);
+      }
+      restAfter(scope.workspaceId, host, cause);
+      return "thrown" as const;
+    }
+  );
+  if (look === "thrown") return { next: false, seen: true };
+  // No browser to look with: the next errand may have one.
+  if (look === undefined) {
+    looked.delete(key);
+    return { next: false, seen: true };
+  }
+  if (look === null) return { next: true, seen: false };
+  if (!look.ok) {
+    console.info("[site-api] left to the browser", {
+      host,
+      reason: look.reason,
+      via,
+      workspaceId: scope.workspaceId,
+      workerMs: look.ms,
+    });
+    return { next: via === "box" && boxMisses.has(look.reason), seen: true };
+  }
+  return { look, next: false, seen: true };
 }
 
 /** How many of a looked page's cards go to the turn: each carries its whole text. */

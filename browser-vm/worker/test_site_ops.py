@@ -1634,5 +1634,137 @@ class ItemChromeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(raised.exception.reason, "moved")
 
 
+class SiteSearchTest(unittest.TestCase):
+    """The home pages a search through a site's own box does not search (`site_search_checked`)."""
+
+    def test_a_home_page_that_went_to_the_sites_check_is_not_searched(self):
+        home = "https://shop.example/"
+        self.assertFalse(worker.site_search_checked(home, "https://shop.example/"))
+        self.assertFalse(worker.site_search_checked(home, "https://shop.example/moscow/"))
+        self.assertTrue(worker.site_search_checked(home, "https://shop.example/xpvnsulc/?back_location=https%3A%2F%2Fshop.example%2F"))
+        self.assertTrue(worker.site_search_checked(home, "https://shop.example/showcaptcha?retpath=x"))
+
+
+class SearchChromeTest(unittest.IsolatedAsyncioTestCase):
+    """A search through a site's own box as `/v1/look` makes it, in a real Chromium (no network): set
+    BRO_SITE_ROWS_CHROME as for RowsChromeTest; CI skips it."""
+
+    # Each field reports a key typed into it: only the search box may.
+    TYPED = " oninput=\"fetch('/typed?f=' + this.name)\""
+    # A home page with a sign-in form and a city's field beside the search: neither is ever typed into.
+    HOME = ("<html><head><title>Магазин</title></head><body><header>"
+            f"<form class=\"login\" action=\"/login\"><input type=\"text\" name=\"email\" placeholder=\"Почта\"{TYPED}>"
+            f"<input type=\"password\" name=\"password\"{TYPED}></form>"
+            f"<input type=\"text\" name=\"city\" placeholder=\"Ваш город\"{TYPED}>"
+            f"<form action=\"/search/\" role=\"search\"><input name=\"q\" placeholder=\"Поиск по магазину\"{TYPED}>"
+            "<button type=\"submit\">Найти</button></form></header><main>" + "<p>Магазин бытовой техники</p>" * 20
+            + "</main></body></html>")
+    # A home page whose box only a search button shows.
+    HIDDEN = ("<html><body><header><button class=\"header-search-toggle\" aria-label=\"Поиск\" onclick=\""
+              "document.getElementById('f').style.display='block'\">🔍</button>"
+              "<form id=\"f\" action=\"/search/\" style=\"display:none\"><input type=\"search\" name=\"text\"></form>"
+              "</header><main>" + "<p>Каталог товаров</p>" * 20 + "</main></body></html>")
+    # A realty site's form: a city and a price, no search box.
+    FORM = ("<html><body><form action=\"/flats/\"><input name=\"city\" placeholder=\"Город\">"
+            "<input name=\"price_to\" placeholder=\"до\" inputmode=\"numeric\"><button>Показать</button></form>"
+            "<main>" + "<p>Квартиры</p>" * 20 + "</main></body></html>")
+    # A travel site's route the site filled in, its button «Найти билеты», no search box: never sent.
+    ROUTE = ("<html><body><form action=\"/tickets/\"><input name=\"from\" value=\"Москва\">"
+             "<input name=\"to\" value=\"Сочи\"><button type=\"submit\">Найти билеты</button></form>"
+             "<main>" + "<p>Билеты на поезда</p>" * 20 + "</main></body></html>")
+    # An old site's one form around the whole page: its box takes no Enter, and the form holds a sign-in link and a
+    # cart's button before anything that searches. Neither is clicked, the form not sent.
+    PAGE_FORM = ("<html><body><form action=\"/default.aspx\" method=\"post\"><a href=\"/login\">Войти</a>"
+                 "<button type=\"button\" onclick=\"fetch('/cart')\">В корзину</button>"
+                 "<input name=\"q\" placeholder=\"Поиск\" onkeydown=\"if (event.key === 'Enter') event.preventDefault()\">"
+                 + "".join(f"<input name=\"f{n}\">" for n in range(7))
+                 + "<main>" + "<p>Каталог</p>" * 20 + "</main></form></body></html>")
+
+    @staticmethod
+    def results(words):
+        cards = "".join(f"<li class=\"card\"><a href=\"/item/{n}\">{words} модель {n}</a><span>{1000 + n} ₽</span></li>"
+                        for n in range(12))
+        return f"<html><body><main><h1>Результаты</h1><ul>{cards}</ul></main></body></html>"
+
+    async def asyncSetUp(self):
+        import os
+
+        chrome = os.environ.get("BRO_SITE_ROWS_CHROME")
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError:
+            async_playwright = None
+        if not chrome or async_playwright is None:
+            self.skipTest("set BRO_SITE_ROWS_CHROME to a Chromium binary, with Playwright installed")
+        self.playwright = await async_playwright().start()
+        self.browser = await self.playwright.chromium.launch(executable_path=chrome, args=["--no-sandbox"])
+        self.context = await self.browser.new_context()
+        self.logins, self.typed, self.sent = [], [], []
+
+        async def serve(route):
+            parts = urllib.parse.urlsplit(route.request.url)
+            if parts.path.startswith("/login"):
+                self.logins.append(route.request.url)
+            if parts.path == "/typed":
+                self.typed.append(parts.query)
+            if parts.path in ("/tickets/", "/cart", "/default.aspx"):
+                self.sent.append(parts.path)
+            query = dict(urllib.parse.parse_qsl(parts.query))
+            if parts.path == "/search/":
+                body = self.results(query.get("q") or query.get("text") or "")
+            else:
+                body = {"shop.example": self.HOME, "hidden.example": self.HIDDEN, "flats.example": self.FORM,
+                        "route.example": self.ROUTE, "aspx.example": self.PAGE_FORM,
+                        }.get(parts.hostname, "<html><main>404</main></html>")
+            await route.fulfill(status=200, content_type="text/html; charset=utf-8", body=body)
+
+        await self.context.route("**/*", serve)
+        self.page = await self.context.new_page()
+
+    async def asyncTearDown(self):
+        await self.browser.close()
+        await self.playwright.stop()
+
+    async def search(self, host, words):
+        holder = {}
+        until = time.monotonic() + worker.SITE_SEARCH_S
+        cards = await worker.site_search_on(self.page, f"https://{host}/", words, holder, until)
+        return cards, holder
+
+    async def test_the_words_go_into_the_sites_search_box_and_never_into_another_field(self):
+        cards, holder = await self.search("shop.example", "чайник")
+        self.assertIn("name", holder["box"]["signs"])
+        self.assertEqual(urllib.parse.urlsplit(self.page.url).path, "/search/")
+        self.assertTrue(worker.site_look_answers("чайник", cards))
+        self.assertTrue(self.typed and all(typed == "f=q" for typed in self.typed), self.typed)
+        self.assertEqual(self.logins, [])
+
+    async def test_a_box_a_search_button_shows_is_opened_first(self):
+        cards, holder = await self.search("hidden.example", "утюг")
+        self.assertEqual(holder["box"]["toggles"], 1)
+        self.assertTrue(worker.site_look_answers("утюг", cards))
+
+    async def test_a_site_with_only_its_own_form_is_not_typed_into(self):
+        with unittest.mock.patch.object(worker, "SITE_SEARCH_WAIT_S", 1):
+            with self.assertRaises(worker.SiteOpFailure) as raised:
+                await self.search("flats.example", "двушка")
+        self.assertEqual(raised.exception.reason, "no_box")
+        self.assertEqual(await self.page.evaluate("[...document.querySelectorAll('input')].map((e) => e.value)"),
+                         ["", ""])
+
+    async def test_another_forms_search_button_is_never_a_toggle(self):
+        with unittest.mock.patch.object(worker, "SITE_SEARCH_WAIT_S", 1):
+            with self.assertRaises(worker.SiteOpFailure) as raised:
+                await self.search("route.example", "сапсан")
+        self.assertEqual(raised.exception.reason, "no_box")
+        self.assertEqual(self.sent, [])
+
+    async def test_a_whole_pages_form_gets_no_click_but_a_search_button(self):
+        cards, holder = await self.search("aspx.example", "чайник")
+        self.assertEqual(holder["sent"], "none:none")
+        self.assertEqual((self.sent, self.logins), ([], []))
+        self.assertEqual(cards, [])
+
+
 if __name__ == "__main__":
     unittest.main()

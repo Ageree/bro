@@ -745,14 +745,27 @@ export async function readBrowserVmSiteDirectly(
 /**
  * Look at a site's results page in the workspace's own browser, no run, as
  * `readBrowserVmSiteDirectly` reads one: its cards and the operations
- * behind them (`lookBrowserVmSite`).
+ * behind them (`lookBrowserVmSite`). Null for a search through the site's
+ * box on a worker before it: the errand's start rolls the new worker out
+ * (`rollout.ts`).
  */
 export async function lookBrowserVmSiteDirectly(
   workspaceId: string,
   input: Parameters<typeof lookBrowserVmSite>[1]
 ) {
-  return onSiteReadVm(workspaceId, async (vm) => lookBrowserVmSite(vm, input));
+  return onSiteReadVm(workspaceId, async (vm) => {
+    if ("site" in input) {
+      const health = await readBrowserVmWorkerHealth(vm);
+      if (!browserVmWorkerAtLeast(health.worker, siteSearchingWorker)) {
+        return null;
+      }
+    }
+    return lookBrowserVmSite(vm, input);
+  });
 }
+
+/** The worker that searches a site through its own box (`site_search_page`). */
+const siteSearchingWorker = "2026-10-26.5";
 
 /**
  * Read one result's own page in the workspace's own browser, no run

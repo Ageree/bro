@@ -555,7 +555,8 @@ export const foundSiteOperationsSchema = z.array(z.json()).max(10);
  * address or not at all; `no_data` — the results are no longer where the
  * operation reads them; `empty` — none for this page; `unanswered` — its
  * results name none of the words asked (`site_op_answers`); `failed` —
- * anything else (the network, a timeout).
+ * anything else (the network, a timeout); `no_box` — a search through the
+ * site's own box found none to type into (a look's only).
  */
 export const siteReadFailures = [
   "blocked",
@@ -564,6 +565,7 @@ export const siteReadFailures = [
   "empty",
   "unanswered",
   "failed",
+  "no_box",
 ] as const;
 
 export type SiteReadFailure = (typeof siteReadFailures)[number];

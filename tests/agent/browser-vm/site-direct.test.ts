@@ -20,7 +20,7 @@ interface Filled {
 }
 /** What the first look's model answers (`guessSiteRead`). */
 interface Guessed {
-  output: { query: string | null; url: string | null };
+  output: { query: string | null; search: boolean | null; url: string | null };
 }
 /** What the model answers whether an errand asks about its links' own pages (`askedAboutPages`). */
 interface AboutPages {
@@ -651,7 +651,8 @@ describe("Bro's own read of a site it has read before", () => {
     expect(model.generateText).not.toHaveBeenCalled();
   });
 
-  it("looks at the results page a model names on a site with no operation, and keeps the one behind its cards", async () => {
+  it("searches a site with no operation through its own box, then the page a model named, and keeps the operation behind the cards", async () => {
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
     const site = {
       errand: "Найди 5 самых дешёвых пылесосов на Ситилинке",
       note: undefined,
@@ -665,25 +666,40 @@ describe("Bro's own read of a site it has read before", () => {
     expect(model.generateText).not.toHaveBeenCalled();
     const { readSiteDirectly, siteColdPilot } = await direct("*", "*");
     expect(siteColdPilot(scope)).toBe(true);
-    // A page off the site is not looked at.
+    // No search (a booking, an item's own page): nothing is typed anywhere.
     model.generateText.mockResolvedValue({
-      output: { query: "пылесос", url: "https://evil.ru/search/?text=x" },
+      output: { query: "столик", search: false, url: null },
     });
     expect(
-      await readSiteDirectly(scope, { ...site, sessionId: "x" })
+      await readSiteDirectly(scope, { ...site, sessionId: "n" })
     ).toBeUndefined();
     expect(browser.lookBrowserVmSiteDirectly).not.toHaveBeenCalled();
+    // The box shows none, and the page named is off the site: not looked at.
+    const another = await direct("*", "*");
+    model.generateText.mockResolvedValue({
+      output: {
+        query: "пылесос",
+        search: true,
+        url: "https://evil.ru/search/?text=x",
+      },
+    });
+    browser.lookBrowserVmSiteDirectly.mockResolvedValueOnce({
+      ms: 9000,
+      ok: false,
+      reason: "no_box",
+    });
+    expect(
+      await another.readSiteDirectly(scope, { ...site, sessionId: "x" })
+    ).toBeUndefined();
+    expect(browser.lookBrowserVmSiteDirectly.mock.calls).toEqual([
+      [scope.workspaceId, { site: site.site, words: "пылесос" }],
+    ]);
     // …and the site is not asked about again for a while.
     model.generateText.mockClear();
     expect(
-      await readSiteDirectly(scope, { ...site, sessionId: "y" })
+      await another.readSiteDirectly(scope, { ...site, sessionId: "y" })
     ).toBeUndefined();
     expect(model.generateText).not.toHaveBeenCalled();
-    const fresh = await direct("*", "*");
-    const page = "https://www.citilink.ru/search/?text=пылесос&sort=price";
-    model.generateText.mockResolvedValue({
-      output: { query: "пылесос", url: page },
-    });
     const operation = {
       fields: { link: { path: ["url"] }, name: ["name"], price: ["price"] },
       items: ["products"],
@@ -695,19 +711,30 @@ describe("Bro's own read of a site it has read before", () => {
         state: { index: 0, tag: "script", type: "application/json" },
       },
     };
-    browser.lookBrowserVmSiteDirectly.mockResolvedValue({
-      cards: [
-        {
-          link: "https://www.citilink.ru/product/1/",
-          text: "Пылесос Kitfort KT-5307 4 990 ₽",
-          title: "Пылесос Kitfort KT-5307",
-        },
-      ],
+    const cards = [
+      {
+        link: "https://www.citilink.ru/product/1/",
+        text: "Пылесос Kitfort KT-5307 4 990 ₽",
+        title: "Пылесос Kitfort KT-5307",
+      },
+    ];
+    // The box answers: its results page, its cards, its operation.
+    const fresh = await direct("*", "*");
+    const named = "https://www.citilink.ru/search/?text=пылесос&sort=price";
+    const landed =
+      "https://www.citilink.ru/search/?text=%D0%BF%D1%8B%D0%BB%D0%B5%D1%81%D0%BE%D1%81";
+    model.generateText.mockResolvedValue({
+      output: { query: "пылесос", search: true, url: named },
+    });
+    browser.lookBrowserVmSiteDirectly.mockClear();
+    browser.lookBrowserVmSiteDirectly.mockResolvedValueOnce({
+      cards,
       count: 36,
-      ms: 5200,
+      ms: 9200,
       ok: true,
       operations: [operation],
-      page,
+      page: landed,
+      via: "box",
     });
     const read = await fresh.readSiteDirectly(scope, {
       ...site,
@@ -726,16 +753,43 @@ describe("Bro's own read of a site it has read before", () => {
       more: false,
       order: "page",
       page: 0,
-      url: new URL(page).href,
+      url: landed,
     });
-    expect(browser.lookBrowserVmSiteDirectly).toHaveBeenCalledWith(
-      scope.workspaceId,
-      { url: new URL(page).href, words: "пылесос" }
-    );
+    expect(browser.lookBrowserVmSiteDirectly.mock.calls).toEqual([
+      [scope.workspaceId, { site: site.site, words: "пылесос" }],
+    ]);
     expect(records.saveBrowserSiteOperation).toHaveBeenCalledWith(
       scope.workspaceId,
       expect.objectContaining({ name: "citilink.ru/search/" })
     );
+    // A box that gives nothing for the words, or a worker before the box:
+    // the page the model named.
+    for (const box of [
+      { ms: 8000, ok: false as const, reason: "unanswered" as const },
+      null,
+    ]) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- each case loads its own module
+      const later = await direct("*", "*");
+      browser.lookBrowserVmSiteDirectly.mockClear();
+      browser.lookBrowserVmSiteDirectly
+        .mockResolvedValueOnce(box)
+        .mockResolvedValueOnce({
+          cards,
+          count: 36,
+          ms: 5200,
+          ok: true,
+          operations: [],
+          page: named,
+        });
+      expect(
+        // oxlint-disable-next-line eslint/no-await-in-loop -- the cases go one after another
+        (await later.readSiteDirectly(scope, { ...site, sessionId: "w" }))?.url
+      ).toBe(new URL(named).href);
+      expect(browser.lookBrowserVmSiteDirectly.mock.calls).toEqual([
+        [scope.workspaceId, { site: site.site, words: "пылесос" }],
+        [scope.workspaceId, { url: new URL(named).href, words: "пылесос" }],
+      ]);
+    }
   });
 
   it("gives a site back when its look failed for no fault of its own, and rests the workspace only when the worker cannot look", async () => {
@@ -751,7 +805,7 @@ describe("Bro's own read of a site it has read before", () => {
     };
     const page = "https://www.rabota.ru/vacancy/?query=сварщик";
     model.generateText.mockResolvedValue({
-      output: { query: "сварщик", url: page },
+      output: { query: "сварщик", search: true, url: page },
     });
     // The model failed to name a page: the site is looked at by the next errand.
     model.generateText.mockRejectedValueOnce(new Error("timeout"));
@@ -759,24 +813,24 @@ describe("Bro's own read of a site it has read before", () => {
       await readSiteDirectly(scope, { ...site, sessionId: "t1" })
     ).toBeUndefined();
     expect(browser.lookBrowserVmSiteDirectly).not.toHaveBeenCalled();
-    // The page answered no list of results: not again for a while.
-    browser.lookBrowserVmSiteDirectly.mockResolvedValueOnce({
-      ms: 4000,
-      ok: false,
-      reason: "unanswered",
-    });
+    // Neither the box nor the page named answered with a list of results:
+    // not again for a while.
+    browser.lookBrowserVmSiteDirectly
+      .mockResolvedValueOnce({ ms: 9000, ok: false, reason: "no_box" })
+      .mockResolvedValueOnce({ ms: 4000, ok: false, reason: "unanswered" });
     expect(
       await readSiteDirectly(scope, { ...site, sessionId: "t2" })
     ).toBeUndefined();
-    expect(browser.lookBrowserVmSiteDirectly).toHaveBeenCalledTimes(1);
+    expect(browser.lookBrowserVmSiteDirectly).toHaveBeenCalledTimes(2);
     expect(
       await readSiteDirectly(scope, { ...site, sessionId: "t3" })
     ).toBeUndefined();
-    expect(browser.lookBrowserVmSiteDirectly).toHaveBeenCalledTimes(1);
+    expect(browser.lookBrowserVmSiteDirectly).toHaveBeenCalledTimes(2);
     // A look that ran out of time rests that site, not the others.
     model.generateText.mockResolvedValue({
       output: {
         query: "сварщик",
+        search: true,
         url: "https://zarplata.ru/vacancy?q=сварщик",
       },
     });
@@ -801,7 +855,11 @@ describe("Bro's own read of a site it has read before", () => {
     expect(model.generateText).not.toHaveBeenCalled();
     // No words to check a page against: no look at all.
     model.generateText.mockResolvedValue({
-      output: { query: null, url: "https://www.superjob.ru/vacancy/search/" },
+      output: {
+        query: null,
+        search: true,
+        url: "https://www.superjob.ru/vacancy/search/",
+      },
     });
     expect(
       await readSiteDirectly(scope, {
@@ -810,11 +868,40 @@ describe("Bro's own read of a site it has read before", () => {
         site: "https://www.superjob.ru",
       })
     ).toBeUndefined();
-    expect(browser.lookBrowserVmSiteDirectly).toHaveBeenCalledTimes(2);
+    expect(browser.lookBrowserVmSiteDirectly).toHaveBeenCalledTimes(3);
+    // Nothing of the site's was looked at — no words, then a worker that
+    // cannot search yet and no page named —: the next errand tries again,
+    // and a box that showed nothing holds the site.
+    const superjob = { ...site, site: "https://www.superjob.ru" };
+    model.generateText.mockClear();
+    model.generateText.mockResolvedValue({
+      output: { query: "сварщик", search: true, url: null },
+    });
+    browser.lookBrowserVmSiteDirectly.mockResolvedValueOnce(null);
+    expect(
+      await readSiteDirectly(scope, { ...superjob, sessionId: "t4a" })
+    ).toBeUndefined();
+    browser.lookBrowserVmSiteDirectly.mockResolvedValueOnce({
+      ms: 9000,
+      ok: false,
+      reason: "no_box",
+    });
+    expect(
+      await readSiteDirectly(scope, { ...superjob, sessionId: "t4b" })
+    ).toBeUndefined();
+    expect(
+      await readSiteDirectly(scope, { ...superjob, sessionId: "t4c" })
+    ).toBeUndefined();
+    expect(model.generateText).toHaveBeenCalledTimes(2);
+    expect(browser.lookBrowserVmSiteDirectly).toHaveBeenCalledTimes(5);
     // A worker that has no look rests every site of the workspace: the next
     // errand does not pay for the model or the call again.
     model.generateText.mockResolvedValue({
-      output: { query: "диван", url: "https://www.avito.ru/moskva?q=диван" },
+      output: {
+        query: "диван",
+        search: true,
+        url: "https://www.avito.ru/moskva?q=диван",
+      },
     });
     browser.lookBrowserVmSiteDirectly.mockRejectedValueOnce(
       new BrowserVmWorkerError(404, "/v1/look", "not found")

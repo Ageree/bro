@@ -820,6 +820,8 @@ const siteLookSchema = z.discriminatedUnion("ok", [
     operations: foundSiteOperationsSchema.catch([]),
     /** Where the page landed: the address the cards are from. */
     page: z.string(),
+    /** How the page came: a named address, or the site's own box. */
+    via: z.enum(["page", "box"]).optional(),
   }),
   z.object({
     ms: z.number().nonnegative(),
@@ -829,28 +831,34 @@ const siteLookSchema = z.discriminatedUnion("ok", [
 ]);
 
 /**
- * Look at a site's results page a model named for an errand, no run: its
- * cards, and the operations behind them for the next search there
+ * Look at a site's results page, no run: the one a model named for an
+ * errand (`url`), or the one the site's own box gives the errand's words
+ * (`site`, `site_search_page` in the worker); its cards, and the operations
+ * behind them for the next search there
  * (`agent/lib/browser-vm/site-ops/direct.ts`). In a tab of its own, beside
  * whatever errand holds the browser.
  */
 export async function lookBrowserVmSite(
   vm: BrowserVmTarget,
-  input: { readonly url: string; readonly words: string | null }
+  input:
+    | { readonly url: string; readonly words: string | null }
+    | { readonly site: string; readonly words: string }
 ) {
   return siteLookSchema.parse(
     await request(vm, "POST", "/v1/look", {
       body: input,
-      timeoutMs: siteLookTimeoutMs,
+      timeoutMs: "site" in input ? siteSearchTimeoutMs : siteLookTimeoutMs,
     })
   );
 }
 
 /**
  * The worker answers a look within 34 s at the very worst (`SITE_LOOK_S` and
- * its slot and tab close); the rest is the call's way there and back.
+ * its slot and tab close), a search through the site's box within 40 s
+ * (`SITE_SEARCH_S`); the rest is the call's way there and back.
  */
 const siteLookTimeoutMs = 38_000;
+const siteSearchTimeoutMs = 44_000;
 
 /**
  * One result's own page read (`site_item` in browser-vm/worker/worker.py):
