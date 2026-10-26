@@ -2425,6 +2425,12 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   `/vakansii/%id%` (superjob) модель заполнения верно не берёт: похож на страницу одной вакансии. Почему поиск ушёл
   в браузер — строка `[site-api] left to the browser` (`reason`, `offered`, `chose`); операции воркспейса и их
   здоровье — `host.py ops NAME site-operations.sh WORKSPACE_ID`.
+- Модель заполнения (`fillInstructions` в `site-ops/direct.ts`) уходила в `null` на поиске, к которому Бро дописал
+  свои условия (рейтинг, «исключи комплекты», скриншот, «если нет — попробуй WB»): Ozon владельца 26.10 ушёл в браузер
+  (69 с вместо 23). Теперь такие условия прямо названы не поводом для `null`: на 41 поручении замера, по 4 прогона на
+  RunInfra, выбор поиска 87% → 99%, бронь, покупка, вход и страница одного товара — `null` по-прежнему. Пробу модели
+  делайте с той же сборкой RunInfra (`RUNINFRA_DEEPSEEK_FLASH_MODEL`) и `reasoning_effort: "none"`, как `runinfra.ts`:
+  поле `reasoning` OpenRouter RunInfra не берёт, и при малом `max_tokens` `content` приходит пустым.
 - Самолечение операций (`site-ops/health.ts`; `failures`, `failed_at`, `last_failure`, `served` в
   `browser_site_operations`, миграция 0092): лишь `no_data` по точному шаблону (страница ответила с того же адреса, а
   данных там нет) — +1 сбой, два подряд — операцию 6 ч не дают ни быстрому пути, ни op(). `moved` и `unanswered`
