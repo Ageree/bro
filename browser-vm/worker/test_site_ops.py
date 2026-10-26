@@ -1709,6 +1709,7 @@ class SearchChromeTest(unittest.IsolatedAsyncioTestCase):
         self.browser = await self.playwright.chromium.launch(executable_path=chrome, args=["--no-sandbox"])
         self.context = await self.browser.new_context()
         self.logins, self.typed, self.sent = [], [], []
+        self.delays = {}
 
         async def serve(route):
             parts = urllib.parse.urlsplit(route.request.url)
@@ -1725,6 +1726,8 @@ class SearchChromeTest(unittest.IsolatedAsyncioTestCase):
                 body = {"shop.example": self.HOME, "hidden.example": self.HIDDEN, "flats.example": self.FORM,
                         "route.example": self.ROUTE, "aspx.example": self.PAGE_FORM,
                         }.get(parts.hostname, "<html><main>404</main></html>")
+            if parts.path == "/" and parts.hostname in self.delays:
+                await asyncio.sleep(self.delays[parts.hostname])
             await route.fulfill(status=200, content_type="text/html; charset=utf-8", body=body)
 
         await self.context.route("**/*", serve)
@@ -1767,6 +1770,22 @@ class SearchChromeTest(unittest.IsolatedAsyncioTestCase):
                 await self.search("route.example", "сапсан")
         self.assertEqual(raised.exception.reason, "no_box")
         self.assertEqual(self.sent, [])
+
+    async def test_a_home_page_slow_over_a_slow_exit_still_gives_results(self):
+        # hoff.ru, pleer.ru, 366.ru on the prod exit (26.10): a home that took longer than the old nine seconds cut
+        # the whole search at 19 s. The home's wait is a deadline of the phase now, and the rest follows.
+        self.delays["shop.example"] = 11
+        cards, holder = await self.search("shop.example", "чайник")
+        self.assertTrue(worker.site_look_answers("чайник", cards))
+        self.assertGreaterEqual(holder["ms"]["home"], 10000)
+
+    async def test_a_search_cut_at_its_deadline_names_the_phase_it_was_in(self):
+        self.delays["shop.example"] = 30
+        holder = {}
+        with self.assertRaises(asyncio.TimeoutError):
+            await asyncio.wait_for(
+                worker.site_search_on(self.page, "https://shop.example/", "чайник", holder, time.monotonic() + 60), 3)
+        self.assertEqual(holder["phase"], "home")
 
     async def test_a_whole_pages_form_gets_no_click_but_a_search_button(self):
         cards, holder = await self.search("aspx.example", "чайник")
