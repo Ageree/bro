@@ -2684,6 +2684,22 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(model.requests[1][-1], {"role": "user", "content": worker.CODE_LAST_CALL})
         self.assertEqual(model.choices, ["required", {"type": "function", "function": {"name": "done"}}])
 
+    async def test_a_code_run_waits_out_a_model_host_that_answers_with_no_choices(self):
+        outage = types.SimpleNamespace(usage=None, choices=None)
+        self.enterContext(mock.patch.object(worker, "CODE_LLM_EMPTY_PAUSES_S", (0, 0)))
+        self.code_engine([outage, FakeAnswer([("done", {"result": "Нашёл.\nRESULT: готово\nNEEDS: none"})])])
+        await self.worker.start_run({"id": "r1", "sessionId": "s1", "llm": LLM, "task": "Find a kettle.",
+                                     "engine": "code"})
+        run = await self.settled("r1")
+        self.assertEqual(run.status, "completed")
+        # An outage that outlasts the pauses fails the run with what happened, not a TypeError.
+        self.code_engine([outage, outage, outage])
+        await self.worker.start_run({"id": "r2", "sessionId": "s1", "llm": LLM, "task": "Find a kettle.",
+                                     "engine": "code"})
+        run = await self.settled("r2")
+        self.assertEqual(run.status, "failed")
+        self.assertIn("did not answer", run.error)
+
     def test_the_code_engine_needs_playwright_with_ai_snapshots(self):
         found = types.SimpleNamespace()
         with mock.patch.object(worker.importlib.util, "find_spec", lambda name: found):

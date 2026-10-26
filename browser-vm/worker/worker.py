@@ -93,7 +93,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-10-26.3"
+VERSION = "2026-10-26.4"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -2214,6 +2214,9 @@ class SiteTraffic:
                 # the errand's value: no operation.
                 if errand_named(errand_words(entry["page"]), operation_words(operation)):
                     continue
+                learned = site_learned_inputs(operation, value, entry["page"])
+                if learned is not None:
+                    operation["inputs"] = learned
                 key = operation["name"]
                 if key not in found or (matched, len(fields)) > (found[key]["seen"]["matched"], len(found[key]["fields"])):
                     found[key] = operation
@@ -2437,6 +2440,125 @@ def site_cards(operation, data, page_url):
     return cards
 
 
+# What an operation learns of the site's own sort from a run (`site_learned_inputs`): the keys a site sorts by (not
+# `s`, a search's words on many sites), a key or value as the site writes it (agent/lib/browser-vm/site-ops/
+# operation.ts takes no other), and how many priced cards in how much order tell a sort from chance.
+SITE_LEARN_SORT_KEYS = (SITE_SORT_KEYS - {"s"}) | {"order_by"}
+SITE_INPUT_TOKEN = re.compile(r"[A-Za-z0-9_.-]{1,24}")
+SITE_LEARN_PRICES = 6
+SITE_SORT_DIRECTIONS = {"dir", "direction", "way", "order_dir", "orderdir", "sort_dir", "sortdir", "asc", "desc"}
+SITE_LEARN_ORDER = 0.9
+# A query key of the price's bounds (`site_learned_price`): one named for a price, and which end it holds.
+SITE_LEARN_PRICE_KEY = re.compile(r"price|cost", re.I)
+SITE_PRICE_ENDS = (("min", ("min", "from", "gte", "low")), ("max", ("max", "to", "lte", "high")))
+SITE_PRICE_RANGE = re.compile(r"(\d{1,9})(?:\.(\d{1,3}))?;(\d{1,9})(?:\.(\d{1,3}))?")
+
+
+def site_card_amount(card):
+    """A card's price as an amount: a number, or a price as the site writes it («1 490 ₽», «от 2 500 ₽»)."""
+    price = card.get("price")
+    amount = site_amount(price)
+    if amount is None and isinstance(price, str) and SITE_PRICE_TEXT.fullmatch(price.strip()):
+        amount = min(site_numbers(price), default=None)
+    return amount
+
+
+def site_learned_inputs(operation, data, page_url):
+    """What the site itself applies to its results, learned from the run's results page (Pomerado's typed inputs,
+    as its own controls set them), so that an errand has the site sort or bound its whole search rather than the
+    first page's cards being sorted or filtered here: its sort by price (`site_learned_sort`) and its price bounds
+    (`site_learned_price`). None when the page teaches neither."""
+    try:
+        query = [(key, value) for key, value in
+                 urllib.parse.parse_qsl(urllib.parse.urlsplit(page_url or "").query, keep_blank_values=True)
+                 if SITE_INPUT_TOKEN.fullmatch(key)]
+    except ValueError:
+        return None
+    if not any(key.lower() in SITE_LEARN_SORT_KEYS or SITE_LEARN_PRICE_KEY.search(key) for key, _ in query):
+        return None
+    try:
+        cards = site_cards(operation, data, page_url)
+    except Exception:
+        return None
+    prices = [amount for amount in map(site_card_amount, cards) if amount is not None and amount > 0]
+    if len(prices) < SITE_LEARN_PRICES or max(prices) == min(prices):
+        return None
+    learned = {}
+    sort = site_learned_sort(query, prices)
+    if sort is not None:
+        learned["sort"] = sort
+    price = site_learned_price(query, prices)
+    if price is not None:
+        learned["price"] = price
+    return learned or None
+
+
+def site_learned_sort(query, prices):
+    """The site's one sort key and value, when the cards come in order of price: nine pairs in ten of neighbouring
+    prices in order (ozon.ru's `sorting=price`, wildberries.ru's `sort=priceup`). Bro reads the order back on every
+    read (`inSiteOrder`). None otherwise: the order of a page that was not sorted by price says nothing of its key."""
+    pairs = [(key, value) for key, value in query
+             if key.lower() in SITE_LEARN_SORT_KEYS and SITE_INPUT_TOKEN.fullmatch(value)]
+    if len(pairs) != 1:
+        return None
+    # A sort the site splits into a key and a direction (`sort=price&direction=asc`, labirint.ru's `way`) is not one
+    # pair: learned without its direction, it would sort the other way.
+    if any(key != pairs[0][0] and (key.lower() in SITE_SORT_DIRECTIONS or value.lower() in ("asc", "desc"))
+           for key, value in query):
+        return None
+    steps = list(zip(prices, prices[1:]))
+    key, value = pairs[0]
+    if sum(after >= before for before, after in steps) >= SITE_LEARN_ORDER * len(steps):
+        return {"asc": f"{key}={value}"}
+    if sum(after <= before for before, after in steps) >= SITE_LEARN_ORDER * len(steps):
+        return {"desc": f"{key}={value}"}
+    return None
+
+
+def site_price_end(key):
+    """Which end of a price a query key holds, by its words (`price_min`, `priceFrom`, `maxPrice`, `lowprice`):
+    "min", "max" or None. `to` counts only as a word of its own (not `price_total`'s)."""
+    words = [word.lower() for word in re.findall(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|\d+", key)]
+    ends = {end for word in words for end, names in SITE_PRICE_ENDS
+            if word in names or any(len(name) >= 3 and (word.startswith(name) or word.endswith(name))
+                                    for name in names)}
+    return ends.pop() if len(ends) == 1 else None
+
+
+def site_learned_price(query, prices):
+    """The site's keys for the price bounds, when every card of the page is within the bound the page was asked
+    with: a key named for a price's lower or upper end (`price_min`, `priceFrom`, `max_price`) holding a number, in
+    roubles; or one key of a price holding both ends as `<min>;<max>` (ozon.ru's `currency_price=1500.000;3000.000`
+    in roubles, wildberries.ru's `priceU=100000;300000` in kopecks: the cards tell which, and neither when both
+    could be). The worker keeps only the cards within the bounds an errand names whatever the site gives back, so a
+    wrong key costs a read, never a wrong answer."""
+    for key, value in query:
+        ends = SITE_PRICE_RANGE.fullmatch(value)
+        if not (ends and SITE_LEARN_PRICE_KEY.search(key)):
+            continue
+        low, high = float(ends.group(1)), float(ends.group(3))
+        decimals = len(ends.group(2) or "")
+        if decimals not in (0, 3) or decimals != len(ends.group(4) or "") or low >= high:
+            return None
+        rub = all(low <= price <= high for price in prices)
+        kop = all(low / 100 <= price <= high / 100 for price in prices)
+        if rub == kop:
+            return None
+        return {"decimals": decimals, "range": key, "unit": "rub" if rub else "kop"}
+    bounds = {}
+    for key, value in query:
+        side = site_price_end(key)
+        if not (side and SITE_LEARN_PRICE_KEY.search(key) and re.fullmatch(r"\d{1,9}", value)):
+            continue
+        amount = float(value)
+        if side in bounds or amount <= 0:
+            return None
+        if not all(price >= amount if side == "min" else price <= amount for price in prices):
+            return None
+        bounds[side] = key
+    return bounds or None
+
+
 def site_operations(options):
     """`siteOps` of a run's input as the worker uses them: by name, the malformed ones left out."""
     known = {}
@@ -2455,12 +2577,14 @@ def site_operations(options):
 
 
 class SiteOpFailure(ValueError):
-    """A read of the site that did not give its results, with why (SITE_BLOCKED and the reasons beside it). A
+    """A read of the site that did not give its results, with why (SITE_BLOCKED and the reasons beside it), and for
+    `moved` where the page went (written into the worker's log as a template, never with its values). A
     ValueError, so the code engine's model reads it as any refusal of op()."""
 
-    def __init__(self, reason, detail):
+    def __init__(self, reason, detail, landed=None):
         super().__init__(detail)
         self.reason = reason
+        self.landed = landed
 
 
 def site_status_failure(status, what):
@@ -2511,6 +2635,7 @@ async def site_goto(page, url, seconds):
     reload by itself (a captcha, or one that sends the page to another host) leaves the first answer, its status
     telling why."""
     passed = asyncio.get_running_loop().create_future()
+    commits = [0]
 
     def answered(response):
         with contextlib.suppress(Exception):
@@ -2519,17 +2644,31 @@ async def site_goto(page, url, seconds):
                     and site_same_place(url, response.url)):
                 passed.set_result(response)
 
+    def committed(frame):
+        if frame == page.main_frame:
+            commits[0] += 1
+
     page.on("response", answered)
+    page.on("framenavigated", committed)
     try:
         response = await page.goto(url, wait_until="commit", timeout=seconds * 1000)
         if response is None or response.status not in SITE_BLOCKED:
             return response
         try:
-            return await asyncio.wait_for(asyncio.shield(passed), SITE_CHECK_S)
+            reloaded = await asyncio.wait_for(asyncio.shield(passed), SITE_CHECK_S)
         except asyncio.TimeoutError:
             return response
+        # The reload's answer comes before its document is the page's (the same address as the check's): a script
+        # run on the page now would run in the check's, as it goes. The reload is the main frame's second commit.
+        until = time.monotonic() + SITE_CHECK_S
+        while commits[0] < 2 and time.monotonic() < until:
+            await asyncio.sleep(0.05)
+        with contextlib.suppress(Exception):
+            await page.wait_for_load_state("domcontentloaded", timeout=SITE_CHECK_S * 1000)
+        return reloaded
     finally:
         page.remove_listener("response", answered)
+        page.remove_listener("framenavigated", committed)
 
 
 async def site_op_document(page, operation, url, seconds=None):
@@ -2548,7 +2687,7 @@ def site_document_state(operation, url, status, landed, text):
     if status in SITE_GONE:
         raise site_status_failure(status, "the page")
     if not site_same_path(url, landed):
-        raise SiteOpFailure("moved", "the page answered from another address: open it instead")
+        raise SiteOpFailure("moved", "the page answered from another address: open it instead", landed)
     try:
         return site_state(operation, text)
     except SiteOpFailure:
@@ -2619,7 +2758,7 @@ async def site_op_xhr(page, operation, url, seconds=SITE_OP_S, load_seconds=None
         if response is not None and response.status in SITE_GONE:
             raise site_status_failure(response.status, "the page")
         if response is not None and not site_same_path(url, response.url):
-            raise SiteOpFailure("moved", "the page answered from another address: open it instead")
+            raise SiteOpFailure("moved", "the page answered from another address: open it instead", response.url)
         try:
             return await asyncio.wait_for(asyncio.shield(found), seconds)
         except asyncio.TimeoutError:
@@ -2948,13 +3087,39 @@ async def site_op_rows_fetched(page, operation, url):
         "twins": bool(source.get("twins")), "least": 1}), SITE_OP_FETCH_S)
     if answer["status"] in SITE_GONE:
         raise site_status_failure(answer["status"], "the page")
-    if not site_same_path(url, answer["landed"]):
-        raise SiteOpFailure("moved", "the page answered from another address: open it instead")
+    if not site_rows_landed(url, answer["landed"], answer["rows"] is not None):
+        raise SiteOpFailure("moved", "the page answered from another address: open it instead", answer["landed"])
     if answer["rows"] is None:
         if answer["status"] != 200:
             raise site_status_failure(answer["status"], "the page")
         raise SiteOpFailure("no_data", "the page no longer has its rows where the operation reads them")
-    return site_rows_data(answer)
+    rows = site_rows_data(answer)
+    if not site_same_path(url, answer["landed"]) and not site_rows_name_search(operation, url, rows):
+        raise SiteOpFailure("moved", "the page answered from another address: open it instead", answer["landed"])
+    return rows
+
+
+def site_rows_landed(url, landed, rows):
+    """Whether an html operation reads the page it landed on: its own address, or another of the site's below its
+    front page that shows the operation's rows — a search for a category's own word sent to the category
+    (petrovich.ru's «дрель» on the owner's browser, 26.10), whose cards are the same rows. A front page shows rows of
+    its own picks and is never the search's. Whether they answer the words is `site_op_answers`'s."""
+    if site_same_path(url, landed):
+        return True
+    deeper = urllib.parse.urlsplit(landed or "").path.strip("/") != ""
+    return bool(rows) and deeper and site_same_place(url, landed)
+
+
+def site_rows_name_search(operation, url, rows):
+    """Whether rows read where the site sent a search name what was searched, half of the first ten — stricter than
+    `site_op_answers`: a search the site sends to one item's own page (an exact title or code) shows rows of
+    «similar items» there, a match or two by chance, and is not the search's list."""
+    words = site_query_words(operation, url)
+    first = rows[:10]
+    if not words or not first:
+        return False
+    naming = sum(1 for row in first if any(stem in site_words(str(row.get("name") or "")) for stem in words))
+    return naming * 2 >= len(first)
 
 
 async def site_op_rows_drawn(page, operation, url, seconds=SITE_ROWS_DRAWN_S, load_seconds=None, goto=True):
@@ -2966,8 +3131,8 @@ async def site_op_rows_drawn(page, operation, url, seconds=SITE_ROWS_DRAWN_S, lo
         response = await site_goto(page, url, load_seconds or CODE_CALL_S)
         if response is not None and response.status in SITE_GONE:
             raise site_status_failure(response.status, "the page")
-        if response is not None and not site_same_path(url, response.url):
-            raise SiteOpFailure("moved", "the page answered from another address: open it instead")
+        if response is not None and not site_same_place(url, response.url):
+            raise SiteOpFailure("moved", "the page answered from another site: open it instead", response.url)
     began = time.monotonic()
     deadline, last, answer, steady = began + seconds, None, None, 0
     while time.monotonic() < deadline:
@@ -2999,9 +3164,12 @@ async def site_op_rows_drawn(page, operation, url, seconds=SITE_ROWS_DRAWN_S, lo
         if len(cards) < 3:
             raise SiteOpFailure("empty", "the page shows no results")
         raise SiteOpFailure("no_data", "the page drew no rows where the operation reads them")
-    if not site_same_path(url, page.url):
-        raise SiteOpFailure("moved", "the page went to another address: open it instead")
-    return site_rows_data(answer)
+    if not site_rows_landed(url, page.url, True):
+        raise SiteOpFailure("moved", "the page went to another address: open it instead", page.url)
+    rows = site_rows_data(answer)
+    if not site_same_path(url, page.url) and not site_rows_name_search(operation, url, rows):
+        raise SiteOpFailure("moved", "the page went to another address: open it instead", page.url)
+    return rows
 
 
 async def site_op_rows(page, operation, url, holder=None, load_seconds=None, block=None):
@@ -3036,7 +3204,7 @@ async def site_op_rows_document(page, operation, url, seconds=None):
         if response.status in SITE_GONE:
             raise site_status_failure(response.status, "the page")
         if not site_same_path(url, response.url):
-            raise SiteOpFailure("moved", "the page answered from another address: open it instead")
+            raise SiteOpFailure("moved", "the page answered from another address: open it instead", response.url)
         answer = await site_rows_read(page_evaluator(page), source["rows"], source["cells"], await response.text(),
                                       url, twins=bool(source.get("twins")), least=1)
         if answer["rows"] is not None:
@@ -4152,6 +4320,7 @@ CODE_LAST_CALL = ("This is your last call: call `done` now with your report of w
 CODE_WALL_SIGNS = ("проверяем браузер", "почти готово", "подтвердите, что вы не робот", "вы не робот",
                    "checking your browser", "just a moment", "verify you are human", "ddos-guard",
                    "доступ ограничен", "access denied")
+CODE_LLM_EMPTY_PAUSES_S = (2, 4, 8, 16)  # a reply with no choices (the model's host down) is asked again after these
 CODE_WALL_TEXT = 1_500  # past this much text the page is the site, whatever it also says
 CODE_WALL_READ_S = 2  # one look at the page for the check; a page that does not answer in it is not judged
 CODE_WALL_CALLS = 2  # calls in a row that ended on the check before the next one must be the report
@@ -6229,10 +6398,20 @@ class Worker:
                 if last:
                     messages.append({"role": "user", "content": CODE_WALL if walled >= CODE_WALL_CALLS else CODE_LAST_CALL})
                 asked = time.monotonic()
-                answer = await client.chat.completions.create(
-                    model=llm["model"], messages=messages, tools=CODE_TOOLS,
-                    tool_choice={"type": "function", "function": {"name": "done"}} if last else "required",
-                    extra_body=code_llm_body(tuning), timeout=CODE_LLM_S)
+                # The model's host answers an outage as a reply with no choices (RouterAI's «User not found» 503
+                # for eight minutes on 26.10: every run of a test account failed before its first call, both
+                # engines): waited out a little, as Bro's own steps are, rather than failing the errand at once.
+                for pause in (*CODE_LLM_EMPTY_PAUSES_S, None):
+                    answer = await client.chat.completions.create(
+                        model=llm["model"], messages=messages, tools=CODE_TOOLS,
+                        tool_choice={"type": "function", "function": {"name": "done"}} if last else "required",
+                        extra_body=code_llm_body(tuning), timeout=CODE_LLM_S)
+                    if answer.choices or pause is None or run.cancel_requested:
+                        break
+                    log.warning("code run %s: the model answered with no choices; again in %ss", run.id, pause)
+                    await asyncio.sleep(pause)
+                if not answer.choices:
+                    raise RuntimeError("The model's provider did not answer (no choices); try again shortly.")
                 timing = {"modelMs": round((time.monotonic() - asked) * 1000), "codeMs": 0}
                 tokens = {"in": 0, "cached": 0, "out": 0, "calls": 1}
                 if answer.usage:
@@ -8616,22 +8795,44 @@ async def site_op(request):
             if not site_op_answers(operation, url, cards):
                 raise SiteOpFailure("unanswered", "the site's results do not answer the words they were asked for")
         except SiteOpFailure as failure:
-            cards, reason, detail = None, failure.reason, str(failure)
+            cards, reason, detail, landed = None, failure.reason, str(failure), failure.landed
             if reason not in ("blocked",) and holder["page"] is not None and await code_wall(holder["page"]):
                 reason = "blocked"
         except Exception as error:
-            cards, reason, detail = None, "failed", f"{type(error).__name__}: {str(error)[:200]}"
+            cards, reason, detail, landed = None, "failed", f"{type(error).__name__}: {str(error)[:200]}", None
         finally:
             await site_op_close(holder)
     ms = round((time.monotonic() - began) * 1000)
     via = holder["via"]
     if cards is None:
-        log.info("site op %s: %s via %s, %s, %d ms", operation["name"], reason, via, fit, ms)
+        # Where a moved page went, as a template: the shape of the address (a category's page, a city's host), not
+        # its words.
+        # Where it went, as its host and depth only: a part of its path may be the errand's word (/brand/makita/).
+        went = ""
+        if reason == "moved" and isinstance(landed, str):
+            there = urllib.parse.urlsplit(landed)
+            went = f", went to {there.hostname} {len([p for p in there.path.split('/') if p])} parts deep"
+        log.info("site op %s: %s via %s, %s, %d ms%s", operation["name"], reason, via, fit, ms, went)
         return web.json_response({"ok": False, "reason": reason, "detail": detail[:300], "fit": fit, "ms": ms})
     picked = site_op_pick(cards, sort, bounds[0], bounds[1], limit)
     log.info("site op %s: %d cards (%d picked) via %s, %s, %d ms", operation["name"], len(cards), len(picked), via,
              fit, ms)
     return web.json_response({"ok": True, "count": len(cards), "cards": picked, "fit": fit, "via": via, "ms": ms})
+
+
+async def site_keep_run_downloads(browser):
+    """Playwright points the browser's downloads at a folder of its own when it connects, and drops it when it stops:
+    a direct read, a look or an item's read puts them back to the folder of the run that may be downloading
+    meanwhile, as the code engine does (`run_code`)."""
+    live = worker.current if worker.current is not None and worker.current.status not in TERMINAL else None
+    session = worker.sessions.get(live.session_id) if live is not None else None
+    if session is None:
+        return
+    with contextlib.suppress(Exception):
+        cdp = await browser.new_browser_cdp_session()
+        await cdp.send("Browser.setDownloadBehavior", {"behavior": "allow", "eventsEnabled": True,
+                                                       "downloadPath": str(session.workspace / DOWNLOADS)})
+        await cdp.detach()
 
 
 async def site_op_direct(operation, url, holder):
@@ -8640,16 +8841,7 @@ async def site_op_direct(operation, url, holder):
 
     holder["pw"] = await async_playwright().start()
     browser = await holder["pw"].chromium.connect_over_cdp(CDP_HTTP)
-    live = worker.current if worker.current is not None and worker.current.status not in TERMINAL else None
-    session = worker.sessions.get(live.session_id) if live is not None else None
-    if session is not None:
-        # Playwright points the browser's downloads at a folder of its own when it connects: back to the folder of
-        # the run that may be downloading meanwhile, as the code engine does (`run_code`).
-        with contextlib.suppress(Exception):
-            cdp = await browser.new_browser_cdp_session()
-            await cdp.send("Browser.setDownloadBehavior", {"behavior": "allow", "eventsEnabled": True,
-                                                           "downloadPath": str(session.workspace / DOWNLOADS)})
-            await cdp.detach()
+    await site_keep_run_downloads(browser)
     page = holder["page"] = await browser.contexts[0].new_page()
     cdp = await page.context.new_cdp_session(page)
     with contextlib.suppress(Exception):
@@ -8834,14 +9026,7 @@ async def site_look_page(url, holder, recorder, until):
 
     holder["pw"] = await async_playwright().start()
     browser = await holder["pw"].chromium.connect_over_cdp(CDP_HTTP)
-    live = worker.current if worker.current is not None and worker.current.status not in TERMINAL else None
-    session = worker.sessions.get(live.session_id) if live is not None else None
-    if session is not None:
-        with contextlib.suppress(Exception):
-            cdp = await browser.new_browser_cdp_session()
-            await cdp.send("Browser.setDownloadBehavior", {"behavior": "allow", "eventsEnabled": True,
-                                                           "downloadPath": str(session.workspace / DOWNLOADS)})
-            await cdp.detach()
+    await site_keep_run_downloads(browser)
     page = holder["page"] = await browser.contexts[0].new_page()
     with contextlib.suppress(Exception):
         cdp = await page.context.new_cdp_session(page)
@@ -8878,6 +9063,245 @@ async def site_look_page(url, holder, recorder, until):
     if not best and status in SITE_BLOCKED:
         raise site_status_failure(status, "the page")
     return best
+
+
+# One result's own page read for Bro (`/v1/item`): a vacancy's salary, a product's specs, a book's annotation, with no
+# model and no run. What goes back, cut short: the page's own structured data (schema.org JSON-LD objects, flattened
+# to `key.path: value`), its og/product meta, and its main text. The document is fetched and read undrawn first; a
+# document with less text than SITE_ITEM_MIN_TEXT and no data is an app's shell (wildberries.ru's product page, 26.10)
+# and the page is drawn instead, read once its text stops growing or at SITE_ITEM_DRAWN_S. Bro waits 38 s
+# (`itemReadTimeoutMs`); with its slot, close and load a read ends within 34.
+SITE_ITEM_S = 18  # Bro waits 38 s: the slot (4), this, the wall's look (2) and the tab's close (5 + 5) fit in it
+SITE_ITEM_DRAWN_S = 9
+SITE_ITEM_MIN_TEXT = 200
+SITE_ITEM_TEXT = 4000
+SITE_ITEM_LD = 4
+SITE_ITEM_FIELDS = 40
+SITE_ITEM_VALUE = 400
+
+SITE_ITEM_LIB = r"""const clean = (s) => String(s == null ? '' : s).replace(/[\s  ​ ⁠]+/g, ' ').trim();
+// The site's own furniture, not the item: its name, its search box, its crumbs, its logo.
+const furniture = /^(WebSite|WebPage|BreadcrumbList|SiteNavigationElement|SearchAction|ImageObject|Organization|ItemList|CollectionPage|SearchResultsPage)$/i;
+const flat = (value, prefix, out, depth) => {
+  if (value == null || Object.keys(out).length >= arg.fields) return;
+  if (Array.isArray(value)) { value.slice(0, 5).forEach((v, i) => flat(v, `${prefix}[${i}]`, out, depth)); return; }
+  if (typeof value === 'object') {
+    if (depth >= 3) return;
+    for (const [k, v] of Object.entries(value)) {
+      if (k === '@context' || /^(image|logo|thumbnailUrl|potentialAction|sameAs)$/.test(k)) continue;
+      flat(v, prefix ? `${prefix}.${k}` : k, out, depth + 1);
+    }
+    return;
+  }
+  const text = clean(value);
+  if (text) out[prefix] = text.slice(0, arg.value);
+};
+const lister = /^(ItemList|CollectionPage|SearchResultsPage|OfferCatalog)$/i;
+const readItem = (d) => {
+  const ld = [];
+  let lists = 0;
+  for (const script of d.querySelectorAll('script[type="application/ld+json"]')) {
+    let value;
+    try { value = JSON.parse(script.textContent); } catch (e) { continue; }
+    for (const one of (Array.isArray(value) ? value : (value && value['@graph']) || [value])) {
+      if (!one || typeof one !== 'object' || ld.length >= arg.ld) continue;
+      const type = [].concat(one['@type'] || []).join(',');
+      if (lister.test(type)) lists += 1;
+      if (!type || furniture.test(type)) continue;
+      const out = {};
+      flat(one, '', out, 0);
+      ld.push(out);
+    }
+  }
+  const meta = {};
+  for (const m of d.querySelectorAll('meta[property^="og:"], meta[property^="product:"], meta[name="description"], meta[itemprop]')) {
+    const key = m.getAttribute('property') || m.getAttribute('name') || m.getAttribute('itemprop');
+    if (!key || /image|url|site_name|locale|type$/i.test(key) || Object.keys(meta).length >= arg.fields) continue;
+    const content = clean(m.getAttribute('content'));
+    if (content) meta[key] = content.slice(0, arg.value);
+  }
+  const root = d.querySelector('main, [role="main"], article, [itemtype*="Product"], [itemtype*="JobPosting"]') || d.body;
+  const parts = [];
+  if (root) {
+    const copy = root.cloneNode(true);
+    for (const el of copy.querySelectorAll('script, style, noscript, svg, nav, header, footer, aside, template, iframe, form, button, dialog')) el.remove();
+    let size = 0;
+    const walk = (node) => {
+      for (const child of node.childNodes) {
+        if (size > arg.text) return;
+        if (child.nodeType === 3) { const t = clean(child.textContent); if (t) { parts.push(t); size += t.length + 3; } }
+        else if (child.nodeType === 1) walk(child);
+      }
+    };
+    walk(copy);
+  }
+  const h1 = d.querySelector('h1');
+  return {title: clean((h1 && h1.textContent) || d.title).slice(0, 300), ld, lists, meta,
+          text: parts.join(' | ').slice(0, arg.text)};
+};"""
+
+SITE_ITEM_FETCH_JS = r"""async (arg) => {
+  /*LIB*/
+  const r = await fetch(arg.url, {credentials: 'include'});
+  const html = await r.text();
+  return {status: r.status, landed: r.url, ...readItem(new DOMParser().parseFromString(html, 'text/html'))};
+}""".replace("/*LIB*/", SITE_ITEM_LIB)
+
+SITE_ITEM_PAGE_JS = r"""(arg) => {
+  /*LIB*/
+  return {landed: location.href, ...readItem(document)};
+}""".replace("/*LIB*/", SITE_ITEM_LIB)
+
+SITE_ITEM_LIMITS = {"fields": SITE_ITEM_FIELDS, "ld": SITE_ITEM_LD, "text": SITE_ITEM_TEXT, "value": SITE_ITEM_VALUE}
+
+
+def site_item_walled(item, status):
+    """Whether an item's read is the site's anti-bot check rather than its page: a status the site turns browsers
+    away with, or a short text with a check's words (CODE_WALL_SIGNS, as the code engine's `code_wall`)."""
+    text = (item.get("text") or "").lower()
+    return status in SITE_BLOCKED or (len(text) < CODE_WALL_TEXT and any(sign in text for sign in CODE_WALL_SIGNS))
+
+
+def site_item_one(item):
+    """An item's read, unless the page's own data says it is a list of results (an ItemList, a collection or a
+    search, SITE_ITEM_LIB's `lists`) and names no one item: its text would be the first of many, and a question
+    about the cheapest or the best answered from them alone. A product page's list of similar ones has the
+    product's own data beside it."""
+    if item.get("lists") and not item.get("ld"):
+        raise SiteOpFailure("unanswered", "the page is a list of results, not one of them")
+    return item
+
+
+def site_item_says(item):
+    """Whether a read of an item's page holds the item: its own data, or text enough to be more than a shell."""
+    return bool(item.get("ld")) or len(item.get("text") or "") >= SITE_ITEM_MIN_TEXT
+
+
+async def site_item_read(url, holder):
+    """An item's page read in a visit's tab (`site_look_page`'s), kept in `holder` for the caller to close: its
+    document fetched from the site's robots.txt (past the site's own check, `site_goto`), or the page drawn."""
+    from playwright.async_api import async_playwright
+
+    holder["pw"] = await async_playwright().start()
+    browser = await holder["pw"].chromium.connect_over_cdp(CDP_HTTP)
+    await site_keep_run_downloads(browser)
+    page = holder["page"] = await browser.contexts[0].new_page()
+    with contextlib.suppress(Exception):
+        cdp = await page.context.new_cdp_session(page)
+        holder["target"] = (await cdp.send("Target.getTargetInfo"))["targetInfo"]["targetId"]
+        worker.visit_tabs.add(holder["target"])
+        # A drawn item's pictures and fonts are no part of what is read: left out, as a direct read's (SITE_HEAVY).
+        await cdp.send("Network.enable")
+        await cdp.send("Network.setBlockedURLs", {"urls": SITE_HEAVY})
+    return await site_item_on(page, url, holder)
+
+
+async def site_item_on(page, url, holder):
+    """`site_item_read` in a tab it was given: `holder["via"]` says how the page was read."""
+    parts = urllib.parse.urlsplit(url)
+    holder["via"] = "fetch"
+    answer = None
+    with contextlib.suppress(Exception):
+        await site_goto(page, f"https://{parts.hostname}/robots.txt", SITE_OP_LOAD_S)
+        # A site that sent the tab to its city's own host is asked there (`site_op_fetched`): a fetch across hosts
+        # is refused by the browser, and the page would have to be drawn.
+        asked = url
+        here = urllib.parse.urlsplit(page.url or "")
+        if here.hostname and here.hostname != parts.hostname and site_same_place(url, page.url):
+            asked = urllib.parse.urlunsplit(("https", here.hostname, parts.path, parts.query, ""))
+        answer = await asyncio.wait_for(page.evaluate(SITE_ITEM_FETCH_JS, {**SITE_ITEM_LIMITS, "url": asked}),
+                                        SITE_OP_FETCH_S)
+    if answer is not None:
+        if answer["status"] in SITE_GONE:
+            raise site_status_failure(answer["status"], "the page")
+        if not site_same_place(url, answer["landed"]):
+            raise SiteOpFailure("moved", "the page answered from another site", answer["landed"])
+        if answer["status"] == 200 and site_item_says(answer) and not site_item_walled(answer, 200):
+            return site_item_one(answer)
+    holder["via"] = "page"
+    response = await site_goto(page, url, SITE_OP_LOAD_S)
+    status = response.status if response is not None else None
+    if status in SITE_GONE:
+        raise site_status_failure(status, "the page")
+    if not site_same_place(url, page.url):
+        raise SiteOpFailure("moved", "the page went to another site", page.url)
+    began, best, last = time.monotonic(), None, -1
+    while True:
+        now = None
+        with contextlib.suppress(Exception):
+            now = await page.evaluate(SITE_ITEM_PAGE_JS, SITE_ITEM_LIMITS)
+        size = len(now["text"]) if now is not None else -1
+        if now is not None and (best is None or size >= len(best["text"])):
+            best = now
+        if (size == last and best is not None and site_item_says(best)) or time.monotonic() - began >= SITE_ITEM_DRAWN_S:
+            break
+        last = size
+        await asyncio.sleep(0.8)
+    if best is not None and site_item_walled(best, status):
+        raise SiteOpFailure("blocked", "the page is the site's anti-bot check")
+    if best is None or not site_item_says(best):
+        if status in SITE_BLOCKED:
+            raise site_status_failure(status, "the page")
+        raise SiteOpFailure("empty", "the page shows nothing of the item")
+    return site_item_one({**best, "status": status})
+
+
+async def site_item(request):
+    """One result's own page read with no model and no run (`POST /v1/item`): Bro's answer to a question about it —
+    a vacancy's salary, a product's specs, a book's annotation (`agent/lib/browser-vm/site-ops/item.ts`) — from the
+    page in a tab of its own beside whatever errand holds the browser, as a direct read's (`site_op`). What goes back
+    is the page's own data and its main text, cut short (SITE_ITEM_LIB); nothing of it is kept, and nothing is sent
+    that the site's own page would not send."""
+    global site_op_gate
+    authorize(request)
+    body = await request.json()
+    url = body.get("url")
+    parts = urllib.parse.urlsplit(url) if isinstance(url, str) else None
+    try:
+        port = parts.port if parts is not None else None
+    except ValueError:
+        port = -1
+    if (parts is None or parts.scheme != "https" or not parts.hostname or port is not None or parts.username
+            or code_prohibited(url)):
+        raise web.HTTPBadRequest(text="url must be an https page of a site")
+    if not code_engine_available():
+        raise web.HTTPNotImplemented(text=json.dumps({"error": "this root cannot read a site directly"}),
+                                     content_type="application/json")
+    if not await chrome_ready():
+        raise web.HTTPServiceUnavailable(text=json.dumps({"error": "the browser is not up"}),
+                                         content_type="application/json")
+    site_op_gate = site_op_gate or asyncio.Semaphore(SITE_OP_DIRECT_AT_ONCE)
+    began = time.monotonic()
+    try:
+        await asyncio.wait_for(site_op_gate.acquire(), SITE_LOOK_GATE_S)
+    except asyncio.TimeoutError:
+        log.info("site item %s: no slot in %ss", parts.hostname, SITE_LOOK_GATE_S)
+        return web.json_response({"ok": False, "reason": "failed", "ms": round((time.monotonic() - began) * 1000)})
+    holder = {"page": None, "via": None}
+    try:
+        item = await asyncio.wait_for(site_item_read(url, holder), SITE_ITEM_S)
+        reason = None
+    except SiteOpFailure as failure:
+        item, reason = None, failure.reason
+        if reason != "blocked" and holder["page"] is not None and await code_wall(holder["page"]):
+            reason = "blocked"
+    except Exception as error:
+        item, reason = None, "failed"
+        log.info("site item failed: %s", type(error).__name__)
+    finally:
+        try:
+            await site_op_close(holder)
+        finally:
+            site_op_gate.release()
+    ms = round((time.monotonic() - began) * 1000)
+    if item is None:
+        log.info("site item %s: %s via %s, %d ms", parts.hostname, reason, holder["via"], ms)
+        return web.json_response({"ok": False, "reason": reason, "ms": ms})
+    landed = item.get("landed") if isinstance(item.get("landed"), str) else url
+    log.info("site item %s: %d data, %d meta, %d chars via %s, %d ms", parts.hostname, len(item["ld"]),
+             len(item["meta"]), len(item["text"]), holder["via"], ms)
+    return web.json_response({"ok": True, "title": item["title"], "ld": item["ld"], "meta": item["meta"],
+                              "text": item["text"], "page": landed, "via": holder["via"], "ms": ms})
 
 
 async def delete_tab(request):
@@ -9991,6 +10415,7 @@ def application():
         web.post("/v1/tabs", open_tab),
         web.post("/v1/op", site_op),
         web.post("/v1/look", site_look),
+        web.post("/v1/item", site_item),
         web.delete("/v1/tabs/{target}", delete_tab),
         web.post("/v1/browser/{action:start|stop|restart}", browser_action),
         web.post("/v1/profile/reset", reset_profile),
