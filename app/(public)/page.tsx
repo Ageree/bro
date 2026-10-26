@@ -51,7 +51,8 @@ export default function Page() {
           <Button
             className={styles.navAction}
             nativeButton={false}
-            render={<Link href="/sign-in" />}
+            // oxlint-disable-next-line nextjs/no-html-link-for-pages -- a full page load: Travelpayouts Drive, which the landing carries, must not live on into sign-in and the cabinet
+            render={<a aria-label="Кабинет" href="/sign-in" />}
           >
             Кабинет
           </Button>

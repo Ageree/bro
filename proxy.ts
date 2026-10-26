@@ -1,5 +1,23 @@
 import { NextResponse, type NextRequest } from "next/server";
+import {
+  travelpayoutsDriveHeader,
+  travelpayoutsDrivePages,
+} from "@web/auth/travelpayouts";
 import { getAuthSession } from "@db/services/auth/session";
+
+/**
+ * The request on to its page, telling the root layout whether the page
+ * carries Travelpayouts Drive (`web/auth/travelpayouts.ts`). A visitor's own
+ * header of that name is dropped.
+ */
+function onward(request: NextRequest) {
+  const headers = new Headers(request.headers);
+  headers.delete(travelpayoutsDriveHeader);
+  if (travelpayoutsDrivePages.has(request.nextUrl.pathname)) {
+    headers.set(travelpayoutsDriveHeader, "1");
+  }
+  return NextResponse.next({ request: { headers } });
+}
 
 export async function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
@@ -60,10 +78,10 @@ export async function proxy(request: NextRequest) {
     pathname.startsWith("/eve/v1/sandbox-files/") ||
     pathname === "/eve/v1/dev/schedules/dynamic"
   ) {
-    return NextResponse.next();
+    return onward(request);
   }
 
-  if (await getAuthSession(request.headers)) return NextResponse.next();
+  if (await getAuthSession(request.headers)) return onward(request);
 
   const signInUrl = new URL("/sign-in", request.url);
   signInUrl.searchParams.set(

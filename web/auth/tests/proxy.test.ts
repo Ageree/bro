@@ -12,6 +12,14 @@ vi.mock("@db/services/auth/session", () => ({
   getAuthSession: mocks.getAuthSession,
 }));
 
+/** Whether the proxy tells the layout that the page carries Drive. */
+async function drive(path: string, headers?: HeadersInit) {
+  const response = await proxy(
+    new NextRequest(`https://example.com${path}`, { headers })
+  );
+  return response.headers.get("x-middleware-request-x-bro-travelpayouts-drive");
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.getAuthSession.mockResolvedValue(null);
@@ -133,6 +141,31 @@ describe("auth proxy matcher", () => {
 
     expect(response.headers.get("x-middleware-next")).toBe("1");
     expect(getAuthSession).not.toHaveBeenCalled();
+  });
+
+  it("tells the layout to carry Travelpayouts Drive on the public pages only", async () => {
+    expect(
+      await Promise.all(["/", "/oferta", "/privacy"].map((path) => drive(path)))
+    ).toEqual(["1", "1", "1"]);
+    expect(
+      await Promise.all(
+        ["/sign-in", `/card/${"A".repeat(43)}`, "/pay/x"].map((path) =>
+          drive(path)
+        )
+      )
+    ).toEqual([null, null, null]);
+    // A visitor's own header does not put it on another page.
+    expect(
+      await drive("/sign-in", { "x-bro-travelpayouts-drive": "1" })
+    ).toBeNull();
+    mocks.getAuthSession.mockResolvedValue({
+      user: {
+        id: "user-1",
+        phoneNumber: "+79990000000",
+        phoneNumberVerified: true,
+      },
+    });
+    expect(await drive("/chat")).toBeNull();
   });
 
   it("allows the schedule dispatcher without a browser session in development", async () => {
