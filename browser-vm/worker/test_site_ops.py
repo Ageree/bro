@@ -976,6 +976,22 @@ class LookTest(DirectSetup):
         self.assertNotIn("менеджер", json.dumps(operation, ensure_ascii=False))
         self.assertEqual((page.closed, self.worker.visit_tabs), (True, set()))
 
+    async def test_an_operation_whose_page_has_no_place_for_words_is_not_learned(self):
+        # zoozavr.ru: the results page is /search/results/<id of this one search>/.
+        url = "https://hh.ru/search/results/48151623/"
+        page = Page({url: HH_DOCUMENT}, [Document(url, HH_DOCUMENT)])
+        page.cards = [self.card(vacancy) for vacancy in VACANCIES]
+        self.next_page = page
+        status, answer = await self.look(url, "менеджер продукта")
+        self.assertEqual((answer["ok"], answer["count"], answer["operations"]), (True, 4, []))
+        for page, words, placed in (("https://hh.ru/search/vacancy?text=%query%", "менеджер", True),
+                                    ("https://tutu.ru/poezda/%word%/%word%/", "москва", True),
+                                    ("https://ostrovok.ru/hotel/russia/kazan/", "казань", True),
+                                    ("https://superjob.ru/vakansii/voditel/", "водитель", True),
+                                    ("https://zoozavr.ru/search/results/%id%/", "корм", False),
+                                    ("https://hoff.ru/nsk/catalog/gostinaya/", "кровать", False)):
+            self.assertEqual(worker.site_words_placed({"page": page}, words), placed, page)
+
     async def test_a_page_that_is_not_the_sites_results_for_the_words_gives_nothing(self):
         url = "https://hh.ru/search/vacancy?text=сварщик"
         self.next_page = Page({url: HH_DOCUMENT}, [Document(url, HH_DOCUMENT)])

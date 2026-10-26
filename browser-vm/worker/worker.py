@@ -93,7 +93,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-10-26.6"
+VERSION = "2026-10-26.8"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -8922,6 +8922,25 @@ def site_look_report(cards):
     return "ITEMS: " + json.dumps(items, ensure_ascii=False)
 
 
+SITE_TRANSLIT = dict(zip("абвгдезийклмнопрстуфыэ", "abvgdezyiklmnoprstufye"),
+                        ж="zh", х="kh", ц="ts", ч="ch", ш="sh", щ="sch", ю="yu", я="ya", ё="e", ъ="", ь="")
+
+
+def site_words_placed(operation, words):
+    """Whether a search's words have a place in the operation learned from it (a look's, with words): a `%query%`
+    or `%word%` in its page's template, or — a latin word a template keeps as it is (/toyota/camry/, superjob.ru's
+    transliterated /vakansii/voditel) — a literal part of its path naming a stem of them or its transliteration. The
+    page of zoozavr.ru (26.10) is /search/results/%id%/: the id the site gave that one search, which another
+    search's words cannot be written in, and Bro's fill failed on it every time."""
+    page = operation.get("page") or ""
+    if "%query%" in page or "%word%" in page:
+        return True
+    stems = {word[:4] for word in site_words(words or "").split() if len(word) >= 3 and not word.isdigit()}
+    stems |= {"".join(SITE_TRANSLIT.get(letter, letter) for letter in stem)[:3] for stem in stems}
+    path = urllib.parse.unquote(urllib.parse.urlsplit(page).path).lower()
+    return any(stem and stem in path for stem in stems)
+
+
 def site_look_answers(words, cards):
     """Whether the page's cards answer the words searched for: half of the first ten name a stem of them. Stricter
     than an operation's check (`site_op_answers`) — a model guessed this page, and a site that drops a key it does
@@ -8998,13 +9017,15 @@ async def site_look(request):
             site_search_results_only(recorder, home)
         operations = await site_operations_found(recorder, site_look_report(cards), None,
                                                  max(0.5, deadline - time.monotonic() - 0.5))
+        operations = [operation for operation in operations if site_words_placed(operation, words)]
         # No data of the site's holds the cards: their rows, learned from the cards' own structure (a look's report
         # is made of the cards' titles, which mislead: a train's station, a section's heading, an old price).
         left = deadline - time.monotonic() - 0.5
         if not operations and left >= SITE_ROWS_MIN_S and not holder["page"].is_closed():
             page = holder["page"]
-            operations = await site_rows_operations(page_evaluator(page), page.url, None,
-                                                    recorder_document(recorder, page.url), None, left)
+            operations = [operation for operation in await site_rows_operations(
+                page_evaluator(page), page.url, None, recorder_document(recorder, page.url), None, left)
+                if site_words_placed(operation, words)]
     except SiteOpFailure as failure:
         cards, operations, reason = None, [], failure.reason
         if reason != "blocked" and holder["page"] is not None and await code_wall(holder["page"]):
