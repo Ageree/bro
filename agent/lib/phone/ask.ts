@@ -11,6 +11,7 @@ import { readUserProfile } from "@db/services/user-profile";
 import type { AccessScope } from "@shared/identity/access-scope";
 import { env } from "@shared/environment";
 import { directModelActive } from "@shared/model/provider";
+import { sayableAloud } from "@agent/lib/privacy/spoken";
 import { unsafeMemoryRanges } from "@shared/memory/schema";
 import { looksLikeCardNumber } from "@shared/privacy/card-number";
 import { documentNumberRanges } from "@shared/privacy/document-numbers";
@@ -22,14 +23,23 @@ import { documentNumberRanges } from "@shared/privacy/document-numbers";
 /** Questions one call may put, and how long the voice waits for an answer. */
 export const askLimit = 4;
 export const askTimeoutMs = 7000;
+/**
+ * How long the call's GPT-Live waits before its own spoken acknowledgement of a question it hands to Bro
+ * (`acknowledgement_delay_ms`: at once by default, 800 at most), in VOICE_FAST_WORKSPACES. Within it the call
+ * sends `askProgressLine` instead, which cancels it: left to itself the voice said «Секунду, смотрю» (probe of
+ * /talk, 27.10), and told to stay silent it guessed answers — on a call, the user's data.
+ */
+export const askAcknowledgementDelayMs = 800;
+
+/** What the voice says while Bro looks for the answer, in its own words (VOICE_FAST_WORKSPACES). */
+export const askProgressLine =
+  "Ответа пока нет. Скажи собеседнику одной короткой фразой, что уточняешь это, словами его вопроса. Не проси подождать и не называй ответ.";
 const answerLimit = 240;
 const memoryLimit = 60;
 const memoryChars = 200;
 const earlierCalls = 2;
 const earlierChars = 600;
 const earlierHeader = /^Call transcript \(task success[^\n]*\n/u;
-// A memory that names a door, a flat or a code is not for a stranger's ears.
-const doorMemory = /домофон|подъезд|этаж|квартир|(?<!\p{L})кв\.|код|парол/iu;
 
 export function phoneAskFor(workspaceId: string) {
   const list = env.PHONE_ASK_WORKSPACES ?? [];
@@ -91,9 +101,13 @@ export function speakableAnswer(
     : answer;
 }
 
+/**
+ * What a call's questions are answered from, but the lines heard: read once,
+ * when the call is placed, so a question waits only on the model.
+ */
 async function packetFor(
   scope: AccessScope,
-  input: { task: string; target: string; heard: string }
+  input: { task: string; target: string }
 ) {
   const [profile, scopeKey, calls] = await Promise.all([
     readUserProfile(scope).catch(() => null),
@@ -119,10 +133,7 @@ async function packetFor(
     memories: texts
       .filter(
         ({ category, text }) =>
-          category !== "rule" &&
-          category !== "person" &&
-          !doorMemory.test(text) &&
-          unsafeMemoryRanges(text).length === 0
+          category !== "rule" && category !== "person" && sayableAloud(text)
       )
       .slice(-memoryLimit)
       .map(({ text }) => text.slice(0, memoryChars)),
@@ -143,44 +154,57 @@ async function packetFor(
       .map((call) =>
         (call.summary ?? "").replace(earlierHeader, "").slice(-earlierChars)
       ),
-    heardOnTheLine: input.heard,
   };
 }
 
 /**
- * The line to say to the far side from the user's own data, or null when the packet has none (the voice then
- * promises to pass the question on in the report). Never throws: a failure is «no answer».
+ * Readies a call's questions to Bro when the call is placed: the packet and the model are read now, so each
+ * question waits on one model call and not on the database reads before it. The returned
+ * function gives the line to say to the far side from the user's own data, or null when the packet has none
+ * (the voice then promises to pass the question on in the report). Never throws: a failure is «no answer».
  */
-export async function askBro(input: {
+export function prepareAskBro(input: {
   scope: AccessScope;
   task: string;
   target: string;
   publicNumber: string;
-  heard: string;
 }) {
-  try {
-    const packet = await packetFor(input.scope, input);
-    const modelId = await getWorkspaceModelId(input.scope);
-    const selection = directModelActive()
-      ? directModelSelection(modelId, {
-          reasoningOff: true,
-          toolChoice: "none",
-        })
-      : null;
-    const { output } = await generateText({
-      abortSignal: AbortSignal.timeout(askTimeoutMs),
-      model: selection?.model ?? modelId,
-      providerOptions: selection?.modelOptions.providerOptions,
-      maxOutputTokens: 160,
-      output: Output.object({ schema: answerSchema }),
-      instructions,
-      prompt: JSON.stringify(packet),
-    });
-    return speakableAnswer(output, input.publicNumber);
-  } catch (error) {
-    console.warn("[phone-live] ask failed", {
-      reason: error instanceof Error ? error.name : "unknown",
-    });
-    return null;
-  }
+  const read = async () =>
+    Promise.all([
+      packetFor(input.scope, input),
+      getWorkspaceModelId(input.scope),
+    ]);
+  let ready = read();
+  // Unasked, a failed read must not surface as an unhandled rejection.
+  void ready.catch(() => undefined);
+  return async (heard: string) => {
+    try {
+      // A read that failed is read again, not held for the whole call.
+      const [packet, modelId] = await ready.catch(async () => {
+        ready = read();
+        return ready;
+      });
+      const selection = directModelActive()
+        ? directModelSelection(modelId, {
+            reasoningOff: true,
+            toolChoice: "none",
+          })
+        : null;
+      const { output } = await generateText({
+        abortSignal: AbortSignal.timeout(askTimeoutMs),
+        model: selection?.model ?? modelId,
+        providerOptions: selection?.modelOptions.providerOptions,
+        maxOutputTokens: 160,
+        output: Output.object({ schema: answerSchema }),
+        instructions,
+        prompt: JSON.stringify({ ...packet, heardOnTheLine: heard }),
+      });
+      return speakableAnswer(output, input.publicNumber);
+    } catch (error) {
+      console.warn("[phone-live] ask failed", {
+        reason: error instanceof Error ? error.name : "unknown",
+      });
+      return null;
+    }
+  };
 }

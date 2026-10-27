@@ -15,6 +15,8 @@ import { agentMailboxEnabled } from "@db/services/agent-mail";
 import { broToBroStanding } from "@db/services/bro-to-bro/enabled";
 import { locationPilot, locationWatchPilot } from "@db/services/location";
 import { phonePilot, readPhoneNumber } from "@db/services/phone";
+import { liveCallsFor } from "@agent/lib/phone/live/place";
+import { voiceFastEnabled, voiceTalkEnabled } from "@shared/voice/pilot";
 import { env } from "@shared/environment";
 import {
   dataProcessors,
@@ -116,6 +118,14 @@ export const privacy = defineTool({
         ...(location && { location }),
         ...(partnerLinksPilot(scope) && { partnerLinks: true }),
         phone,
+        ...((voiceTalkEnabled(scope.workspaceId) ||
+          (phone && liveCallsFor(scope.workspaceId))) && {
+          voice: {
+            brief: voiceFastEnabled(scope.workspaceId),
+            calls: phone && liveCallsFor(scope.workspaceId),
+            talk: voiceTalkEnabled(scope.workspaceId),
+          },
+        }),
         ...(yclientsPilot(scope) && { yclients: true }),
       }),
       serverLocation: serverLocation(),

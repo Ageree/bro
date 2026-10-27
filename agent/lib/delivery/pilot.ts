@@ -5,6 +5,7 @@ import {
 } from "@agent/lib/workspace-list";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { stepIdentity } from "@agent/lib/turn-kind/step";
+import { fastVoiceTurn } from "@agent/lib/voice/turn";
 import { env } from "@shared/environment";
 import { directModelActive } from "@shared/model/provider";
 
@@ -45,10 +46,11 @@ export async function earlyReplyPilot(
 /**
  * `earlyReplyPilot` for a tool's `step.started` resolver: the caller's
  * workspace, the verdict of the turn the model's resolver got too. A caller
- * that is not a workspace user is out of the pilot.
+ * that is not a workspace user is out of the pilot, and so is a turn that
+ * answers /talk's voice (`fastVoiceTurn`), as in the model's resolver.
  */
 export async function earlyReplyPilotOfCaller(
-  context: Pick<DynamicResolveContext, "session">,
+  context: Pick<DynamicResolveContext, "messages" | "session">,
   event: Parameters<typeof stepIdentity>[0]
 ) {
   if ((env.EARLY_REPLY_WORKSPACES ?? []).length === 0) return false;
@@ -61,5 +63,8 @@ export async function earlyReplyPilotOfCaller(
   } catch {
     return false;
   }
-  return earlyReplyPilot(scope, stepIdentity(event, context.session.id));
+  const turn = stepIdentity(event, context.session.id);
+  if (await fastVoiceTurn(context.messages, scope.workspaceId, turn))
+    return false;
+  return earlyReplyPilot(scope, turn);
 }

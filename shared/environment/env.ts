@@ -272,6 +272,11 @@ export const env = createEnv({
     // Bro in the browser, GPT-Live over WebRTC with Bro behind it
     // (`shared/voice/pilot.ts`). Needs OPENAI_API_KEY. Unset, nobody's.
     VOICE_WORKSPACES: workspaceListSchema.optional(),
+    // Workspace ids or `*` of the voice that knows its person and waits less
+    // (`shared/voice/pilot.ts`): /talk's voice gets a brief of the person,
+    // says no filler before a quick answer, and Bro's turns from it skip the
+    // heads-up and the tool router. Only within VOICE_WORKSPACES.
+    VOICE_FAST_WORKSPACES: workspaceListSchema.optional(),
     OPENAI_API_KEY: pastedKeySchema.optional(),
     OPENAI_PROXY_URL: z
       .url()

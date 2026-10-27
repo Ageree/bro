@@ -62,7 +62,8 @@ type RouterReason =
   | "reused"
   | "steer"
   | "turn"
-  | "unreadable";
+  | "unreadable"
+  | "voice";
 
 /** What the router knows of a step, read before it decides. */
 export interface RouterInputs {
@@ -89,6 +90,11 @@ export interface RouterInputs {
   readonly step: StepIdentity;
   /** The skills the turn's words and Bro's last message want. */
   readonly triggered: readonly SkillName[];
+  /**
+   * The turn answers /talk's voice (`fastVoiceTurn`): every group, without
+   * asking, so the block stays one for the whole voice conversation.
+   */
+  readonly voice: boolean;
   readonly warmMs: number;
   /**
    * TOOL_ROUTER_WHOLE_WORKSPACES: a set that would grow past the block of
@@ -307,8 +313,12 @@ export function chooseRouterGroups(inputs: RouterInputs): RouterChoice {
     const turnDigest = inputs.held?.digest ?? state.turnDigest;
     // The person wrote again mid-turn: their new words join at once, and
     // the decision about them when it comes. After a compaction the words
-    // of the turn are not to be trusted to be new.
-    const steer = inputs.compaction === "none" && turnDigest !== inputs.digest;
+    // of the turn are not to be trusted to be new. A voice turn has every
+    // group already.
+    const steer =
+      !inputs.voice &&
+      inputs.compaction === "none" &&
+      turnDigest !== inputs.digest;
     const finish = (decision: RouterDecision | undefined) => {
       const steered = decidedGroups(decision);
       const triggers = steer
@@ -349,6 +359,12 @@ export function chooseRouterGroups(inputs: RouterInputs): RouterChoice {
       }),
   });
 
+  if (inputs.voice) {
+    return settledWithout(everyGroup, "voice", {
+      carried: everyGroup,
+      failedOpen: false,
+    });
+  }
   if (state.turnDigest === inputs.digest && state.turnGroups !== null) {
     return settledWithout(
       [...state.turnGroups, ...recent, ...inputs.opened],
@@ -632,7 +648,8 @@ export async function routerGroupsOfStep(
   step: StepIdentity,
   setup: SkillSetup,
   mode: "on" | "shadow",
-  wholeOnGrowth = false
+  wholeOnGrowth = false,
+  voice = false
 ): Promise<readonly RouterGroup[]> {
   const started = Date.now();
   const state = readRouterState();
@@ -674,6 +691,7 @@ export async function routerGroupsOfStep(
     state,
     step,
     triggered,
+    voice,
     warmMs: env.TOOL_ROUTER_WARM_MINUTES * 60_000,
     wholeOnGrowth,
     withPrev: text.withPrev,

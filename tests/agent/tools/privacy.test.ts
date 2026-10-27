@@ -562,6 +562,27 @@ describe("privacy", () => {
     ).toContain("поиск мест на Яндекс Картах");
   });
 
+  it("names OpenAI's voice, and the brief only where the voice gets it", async () => {
+    const { facts } = await withServices({});
+    const model = "deepseek/deepseek-v4.1-flash";
+
+    expect(facts.dataProcessors(model).join("\n")).not.toContain("GPT-Live");
+    const calls = facts
+      .dataProcessors(model, {
+        voice: { brief: false, calls: true, talk: false },
+      })
+      .join("\n");
+    expect(calls).toContain("Звонки Бро ведёт голосовая модель GPT-Live");
+    expect(calls).not.toContain("сводку");
+    const talk = facts
+      .dataProcessors(model, {
+        voice: { brief: true, calls: false, talk: true },
+      })
+      .join("\n");
+    expect(talk).toContain("события календаря на неделю вперёд");
+    expect(talk).not.toContain("Собеседнику звонка");
+  });
+
   it("names the browser's second proxy too, when there is one", async () => {
     const { facts } = await withServices({
       ...browserVmTestEnvironment,

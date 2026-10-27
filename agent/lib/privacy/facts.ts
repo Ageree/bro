@@ -107,6 +107,7 @@ export function dataProcessors(
     location = false,
     partnerLinks = false,
     phone = false,
+    voice,
     yclients = false,
   }: {
     readonly memoryDigest?: boolean;
@@ -123,6 +124,16 @@ export function dataProcessors(
     /** Links to travel brands go out as partner links (`partnerLinksPilot`). */
     readonly partnerLinks?: boolean;
     readonly phone?: boolean;
+    /**
+     * GPT-Live carries the workspace's voice: /talk (`voiceTalkEnabled`), its
+     * calls (`liveCallsFor`) or both; `brief` when /talk's voice gets the
+     * person's brief (`voiceFastEnabled`).
+     */
+    readonly voice?: {
+      readonly brief: boolean;
+      readonly calls: boolean;
+      readonly talk: boolean;
+    };
     /** The workspace books salons through YClients (`yclientsPilot`). */
     readonly yclients?: boolean;
   } = {}
@@ -134,6 +145,11 @@ export function dataProcessors(
           "Звонки обслуживают МТС Exolve и ElevenLabs: оператор видит телефонные номера и может записывать разговор, а ElevenLabs получает только задачу конкретного исходящего звонка и минимальный нужный контекст, обрабатывает голос и формирует итог. Всю память Бро туда не отправляет; входящий звонящий не получает доступ к данным владельца. Записи и расшифровки могут храниться у провайдеров по их правилам, их удаление из Бро не удаляет данные у провайдера.",
         ]
       : []),
+    ...(voice === undefined
+      ? []
+      : [
+          `${voice.talk ? (voice.calls ? "Голосовой разговор с Бро и звонки" : "Голосовой разговор с Бро") : "Звонки Бро"} ведёт голосовая модель GPT-Live компании OpenAI: она слышит разговор и говорит голосом Бро.${voice.talk && voice.brief ? " В разговоре с самим человеком она получает и сводку о нём: имя, записи памяти (кроме закрытых записей, кодов и паролей), напоминания, дела Бро в других чатах, итоги последних звонков и события календаря на неделю вперёд." : ""}${voice.calls ? " Собеседнику звонка голос называет только задачу звонка и то, что Бро разрешил сказать после проверки." : ""}`,
+        ]),
     direct !== undefined
       ? `Сообщения и всё, что Бро читает для ответа (письма, события, страницы, память), обрабатывает языковая модель ${modelId}: запрос идёт через ${direct} к провайдеру, который эту модель запускает${direct === "RouterAI" && modelId.startsWith("deepseek/") ? " (для моделей DeepSeek — хост DeepInfra)" : ""}. Голосовые сообщения распознаёт и картинки рисует тоже модель через ${direct}, а запросы веб-поиска ${instantSearchEnabled() ? `идут через Composio к поисковикам TinyFish и Tavily, а если те не ответили — через ${direct} к поисковикам Exa и Perplexity` : `${direct} передаёт поисковикам Exa и Perplexity`}.`
       : `Сообщения и всё, что Бро читает для ответа (письма, события, страницы, память), обрабатывает языковая модель ${modelId}: запрос идёт через Vercel AI Gateway к её провайдеру.`,

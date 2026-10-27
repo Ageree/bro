@@ -54,6 +54,7 @@ import {
 import { browserRunReportDelivered } from "@db/services/browser-runs";
 import { earlyReplySplitPilot, fastReplyPilot } from "@agent/lib/delivery/fast";
 import { earlyReplyPilot } from "@agent/lib/delivery/pilot";
+import { fastVoiceTurn } from "@agent/lib/voice/turn";
 import { taskAtWorkNote, taskHandoff } from "@agent/lib/delivery/task-handoff";
 import {
   approvedResendOwed,
@@ -302,6 +303,11 @@ export default defineAgent({
         // between steps changed the step's notes and tools.
         const stepPilot = stepContextPilot(scope, step);
         const routerMode = toolRouterMode();
+        // A turn from /talk's voice sends no heads-up and keeps every tool
+        // group from its first step (`fastVoiceTurn`).
+        const voiceFast =
+          kind === "person" &&
+          (await fastVoiceTurn(ctx.messages, scope.workspaceId, step));
         const [
           modelId,
           formOfAddress,
@@ -340,11 +346,15 @@ export default defineAgent({
           compactionPilot(scope, step),
           // A person's turn may open with «сейчас поищу» before slow work;
           // `send_message` asks the same verdict of the turn.
-          kind === "person" ? earlyReplyPilot(scope, step) : false,
+          kind === "person" && !voiceFast
+            ? earlyReplyPilot(scope, step)
+            : false,
           // Every step of the turn runs without hidden reasoning.
           kind === "person" ? fastReplyPilot(scope, step) : false,
           // The heads-up of the early-reply pilot in a step of its own.
-          kind === "person" ? earlyReplySplitPilot(scope, step) : false,
+          kind === "person" && !voiceFast
+            ? earlyReplySplitPilot(scope, step)
+            : false,
           // The pilot of the tool router chooses a person's groups, only
           // with the cache-friendly step: without it the block changes
           // between steps anyway. A failure leaves the step as before.
@@ -357,7 +367,8 @@ export default defineAgent({
                         step,
                         skillSetup(ctx),
                         routerMode,
-                        toolRouterWholeOnGrowth(scope.workspaceId)
+                        toolRouterWholeOnGrowth(scope.workspaceId),
+                        voiceFast
                       )
                     : undefined
                 )
@@ -509,6 +520,11 @@ export default defineAgent({
             kind === "person" && promptWarmWorkspace(scope.workspaceId)
               ? ctx.session.id
               : undefined,
+          // A turn from /talk's voice warms the next voice conversation.
+          ...(voiceFast &&
+            promptWarmWorkspace(scope.workspaceId) && {
+              warmVoice: scope.workspaceId,
+            }),
           toolChoice:
             staleReport ||
             (pastAnswer && !reportPastAnswer) ||
