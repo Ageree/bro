@@ -49,16 +49,17 @@ const askRule =
 
 // The same in VOICE_FAST_WORKSPACES, in the template of OpenAI's prompting guide for `gpt-live-1`: with `askRule` the
 // call voice never delegated (probe 27.10: 0 of 40 questions, and 2–3 of 6 answers about children or wishes made
-// up), with this block it delegated 39 of 39. While Bro looks, the call tells the voice what to say
+// up), with this block it delegated 39 of 39. Its first line names any question about the person: «Вы у нас раньше
+// были?» left out of a list of examples was answered «Нет, не был» 2 times in 3. While Bro looks, the call tells the voice what to say
 // (`askProgressLine`) in place of GPT-Live's own acknowledgement, «Секунду, смотрю».
 const quickAskRule = [
   "У тебя нет инструментов для действий и доступа к аккаунтам.",
   "Delegation policy:",
   "Backend tools:",
-  "- Бро за кадром знает пользователя: кто будет с ним (дети, гости), аллергии, пожелания и предпочтения, о чём договорились раньше.",
+  "- Бро за кадром знает пользователя: его прошлые визиты, заказы и звонки, кто будет с ним (дети, гости), здоровье и аллергии, пожелания и предпочтения, о чём договорились раньше.",
   "",
   "Generate <|SpawnThinking|> when:",
-  "- Собеседник спрашивает о пользователе то, чего нет в задаче: на кого оформить, если имени нет в задаче; будут ли дети или гости; аллергии; пожелания; предпочтения; о чём договорились раньше.",
+  "- Любой вопрос о самом пользователе, ответа на который нет в задаче: был ли он у вас раньше и что заказывал или лечил; здоровье и аллергии; будут ли дети или гости; пожелания и предпочтения; о чём договорились раньше; на кого оформить, если имени нет в задаче.",
   "",
   "Do not generate <|SpawnThinking|> when:",
   "- Ответ есть в задаче.",
