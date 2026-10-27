@@ -369,7 +369,9 @@ function rest(workspaceId: string, host: string) {
  * worker itself cannot read (a root or a worker before the path — 404, 501
  * — or a browser that is not up, 503), only the site after a call that ran
  * out of time on it. A refused address (400) rests nothing: the next errand
- * names its own.
+ * names its own. Neither does a browser busy with an errand that took no new
+ * connection in time (409): it is no fault of the site's or the worker's,
+ * the search goes to the errand and the next one may find the browser free.
  */
 function restAfter(workspaceId: string, host: string, cause: unknown) {
   if (cause instanceof BrowserVmWorkerError) {
