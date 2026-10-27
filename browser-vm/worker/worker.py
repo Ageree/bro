@@ -93,7 +93,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-10-27.2"
+VERSION = "2026-10-27.3"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -607,7 +607,14 @@ class SiteErrors:
 
     A refused write can be the site's own flow, too: hh.ru's code step answers 400 ACCOUNT_NOT_FOUND for a new
     address and goes on to its sign-up form (24.10), and the run, told not to report success for it, reported
-    the finished sign-up as failed. So the notice has the agent judge it by the page it is on next."""
+    the finished sign-up as failed. So the notice has the agent judge it by the page it is on next.
+
+    A page's own `alert()` is the same kind of answer. The Remarked booking widget on atelierfamily.ru (27.10)
+    answers HTTP 200 and says «Ошибка: …» or «Вы уже забронировали столик на сегодня» in an alert; the browser
+    closes it at once, the page shows nothing, and the run pressed «Забронировать» again and again, reported
+    «no confirmation» and could not say whether the table was booked. A dialog is recorded the same way, from the
+    tab's own socket (`Page.javascriptDialogOpening`, which the agent's browser session answers, not this
+    listener), told to the agent at its next step and put in the report in a block of its own."""
 
     LIMIT = 8
     BODY = 600
@@ -664,6 +671,8 @@ class SiteErrors:
                     # Chrome's buffer is as small with SiteTraffic as without (a 3 GB sandbox ran out of memory on
                     # 24–25.10): SiteTraffic asks for a body the moment it has come, before anything evicts it.
                     await self.send("Network.enable", {"maxTotalBufferSize": 2_000_000}, socket)
+                    # Only to hear the page's own dialogs: the agent's session is the one that answers them.
+                    await self.send("Page.enable", {}, socket)
                     async for message in ws:
                         with contextlib.suppress(Exception):
                             await self.handle(json.loads(message.data), socket)
@@ -681,6 +690,9 @@ class SiteErrors:
             return
         method, params = data.get("method"), data.get("params") or {}
         request_id = params.get("requestId")
+        if method == "Page.javascriptDialogOpening":
+            self.record_dialog(params)
+            return
         if method == "Network.requestWillBeSent" and params.get("type") in ("XHR", "Fetch"):
             request = params.get("request") or {}
             url = request.get("url", "")
@@ -729,6 +741,30 @@ class SiteErrors:
                 self.entries.append(entry)
         return entry
 
+    def record_dialog(self, params):
+        """A dialog the page opened (`alert`, `confirm`, `prompt`): what it said. A page leaving (`beforeunload`)
+        says nothing the person's errand needs."""
+        kind = params.get("type") or "alert"
+        message = (params.get("message") or "").strip()
+        if kind == "beforeunload" or not message:
+            return
+        address = (params.get("url") or "").split("?")[0].split("#")[0]
+        message = message[: self.BODY]
+        for kept in self.entries:
+            if kept.get("dialog") and (kept["method"], kept["address"], kept["answer"]) == (kind, address, message):
+                kept["count"] += 1
+                return
+        entry = {"status": "dialog", "method": kind, "address": address, "answer": message, "write": True,
+                 "dialog": True, "count": 1, "at": time.monotonic()}
+        if len(self.entries) < self.LIMIT:
+            self.entries.append(entry)
+        else:
+            # What the page itself said to the person comes before the background probes.
+            probe = next((kept for kept in self.entries if not kept["write"]), None)
+            if probe is not None:
+                self.entries.remove(probe)
+                self.entries.append(entry)
+
     def notices(self, secrets=None):
         """What to tell the agent before its next step: each refused write of the site not told yet, once its
         answer is in (or did not come within `BODY_WAIT_S`), each distinct answer once, `NOTICES` a run."""
@@ -747,6 +783,15 @@ class SiteErrors:
                 continue
             self.told.add(key)
             self.notices_sent += 1
+            if entry.get("dialog"):
+                told.append(f"The page opened a browser {entry['method']} dialog saying: «{answer}». The browser "
+                            "closed it by itself, so the page may show nothing of it. It is the page's own message "
+                            "to the person, usually the site's answer to what you just sent. An error or a "
+                            "refusal in it (a field, a time that is taken) is what to fix before you try again; a "
+                            "message that the thing was already done (already booked, already ordered, already "
+                            "sent) means an earlier press went through, so do not press the button again: report "
+                            "it as done with the page's own words.")
+                continue
             told.append(f"The site's server refused {entry['method']} {clean(entry['address'])}: {entry['status']}"
                         + (f" — {answer}" if answer else " (no answer text)")
                         + ". The browser saw this request; the page may not show why. Judge it by what the page "
@@ -766,8 +811,17 @@ class SiteErrors:
             return (f"- {e['status']} {e['method']} {clean(e['address'])}{times}"
                     + (f" — {clean(e['answer'])}" if e["answer"] else ""))
 
-        return ("SITE ERRORS (recorded by the browser itself, not by the agent: the site's own requests its "
-                "server refused during this run):\n" + "\n".join(map(line, self.entries)) + "\n\n")
+        def dialog(e):
+            times = f" (×{e['count']})" if e["count"] > 1 else ""
+            return f"- {e['method']} on {clean(e['address'])}{times}: «{clean(e['answer'])}»"
+
+        refused = [e for e in self.entries if not e.get("dialog")]
+        dialogs = [e for e in self.entries if e.get("dialog")]
+        return (("SITE ERRORS (recorded by the browser itself, not by the agent: the site's own requests its "
+                 "server refused during this run):\n" + "\n".join(map(line, refused)) + "\n\n" if refused else "")
+                + ("PAGE DIALOGS (recorded by the browser itself, not by the agent: what the page's own alert or "
+                   "confirm said before the browser closed it):\n" + "\n".join(map(dialog, dialogs)) + "\n\n"
+                   if dialogs else ""))
 
 
 # --- Site operations ----------------------------------------------------------------------------------------

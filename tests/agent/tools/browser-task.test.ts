@@ -5877,6 +5877,59 @@ describe("browser_task finds the option before the one card", () => {
   });
 });
 
+describe("browser_task form that refuses its submit button", () => {
+  // 27.10, atelierfamily.ru: a Remarked booking form painted its empty
+  // required fields red and scrolled; the run took it for a broken widget.
+  it("tells a run that may act to look for the fields the form still wants", async () => {
+    const { composeBrowserContinuation, composeBrowserTask } =
+      await import("@agent/tools/browser_task");
+    const staged = composeBrowserTask({
+      aliases: [],
+      allowPayment: false,
+      collectImages: false,
+      consent: undefined,
+      deliveryAddress: undefined,
+      errand: "Забронируй столик на 22:00",
+      facts: undefined,
+      home: undefined,
+      site: "https://atelierfamily.ru",
+      staging: "person",
+    });
+    const continued = composeBrowserContinuation({
+      aliases: [],
+      allowPayment: false,
+      collectImages: false,
+      consent: undefined,
+      deliveryAddress: undefined,
+      errand: "Забронируй столик на 22:00",
+      facts: undefined,
+      message: "Ещё раз попробуй форму. День рождения необязательное поле.",
+      searching: false,
+      site: "https://atelierfamily.ru",
+      staging: "person",
+    });
+    const search = composeBrowserTask({
+      aliases: [],
+      allowPayment: false,
+      collectImages: false,
+      consent: undefined,
+      deliveryAddress: undefined,
+      errand: "Найди столик",
+      facts: undefined,
+      home: undefined,
+      site: "https://atelierfamily.ru",
+    });
+
+    for (const task of [staged, continued]) {
+      expect(task).toContain("the form refused it, the site is not broken");
+      expect(task).toContain(
+        "Never leave a field empty because the errand or you take it for optional"
+      );
+    }
+    expect(search).not.toContain("the form refused it");
+  });
+});
+
 describe("browser_task sign-in by the person's phone", () => {
   // RU 25.09, d04: «закажи на озоне тот же корм» stopped at Ozon's sign-in,
   // which takes a phone and an SMS code, with NEEDS: password.

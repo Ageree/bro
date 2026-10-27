@@ -3771,6 +3771,37 @@ class SiteErrorsUnitTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("POST https://shop.ru/api/a — phone must be a valid phone number", report)
         self.assertIn("POST https://shop.ru/api/b — deliveryMethod must be a valid enum value", report)
 
+    async def test_a_page_alert_is_told_to_the_agent_and_reported_in_its_own_block(self):
+        # The Remarked booking widget (27.10): HTTP 200 and an alert the browser closes by itself.
+        page = "https://atelierfamily.ru/salone-pasta-and-bar?utm_source=ya#openReMarkedWidget1"
+        secrets = {"https://*.atelierfamily.ru": {"phone": "+79217818876"}}
+        alert = {"method": "Page.javascriptDialogOpening", "params": {
+            "url": page, "type": "alert", "message": "Вы уже забронировали столик на сегодня +79217818876"}}
+        await self.errors.handle(alert)
+        await self.errors.handle(alert)
+        await self.errors.handle({"method": "Page.javascriptDialogOpening", "params": {
+            "url": page, "type": "beforeunload", "message": "Leave site?"}})
+        notices = self.errors.notices(secrets)
+        self.assertEqual(len(notices), 1)
+        self.assertIn("browser alert dialog saying: «Вы уже забронировали столик на сегодня <secret>»", notices[0])
+        self.assertIn("so do not press the button again", notices[0])
+        self.assertEqual(self.errors.notices(secrets), [])
+        report = self.errors.report(secrets)
+        self.assertIn("PAGE DIALOGS", report)
+        self.assertIn("- alert on https://atelierfamily.ru/salone-pasta-and-bar (×2): «Вы уже забронировали", report)
+        for hidden in ("utm_source", "79217818876", "Leave site"):
+            self.assertNotIn(hidden, report)
+        self.assertNotIn("SITE ERRORS", report)
+
+    async def test_a_dialog_and_a_refused_write_share_the_report_in_two_blocks(self):
+        await self.request("POST", "https://shop.ru/api/orders", 400, "bad phone")
+        await self.errors.handle({"method": "Page.javascriptDialogOpening", "params": {
+            "url": self.PAGE, "type": "confirm", "message": "Ошибка: Tables are not free"}})
+        report = self.errors.report()
+        self.assertLess(report.index("SITE ERRORS"), report.index("PAGE DIALOGS"))
+        self.assertIn("400 POST https://shop.ru/api/orders — bad phone", report)
+        self.assertIn("- confirm on https://shop.ru/checkout: «Ошибка: Tables are not free»", report)
+
     async def test_probes_never_crowd_a_refused_write_out_of_the_report(self):
         for number in range(worker.SiteErrors.LIMIT + 2):
             await self.request("GET", f"https://shop.ru/api/probe{number}", 404, "")
