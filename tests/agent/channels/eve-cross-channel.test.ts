@@ -34,6 +34,9 @@ vi.mock("@db/services/conversation-log", () => ({
   lastLineOfConversation: capture.lastLine,
   readRecapLines: capture.recapLines,
 }));
+vi.mock("@db/services/phone", () => ({
+  readRecentCallRecords: async () => [],
+}));
 vi.mock("@db/services/user-profile", () => ({
   readWorkspaceTimeZone: async () => "Europe/Moscow",
 }));
