@@ -113,6 +113,12 @@ const maximumArrivals = 500;
 const voiceTalkContext =
   "Это сообщение — расшифровка живого голосового разговора (пометка [голосом]); строки «(ты: «…»)» — твои же реплики голосом между словами человека, они для понимания, а не просьба. Твой ответ человек услышит голосом, который перескажет его своими словами. Отвечай коротко и разговорно: главное — в первой фразе, без списков, таблиц и разметки; ссылки и подробности — в конце, они останутся в чате. Расшифровка может ошибаться в словах, именах и числах: если смысл неясен, переспроси одной фразой. Вопрос задавай обычным сообщением, не карточкой ask_question: на карточку голосом не ответить.";
 
+// The voice's person waits in silence for the answer (VOICE_FAST_WORKSPACES):
+// prod 27.10, «что главное в новостях» took a second search and a page read,
+// 4–5 steps and 11–17 s, where the first search's excerpts already answered.
+const quickVoiceSearch =
+  "Человек ждёт ответа на слух: если выдержки первого поиска отвечают на вопрос, отвечай по ним сразу; искать ещё раз и открывать страницы — только если ответа в выдержках нет.";
+
 const channel = eveChannel({
   auth: authenticate,
   // A file the person attaches may be as large as one Telegram or iMessage
@@ -170,7 +176,11 @@ const channel = eveChannel({
       ...(notes.length > 0 ? [notes.join("\n")] : []),
       ...(text?.startsWith(voiceTalkMarker) === true &&
       voiceTalkEnabled(scope.workspaceId)
-        ? [voiceTalkContext]
+        ? [
+            fastVoice
+              ? `${voiceTalkContext} ${quickVoiceSearch}`
+              : voiceTalkContext,
+          ]
         : []),
     ];
     if (sessionId !== undefined) {
