@@ -1584,6 +1584,17 @@ function phoneGuardLine(
 }
 
 /**
+ * A booking form that refused the button said nothing (27.10, atelierfamily.ru,
+ * Remarked widget): it only painted the empty required fields' borders red and
+ * scrolled to the first one. The run saw «the page did not change», called the
+ * widget unstable and gave up three times; the birthday it left empty because
+ * the errand called it optional, and a required «have you been here before?»
+ * dropdown under the fold it never saw.
+ */
+const silentSubmitLine =
+  "When you press a form's submit button and nothing comes of it — no confirmation, no error text, the page only scrolls or stays as it is — the form refused it, the site is not broken: sites mark what they still want only by a red border or a scroll to the field. Before you press again, go through the whole form, below what is visible too, for each field marked with * or «обязательно», with a red border, with aria-invalid=\"true\" or required, each dropdown still on «Выберите…» and each unticked consent box, fill every one from the person's details, and press again — but only while the form is still there with your values in it: a form that is gone or came back empty may have gone through, and then you do not press again but stop with NEEDS: info saying so. Never leave a field empty because the errand or you take it for optional: only the site says so, by accepting the form without it; when a field needs a detail you do not have, stop with NEEDS: info naming it. A date a calendar fills (a birthday included) is set by its year, then month, then day, and read back from the field before you go on: a month the calendar took wrong is a reason to pick it again, not to stop. Call a site unstable only once every field has been checked this way.";
+
+/**
  * A sign-in the site offers to remember is one the profile keeps: «Запомнить
  * меня» turns a session cookie, which dies with the browser, into one that
  * outlives it, and «доверять этому устройству» spares the next code. The
@@ -1674,6 +1685,9 @@ export function composeBrowserTask(options: {
       ? undefined
       : formFieldsLine,
     phoneGuardLine(Boolean(options.consent) || own, options.facts),
+    options.staging !== undefined || options.consent !== undefined
+      ? silentSubmitLine
+      : undefined,
     credentialsLine(options.aliases, options.site),
     vaultCardLaterLine(options),
     // The account does not exist yet: nothing to check a sign-in against.
@@ -1910,6 +1924,10 @@ export function composeBrowserContinuation(options: {
       ? undefined
       : formFieldsLine,
     phoneGuardLine(Boolean(options.consent) || own, options.facts),
+    options.done !== true &&
+    (staging !== undefined || options.consent !== undefined)
+      ? silentSubmitLine
+      : undefined,
     credentialsLine(options.aliases, options.site),
     vaultCardLaterLine(options),
     options.signUp?.begins === true
