@@ -139,6 +139,33 @@ afterEach(() => {
 });
 
 describe("Bro's own read of a site it has read before", () => {
+  it("answers with the cards of the category the site sent the search to, and does not count the read", async () => {
+    const { readSiteDirectly } = await direct();
+    const url = "https://hh.ru/search/vacancy?text=%D0%BF%D1%80%D0%BE";
+    filled(url);
+    browser.readBrowserVmSiteDirectly.mockResolvedValue({
+      ...vacancies,
+      landed: "https://hh.ru/catalog/managers/",
+      via: "page",
+    });
+    const read = await readSiteDirectly(scope, {
+      errand,
+      note: undefined,
+      sessionId: "s1",
+      site: "https://hh.ru",
+    });
+    expect(read).toEqual({
+      cards: vacancies.cards,
+      count: 50,
+      from: "page",
+      more: false,
+      order: "page",
+      page: 0,
+      url: "https://hh.ru/catalog/managers/",
+    });
+    expect(records.noteBrowserSiteOperationRead).not.toHaveBeenCalled();
+  });
+
   it("answers a search from the site's data and counts the read for its operation", async () => {
     const { readSiteDirectly, siteApiPilot, siteReadNote } = await direct();
     expect(siteApiPilot(scope)).toBe(true);
@@ -922,5 +949,25 @@ describe("Bro's own read of a site it has read before", () => {
       })
     ).toBeUndefined();
     expect(model.generateText).not.toHaveBeenCalled();
+  });
+});
+
+describe("carriesWords", () => {
+  it("drops a page whose only place is a search's id, and keeps every reviewed and found page", async () => {
+    const { carriesWords } =
+      await import("@agent/lib/browser-vm/site-ops/direct");
+    expect(
+      carriesWords({ page: "https://zoozavr.ru/search/results/%id%/" })
+    ).toBe(false);
+    for (const page of [
+      "https://hh.ru/search/vacancy?text=%query%",
+      "https://ostrovok.ru/hotel/russia/kazan/",
+      "https://www.tutu.ru/poezda/%word%/%word%/",
+      "https://www.wildberries.ru/catalog/%id%/search.aspx?search=%query%",
+      "https://hoff.ru/nsk/catalog/gostinaya/divany/",
+    ])
+      expect(carriesWords({ page })).toBe(true);
+    for (const { page } of knownSiteOperations)
+      expect(carriesWords({ page })).toBe(true);
   });
 });

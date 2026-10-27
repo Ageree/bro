@@ -328,6 +328,19 @@ const restMs = 10 * 60_000;
 /** Until when, by workspace and the errand's site host (`*` for every host): an operation may read a subdomain of it. */
 const resting = new Map<string, number>();
 
+/**
+ * Whether a search's words have a place in the operation's page: a
+ * `%query%` or `%word%` in its address. A page whose only placeholder is an
+ * id (zoozavr.ru `/search/results/%id%/`, the id the site gave one search)
+ * cannot carry another search's words: the fill would only fail, and the
+ * site would never get its first look through the site's own box.
+ */
+export function carriesWords(operation: { readonly page: string }) {
+  return (
+    /%(?:query|word)%/.test(operation.page) || !operation.page.includes("%id%")
+  );
+}
+
 function hostOf(address: string) {
   return URL.parse(address)?.hostname.replace(/^www\./u, "") ?? "";
 }
@@ -426,7 +439,9 @@ async function readSite(
     });
     return undefined;
   }
-  const operations = await siteOperationsFor(scope.workspaceId, input.site);
+  const operations = (
+    await siteOperationsFor(scope.workspaceId, input.site)
+  ).filter(carriesWords);
   if (operations.length === 0) {
     if (siteColdPilot(scope)) return lookSite(scope, input, began);
     console.info("[site-api] left to the browser", {
@@ -609,6 +624,29 @@ async function readSite(
       reason: read.reason,
     });
     return undefined;
+  }
+  if (read.landed !== undefined) {
+    // The site sent the search to a category of its own: its cards answer
+    // the turn as a look's do. Not the operation's read — it counts neither
+    // for nor against it, and there is no next page of the same search.
+    console.info("[site-api] served", {
+      ...timing,
+      cards: read.cards.length,
+      count: read.count,
+      order: "page",
+      page: ask.page,
+      via: "category",
+      workerMs: read.ms,
+    });
+    return {
+      cards: read.cards,
+      count: read.count,
+      from: "page",
+      more: false,
+      order: "page",
+      page: 0,
+      url: read.landed,
+    };
   }
   let { cards } = read;
   // The order read back: a site that did not sort as asked (an operation's
