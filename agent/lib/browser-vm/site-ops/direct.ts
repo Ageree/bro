@@ -341,6 +341,11 @@ export function carriesWords(operation: { readonly page: string }) {
   );
 }
 
+/** Whether the page has a slot for a search's words: `%query%` or `%word%`. */
+function canPlaceWords(operation: { readonly page: string }) {
+  return /%(?:query|word)%/.test(operation.page);
+}
+
 function hostOf(address: string) {
   return URL.parse(address)?.hostname.replace(/^www\./u, "") ?? "";
 }
@@ -490,6 +495,15 @@ async function readSite(
             : "fit",
       workspaceId: scope.workspaceId,
     });
+    // Pages of single categories (hoff.ru `/catalog/…/divany-uglovye/`) hold
+    // no place for words: the site's own box is still unasked.
+    if (
+      !operations.some(canPlaceWords) &&
+      siteColdPilot(scope) &&
+      !lookedRecently(scope.workspaceId, input.site, Date.now())
+    ) {
+      return lookSite(scope, input, Date.now());
+    }
     return undefined;
   }
   let search = url;

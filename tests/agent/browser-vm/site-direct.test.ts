@@ -819,6 +819,78 @@ describe("Bro's own read of a site it has read before", () => {
     }
   });
 
+  it("looks through the site's own box when it keeps only category pages, and not when one page takes words", async () => {
+    const { readSiteDirectly } = await direct("*", "*");
+    const site = {
+      errand: "Найди угловой диван на hoff.ru",
+      note: undefined,
+      site: "https://hoff.ru",
+    };
+    const saved = (page: string) => ({
+      adopted: false,
+      createdAt: new Date(),
+      failedAt: null,
+      failures: 0,
+      host: "hoff.ru",
+      id: page,
+      lastFailure: null,
+      name: page,
+      operation: {
+        fields: { link: { path: ["url"] }, name: ["name"] },
+        items: ["products"],
+        name: page,
+        page: `https://${page}`,
+        seen: { items: 20, matched: 6, of: 6 },
+        source: {
+          kind: "document",
+          state: { index: 0, tag: "script", type: "application/json" },
+        },
+      },
+      runs: 1,
+      served: 0,
+      updatedAt: new Date(),
+      workspaceId: scope.workspaceId,
+    });
+    records.listBrowserSiteOperations.mockResolvedValue([
+      saved("hoff.ru/nsk/catalog/shkafy/"),
+      saved("hoff.ru/nsk/catalog/gostinaya/divany/"),
+    ]);
+    // The fill names a page that was not offered.
+    model.generateText.mockResolvedValueOnce({
+      output: {
+        limit: 5,
+        operation: "hoff.ru/nsk/catalog/gostinaya/divany/divany-uglovye/",
+        priceMax: null,
+        priceMin: null,
+        sort: "site",
+        url: "https://hoff.ru/nsk/catalog/gostinaya/divany/divany-uglovye/",
+      },
+    });
+    model.generateText.mockResolvedValueOnce({
+      output: { query: "угловой диван", search: true, url: null },
+    });
+    browser.lookBrowserVmSiteDirectly.mockResolvedValueOnce({
+      ms: 900,
+      ok: false,
+      reason: "no_box",
+    });
+    expect(
+      await readSiteDirectly(scope, { ...site, sessionId: "c" })
+    ).toBeUndefined();
+    expect(browser.lookBrowserVmSiteDirectly).toHaveBeenCalledTimes(1);
+    // A site with a page that takes words stays with the browser.
+    browser.lookBrowserVmSiteDirectly.mockClear();
+    const other = await direct("*", "*");
+    records.listBrowserSiteOperations.mockResolvedValue([
+      saved("hoff.ru/search/?q=%query%"),
+    ]);
+    filled(null, null);
+    expect(
+      await other.readSiteDirectly(scope, { ...site, sessionId: "d" })
+    ).toBeUndefined();
+    expect(browser.lookBrowserVmSiteDirectly).not.toHaveBeenCalled();
+  });
+
   it("gives a site back when its look failed for no fault of its own, and rests the workspace only when the worker cannot look", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const { readSiteDirectly } = await direct("*", "*");
