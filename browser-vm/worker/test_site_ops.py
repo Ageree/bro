@@ -1812,3 +1812,141 @@ class SearchChromeTest(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CategoryLandingTest(unittest.TestCase):
+    def test_a_page_below_the_front_page_of_the_same_site_is_a_category_landing(self):
+        url = "https://shop.example/search/?q=ноутбук"
+        self.assertTrue(worker.site_category_landing(url, "https://shop.example/catalog/noutbuki/"))
+        self.assertTrue(worker.site_category_landing(url, "https://www.shop.example/catalog/noutbuki/"))
+        self.assertFalse(worker.site_category_landing(url, "https://shop.example/"))
+        self.assertFalse(worker.site_category_landing(url, "https://other.example/catalog/noutbuki/"))
+        self.assertFalse(worker.site_category_landing(url, "https://shop.example/search/?q=ноутбук"))
+
+    def test_a_search_that_ended_on_a_page_without_its_words_is_a_category(self):
+        self.assertTrue(worker.site_search_category("ноутбук", "https://shop.example/catalog/noutbuki/"))
+        self.assertFalse(worker.site_search_category("ноутбук", "https://shop.example/search/?q=ноутбук"))
+        self.assertFalse(worker.site_search_category("дюна", "https://shop.example/search/dyuna"))
+        self.assertFalse(worker.site_search_category("ноутбук", "https://shop.example/catalog/ноутбуки/"))
+        self.assertFalse(worker.site_search_category("ноутбук", "https://shop.example/"))
+
+
+class CategoryLandingChromeTest(unittest.IsolatedAsyncioTestCase):
+    """A search the site sends to a category of its own, in a real Chromium (no network): set BRO_SITE_ROWS_CHROME as
+    for RowsChromeTest; CI skips it."""
+
+    OPERATION = {"name": "shop.example/search/", "page": "https://shop.example/search/?q=%query%",
+                 "source": {"kind": "document", "state": {"tag": "template", "id": "state"}}, "items": ["items"]}
+    HOME = ("<html><body><form action=\"/search/\" role=\"search\"><input name=\"q\" placeholder=\"Поиск\">"
+            "<button type=\"submit\">Найти</button></form><main>" + "<p>Магазин</p>" * 20 + "</main></body></html>")
+
+    @staticmethod
+    def cards(title, head=""):
+        items = "".join(f"<li class=\"card\"><a href=\"/item/{n}\">{title} модель {n}</a><span>{1000 + n} ₽</span></li>"
+                        for n in range(12))
+        return f"<html><head>{head}</head><body><main><ul>{items}</ul></main></body></html>"
+
+    async def asyncSetUp(self):
+        import os
+
+        chrome = os.environ.get("BRO_SITE_ROWS_CHROME")
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError:
+            async_playwright = None
+        if not chrome or async_playwright is None:
+            self.skipTest("set BRO_SITE_ROWS_CHROME to a Chromium binary, with Playwright installed")
+        import ssl
+        import subprocess
+        import tempfile
+
+        from aiohttp import web
+
+        # The site is a local TLS server the browser reaches under the site's name: a redirect (the search's way to its
+        # category) is the network's, which a fulfilled route does not follow.
+        self.certs = tempfile.TemporaryDirectory()
+        key, cert = f"{self.certs.name}/key.pem", f"{self.certs.name}/cert.pem"
+        subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", cert,
+                        "-days", "1", "-subj", "/CN=shop.example"], check=True, capture_output=True)
+        context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+        context.load_cert_chain(cert, key)
+
+        async def serve(request):
+            query = request.query.get("q")
+            if request.path == "/search/":
+                # «ноутбук» is a category's word, an exact title a product's; the site has no search page of its own.
+                target = {"ноутбук": "/catalog/noutbuki/", "ноутбук x1": "/item/x1/",
+                          "ничего": "/"}.get(query, "/catalog/other/")
+                raise web.HTTPFound(target)
+            if request.path == "/catalog/noutbuki/":
+                body = self.cards("Ноутбук")
+            elif request.path == "/item/x1/":
+                body = self.cards("Ноутбук", "<meta property=\"og:type\" content=\"product\">")
+            elif request.path == "/catalog/other/":
+                body = self.cards("Чайник")
+            elif request.path == "/robots.txt":
+                return web.Response(text="User-agent: *")
+            else:
+                body = self.HOME
+            return web.Response(text=body, content_type="text/html")
+
+        app = web.Application()
+        app.router.add_get("/{tail:.*}", serve)
+        self.runner = web.AppRunner(app)
+        await self.runner.setup()
+        site = web.TCPSite(self.runner, "127.0.0.1", 0, ssl_context=context)
+        await site.start()
+        port = self.runner.addresses[0][1]
+        self.playwright = await async_playwright().start()
+        self.browser = await self.playwright.chromium.launch(executable_path=chrome, args=[
+            "--no-sandbox", "--no-proxy-server", f"--host-resolver-rules=MAP shop.example 127.0.0.1:{port}",
+            "--ignore-certificate-errors"])
+        self.context = await self.browser.new_context()
+        self.page = await self.context.new_page()
+
+    async def asyncTearDown(self):
+        await self.browser.close()
+        await self.playwright.stop()
+        await self.runner.cleanup()
+        self.certs.cleanup()
+
+    async def moved(self, words):
+        url = "https://shop.example/search/?q=" + urllib.parse.quote(words)
+        with self.assertRaises(worker.SiteOpFailure) as raised:
+            await worker.site_op_fetched(self.page, self.OPERATION, url)
+        self.assertEqual(raised.exception.reason, "moved")
+        return url, raised.exception.landed
+
+    async def test_a_direct_read_sent_to_a_category_gets_its_cards(self):
+        url, landed = await self.moved("ноутбук")
+        cards = await worker.site_op_landed({"page": self.page}, self.OPERATION, url, landed, time.monotonic() + 30)
+        self.assertEqual(len(cards), 12)
+        rows = worker.site_page_cards(cards, landed)
+        self.assertEqual(rows[0]["link"], "https://shop.example/item/0")
+        self.assertTrue(rows[0]["price"].endswith("1000 ₽"))
+
+    async def test_a_read_with_too_little_of_its_time_left_does_not_open_the_category(self):
+        # Bro waits 45 s for /v1/op: the category's cards come within the read's own SITE_OP_DIRECT_S.
+        url, landed = await self.moved("ноутбук")
+        self.assertIsNone(await worker.site_op_landed({"page": self.page}, self.OPERATION, url, landed,
+                                                      time.monotonic() + 1))
+        self.assertNotEqual(urllib.parse.urlsplit(self.page.url).path, urllib.parse.urlsplit(landed).path)
+
+    async def test_a_category_that_names_nothing_of_the_search_is_not_its_answer(self):
+        url, landed = await self.moved("кастрюля")
+        self.assertIsNone(await worker.site_op_landed({"page": self.page}, self.OPERATION, url, landed, time.monotonic() + 30))
+
+    async def test_a_search_sent_to_one_items_page_is_not_a_list(self):
+        url, landed = await self.moved("ноутбук x1")
+        self.assertIsNone(await worker.site_op_landed({"page": self.page}, self.OPERATION, url, landed, time.monotonic() + 30))
+
+    async def test_a_search_sent_to_the_front_page_is_not_a_list(self):
+        url, landed = await self.moved("ничего")
+        self.assertIsNone(await worker.site_op_landed({"page": self.page}, self.OPERATION, url, landed, time.monotonic() + 30))
+
+    async def test_a_search_through_the_box_that_ends_on_a_category_gives_its_cards(self):
+        holder = {}
+        cards = await worker.site_search_on(self.page, "https://shop.example/", "ноутбук", holder,
+                                            time.monotonic() + worker.SITE_SEARCH_S)
+        self.assertTrue(worker.site_look_answers("ноутбук", cards))
+        self.assertTrue(worker.site_search_category("ноутбук", self.page.url))

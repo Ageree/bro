@@ -802,6 +802,10 @@ SITE_OP_DIRECT_AT_ONCE = 2
 # waits for its answer (`readBrowserVmSite`), since an answer it stopped waiting for still holds a slot here.
 SITE_OP_LOAD_S = 12
 SITE_OP_DIRECT_S = 38
+# A search the site sent to a category of its own (`site_op_landed`): how long its cards are given to draw, and the
+# least of the read's own time (SITE_OP_DIRECT_S) that must be left for it — Bro's 45 s still hold.
+SITE_OP_LANDED_S = 8
+SITE_OP_LANDED_MIN_S = 3
 # How long a page the site answered with its own check (401, 403, 429…) is given to pass it and reload itself
 # (`site_goto`): a script's check passes in a second or two; a captcha never does, and costs a read this much.
 SITE_CHECK_S = 8
@@ -8788,6 +8792,7 @@ async def site_op(request):
     site_op_gate = site_op_gate or asyncio.Semaphore(SITE_OP_DIRECT_AT_ONCE)
     began = time.monotonic()
     holder = {"page": None, "via": None}
+    category = None
     async with site_op_gate:
         try:
             data = await asyncio.wait_for(site_op_direct(operation, url, holder), SITE_OP_DIRECT_S)
@@ -8798,12 +8803,23 @@ async def site_op(request):
             cards, reason, detail, landed = None, failure.reason, str(failure), failure.landed
             if reason not in ("blocked",) and holder["page"] is not None and await code_wall(holder["page"]):
                 reason = "blocked"
+            # A search the site sent to its category answers with the category's cards.
+            if reason == "moved":
+                shown = await site_op_landed(holder, operation, url, landed, began + SITE_OP_DIRECT_S)
+                if shown is not None:
+                    category = site_page_cards(shown, landed)
         except Exception as error:
             cards, reason, detail, landed = None, "failed", f"{type(error).__name__}: {str(error)[:200]}", None
         finally:
             await site_op_close(holder)
     ms = round((time.monotonic() - began) * 1000)
     via = holder["via"]
+    if category is not None:
+        # The category's cards in the site's order: `landed` tells Bro they are the page's, not the operation's.
+        picked = category[:max(1, min(limit, SITE_OP_PICKED))]
+        log.info("site op %s: %d cards of the category it went to, %s, %d ms", operation["name"], len(category), fit, ms)
+        return web.json_response({"ok": True, "count": len(category), "cards": picked, "fit": fit, "via": "page",
+                                  "landed": landed, "ms": ms})
     if cards is None:
         # Where a moved page went, as a template: the shape of the address (a category's page, a city's host), not
         # its words.
@@ -8894,6 +8910,74 @@ async def site_op_close(holder):
 
 
 SITE_OP_CLOSE_S = 5
+
+
+# The one item a page is about (og:type, schema.org Product): a search by an exact title or code that the site sends to
+# the item is not a list of results, whatever «similar items» it shows below.
+SITE_PRODUCT_PAGE_JS = r"""() => {
+  const type = document.querySelector('meta[property="og:type"]');
+  if (type && /product/i.test(type.getAttribute('content') || '')) return true;
+  for (const script of document.querySelectorAll('script[type="application/ld+json"]')) {
+    if (/"@type"\s*:\s*"Product"/.test(script.textContent || '')) return true;
+  }
+  return false;
+}"""
+
+
+def site_category_landing(url, landed):
+    """Whether a page asked at `url` went on to another of the site's own below its front page: the category a search
+    for its word is sent to (4lapy.ru, biggeek.ru, kant.ru for «ноутбук» or «корм для кошек», 26.10). The front page is
+    never the search's, and another site is `moved` for good (`site_same_place`)."""
+    got = urllib.parse.urlsplit(landed or "")
+    return (site_same_place(url, landed) and not site_same_path(url, landed)
+            and got.path.strip("/") != "")
+
+
+async def site_op_landed(holder, operation, url, landed, deadline):
+    """The cards of the category a search was sent to, for a document or xhr operation whose page answered from
+    another address (`moved`): read from the tab, when the site's own page there is a list that names the words asked
+    (`site_look_answers`, as a look's). None otherwise — a front page, another site, an item's own page, a list that
+    names nothing of the search — and the read goes on as `moved`, which does not count against the operation. The
+    cards are the page's, in its order, not the operation's data. Within the read's own `deadline` (monotonic)."""
+    page = holder.get("page")
+    if page is None or page.is_closed() or not site_category_landing(url, landed):
+        return None
+    words = " ".join(sorted(site_query_words(operation, url)))
+    until = min(time.monotonic() + SITE_OP_LANDED_S, deadline)
+    if not words or until - time.monotonic() < SITE_OP_LANDED_MIN_S:
+        return None
+    try:
+        if urllib.parse.urldefrag(page.url)[0] != urllib.parse.urldefrag(landed)[0]:
+            await page.goto(landed, wait_until="domcontentloaded", timeout=(until - time.monotonic()) * 1000)
+        if not site_same_place(url, page.url) or await page.evaluate(SITE_PRODUCT_PAGE_JS):
+            return None
+        best, last = [], None
+        while True:
+            now = await page.evaluate(CODE_CARDS_JS, SITE_LOOK_CARDS)
+            best = now if len(now) >= len(best) else best
+            mark = (len(now), now[0]["text"] if now else "")
+            if (mark == last and len(now) >= 5) or time.monotonic() >= until - 0.7:
+                break
+            last = mark
+            await asyncio.sleep(0.7)
+    except Exception:
+        return None
+    if len(best) < 3 or not site_look_answers(words, best):
+        return None
+    return best
+
+
+def site_page_cards(cards, landed):
+    """A page's cards as a direct read's: name, price (the first in the card's text) and a link on the page's own
+    host."""
+    rows = []
+    for card in cards[:SITE_LOOK_CARDS]:
+        price = SITE_LOOK_PRICE.search(card.get("text") or "")
+        link = next((link for link in card.get("links") or []
+                     if link.startswith("https://") and site_same_place(landed, link)), None)
+        rows.append({"name": (card.get("title") or "")[:SITE_OP_FIELD_CHARS], "price": price.group(0) if price else None,
+                     "link": link, "more": {}})
+    return rows
 
 
 # A first look at a site's results page (`/v1/look`): how long it may take in all once it has its slot — the
@@ -9020,13 +9104,16 @@ async def site_look(request):
             await asyncio.wait_for(recorder.settle(), max(0.1, min(3, deadline - time.monotonic() - 1.5)))
         if search:
             site_search_results_only(recorder, home)
-        operations = await site_operations_found(recorder, site_look_report(cards), None,
-                                                 max(0.5, deadline - time.monotonic() - 0.5))
-        operations = [operation for operation in operations if site_words_placed(operation, words)]
+        # A search the site sent to a category of its own answers with the category's cards, but its page is the
+        # word's alone: an operation learned there would read this category for every other search.
+        category = search and site_search_category(words, holder["page"].url)
+        operations = [] if category else [operation for operation in await site_operations_found(
+            recorder, site_look_report(cards), None, max(0.5, deadline - time.monotonic() - 0.5))
+            if site_words_placed(operation, words)]
         # No data of the site's holds the cards: their rows, learned from the cards' own structure (a look's report
         # is made of the cards' titles, which mislead: a train's station, a section's heading, an old price).
         left = deadline - time.monotonic() - 0.5
-        if not operations and left >= SITE_ROWS_MIN_S and not holder["page"].is_closed():
+        if not operations and not category and left >= SITE_ROWS_MIN_S and not holder["page"].is_closed():
             page = holder["page"]
             operations = [operation for operation in await site_rows_operations(
                 page_evaluator(page), page.url, None, recorder_document(recorder, page.url), None, left)
@@ -9764,6 +9851,20 @@ async def site_search_cards(page, home, homely, until):
         last = mark
         await asyncio.sleep(0.7)
     return best
+
+
+def site_search_category(words, landed):
+    """Whether a search through the site's box ended on a category's page rather than a results page: below the
+    front page, with no query and no word of a search in its path (/catalog/noutbuki/), and none of the words in it
+    (a results page keeps them in its address, in the site's alphabet or not: /search/dyuna)."""
+    parts = urllib.parse.urlsplit(landed or "")
+    if parts.path.strip("/") == "" or parts.query:
+        return False
+    path = urllib.parse.unquote(parts.path).lower()
+    if re.search(r"search|poisk|find|query|result", path):
+        return False
+    stems = {word[:4] for word in site_words(words or "").split() if len(word) >= 4}
+    return not any(stem in site_words(path) for stem in stems)
 
 
 def site_search_results_only(recorder, home):
