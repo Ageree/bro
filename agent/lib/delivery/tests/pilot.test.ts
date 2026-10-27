@@ -30,6 +30,9 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.stubEnv("EARLY_REPLY_WORKSPACES", "");
   vi.stubEnv("OPENROUTER_API_KEY", "");
+  vi.stubEnv("VOICE_WORKSPACES", "");
+  vi.stubEnv("VOICE_FAST_WORKSPACES", "");
+  vi.stubEnv("OPENAI_API_KEY", "");
 });
 
 async function loadPilot(list: string, settings: Record<string, string>) {
@@ -64,6 +67,7 @@ function callerContext(principalType: "service" | "user") {
       },
       id: "session-1",
     },
+    messages: [],
   } as const;
 }
 
@@ -120,5 +124,28 @@ describe("the pilot list of the early reply", () => {
       await unset.earlyReplyPilotOfCaller(callerContext("user"), event)
     ).toBe(false);
     expect(services.readAccountEmail).not.toHaveBeenCalled();
+  });
+
+  it("sends no heads-up in a turn from the fast voice, as the model's resolver", async () => {
+    const { earlyReplyPilotOfCaller } = await loadPilot("*", {
+      ...openRouter,
+      OPENAI_API_KEY: "sk-test-voice",
+      VOICE_FAST_WORKSPACES: workspaceId,
+      VOICE_WORKSPACES: "*",
+    });
+    const event = { data: { stepIndex: 0, turnId: "turn_7" } };
+    const voiced = {
+      ...callerContext("user"),
+      messages: [
+        { content: "[голосом] Какая завтра погода?", role: "user" as const },
+      ],
+    };
+
+    expect(await earlyReplyPilotOfCaller(voiced, event)).toBe(false);
+    expect(
+      await earlyReplyPilotOfCaller(callerContext("user"), {
+        data: { stepIndex: 0, turnId: "turn_8" },
+      })
+    ).toBe(true);
   });
 });

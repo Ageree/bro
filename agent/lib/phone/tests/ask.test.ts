@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type * as Ai from "ai";
-import { askBro, speakableAnswer } from "@agent/lib/phone/ask";
+import { prepareAskBro, speakableAnswer } from "@agent/lib/phone/ask";
 import { outboundPrompt } from "@shared/phone/persona";
 
 const mocks = vi.hoisted(() => ({
@@ -50,13 +50,13 @@ vi.mock("@db/services/memory/records", () => ({
 
 const scope = { userId: "u1", workspaceId: "w1" };
 const publicNumber = "+79249098921";
-const question = {
+const call = {
   scope,
   task: "Забронировать столик на вечер",
   target: "+78005553535",
   publicNumber,
-  heard: "Собеседник: На какую фамилию записать?",
 };
+const heard = "Собеседник: На какую фамилию записать?";
 const memory = (
   text: string,
   extra: { category?: string; localOnly?: boolean } = {}
@@ -133,13 +133,13 @@ describe("the question put to Bro", () => {
     mocks.calls.mockResolvedValue([
       {
         direction: "outbound",
-        target: question.target,
+        target: call.target,
         state: "done",
         summary: `Call transcript (task success is for you to judge from it):\n${"Бро: привет. ".repeat(80)}Договорились на 19:00`,
       },
       {
         direction: "outbound",
-        target: question.target,
+        target: call.target,
         state: "done",
         summary: "The call connected, but nothing was heard or said.",
       },
@@ -154,14 +154,14 @@ describe("the question put to Bro", () => {
       output: { answer: "На Иванова.", source: "profile" },
     });
 
-    await expect(askBro(question)).resolves.toBe("На Иванова.");
+    await expect(prepareAskBro(call)(heard)).resolves.toBe("На Иванова.");
 
     const sent = mocks.generateText.mock.calls[0]?.[0].prompt ?? "";
     expect(sent).toContain("Максим Иванов");
     expect(sent).toContain("Не ем свинину");
     expect(sent).toContain('"memories":["Не ем свинину"]');
     expect(sent).toContain("Договорились на 19:00");
-    expect(sent).toContain(question.heard);
+    expect(sent).toContain(heard);
     expect(sent).toContain("Не называй мою фамилию по телефону");
     expect(sent).not.toContain("Call transcript");
     expect(sent).not.toContain("nothing was heard");
@@ -180,12 +180,29 @@ describe("the question put to Bro", () => {
   });
 
   it("answers nothing when the model fails or says a secret", async () => {
+    const ask = prepareAskBro(call);
     mocks.generateText.mockRejectedValueOnce(new Error("down"));
-    await expect(askBro(question)).resolves.toBeNull();
+    await expect(ask(heard)).resolves.toBeNull();
     mocks.generateText.mockResolvedValueOnce({
       output: { answer: "Звоните на me@example.com", source: "profile" },
     });
-    await expect(askBro(question)).resolves.toBeNull();
+    await expect(ask(heard)).resolves.toBeNull();
+  });
+
+  it("reads the user's data once, when the call is placed, and only the model for each question", async () => {
+    mocks.generateText.mockResolvedValue({
+      output: { answer: "На Иванова.", source: "profile" },
+    });
+    const ask = prepareAskBro(call);
+    await ask(heard);
+    await ask("Собеседник: А по какому номеру перезвонить?");
+
+    expect(mocks.profile).toHaveBeenCalledOnce();
+    expect(mocks.memories).toHaveBeenCalledOnce();
+    expect(mocks.generateText).toHaveBeenCalledTimes(2);
+    expect(mocks.generateText.mock.calls[1]?.[0].prompt).toContain(
+      "А по какому номеру перезвонить?"
+    );
   });
 });
 
@@ -203,6 +220,15 @@ describe("the call's prompt", () => {
     expect(outboundPrompt(base)).not.toContain("делегированием");
     expect(outboundPrompt({ ...base, canAsk: true })).toContain(
       "делегированием"
+    );
+  });
+
+  it("words the voice's wait its own way only in the fast pilot", () => {
+    expect(outboundPrompt({ ...base, canAsk: true, quickAsk: true })).not.toBe(
+      outboundPrompt({ ...base, canAsk: true })
+    );
+    expect(outboundPrompt({ ...base, quickAsk: true })).toBe(
+      outboundPrompt(base)
     );
   });
 });

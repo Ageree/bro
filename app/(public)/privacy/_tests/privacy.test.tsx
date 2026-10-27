@@ -25,6 +25,7 @@ describe("privacy page", () => {
       "RouterAI",
       "Composio",
       "ElevenLabs",
+      "GPT-Live",
       "AgentMail",
       "Mail.ru и Яндекс",
       "Песочница для кода",

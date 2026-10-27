@@ -5,12 +5,20 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import * as z from "zod";
 import { sendMessageToolResultSchema } from "@shared/chat/message-delivery";
 import { voiceTalkMarker } from "@shared/voice/marker";
+import {
+  voiceCalendarPath,
+  voicePaceHeader,
+  voiceSessionPath,
+} from "@shared/voice/routes";
 import { Hearing } from "../_lib/hearing";
 import {
   alreadySentCommentary,
   asksPerson,
   failedCommentary,
+  notePieces,
+  progressCommentary,
   replyCommentary,
+  spokenText,
   unheardCommentary,
   unsentCommentary,
   waitingCommentary,
@@ -251,6 +259,9 @@ function openCall(input: {
   let lastActivityAt = 0;
   let speakingUntil = 0;
   let latestDelegation: string | undefined;
+  // VOICE_FAST_WORKSPACES, as the session's answer says: the page tells the
+  // voice what to say while Bro works, and Bro's messages go over bare.
+  let pagePaced = false;
   // Bro's question the person has not answered yet: GPT-Live may take their
   // reply for part of the task under way and delegate nothing (20.10 the
   // owner's choice after «Что берём?» never reached Bro), and its docs leave
@@ -279,6 +290,31 @@ function openCall(input: {
     void audio.play().catch(() => {
       input.onSilentAudio();
     });
+  });
+
+  // The person's calendar for the voice's context (VOICE_FAST_WORKSPACES;
+  // elsewhere the route is missing): Google takes a second or two, so the
+  // line does not wait for it, and it arrives as a silent note.
+  const calendar = fetch(voiceCalendarPath, { cache: "no-store" })
+    .then(async (response) =>
+      response.status === 200 ? await response.text() : undefined
+    )
+    .catch(() => undefined);
+  const noteCalendar = (text: string | undefined) => {
+    if (text === undefined || channel.readyState !== "open") return;
+    for (const [index, content] of notePieces(text).entries()) {
+      channel.send(
+        JSON.stringify({
+          type: "session.thinking.append",
+          event_id: `calendar_${String(index)}`,
+          delegation_id: null,
+          content,
+        })
+      );
+    }
+  };
+  channel.addEventListener("open", () => {
+    void calendar.then(noteCalendar);
   });
 
   const comment = (delegationId: string | undefined, content: string) => {
@@ -313,7 +349,13 @@ function openCall(input: {
             : (output.text ?? "Прислал файл в чат.");
         deliveredSinceBoundary += 1;
         lastActivityAt = clock();
-        comment(latestDelegation, replyCommentary(text));
+        // The fast voice gets the bare text: wrapped as «сообщение уже ушло
+        // человеку в чат», it opened with «Я уже ему написал:» in 21 of 45
+        // answers (probe 27.10), and the bare text never.
+        comment(
+          latestDelegation,
+          pagePaced ? spokenText(text) : replyCommentary(text)
+        );
         answerOwed =
           asksPerson(text) && latestDelegation !== undefined
             ? { delegationId: latestDelegation, since: clock() }
@@ -475,6 +517,8 @@ function openCall(input: {
       lastActivityAt = now;
       answerOwed = undefined;
       report("delegated");
+      // Within GPT-Live's 800 ms, before its own «Секунду, смотрю».
+      if (pagePaced) comment(created.data.delegation.id, progressCommentary);
       void delegate(created.data.delegation.id);
     } else if (event.type === "session.closed") {
       report("closed");
@@ -511,7 +555,7 @@ function openCall(input: {
   const connected = (async () => {
     const offer = await peer.createOffer();
     await peer.setLocalDescription(offer);
-    const response = await fetch("/api/voice/session", {
+    const response = await fetch(voiceSessionPath, {
       body: offer.sdp,
       headers: { "Content-Type": "application/sdp" },
       method: "POST",
@@ -520,6 +564,7 @@ function openCall(input: {
       throw new Error(
         `Сервер не открыл голосовую сессию (${String(response.status)}).`
       );
+    pagePaced = response.headers.get(voicePaceHeader) === "page";
     await peer.setRemoteDescription({
       sdp: await response.text(),
       type: "answer",

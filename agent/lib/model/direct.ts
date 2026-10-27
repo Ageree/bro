@@ -1515,6 +1515,12 @@ export function directModelSelection(
      * cache keeps through a pause (`warm.ts`, PROMPT_WARM_WORKSPACES).
      */
     readonly warmConversation?: string;
+    /**
+     * With `warmConversation`: the workspace of a turn from /talk's voice,
+     * whose prompt opens the workspace's next voice conversation warm
+     * (`warmVoicePrompt`).
+     */
+    readonly warmVoice?: string;
     /** Tools this step may not call, though the turn has them. */
     readonly withheldTools?: readonly string[];
   }
@@ -1557,7 +1563,7 @@ export function directModelSelection(
     // Around every other: the call that reaches RunInfra is the
     // conversation's, whichever middleware makes it.
     ...(options.warmConversation
-      ? [warmCallMiddleware(options.warmConversation)]
+      ? [warmCallMiddleware(options.warmConversation, options.warmVoice)]
       : []),
     // Outermost of the rest: it reads the price the one below puts where eve
     // reads it.

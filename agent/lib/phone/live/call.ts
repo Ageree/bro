@@ -89,6 +89,10 @@ export async function dialLive(input: {
   askLimit?: number;
   /** How long the voice waits for `ask`. */
   askTimeoutMs?: number;
+  /** How long GPT-Live waits before its own acknowledgement of a delegation; at once when unset. */
+  acknowledgementDelayMs?: number;
+  /** What the voice is told to say the moment it hands a question to `ask`, in place of that acknowledgement. */
+  askProgress?: string;
 }) {
   const { line } = input;
   const domain = line.hostname;
@@ -161,11 +165,16 @@ export async function dialLive(input: {
     // The far side's last words reach the transcript a moment after they are said.
     await new Promise((resolve) => setTimeout(resolve, 500));
     const heard = transcript().split("\n").slice(-6).join("\n");
+    const askedAt = performance.now();
     const said = await within(
       (input.ask?.(heard) ?? Promise.resolve(null)).catch(() => null),
       input.askTimeoutMs ?? 7000
     );
-    say("asked", { answered: said ? 1 : 0, n: asked });
+    say("asked", {
+      answered: said ? 1 : 0,
+      ms: Math.round(performance.now() - askedAt),
+      n: asked,
+    });
     return said
       ? `Из данных пользователя: ${JSON.stringify(said)}. Скажи это собеседнику своими словами, коротко, и продолжай задачу.`
       : noAnswer;
@@ -178,6 +187,15 @@ export async function dialLive(input: {
         askInFlight = null;
       });
     }
+    // Each delegation that waits on Bro, the second one too, says what it checks: otherwise the voice fills the
+    // wait with its own acknowledgement once its delay is up.
+    if (askInFlight && input.askProgress !== undefined)
+      live?.send({
+        type: "session.commentary.append",
+        event_id: `progress_${id}`,
+        delegation_id: id,
+        content: input.askProgress,
+      });
     const content = (await askInFlight) ?? noAnswer;
     live?.send({
       type: "session.commentary.append",
@@ -303,7 +321,13 @@ export async function dialLive(input: {
           format: { type: "audio/pcma", rate: 8000 },
           output: { voice: input.voice },
         },
-        delegation: { type: "client" },
+        delegation:
+          input.acknowledgementDelayMs === undefined
+            ? { type: "client" }
+            : {
+                type: "client",
+                acknowledgement_delay_ms: input.acknowledgementDelayMs,
+              },
       },
       onEvent: onLiveEvent,
     });

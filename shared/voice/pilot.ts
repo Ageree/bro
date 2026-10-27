@@ -12,3 +12,24 @@ export function voiceTalkEnabled(workspaceId: string) {
     env.OPENAI_API_KEY !== undefined
   );
 }
+
+/**
+ * Whether /talk's voice knows its person and waits less (VOICE_FAST_WORKSPACES,
+ * ids or `*`, within the voice pilot): the session carries a brief of the
+ * person (`agent/lib/voice/brief.ts`), the voice says no filler before a quick
+ * answer, and Bro's turns from the voice skip the heads-up and the tool
+ * router (`agent/lib/voice/turn.ts`).
+ */
+export function voiceFastEnabled(workspaceId: string) {
+  return voiceTalkEnabled(workspaceId) && voiceFastListed(workspaceId);
+}
+
+/**
+ * Whether VOICE_FAST_WORKSPACES names the workspace, whatever its other
+ * pilots: a GPT-Live call reads its answers ahead and says no filler before
+ * a quick one (`agent/lib/phone/live/place.ts`).
+ */
+export function voiceFastListed(workspaceId: string) {
+  const list = env.VOICE_FAST_WORKSPACES ?? [];
+  return list.includes("*") || list.includes(workspaceId);
+}

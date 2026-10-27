@@ -1,13 +1,16 @@
 import {
-  askBro,
+  askAcknowledgementDelayMs,
   askLimit,
+  askProgressLine,
   askTimeoutMs,
   phoneAskFor,
+  prepareAskBro,
 } from "@agent/lib/phone/ask";
 import { updatePhoneCall } from "@db/services/phone";
 import { env } from "@shared/environment";
 import type { AccessScope } from "@shared/identity/access-scope";
 import { readSipCredentials } from "@shared/phone/exolve";
+import { voiceFastListed } from "@shared/voice/pilot";
 import {
   liveCallMaxSeconds,
   liveCallRules,
@@ -63,6 +66,15 @@ export async function placeLiveCall(input: {
       "The SIP line is unavailable or carries another number."
     );
   const canAsk = phoneAskFor(input.scope.workspaceId);
+  const quickAsk = canAsk && voiceFastListed(input.scope.workspaceId);
+  const ask = canAsk
+    ? prepareAskBro({
+        scope: input.scope,
+        task: input.task,
+        target: input.target,
+        publicNumber: input.publicNumber,
+      })
+    : undefined;
   const call = await dialLive({
     line,
     target: input.target,
@@ -73,6 +85,7 @@ export async function placeLiveCall(input: {
       repeatCall: input.repeatCall,
       task: input.task,
       canAsk,
+      quickAsk,
     }),
     voice: liveVoice,
     maxTalkSeconds: liveCallMaxSeconds,
@@ -80,18 +93,11 @@ export async function placeLiveCall(input: {
     ringSeconds,
     apiKey,
     proxyUrl: env.OPENAI_PROXY_URL,
-    ask: canAsk
-      ? (heard) =>
-          askBro({
-            scope: input.scope,
-            task: input.task,
-            target: input.target,
-            publicNumber: input.publicNumber,
-            heard,
-          })
-      : undefined,
+    ask,
     askLimit,
     askTimeoutMs,
+    acknowledgementDelayMs: quickAsk ? askAcknowledgementDelayMs : undefined,
+    askProgress: quickAsk ? askProgressLine : undefined,
   });
   return {
     // The reconciler tells live calls by this prefix; GPT-Live's own ids carry it, but nothing promises so.

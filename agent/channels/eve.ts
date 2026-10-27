@@ -30,7 +30,7 @@ import { getAuthSession } from "@db/services/auth/session";
 import { sendMessageToolResultSchema } from "@shared/chat/message-delivery";
 import { webMessageBodyBytes } from "@shared/chat/web-files";
 import { voiceTalkMarker } from "@shared/voice/marker";
-import { voiceTalkEnabled } from "@shared/voice/pilot";
+import { voiceFastEnabled, voiceTalkEnabled } from "@shared/voice/pilot";
 import {
   finalizeScheduledReportDelivery,
   releaseScheduledReportDelivery,
@@ -132,7 +132,12 @@ const channel = eveChannel({
     // context below is read and the turn waits in the world's queue.
     const sessionId = context.eve.sessionId;
     const text = z.string().safeParse(message).data;
-    if (sessionId !== undefined && text !== undefined) {
+    // A turn from /talk's voice in its fast pilot does not ask the router
+    // (`fastVoiceTurn`).
+    const fastVoice =
+      text?.startsWith(voiceTalkMarker) === true &&
+      voiceFastEnabled(scope.workspaceId);
+    if (sessionId !== undefined && text !== undefined && !fastVoice) {
       askRouterAboutNext({
         conversation: `web:${sessionId}`,
         words: text,

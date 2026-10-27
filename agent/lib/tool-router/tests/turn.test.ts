@@ -81,6 +81,7 @@ function inputs(overrides: Partial<RouterInputs> = {}): RouterInputs {
     state: emptyRouterState,
     step: { sessionId: "session-1", stepIndex: 0, turnId: "turn_2" },
     triggered: [],
+    voice: false,
     warmMs: 60 * 60_000,
     wholeOnGrowth: false,
     withPrev: true,
@@ -199,6 +200,34 @@ describe("the router's choice of a turn's groups", () => {
       "phone",
       "events",
     ]);
+  });
+
+  it("gives a turn of the voice every group without asking, and keeps it through its steps", () => {
+    // 27.10: each new topic of a voice conversation changed the block, and
+    // the step read the whole prompt cold.
+    const choice = chooseRouterGroups(
+      inputs({
+        state: after(["calendar"], 5),
+        triggered: ["google"],
+        voice: true,
+      })
+    );
+    expect(choice.ask).toBeUndefined();
+    const outcome = choice.finish(undefined);
+    expect(outcome.groups).toEqual([...routerGroups]);
+    expect(outcome.reason).toBe("voice");
+    // The person said more mid-turn: nothing to ask, the block stays.
+    const next = chooseRouterGroups(
+      inputs({
+        digest: "digest-3",
+        state: outcome.state,
+        step: { sessionId: "session-1", stepIndex: 1, turnId: "turn_2" },
+        voice: true,
+      })
+    );
+    expect(next.ask).toBeUndefined();
+    expect(next.finish(undefined).groups).toEqual([...routerGroups]);
+    expect(next.finish(undefined).blockChanged).toBe(false);
   });
 
   it("keeps the last turn's set within the warm window, and drops it past", () => {

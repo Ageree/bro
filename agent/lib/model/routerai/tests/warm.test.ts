@@ -67,11 +67,16 @@ function pings(sent: ReturnType<typeof vi.fn<typeof fetch>>) {
   }));
 }
 
-async function step(words: string, warmConversation?: string) {
+async function step(
+  words: string,
+  warmConversation?: string,
+  warmVoice?: string
+) {
   const { directModelSelection } = await import("@agent/lib/model/direct");
   const selection = directModelSelection("deepseek/deepseek-v4.1-flash", {
     toolChoice: "auto",
     warmConversation,
+    ...(warmVoice !== undefined && { warmVoice }),
   });
   await generateText({
     model: selection.model,
@@ -166,5 +171,28 @@ describe("a person's prompt kept in RunInfra's cache", () => {
     expect(pinged).toHaveBeenCalledOnce();
     await step("Ты тут?");
     expect(stepUrls()).toEqual([runInfraUrl, runInfraUrl]);
+  });
+
+  it("opens a workspace's next voice conversation with its last voice prompt, once", async () => {
+    const { warmVoicePrompt } = await import("@agent/lib/model/routerai/warm");
+    warmVoicePrompt("personal:w1");
+    await step("Что у меня завтра?", "session-typed");
+    warmVoicePrompt("personal:w1");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pinged).not.toHaveBeenCalled();
+
+    await step(
+      "[голосом] Какая завтра погода?",
+      "session-voice",
+      "personal:w1"
+    );
+    warmVoicePrompt("personal:w2");
+    warmVoicePrompt("personal:w1");
+    // A page opened again within minutes needs no second ping.
+    warmVoicePrompt("personal:w1");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pings(pinged).map((ping) => ping.body.messages)).toEqual([
+      [{ content: "[голосом] Какая завтра погода?", role: "user" }],
+    ]);
   });
 });

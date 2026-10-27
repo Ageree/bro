@@ -26,6 +26,28 @@ const callConversation = new AsyncLocalStorage<string>();
 const held = new Map<string, ReturnType<typeof setTimeout>>();
 
 /**
+ * The workspace of a turn from /talk's voice (`fastVoiceTurn`), set by
+ * `warmCallMiddleware` beside the conversation: its last prompt is what a new
+ * voice conversation of the workspace shares up to its history — the tool
+ * block, the instructions and memory (`warmVoicePrompt`).
+ */
+const callVoice = new AsyncLocalStorage<string>();
+
+const voicePrompts = new Map<
+  string,
+  {
+    readonly at: number;
+    readonly ping: string;
+    pingedAt?: number;
+    readonly send: (body: string) => Promise<boolean>;
+  }
+>();
+/** A voice prompt older than this is not sent again: what it held may be gone. */
+const voicePromptLifeMs = 12 * 60 * 60_000;
+/** A warm prompt needs no second ping this soon: a page reloaded, a call retried. */
+const voiceRepingMs = 10 * 60_000;
+
+/**
  * The session whose model call this is, when `warmCallMiddleware` marked
  * it: the `[model] call` and `[model] prefix` lines name it, so a call is
  * lined up with its session's `[tools]` line and its previous call.
@@ -48,14 +70,37 @@ export function promptWarmWorkspace(workspaceId: string) {
  * reaches RunInfra is the one its next pause keeps warm (`keepWarm`).
  */
 export function warmCallMiddleware(
-  conversation: string
+  conversation: string,
+  voiceWorkspace?: string
 ): LanguageModelMiddleware {
+  const marked = <T>(call: () => T) =>
+    callConversation.run(conversation, () =>
+      voiceWorkspace === undefined
+        ? call()
+        : callVoice.run(voiceWorkspace, call)
+    );
   return {
-    wrapGenerate: async ({ doGenerate }) =>
-      callConversation.run(conversation, doGenerate),
-    wrapStream: async ({ doStream }) =>
-      callConversation.run(conversation, doStream),
+    wrapGenerate: async ({ doGenerate }) => marked(doGenerate),
+    wrapStream: async ({ doStream }) => marked(doStream),
   };
+}
+
+/**
+ * When /talk opens (`agent/channels/voice.ts`): the workspace's last voice
+ * prompt goes to RunInfra once more for one token, so the first question of
+ * the new conversation reads its tool block and instructions from the cache.
+ * A voice conversation is opened after long pauses, past the cache's life,
+ * and its first step then read 40–85k tokens cold (3–3.8 s, 27.10). Nothing
+ * held — a first conversation, a restart since — sends nothing.
+ */
+export function warmVoicePrompt(workspaceId: string) {
+  const last = voicePrompts.get(workspaceId);
+  const now = Date.now();
+  if (last === undefined || now - last.at > voicePromptLifeMs) return;
+  if (last.pingedAt !== undefined && now - last.pingedAt < voiceRepingMs)
+    return;
+  last.pingedAt = now;
+  void last.send(last.ping).catch(() => false);
 }
 
 /**
@@ -71,9 +116,19 @@ export function keepWarm(
 ) {
   const conversation = callConversation.getStore();
   if (conversation === undefined) return;
+  const body = ping();
+  const voice = callVoice.getStore();
+  if (voice !== undefined) {
+    voicePrompts.delete(voice);
+    voicePrompts.set(voice, { at: Date.now(), ping: body, send });
+    if (voicePrompts.size > maximumConversations) {
+      const [oldest] = voicePrompts.keys();
+      if (oldest !== undefined) voicePrompts.delete(oldest);
+    }
+  }
   clearTimeout(held.get(conversation));
   held.delete(conversation);
-  schedule(conversation, ping(), send, 1);
+  schedule(conversation, body, send, 1);
   if (held.size > maximumConversations) {
     const [oldest, timer] = held.entries().next().value ?? [];
     clearTimeout(timer);
