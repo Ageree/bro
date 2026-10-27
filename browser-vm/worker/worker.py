@@ -93,7 +93,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-VERSION = "2026-10-27.1"
+VERSION = "2026-10-27.2"
 CODE = Path(__file__).resolve()
 # The code an update replaced, kept until the new code is up: if that keeps failing to start, systemd's
 # bro-worker-rollback (provision.sh) brings this back. The VM has no other way in.
@@ -8793,6 +8793,7 @@ async def site_op(request):
     began = time.monotonic()
     holder = {"page": None, "via": None}
     category = None
+    busy = False
     async with site_op_gate:
         try:
             data = await asyncio.wait_for(site_op_direct(operation, url, holder), SITE_OP_DIRECT_S)
@@ -8808,16 +8809,21 @@ async def site_op(request):
                 shown = await site_op_landed(holder, operation, url, landed, began + SITE_OP_DIRECT_S)
                 if shown is not None:
                     category = site_page_cards(shown, landed)
+        except SiteBrowserBusy:
+            busy = True
         except Exception as error:
             cards, reason, detail, landed = None, "failed", f"{type(error).__name__}: {str(error)[:200]}", None
         finally:
             await site_op_close(holder)
+    if busy:
+        return site_busy_response(holder, f"site op {operation['name']}")
     ms = round((time.monotonic() - began) * 1000)
     via = holder["via"]
     if category is not None:
         # The category's cards in the site's order: `landed` tells Bro they are the page's, not the operation's.
         picked = category[:max(1, min(limit, SITE_OP_PICKED))]
-        log.info("site op %s: %d cards of the category it went to, %s, %d ms", operation["name"], len(category), fit, ms)
+        log.info("site op %s: %d cards of the category it went to, %s, %d ms, %s", operation["name"], len(category), fit,
+                 ms, holder.get("setup"))
         return web.json_response({"ok": True, "count": len(category), "cards": picked, "fit": fit, "via": "page",
                                   "landed": landed, "ms": ms})
     if cards is None:
@@ -8828,11 +8834,12 @@ async def site_op(request):
         if reason == "moved" and isinstance(landed, str):
             there = urllib.parse.urlsplit(landed)
             went = f", went to {there.hostname} {len([p for p in there.path.split('/') if p])} parts deep"
-        log.info("site op %s: %s via %s, %s, %d ms%s", operation["name"], reason, via, fit, ms, went)
+        log.info("site op %s: %s via %s, %s, %d ms%s, %s", operation["name"], reason, via, fit, ms, went,
+                 holder.get("setup"))
         return web.json_response({"ok": False, "reason": reason, "detail": detail[:300], "fit": fit, "ms": ms})
     picked = site_op_pick(cards, sort, bounds[0], bounds[1], limit)
-    log.info("site op %s: %d cards (%d picked) via %s, %s, %d ms", operation["name"], len(cards), len(picked), via,
-             fit, ms)
+    log.info("site op %s: %d cards (%d picked) via %s, %s, %d ms, %s", operation["name"], len(cards), len(picked), via,
+             fit, ms, holder.get("setup"))
     return web.json_response({"ok": True, "count": len(cards), "cards": picked, "fit": fit, "via": via, "ms": ms})
 
 
@@ -8853,16 +8860,7 @@ async def site_keep_run_downloads(browser):
 
 async def site_op_direct(operation, url, holder):
     """The read of `site_op` in its own tab, kept in `holder` for the caller to close whatever happens."""
-    from playwright.async_api import async_playwright
-
-    holder["pw"] = await async_playwright().start()
-    browser = await holder["pw"].chromium.connect_over_cdp(CDP_HTTP)
-    await site_keep_run_downloads(browser)
-    page = holder["page"] = await browser.contexts[0].new_page()
-    cdp = await page.context.new_cdp_session(page)
-    with contextlib.suppress(Exception):
-        holder["target"] = (await cdp.send("Target.getTargetInfo"))["targetInfo"]["targetId"]
-        worker.visit_tabs.add(holder["target"])
+    page, cdp = await site_visit_open(holder)
     if operation["source"]["kind"] == "html":
         async def block():
             with contextlib.suppress(Exception):
@@ -8888,6 +8886,60 @@ async def site_op_direct(operation, url, holder):
         await cdp.send("Network.setBlockedURLs", {"urls": SITE_HEAVY})
     holder["via"] = "page"
     return await site_op_xhr(page, operation, url, SITE_OP_DIRECT_XHR_S, SITE_OP_LOAD_S)
+
+
+SITE_CONNECT_S = 5  # a visit's way to its own tab: Playwright, the connection, the tab (normally under a second)
+
+
+class SiteBrowserBusy(Exception):
+    """The browser did not take a new Playwright connection in SITE_CONNECT_S. Playwright attaches to every tab the
+    browser has and waits for each to answer, and a tab whose navigation hangs does not: on the stand (27.10) one
+    tab at a hanging server held `connect_over_cdp` for as long as its navigation, 100 s and more. Not the site's
+    fault: the answer is 409, and Bro leaves the search to the errand instead of resting the site."""
+
+
+async def site_visit_open(holder):
+    """A visit's tab and its CDP session (None if the session did not come), in `holder` for the caller to close
+    (`site_op_close`) whatever happens: the one start of a direct read, a look, a box search and an item's read.
+    `holder["setup"]` says in the journal how long each part took, as the code engine's does (`run_code`)."""
+    from playwright.async_api import async_playwright
+
+    began = time.monotonic()
+    marks = {}
+
+    async def opened():
+        holder["pw"] = await async_playwright().start()
+        marks["playwright"] = time.monotonic()
+        browser = await holder["pw"].chromium.connect_over_cdp(CDP_HTTP)
+        marks["connect"] = time.monotonic()
+        await site_keep_run_downloads(browser)
+        page = holder["page"] = await browser.contexts[0].new_page()
+        cdp = None
+        with contextlib.suppress(Exception):
+            cdp = await page.context.new_cdp_session(page)
+            holder["target"] = (await cdp.send("Target.getTargetInfo"))["targetInfo"]["targetId"]
+            worker.visit_tabs.add(holder["target"])
+        marks["tab"] = time.monotonic()
+        return page, cdp
+
+    try:
+        page, cdp = await asyncio.wait_for(opened(), SITE_CONNECT_S)
+    except asyncio.TimeoutError:
+        done = [name for name in ("playwright", "connect", "tab") if name in marks]
+        holder["setup"] = f"no connection in {SITE_CONNECT_S} s, past {done[-1] if done else 'nothing'}"
+        raise SiteBrowserBusy(holder["setup"])
+    last = began
+    parts = []
+    for name in ("playwright", "connect", "tab"):
+        parts.append(f"{name} {marks[name] - last:.1f}")
+        last = marks[name]
+    holder["setup"] = f"set up in {last - began:.1f} s ({', '.join(parts)})"
+    return page, cdp
+
+
+def site_busy_response(holder, what):
+    log.info("%s: the browser took no new connection, %s", what, holder.get("setup"))
+    return web.json_response({"error": "the browser is busy and took no new connection in time"}, status=409)
 
 
 async def site_op_close(holder):
@@ -9082,6 +9134,7 @@ async def site_look(request):
         log.info("site look %s: no slot in %ss", parts.hostname, SITE_LOOK_GATE_S)
         return web.json_response({"ok": False, "reason": "failed", "ms": round((time.monotonic() - began) * 1000)})
     holder = {"page": None}
+    busy = False
     recorder = SiteTraffic()
     home = f"https://{parts.hostname}/"
     deadline = time.monotonic() + (SITE_SEARCH_S + SITE_LOOK_LEARN_S if search else SITE_LOOK_S)
@@ -9122,6 +9175,8 @@ async def site_look(request):
         cards, operations, reason = None, [], failure.reason
         if reason != "blocked" and holder["page"] is not None and await code_wall(holder["page"]):
             reason = "blocked"
+    except SiteBrowserBusy:
+        cards, operations, reason, busy = None, [], "failed", True
     except Exception as error:
         cards, operations, reason = None, [], "failed"
         log.info("site look failed: %s", type(error).__name__)
@@ -9131,18 +9186,21 @@ async def site_look(request):
             await site_op_close(holder)
         finally:
             site_op_gate.release()
+    if busy:
+        return site_busy_response(holder, f"site look {parts.hostname}")
     ms = round((time.monotonic() - began) * 1000)
     via = "box" if search else "page"
     if cards is None:
-        log.info("site look %s (%s): %s, %d ms %s", parts.hostname, via, reason, ms, holder.get("ms") or "")
+        log.info("site look %s (%s): %s, %d ms %s, %s", parts.hostname, via, reason, ms, holder.get("ms") or "",
+                 holder.get("setup"))
         return web.json_response({"ok": False, "reason": reason, "ms": ms, "via": via})
     # Only a link on the page's own host, https: a card's first link can be an ad's, a tracker's or a seller's.
     picked = [{"title": card.get("title") or "", "text": card.get("text", "")[:SITE_OP_FIELD_CHARS * 3],
                "link": next((link for link in card.get("links") or []
                              if link.startswith("https://") and site_same_place(landed, link)), None)}
               for card in cards[:SITE_LOOK_CARDS]]
-    log.info("site look %s (%s): %d cards, %d operations, %d ms %s", parts.hostname, via, len(cards), len(operations),
-             ms, holder.get("ms") or "")
+    log.info("site look %s (%s): %d cards, %d operations, %d ms %s, %s", parts.hostname, via, len(cards), len(operations),
+             ms, holder.get("ms") or "", holder.get("setup"))
     return web.json_response({"ok": True, "cards": picked, "count": len(cards), "operations": operations,
                               "page": landed, "ms": ms, "via": via})
 
@@ -9150,16 +9208,7 @@ async def site_look(request):
 async def site_look_page(url, holder, recorder, until):
     """The cards of a results page opened in a visit's tab (`site_op_direct`'s), its requests written down, by
     `until` (monotonic): the cards drawn by then are the page's."""
-    from playwright.async_api import async_playwright
-
-    holder["pw"] = await async_playwright().start()
-    browser = await holder["pw"].chromium.connect_over_cdp(CDP_HTTP)
-    await site_keep_run_downloads(browser)
-    page = holder["page"] = await browser.contexts[0].new_page()
-    with contextlib.suppress(Exception):
-        cdp = await page.context.new_cdp_session(page)
-        holder["target"] = (await cdp.send("Target.getTargetInfo"))["targetInfo"]["targetId"]
-        worker.visit_tabs.add(holder["target"])
+    page, _ = await site_visit_open(holder)
     recorder.watch(page)
     load = max(1.0, min(SITE_OP_LOAD_S, until - time.monotonic() - 1))
     response = await page.goto(url, wait_until="domcontentloaded", timeout=load * 1000)
@@ -9549,16 +9598,7 @@ async def site_search_eval(page, script, arg):
 async def site_search_page(home, words, holder, recorder, until):
     """The cards of a site's results for `words`, searched for through the site's own box in a visit's tab
     (`site_look_page`'s), its requests written down from the home page on, by `until` (monotonic)."""
-    from playwright.async_api import async_playwright
-
-    holder["pw"] = await async_playwright().start()
-    browser = await holder["pw"].chromium.connect_over_cdp(CDP_HTTP)
-    await site_keep_run_downloads(browser)
-    page = holder["page"] = await browser.contexts[0].new_page()
-    with contextlib.suppress(Exception):
-        cdp = await page.context.new_cdp_session(page)
-        holder["target"] = (await cdp.send("Target.getTargetInfo"))["targetInfo"]["targetId"]
-        worker.visit_tabs.add(holder["target"])
+    page, _ = await site_visit_open(holder)
     recorder.watch(page)
     page.on("popup", site_search_popup)
     return await site_search_on(page, home, words, holder, until)
@@ -9993,16 +10033,8 @@ def site_item_says(item):
 async def site_item_read(url, holder):
     """An item's page read in a visit's tab (`site_look_page`'s), kept in `holder` for the caller to close: its
     document fetched from the site's robots.txt (past the site's own check, `site_goto`), or the page drawn."""
-    from playwright.async_api import async_playwright
-
-    holder["pw"] = await async_playwright().start()
-    browser = await holder["pw"].chromium.connect_over_cdp(CDP_HTTP)
-    await site_keep_run_downloads(browser)
-    page = holder["page"] = await browser.contexts[0].new_page()
+    page, cdp = await site_visit_open(holder)
     with contextlib.suppress(Exception):
-        cdp = await page.context.new_cdp_session(page)
-        holder["target"] = (await cdp.send("Target.getTargetInfo"))["targetInfo"]["targetId"]
-        worker.visit_tabs.add(holder["target"])
         # A drawn item's pictures and fonts are no part of what is read: left out, as a direct read's (SITE_HEAVY).
         await cdp.send("Network.enable")
         await cdp.send("Network.setBlockedURLs", {"urls": SITE_HEAVY})
@@ -10091,6 +10123,7 @@ async def site_item(request):
         log.info("site item %s: no slot in %ss", parts.hostname, SITE_LOOK_GATE_S)
         return web.json_response({"ok": False, "reason": "failed", "ms": round((time.monotonic() - began) * 1000)})
     holder = {"page": None, "via": None}
+    busy = False
     try:
         item = await asyncio.wait_for(site_item_read(url, holder), SITE_ITEM_S)
         reason = None
@@ -10098,6 +10131,8 @@ async def site_item(request):
         item, reason = None, failure.reason
         if reason != "blocked" and holder["page"] is not None and await code_wall(holder["page"]):
             reason = "blocked"
+    except SiteBrowserBusy:
+        item, reason, busy = None, "failed", True
     except Exception as error:
         item, reason = None, "failed"
         log.info("site item failed: %s", type(error).__name__)
@@ -10106,13 +10141,15 @@ async def site_item(request):
             await site_op_close(holder)
         finally:
             site_op_gate.release()
+    if busy:
+        return site_busy_response(holder, f"site item {parts.hostname}")
     ms = round((time.monotonic() - began) * 1000)
     if item is None:
-        log.info("site item %s: %s via %s, %d ms", parts.hostname, reason, holder["via"], ms)
+        log.info("site item %s: %s via %s, %d ms, %s", parts.hostname, reason, holder["via"], ms, holder.get("setup"))
         return web.json_response({"ok": False, "reason": reason, "ms": ms})
     landed = item.get("landed") if isinstance(item.get("landed"), str) else url
-    log.info("site item %s: %d data, %d meta, %d chars via %s, %d ms", parts.hostname, len(item["ld"]),
-             len(item["meta"]), len(item["text"]), holder["via"], ms)
+    log.info("site item %s: %d data, %d meta, %d chars via %s, %d ms, %s", parts.hostname, len(item["ld"]),
+             len(item["meta"]), len(item["text"]), holder["via"], ms, holder.get("setup"))
     return web.json_response({"ok": True, "title": item["title"], "ld": item["ld"], "meta": item["meta"],
                               "text": item["text"], "page": landed, "via": holder["via"], "ms": ms})
 

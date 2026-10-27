@@ -12,6 +12,7 @@ import types
 import unittest
 import unittest.mock
 import urllib.parse
+import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -799,6 +800,7 @@ class DirectSetup(unittest.IsolatedAsyncioTestCase):
         from aiohttp.test_utils import TestClient, TestServer
 
         self.pages = []
+        self.hang = False
         test = self
 
         class Browser:
@@ -806,6 +808,8 @@ class DirectSetup(unittest.IsolatedAsyncioTestCase):
 
         class Chromium:
             async def connect_over_cdp(self, _url):
+                if test.hang:  # a browser whose tabs do not answer: Playwright waits for them
+                    await asyncio.sleep(3600)
                 return Browser()
 
         class Playwright:
@@ -842,6 +846,43 @@ class DirectSetup(unittest.IsolatedAsyncioTestCase):
         self.pages.append(page)
         return page
 
+
+
+class BusyBrowserTest(DirectSetup):
+    """A browser that takes no new connection (a run's tab navigating to a server that does not answer, 27.10): every
+    direct read ends at once with 409, not with the site blamed."""
+
+    async def asyncSetUp(self):
+        from unittest import mock
+
+        await super().asyncSetUp()
+        self.hang = True
+        self.enterContext(mock.patch.object(worker, "SITE_CONNECT_S", 0.3))
+
+    async def post(self, path, body):
+        began = time.monotonic()
+        response = await self.client.post(path, json=body, headers={"Authorization": f"Bearer {self.token}"})
+        return response.status, time.monotonic() - began
+
+    async def test_every_direct_read_answers_409_in_the_connect_budget_and_leaves_nothing_behind(self):
+        [operation] = await OpTest._hh_operation(None)
+        for path, body in (
+                ("/v1/op", {"operation": operation, "url": "https://hh.ru/search/vacancy?text=менеджер&area=2"}),
+                ("/v1/look", {"url": "https://shop.example/catalog/?q=мастер", "words": "мастер"}),
+                ("/v1/look", {"site": "https://shop.example/", "words": "мастер"}),
+                ("/v1/item", {"url": "https://shop.example/item/1"})):
+            self.stopped = False
+            status, seconds = await self.post(path, body)
+            self.assertEqual(status, 409, path)
+            self.assertLess(seconds, 3, path)
+            self.assertTrue(self.stopped, path)  # Playwright stopped
+            self.assertEqual(self.pages, [], path)
+            self.assertEqual(self.worker.visit_tabs, set(), path)
+        # The slot of the gate is given back: once the browser answers, the next read goes through.
+        self.hang = False
+        self.next_page = Page({})
+        status, _ = await self.post("/v1/item", {"url": "https://shop.example/item/1"})
+        self.assertEqual(status, 200)
 
 
 class DirectOpTest(DirectSetup):
@@ -1950,3 +1991,80 @@ class CategoryLandingChromeTest(unittest.IsolatedAsyncioTestCase):
                                             time.monotonic() + worker.SITE_SEARCH_S)
         self.assertTrue(worker.site_look_answers("ноутбук", cards))
         self.assertTrue(worker.site_search_category("ноутбук", self.page.url))
+
+
+class BusyChromeTest(unittest.IsolatedAsyncioTestCase):
+    """A visit's start on a browser that has a tab navigating to a server that never answers, in a real Chromium (no
+    network): set BRO_SITE_ROWS_CHROME as for RowsChromeTest; CI skips it. Before 27.10 `connect_over_cdp` waited
+    for that tab for as long as its navigation (100 s and more on the stand), and a search by a site's box ended
+    «out of time in start» (366.ru on the owner's account, beside an errand on pleer.ru)."""
+
+    async def asyncSetUp(self):
+        import os
+        import socket
+        import subprocess
+        import tempfile
+        from unittest import mock
+
+        chrome = os.environ.get("BRO_SITE_ROWS_CHROME")
+        try:
+            import playwright.async_api  # noqa: F401
+        except ImportError:
+            chrome = None
+        if not chrome:
+            self.skipTest("set BRO_SITE_ROWS_CHROME to a Chromium binary, with Playwright installed")
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        profile = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(profile.cleanup)
+        self.chrome = subprocess.Popen([chrome, "--headless=new", "--no-sandbox", f"--remote-debugging-port={port}",
+                                        f"--user-data-dir={profile.name}", "about:blank"],
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(self.chrome.wait)
+        self.addCleanup(self.chrome.kill)
+        self.hung = []
+
+        async def hang(_reader, writer):
+            self.hung.append(writer)
+            await asyncio.sleep(3600)
+
+        self.server = await asyncio.start_server(hang, "127.0.0.1", 0)
+        self.addAsyncCleanup(self.close_server)
+        self.hanging = f"http://127.0.0.1:{self.server.sockets[0].getsockname()[1]}/x"
+        self.cdp = f"http://127.0.0.1:{port}"
+        for _ in range(100):
+            try:
+                await asyncio.to_thread(urllib.request.urlopen, f"{self.cdp}/json/version", None, 1)
+                break
+            except OSError:
+                await asyncio.sleep(0.1)
+        self.worker = types.SimpleNamespace(current=None, sessions={}, visit_tabs=set())
+        self.enterContext(mock.patch.object(worker, "worker", self.worker))
+        self.enterContext(mock.patch.object(worker, "CDP_HTTP", self.cdp))
+
+    async def close_server(self):
+        self.server.close()
+        for writer in self.hung:
+            writer.close()
+
+    async def test_a_visit_on_a_browser_with_a_hanging_tab_ends_busy_in_seconds(self):
+        # A run's tab, as browser-use opens one: by CDP, not by this Playwright.
+        request = urllib.request.Request(f"{self.cdp}/json/new?{self.hanging}", method="PUT")
+        await asyncio.to_thread(urllib.request.urlopen, request)
+        await asyncio.sleep(1)
+        holder = {"page": None}
+        began = time.monotonic()
+        with self.assertRaises(worker.SiteBrowserBusy):
+            await worker.site_visit_open(holder)
+        self.assertLess(time.monotonic() - began, worker.SITE_CONNECT_S + 2)
+        await worker.site_op_close(holder)
+
+    async def test_a_visit_on_a_quiet_browser_opens_its_tab_and_says_how_long_each_part_took(self):
+        holder = {"page": None}
+        page, cdp = await worker.site_visit_open(holder)
+        self.assertIsNotNone(cdp)
+        self.assertRegex(holder["setup"], r"^set up in [\d.]+ s \(playwright [\d.]+, connect [\d.]+, tab [\d.]+\)$")
+        self.assertEqual(self.worker.visit_tabs, {holder["target"]})
+        await worker.site_op_close(holder)
+        self.assertEqual(self.worker.visit_tabs, set())

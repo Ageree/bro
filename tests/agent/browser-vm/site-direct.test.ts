@@ -950,6 +950,48 @@ describe("Bro's own read of a site it has read before", () => {
     ).toBeUndefined();
     expect(model.generateText).not.toHaveBeenCalled();
   });
+
+  it("gives the site back when the browser is busy and took no connection (409): the errand goes on, nothing rests", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { readSiteDirectly } = await direct("*", "*");
+    const { BrowserVmWorkerError } =
+      await import("@agent/lib/browser-vm/worker");
+    model.generateText.mockResolvedValue({
+      output: {
+        query: "диван",
+        search: true,
+        url: "https://www.detmir.ru/search?q=диван",
+      },
+    });
+    browser.lookBrowserVmSiteDirectly.mockRejectedValue(
+      new BrowserVmWorkerError(409, "/v1/look", '{"error":"busy"}')
+    );
+    const site = {
+      errand: "Найди 5 диванов",
+      note: undefined,
+      site: "https://www.hoff.ru",
+    };
+    const start = site;
+    expect(
+      await readSiteDirectly(scope, { ...start, sessionId: "b1" })
+    ).toBeUndefined();
+    const looks = browser.lookBrowserVmSiteDirectly.mock.calls.length;
+    // The site is not marked as looked at and the workspace does not rest:
+    // the next errand there looks again, and another site is looked at too.
+    expect(
+      await readSiteDirectly(scope, { ...start, sessionId: "b2" })
+    ).toBeUndefined();
+    expect(browser.lookBrowserVmSiteDirectly.mock.calls.length).toBeGreaterThan(
+      looks
+    );
+    browser.lookBrowserVmSiteDirectly.mockClear();
+    await readSiteDirectly(scope, {
+      ...site,
+      sessionId: "b3",
+      site: "https://www.detmir.ru",
+    });
+    expect(browser.lookBrowserVmSiteDirectly).toHaveBeenCalled();
+  });
 });
 
 describe("carriesWords", () => {
