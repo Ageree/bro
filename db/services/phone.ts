@@ -881,6 +881,36 @@ export async function listPhoneCalls(scope: AccessScope, callId?: string) {
 }
 
 /**
+ * The latest finished outbound calls of the workspace since `since`, newest
+ * last: what a chat that was not there when Bro called is told about them
+ * (`agent/lib/conversation/recap.ts`). The record is the call's own
+ * transcript or summary, untrusted text.
+ */
+export async function readRecentCallRecords(
+  workspaceId: string,
+  options: { readonly since: Date; readonly limit: number }
+) {
+  const rows = await db
+    .select({
+      createdAt: phoneCalls.createdAt,
+      summary: phoneCalls.summary,
+      task: phoneCalls.task,
+    })
+    .from(phoneCalls)
+    .where(
+      and(
+        eq(phoneCalls.workspaceId, workspaceId),
+        eq(phoneCalls.direction, "outbound"),
+        eq(phoneCalls.state, "done"),
+        gt(phoneCalls.createdAt, options.since)
+      )
+    )
+    .orderBy(sql`${phoneCalls.createdAt} desc`)
+    .limit(options.limit);
+  return rows.toReversed();
+}
+
+/**
  * The 20 open calls checked longest ago, never-checked ones first (a new
  * inbound call has no `checked_at`). Each is marked checked here, whatever the
  * poll does with it: a call whose poll returns early or fails still rotates to
