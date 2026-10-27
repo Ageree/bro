@@ -4,6 +4,7 @@ import type {
   lastLineOfConversation,
   readRecapLines,
 } from "@db/services/conversation-log";
+import type { readRecentCallRecords } from "@db/services/phone";
 import type { readWorkspaceScope } from "@db/services/scope";
 import type { readWorkspaceTimeZone } from "@db/services/user-profile";
 import type { readAccountEmail } from "@db/services/users";
@@ -22,6 +23,7 @@ const services = vi.hoisted(() => ({
   lastLineOfConversation: vi.fn<typeof lastLineOfConversation>(),
   readAccountEmail: vi.fn<typeof readAccountEmail>(),
   readRecapLines: vi.fn<typeof readRecapLines>(),
+  readRecentCallRecords: vi.fn<typeof readRecentCallRecords>(),
   readWorkspaceScope: vi.fn<typeof readWorkspaceScope>(),
   readWorkspaceTimeZone: vi.fn<typeof readWorkspaceTimeZone>(),
 }));
@@ -29,6 +31,9 @@ const services = vi.hoisted(() => ({
 vi.mock("@db/services/conversation-log", () => ({
   lastLineOfConversation: services.lastLineOfConversation,
   readRecapLines: services.readRecapLines,
+}));
+vi.mock("@db/services/phone", () => ({
+  readRecentCallRecords: services.readRecentCallRecords,
 }));
 vi.mock("@db/services/users", () => ({
   readAccountEmail: services.readAccountEmail,
@@ -62,6 +67,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   services.lastLineOfConversation.mockResolvedValue(undefined);
   services.readRecapLines.mockResolvedValue([]);
+  services.readRecentCallRecords.mockResolvedValue([]);
   services.readAccountEmail.mockResolvedValue("alice@example.com");
   services.readWorkspaceScope.mockResolvedValue(scope);
   services.readWorkspaceTimeZone.mockResolvedValue("Europe/Moscow");
@@ -218,7 +224,40 @@ describe("the recap of the person's other channels", () => {
 
     expect(heading).toContain("a message the person sent there");
     expect(heading).toContain("may quote or forward someone else's words");
-    expect(heading).toContain("Bro already answered every line there");
+    expect(heading).toContain("Bro answered them there");
+    expect(heading).toContain("never tell the person that it was done");
+  });
+
+  // 27.10: «забронируй на 20:00» was told in a voice chat as the booking, and
+  // the call had taken 20:30 because 20:00 was full.
+  it("tells what a call came out with, not only what the person asked for", async () => {
+    services.readRecentCallRecords.mockResolvedValue([
+      {
+        createdAt: tuesday,
+        summary: `${"Алло. ".repeat(300)}На 20:00 мест нет. Тогда запишите на 20:30, шестеро, Савелий. Хорошо, ждём в 20:30.`,
+        task: "Забронировать столик в «Банщиках» на 20:00 на шестерых",
+      },
+    ]);
+    const recap = await recapOf([
+      line("Забронируй в Банщиках на 20:00", "channel:telegram", tuesday),
+    ]);
+
+    expect(recap).toContain("[Telegram, вт 29.09 14:05] Person: Забронируй");
+    expect(recap).toContain("[Call Bro made, вт 29.09 14:05] Bro called");
+    expect(recap).toContain("Хорошо, ждём в 20:30.");
+    expect(recap).toContain("untrusted");
+    expect(services.readRecentCallRecords.mock.lastCall?.[0]).toBe(
+      scope.workspaceId
+    );
+  });
+
+  it("leaves out a call with nothing recorded", async () => {
+    services.readRecentCallRecords.mockResolvedValue([
+      { createdAt: tuesday, summary: null, task: "Позвонить" },
+    ]);
+    const recap = await recapOf([line("Позвони", "channel:telegram", tuesday)]);
+
+    expect(recap).not.toContain("[Call Bro made");
   });
 
   it("keeps to 1800 characters, dropping the oldest lines", async () => {
