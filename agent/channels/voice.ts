@@ -191,7 +191,7 @@ export default defineChannel({
         fast,
         instructionsChars: instructions.length,
         session: parsed.data.session.id,
-        // The person's profile and brief before it, then OpenAI's answer.
+        // The wait for the person's brief before it, then OpenAI's answer.
         briefMs,
         ms: Math.round(performance.now() - startedAt),
       });

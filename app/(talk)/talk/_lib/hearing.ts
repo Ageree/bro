@@ -38,6 +38,11 @@ export class Hearing {
     this.#spoken.push(piece);
   }
 
+  /** Whether some of the person's words have not been given to Bro yet. */
+  hasRequest() {
+    return this.#heard.length > this.#sent;
+  }
+
   /**
    * The person's words not yet given to Bro, their last few utterances, with
    * the voice's lines between them (`voiceLine`, which the web channel
