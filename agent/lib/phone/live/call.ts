@@ -186,14 +186,16 @@ export async function dialLive(input: {
       askInFlight = askVoice().finally(() => {
         askInFlight = null;
       });
-      if (input.askProgress !== undefined)
-        live?.send({
-          type: "session.commentary.append",
-          event_id: `progress_${id}`,
-          delegation_id: id,
-          content: input.askProgress,
-        });
     }
+    // Each delegation that waits on Bro, the second one too, says what it checks: otherwise the voice fills the
+    // wait with its own acknowledgement once its delay is up.
+    if (askInFlight && input.askProgress !== undefined)
+      live?.send({
+        type: "session.commentary.append",
+        event_id: `progress_${id}`,
+        delegation_id: id,
+        content: input.askProgress,
+      });
     const content = (await askInFlight) ?? noAnswer;
     live?.send({
       type: "session.commentary.append",

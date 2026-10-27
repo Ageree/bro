@@ -21,9 +21,7 @@ const mocks = vi.hoisted(() => ({
   >(),
   workstreams:
     vi.fn<
-      () => Promise<
-        { content: { nextStep: string; status: string; title: string } }[]
-      >
+      () => Promise<{ nextStep: string; status: string; title: string }[]>
     >(),
 }));
 
@@ -36,7 +34,7 @@ vi.mock("@db/services/scheduled-agent-jobs", () => ({
   listScheduledAgentJobs: mocks.jobs,
 }));
 vi.mock("@db/services/workstreams", () => ({
-  listWorkspaceWorkstreams: mocks.workstreams,
+  listOpenWorkstreams: mocks.workstreams,
 }));
 vi.mock("@db/services/settings", () => ({
   getGoogleWorkspaceAccess: async () => await Promise.resolve("full"),
@@ -81,6 +79,7 @@ describe("the brief the voice gets of its person", () => {
       memory("Без моего ок ничего не оплачивай", { category: "rule" }),
       memory("Диагноз только для себя", { localOnly: true }),
       memory("Код домофона 4512#"),
+      memory("Паспорт 4510 123456, выдан ОВД"),
     ]);
     mocks.jobs.mockResolvedValue([
       {
@@ -92,13 +91,10 @@ describe("the brief the voice gets of its person", () => {
     ]);
     mocks.workstreams.mockResolvedValue([
       {
-        content: {
-          nextStep: "ждём ответа клуба",
-          status: "waiting",
-          title: "Бронь в клубе",
-        },
+        nextStep: "ждём ответа клуба",
+        status: "waiting",
+        title: "Бронь в клубе",
       },
-      { content: { nextStep: "", status: "completed", title: "Билеты" } },
     ]);
     mocks.calls.mockResolvedValue([
       {
@@ -119,7 +115,7 @@ describe("the brief the voice gets of its person", () => {
       "Договорились на 20:30",
     ])
       expect(brief).toContain(kept);
-    for (const left of ["Диагноз", "4512", "Старое", "Билеты"])
+    for (const left of ["Диагноз", "4512", "123456", "Старое"])
       expect(brief).not.toContain(left);
   });
 
@@ -142,6 +138,15 @@ describe("the calendar the voice gets", () => {
         },
         { start: { date: "2026-10-30" }, summary: "Отпуск" },
         {
+          location: "ул. Ленина 5, кв. 12, код домофона 1234",
+          start: { dateTime: "2026-10-29T16:00:00Z" },
+          summary: "Ужин у Маши",
+        },
+        {
+          start: { dateTime: "2026-10-31T07:00:00Z" },
+          summary: "Код от двери 4821",
+        },
+        {
           start: { dateTime: "2026-10-29T10:00:00Z" },
           status: "cancelled",
           summary: "Отменено",
@@ -156,6 +161,11 @@ describe("the calendar the voice gets", () => {
     );
     expect(calendar).toContain("2026-10-30, весь день: «Отпуск»");
     expect(calendar).not.toContain("Отменено");
+    // A door stays out, the slot itself does not.
+    expect(calendar).toContain("чт 29.10 19:00 «Ужин у Маши»\n");
+    expect(calendar).toContain("сб 31.10 10:00 событие, подробности — у Бро");
+    for (const left of ["1234", "4821", "Ленина"])
+      expect(calendar).not.toContain(left);
   });
 
   it("is undefined without a Google account or when Google fails", async () => {

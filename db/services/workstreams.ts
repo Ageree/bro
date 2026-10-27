@@ -203,6 +203,25 @@ export async function saveWorkstream(
 }
 
 /** Every live workstream of a workspace, under any scope key. */
+/**
+ * A workspace's open work, newest first, across its memory scopes: for a
+ * brief read outside any session (`agent/lib/voice/brief.ts`).
+ */
+export async function listOpenWorkstreams(workspaceId: string, limit: number) {
+  const rows = await db
+    .select({ content: workstreams.content })
+    .from(workstreams)
+    .where(
+      and(
+        eq(workstreams.workspaceId, workspaceId),
+        sql`${workstreams.content}->>'status' IN ('active', 'waiting')`
+      )
+    )
+    .orderBy(desc(workstreams.updatedAt), workstreams.id)
+    .limit(limit);
+  return rows.flatMap(({ content }) => (content ? [content] : []));
+}
+
 export async function listWorkspaceWorkstreams(workspaceId: string) {
   const rows = await db
     .select()

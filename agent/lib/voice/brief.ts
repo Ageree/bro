@@ -12,11 +12,10 @@ import {
 import { readRecentCallRecords } from "@db/services/phone";
 import { listScheduledAgentJobs } from "@db/services/scheduled-agent-jobs";
 import { getGoogleWorkspaceAccess } from "@db/services/settings";
-import { listWorkspaceWorkstreams } from "@db/services/workstreams";
+import { listOpenWorkstreams } from "@db/services/workstreams";
 import { activeConnectedAccount } from "@shared/composio/accounts";
 import { googleWorkspaceAuthConfigId } from "@shared/google-workspace/connection";
 import type { AccessScope } from "@shared/identity/access-scope";
-import { unsafeMemoryRanges } from "@shared/memory/schema";
 
 // What /talk's voice knows of its person before they say a word
 // (VOICE_FAST_WORKSPACES): a question about them — their brother's name, what
@@ -40,6 +39,8 @@ const budgets = {
 const memoryRecords = 1000;
 const memoryChars = 240;
 const scheduleChars = 140;
+/** The newest open work; the budget keeps what fits of it. */
+const workstreams = 12;
 const callWindowMs = 3 * 24 * 60 * 60_000;
 const callChars = 400;
 const calendarDays = 7;
@@ -130,11 +131,9 @@ async function scheduleLines(scope: AccessScope, timeZone: string) {
 }
 
 async function workstreamLines(scope: AccessScope) {
-  const all = await listWorkspaceWorkstreams(scope.workspaceId);
+  const open = await listOpenWorkstreams(scope.workspaceId, workstreams);
   return within(
-    all.flatMap(({ content }) => {
-      if (content.status !== "active" && content.status !== "waiting")
-        return [];
+    open.flatMap((content) => {
       const status = content.status === "waiting" ? "ждёт" : "в работе";
       const next =
         content.nextStep === "" || !sayableAloud(content.nextStep)
@@ -216,30 +215,36 @@ export async function voiceBrief(
   ].join("\n");
 }
 
+/**
+ * An event as a line for the voice. A title or a place that names a door, a
+ * code or a document stays out (`sayableAloud`): the time is still said, so
+ * the voice does not take the slot for free, and asks Bro for the rest.
+ */
 function eventLine(event: CalendarEvent, timeZone: string) {
-  const title = oneLine(event.summary ?? "", 120) || "(без названия)";
+  const summary = oneLine(event.summary ?? "", 120);
+  const title = !sayableAloud(summary)
+    ? "событие, подробности — у Бро"
+    : `«${summary || "без названия"}»`;
+  const location = oneLine(event.location ?? "", 100);
   const place =
-    event.location === undefined || event.location.trim() === ""
-      ? ""
-      : `, ${oneLine(event.location, 100)}`;
+    location === "" || !sayableAloud(location) ? "" : `, ${location}`;
   const start = Date.parse(event.start?.dateTime ?? "");
   const end = Date.parse(event.end?.dateTime ?? "");
   if (Number.isFinite(start)) {
     const until = Number.isFinite(end)
       ? `–${stamp(new Date(end), timeZone).split(" ").at(-1) ?? ""}`
       : "";
-    return `- ${stamp(new Date(start), timeZone)}${until} «${title}»${place}`;
+    return `- ${stamp(new Date(start), timeZone)}${until} ${title}${place}`;
   }
   // An all-day event: Google's date is the day itself, no zone.
-  return `- ${event.start?.date ?? ""}, весь день: «${title}»${place}`;
+  return `- ${event.start?.date ?? ""}, весь день: ${title}${place}`;
 }
 
 /**
  * The person's primary calendar for the next week as lines for the voice, or
  * undefined without a Google connection or when it could not be read in
  * time. Read through the person's own Composio account, as the proactive
- * check reads it, read only. A line with a code or a credential in it is
- * left out.
+ * check reads it, read only.
  */
 export async function voiceCalendar(
   scope: AccessScope,
@@ -273,11 +278,9 @@ export async function voiceCalendar(
       }
     );
     const items = listed.items ?? [];
-    const lines = items.flatMap((event) => {
-      if (event.status === "cancelled") return [];
-      const line = eventLine(event, input.timeZone);
-      return unsafeMemoryRanges(line).length === 0 ? [line] : [];
-    });
+    const lines = items.flatMap((event) =>
+      event.status === "cancelled" ? [] : [eventLine(event, input.timeZone)]
+    );
     // A full page may stop short of the week's end.
     const full = items.length >= calendarEvents;
     return [

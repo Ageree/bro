@@ -21,6 +21,7 @@ import * as schema from "@db/schema";
 import {
   findWorkstreams,
   forgetWorkstream,
+  listOpenWorkstreams,
   readWorkstream,
   recallWorkstreams,
   saveWorkstream,
@@ -520,6 +521,37 @@ describe("workstream memory", () => {
         DROP FUNCTION refuse_log_delete();
       `);
     }
+  });
+
+  // The voice's brief keeps only what fits, so its open work comes newest
+  // first rather than in the order of the ids.
+  it("lists the workspace's open work newest first, across its scopes", async () => {
+    const save = async (
+      id: string,
+      key: string,
+      status: "active" | "completed" = "active"
+    ) =>
+      await saveWorkstream(
+        alice,
+        key,
+        {
+          id,
+          expectedRevision: 0,
+          content: { ...content, title: id, status },
+        },
+        `save-${id}`,
+        "first"
+      );
+    await save("a-older", "key-a");
+    await save("b-done", "key-a", "completed");
+    await save("z-newer", "preview-key");
+
+    expect(
+      (await listOpenWorkstreams(alice.workspaceId, 5)).map(
+        ({ title }) => title
+      )
+    ).toStrictEqual(["z-newer", "a-older"]);
+    expect(await listOpenWorkstreams(bob.workspaceId, 5)).toEqual([]);
   });
 
   it("isolates records by both authenticated workspace and Eve memory scope", async () => {
