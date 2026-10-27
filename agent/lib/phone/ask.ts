@@ -31,9 +31,13 @@ export const askTimeoutMs = 7000;
  */
 export const askAcknowledgementDelayMs = 800;
 
-/** What the voice says while Bro looks for the answer, in its own words (VOICE_FAST_WORKSPACES). */
+/**
+ * What the voice says while Bro looks for the answer (VOICE_FAST_WORKSPACES). «Что уточняешь» came out as
+ * «Сейчас уточню» 17 times in 18 (call probe, 27.10); «Так, смотрю…» and the subject — «Так, смотрю по детям» —
+ * once in 9.
+ */
 export const askProgressLine =
-  "Ответа пока нет. Скажи собеседнику одной короткой фразой, что уточняешь это, словами его вопроса. Не проси подождать и не называй ответ.";
+  "Ответа пока нет. Скажи собеседнику одной короткой фразой «Так, смотрю…» и предмет его вопроса. Не проси подождать и не называй ответ.";
 const answerLimit = 240;
 const memoryLimit = 60;
 const memoryChars = 200;
