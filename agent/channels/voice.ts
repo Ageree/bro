@@ -37,6 +37,8 @@ const maximumOfferLength = 64 * 1024;
  * than keep the person waiting for the line.
  */
 const briefWaitMs = 1500;
+/** Each of the two tries at opening the session: it answers in 0.6–1.5 s. */
+const sessionTimeoutMs = 8000;
 
 const answerSchema = z.object({
   session: z.object({ id: z.string() }),
@@ -118,38 +120,55 @@ export default defineChannel({
           })
         : talkInstructions(person);
       const startedAt = performance.now();
-      let answer: Awaited<ReturnType<typeof fetch>>;
-      try {
-        answer = await fetch("https://api.openai.com/v1/live/sessions", {
+      const body = JSON.stringify({
+        session: {
+          model: "gpt-live-1",
+          instructions,
+          audio: { output: { voice: liveVoice } },
+          delegation: fast
+            ? {
+                type: "client",
+                acknowledgement_delay_ms: voiceAcknowledgementDelayMs,
+              }
+            : { type: "client" },
+        },
+        transport: { type: "webrtc", sdp: offer },
+      });
+      const open = async () =>
+        await fetch("https://api.openai.com/v1/live/sessions", {
           method: "POST",
           dispatcher: proxy,
           headers: {
             Authorization: `Bearer ${apiKey}`,
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({
-            session: {
-              model: "gpt-live-1",
-              instructions,
-              audio: { output: { voice: liveVoice } },
-              delegation: fast
-                ? {
-                    type: "client",
-                    acknowledgement_delay_ms: voiceAcknowledgementDelayMs,
-                  }
-                : { type: "client" },
-            },
-            transport: { type: "webrtc", sdp: offer },
-          }),
-          signal: AbortSignal.timeout(15_000),
+          body,
+          signal: AbortSignal.timeout(sessionTimeoutMs),
         });
-      } catch (error) {
-        console.warn("[voice] GPT-Live did not answer", {
-          reason: error instanceof Error ? error.message : "unknown",
-          ms: Math.round(performance.now() - startedAt),
-        });
+      /** An answer below 500, or undefined after OpenAI's own error or none. */
+      const tryOpen = async (attempt: number) => {
+        try {
+          const answered = await open();
+          if (answered.status < 500) return answered;
+          console.warn("[voice] GPT-Live refused the session", {
+            attempt,
+            status: answered.status,
+            body: (await answered.text()).slice(0, 300),
+          });
+        } catch (error) {
+          console.warn("[voice] GPT-Live did not answer", {
+            attempt,
+            reason: error instanceof Error ? error.message : "unknown",
+            ms: Math.round(performance.now() - startedAt),
+          });
+        }
+        return undefined;
+      };
+      // OpenAI's own 500 (prod 27.10, 1 session in 4) or no answer: asked
+      // once more, the same offer, before the page says it could not connect.
+      const answer = (await tryOpen(1)) ?? (await tryOpen(2));
+      if (answer === undefined)
         return new Response("Voice unavailable", { status: 502 });
-      }
       if (!answer.ok) {
         console.warn("[voice] GPT-Live refused the session", {
           status: answer.status,
