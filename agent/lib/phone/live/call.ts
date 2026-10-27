@@ -80,6 +80,15 @@ export async function dialLive(input: {
   ringSeconds: number;
   apiKey: string;
   proxyUrl?: string;
+  /**
+   * What the voice may ask Bro mid-call (`agent/lib/phone/ask.ts`): the last lines of the talk in, the line to
+   * say out, null when there is none. Unset, the voice is told it has nothing to ask.
+   */
+  ask?: (heard: string) => Promise<string | null>;
+  /** Questions one call may put to `ask`. */
+  askLimit?: number;
+  /** How long the voice waits for `ask`. */
+  askTimeoutMs?: number;
 }) {
   const { line } = input;
   const domain = line.hostname;
@@ -141,6 +150,42 @@ export async function dialLive(input: {
     }
     return transcode(frame, "pcma", leg?.law ?? "pcma");
   }
+
+  // The voice delegates a question the task does not answer. With `ask` it gets the user's own line back; with
+  // nothing to give, or no `ask`, it is told so rather than left waiting on an answer that never comes.
+  const noAnswer =
+    "Этих сведений у тебя нет. Скажи собеседнику, что уточнишь у пользователя и передашь в отчёте.";
+  let asked = 0;
+  let askInFlight: Promise<string> | null = null;
+  const askVoice = async () => {
+    // The far side's last words reach the transcript a moment after they are said.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const heard = transcript().split("\n").slice(-6).join("\n");
+    const said = await within(
+      (input.ask?.(heard) ?? Promise.resolve(null)).catch(() => null),
+      input.askTimeoutMs ?? 7000
+    );
+    say("asked", { answered: said ? 1 : 0, n: asked });
+    return said
+      ? `Из данных пользователя: ${JSON.stringify(said)}. Скажи это собеседнику своими словами, коротко, и продолжай задачу.`
+      : noAnswer;
+  };
+  const answerDelegation = async (id: string) => {
+    // A second delegation while one is asked gets that answer: two replies must not contradict each other.
+    if (!askInFlight && input.ask && asked < (input.askLimit ?? 0)) {
+      asked += 1;
+      askInFlight = askVoice().finally(() => {
+        askInFlight = null;
+      });
+    }
+    const content = (await askInFlight) ?? noAnswer;
+    live?.send({
+      type: "session.commentary.append",
+      event_id: `answer_${id}`,
+      delegation_id: id,
+      content,
+    });
+  };
 
   const pieces: { close: () => void }[] = [];
   const closeAll = () => {
@@ -242,17 +287,9 @@ export async function dialLive(input: {
         const parsed = usage.safeParse(event);
         if (parsed.success) usageSeconds = parsed.data.usage.seconds;
       } else if (event.type === "session.delegation.created") {
-        // The call has no tools: the voice hears so, rather than waiting on an answer that never comes.
         const parsed = delegation.safeParse(event);
         if (!parsed.success) return;
-        const id = parsed.data.delegation.id;
-        live?.send({
-          type: "session.commentary.append",
-          event_id: `none_${id}`,
-          delegation_id: id,
-          content:
-            "Этих сведений у тебя нет. Скажи собеседнику, что уточнишь у пользователя и передашь в отчёте.",
-        });
+        void answerDelegation(parsed.data.delegation.id);
       }
     };
     const session = await openLiveSession({

@@ -265,6 +265,9 @@ export const env = createEnv({
     // Outbound calls in GPT-Live over Exolve SIP from this server (`agent/lib/phone/live/`); ElevenLabs
     // stays the voice of inbound calls and the fallback when GPT-Live does not start.
     PHONE_LIVE_WORKSPACES: workspaceListSchema.optional(),
+    // The voice of a GPT-Live call may ask Bro for what the task left out (`agent/lib/phone/ask.ts`):
+    // workspace ids or *. Unset, the voice promises to pass the question on in the report.
+    PHONE_ASK_WORKSPACES: workspaceListSchema.optional(),
     // Workspace ids or `*` whose cabinet has /talk: a voice conversation with
     // Bro in the browser, GPT-Live over WebRTC with Bro behind it
     // (`shared/voice/pilot.ts`). Needs OPENAI_API_KEY. Unset, nobody's.
