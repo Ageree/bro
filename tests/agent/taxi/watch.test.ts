@@ -109,7 +109,8 @@ describe("watching a booked taxi", () => {
     ]);
     const [row] = await database.select().from(schema.taxiWatches);
     expect(row?.state).toBe("done");
-  });
+    // Seven ticks through PGlite: past vitest's 5 s on a loaded runner.
+  }, 30_000);
 
   it("does not repeat a notice the chat did not take", async () => {
     const { database, watch } = await watching();
