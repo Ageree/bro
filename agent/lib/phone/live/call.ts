@@ -156,27 +156,29 @@ export async function dialLive(input: {
   const noAnswer =
     "Этих сведений у тебя нет. Скажи собеседнику, что уточнишь у пользователя и передашь в отчёте.";
   let asked = 0;
-  let asking = false;
+  let askInFlight: Promise<string> | null = null;
+  const askVoice = async () => {
+    // The far side's last words reach the transcript a moment after they are said.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const heard = transcript().split("\n").slice(-6).join("\n");
+    const said = await within(
+      (input.ask?.(heard) ?? Promise.resolve(null)).catch(() => null),
+      input.askTimeoutMs ?? 7000
+    );
+    say("asked", { answered: said ? 1 : 0, n: asked });
+    return said
+      ? `Из данных пользователя: ${JSON.stringify(said)}. Скажи это собеседнику своими словами, коротко, и продолжай задачу.`
+      : noAnswer;
+  };
   const answerDelegation = async (id: string) => {
-    let content = noAnswer;
-    if (input.ask && !asking && asked < (input.askLimit ?? 0)) {
-      asking = true;
+    // A second delegation while one is asked gets that answer: two replies must not contradict each other.
+    if (!askInFlight && input.ask && asked < (input.askLimit ?? 0)) {
       asked += 1;
-      try {
-        // The far side's last words reach the transcript a moment after they are said.
-        await new Promise((resolve) => setTimeout(resolve, 500));
-        const heard = transcript().split("\n").slice(-6).join("\n");
-        const said = await within(
-          input.ask(heard).catch(() => null),
-          input.askTimeoutMs ?? 7000
-        );
-        if (said)
-          content = `Из данных пользователя: ${JSON.stringify(said)}. Скажи это собеседнику своими словами, коротко, и продолжай задачу.`;
-        say("asked", { answered: said ? 1 : 0, n: asked });
-      } finally {
-        asking = false;
-      }
+      askInFlight = askVoice().finally(() => {
+        askInFlight = null;
+      });
     }
+    const content = (await askInFlight) ?? noAnswer;
     live?.send({
       type: "session.commentary.append",
       event_id: `answer_${id}`,

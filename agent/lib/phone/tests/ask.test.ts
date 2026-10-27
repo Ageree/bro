@@ -101,12 +101,22 @@ describe("the line the voice may say", () => {
     ["a code", "Код из смс 482193"],
     ["an address of mail", "Пишите на me@example.com"],
     ["a telephone of someone", "Звоните +7 999 000-11-22"],
+    ["a telephone with brackets", "Номер мамы +7 (916) 123-45-67"],
+    ["a city number", "Звоните 495 123-45-67"],
+    [
+      "a telephone in words",
+      "Восемь девятьсот девяносто девять ноль ноль один",
+    ],
+    ["a door code", "Код подъезда 4512"],
   ])("drops %s", (_, answer) => {
     expect(says(answer)).toBeNull();
   });
 
-  it("lets Bro's public number through", () => {
+  it("lets Bro's public number, times, dates and years through", () => {
     expect(says("Перезвоните на +7 924 909 89 21")).not.toBeNull();
+    expect(says("Перезвоните на +79249098921")).not.toBeNull();
+    expect(says("27.10.2026 в 19:00, два места")).not.toBeNull();
+    expect(says("Мы были у вас в 2025 году")).not.toBeNull();
   });
 });
 
@@ -115,7 +125,9 @@ describe("the question put to Bro", () => {
     mocks.memories.mockResolvedValue([
       memory("Не ем свинину"),
       memory("Только у себя", { localOnly: true }),
-      memory("Не пиши маме", { category: "rule" }),
+      memory("Не называй мою фамилию по телефону", { category: "rule" }),
+      memory("У мамы диабет", { category: "person" }),
+      memory("Код домофона 4512, кв. 37"),
       memory("пароль от почты — Kot2024!"),
     ]);
     mocks.calls.mockResolvedValue([
@@ -123,7 +135,13 @@ describe("the question put to Bro", () => {
         direction: "outbound",
         target: question.target,
         state: "done",
-        summary: "Договорились на 19:00",
+        summary: `Call transcript (task success is for you to judge from it):\n${"Бро: привет. ".repeat(80)}Договорились на 19:00`,
+      },
+      {
+        direction: "outbound",
+        target: question.target,
+        state: "done",
+        summary: "The call connected, but nothing was heard or said.",
       },
       {
         direction: "outbound",
@@ -141,11 +159,16 @@ describe("the question put to Bro", () => {
     const sent = mocks.generateText.mock.calls[0]?.[0].prompt ?? "";
     expect(sent).toContain("Максим Иванов");
     expect(sent).toContain("Не ем свинину");
+    expect(sent).toContain('"memories":["Не ем свинину"]');
     expect(sent).toContain("Договорились на 19:00");
     expect(sent).toContain(question.heard);
+    expect(sent).toContain("Не называй мою фамилию по телефону");
+    expect(sent).not.toContain("Call transcript");
+    expect(sent).not.toContain("nothing was heard");
     for (const left of [
       "Только у себя",
-      "Не пиши маме",
+      "диабет",
+      "4512",
       "Kot2024",
       "Чужой номер",
       "+79990001122",
