@@ -109,6 +109,7 @@ export default defineChannel({
         timeZone,
         now,
       };
+      const briefFrom = performance.now();
       const instructions = fast
         ? fastTalkInstructions({
             ...person,
@@ -120,6 +121,7 @@ export default defineChannel({
           })
         : talkInstructions(person);
       const startedAt = performance.now();
+      const briefMs = Math.round(startedAt - briefFrom);
       const body = JSON.stringify({
         session: {
           model: "gpt-live-1",
@@ -189,6 +191,8 @@ export default defineChannel({
         fast,
         instructionsChars: instructions.length,
         session: parsed.data.session.id,
+        // The person's profile and brief before it, then OpenAI's answer.
+        briefMs,
         ms: Math.round(performance.now() - startedAt),
       });
       return new Response(parsed.data.transport.sdp, {
