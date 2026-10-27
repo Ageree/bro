@@ -319,6 +319,7 @@ async function placeCall(
     ): Promise<Awaited<ReturnType<typeof placeLiveCall>> | null> => {
       try {
         return await placeLiveCall({
+          scope,
           callId: started.id,
           sipId,
           publicNumber: number.number,
