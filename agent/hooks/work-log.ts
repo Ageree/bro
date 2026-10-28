@@ -9,6 +9,7 @@ import { withoutSecrets } from "@agent/lib/privacy/secrets";
 import { workLogEnabled } from "@agent/lib/work-log/pilot";
 import { isBackgroundTurnText } from "@shared/chat/background-turn";
 import { sendMessageToolResultSchema } from "@shared/chat/message-delivery";
+import { voiceTalkMarker } from "@shared/voice/marker";
 
 /**
  * What Bro did in a chat, into `work_log` for the chats that come after it
@@ -28,6 +29,9 @@ export default defineHook({
       if (event.data.kind !== undefined) return;
       if (isBackgroundTurnText(event.data.message)) return;
       if (!startedByPerson(ctx)) return;
+      if (event.data.message.trimStart().startsWith(voiceTalkMarker)) {
+        holdVoiceTurn(turnKey(ctx.session.id, event.data.turnId));
+      }
       const files = (event.data.parts ?? []).flatMap((part) =>
         part.type === "file" && part.filename !== undefined
           ? [part.filename]
@@ -42,6 +46,18 @@ export default defineHook({
       const text = said === "" ? files.join(", ") : said;
       await keep(ctx, event, "person", text, files);
     },
+    "actions.requested"(event, ctx) {
+      const turn = voiceTurns.get(turnKey(ctx.session.id, event.data.turnId));
+      if (turn === undefined) return;
+      const names = event.data.actions.map((action) =>
+        action.kind === "load-skill"
+          ? "load_skill"
+          : "toolName" in action
+            ? action.toolName
+            : action.name
+      );
+      if (names.some((name) => !recallTools.has(name))) turn.worked = true;
+    },
     async "action.result"(event, ctx) {
       // What reached the person: a refused or stale send is not Bro's word.
       if (event.data.status !== "completed") return;
@@ -50,11 +66,55 @@ export default defineHook({
       const output = result.data.output;
       // A link alone names nothing done.
       if (output.kind === "link" || output.text === undefined) return;
+      const turn = voiceTurns.get(turnKey(ctx.session.id, event.data.turnId));
+      if (turn !== undefined && !turn.worked) return;
       const text = output.text;
       await keep(ctx, event, "bro", text, []);
     },
   },
 });
+
+/**
+ * The calls of a turn that only look up what Bro already has: a voice turn
+ * that made no other answered from its records and memory.
+ */
+const recallTools = new Set([
+  "load_skill",
+  "open_tools",
+  "profile__find",
+  "profile__read",
+  "profile__semantic_find",
+  "react_to_message",
+  "send_message",
+  "workstreams__find",
+  "workstreams__read",
+]);
+
+/**
+ * The voice turns this process has seen open, and whether each did any
+ * work. A voice turn reads the work log itself (`agent/lib/work-log/`), so
+ * its answer made of the log and memory alone adds nothing — and a figure
+ * it got wrong would come back to every later voice chat as a record: on
+ * 28.10 one made-up margin, logged, was then repeated by each new chat as
+ * found. The person's question is kept either way. A restart forgets the
+ * turn, and its answer is kept as any other.
+ */
+const voiceTurns = new Map<string, { worked: boolean }>();
+const voiceTurnsHeld = 200;
+
+function turnKey(sessionId: string, turnId: string) {
+  return `${sessionId}\u0000${turnId}`;
+}
+
+function holdVoiceTurn(key: string) {
+  // A second message steered into the turn keeps what the turn did.
+  if (voiceTurns.has(key)) return;
+  voiceTurns.set(key, { worked: false });
+  for (const oldest of voiceTurns.keys()) {
+    if (voiceTurns.size <= voiceTurnsHeld) break;
+    voiceTurns.delete(oldest);
+  }
+}
 
 const fileNameLimit = 200;
 

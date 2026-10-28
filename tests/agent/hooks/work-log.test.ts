@@ -58,6 +58,9 @@ function context(options: { readonly subagent?: boolean } = {}) {
 type HookEvents = NonNullable<(typeof workLogHook)["events"]>;
 type ReceivedEvent = Parameters<NonNullable<HookEvents["message.received"]>>[0];
 type ResultEvent = Parameters<NonNullable<HookEvents["action.result"]>>[0];
+type RequestedEvent = Parameters<
+  NonNullable<HookEvents["actions.requested"]>
+>[0];
 
 const meta = { at: "2026-10-28T11:00:00.000Z", id: "event-1" };
 
@@ -94,12 +97,36 @@ function sent(
   };
 }
 
+function asked(toolName: string, turnId: string): RequestedEvent {
+  return {
+    data: {
+      actions: [{ callId: "call-0", input: {}, kind: "tool-call", toolName }],
+      sequence: 1,
+      stepIndex: 0,
+      turnId,
+    },
+    meta,
+    type: "actions.requested",
+  };
+}
+
+function inTurn<T extends { data: { turnId: string } }>(
+  event: T,
+  turnId: string
+): T {
+  return { ...event, data: { ...event.data, turnId } };
+}
+
 async function receive(event: ReceivedEvent, ctx: HookContext = context()) {
   await hook.events?.["message.received"]?.(event, ctx);
 }
 
 async function result(event: ResultEvent, ctx: HookContext = context()) {
   await hook.events?.["action.result"]?.(event, ctx);
+}
+
+async function requested(event: RequestedEvent, ctx: HookContext = context()) {
+  await hook.events?.["actions.requested"]?.(event, ctx);
 }
 
 beforeEach(() => {
@@ -159,6 +186,27 @@ describe("the work log hook", () => {
     expect(mocks.appendWorkLine.mock.lastCall?.[1].text).toBe(
       "Код из письма сайта — [удалено], ввёл его. Карточка: [ссылка] отель."
     );
+  });
+
+  it("keeps a voice turn's answer only when the turn did something besides answering", async () => {
+    // Told from the records: a wrong figure here would become one.
+    await receive(
+      inTurn(received("[голосом]\nКакая маржа на рафе?"), "turn_1")
+    );
+    await requested(asked("profile__find", "turn_1"));
+    await result(inTurn(sent("Маржа 197 ₽."), "turn_1"));
+    // Searched: what it found is new.
+    await receive(inTurn(received("[голосом]\nКакой курс доллара?"), "turn_2"));
+    await requested(asked("web_search", "turn_2"));
+    await result(inTurn(sent("Доллар — 81,4 ₽."), "turn_2"));
+
+    expect(
+      mocks.appendWorkLine.mock.calls.map(([, line]) => [line.role, line.text])
+    ).toEqual([
+      ["person", "Какая маржа на рафе?"],
+      ["person", "Какой курс доллара?"],
+      ["bro", "Доллар — 81,4 ₽."],
+    ]);
   });
 
   it("keeps nothing outside the pilot or from a subagent", async () => {
