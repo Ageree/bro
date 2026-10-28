@@ -12,7 +12,11 @@ const forecastUrl =
 const requestTimeoutMs = 2500;
 /** MET asks clients to cache; a forecast is updated about hourly. */
 const keptMs = 30 * 60_000;
-const daysTold = 3;
+/**
+ * A week: told three days, the voice said «на выходные прогноза пока нет» on a Wednesday (prod 28.10), while
+ * MET forecasts about nine days ahead, six-hourly past the first two and a half.
+ */
+const daysTold = 7;
 
 const timeseriesSchema = z.array(
   z.object({
@@ -179,7 +183,14 @@ export function weatherLines(
         .filter((day) => day >= dayOf.format(input.now))
     ),
   ].slice(0, daysTold);
-  for (const [index, day] of days.entries()) {
+  // Named by the date, not by the place in the list: a day the forecast skips must not shift the names.
+  const named = new Map(
+    ["Сегодня", "Завтра", "Послезавтра"].map((name, ahead) => [
+      dayOf.format(new Date(input.now.getTime() + ahead * 24 * 60 * 60_000)),
+      name,
+    ])
+  );
+  for (const day of days) {
     const entries = series.filter(
       (entry) => dayOf.format(new Date(entry.time)) === day
     );
@@ -211,7 +222,7 @@ export function weatherLines(
         ? []
         : [entry.data.instant.details.wind_speed]
     );
-    const name = ["Сегодня", "Завтра", "Послезавтра"][index] ?? "";
+    const name = named.get(day);
     const parts = [
       daytime.length > 0
         ? `днём ${range(daytime.map((entry) => entry.data.instant.details.air_temperature))}`
@@ -227,9 +238,13 @@ export function weatherLines(
         ? `ветер до ${String(Math.round(Math.max(...winds)))} м/с`
         : undefined,
     ].filter((part) => part !== undefined);
-    lines.push(
-      `${name}, ${label.format(new Date(entries[0]?.time ?? input.now))}: ${parts.join(", ")}.`
-    );
+    const date = label.format(new Date(entries[0]?.time ?? input.now));
+    // Past the day after tomorrow the date alone, its weekday first: «Суббота, 31 октября».
+    const title =
+      name === undefined
+        ? `${date.charAt(0).toUpperCase()}${date.slice(1)}`
+        : `${name}, ${date}`;
+    lines.push(`${title}: ${parts.join(", ")}.`);
   }
   return lines.join("\n");
 }

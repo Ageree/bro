@@ -4,6 +4,7 @@ import { quickVoiceAnswer } from "@agent/lib/voice/quick/answer";
 import type * as Remind from "@agent/lib/voice/quick/remind";
 
 interface Options {
+  readonly instructions: string;
   readonly tools: {
     readonly remind: {
       readonly execute: (input: {
@@ -30,9 +31,13 @@ interface Page {
 }
 
 const mocks = vi.hoisted(() => ({
+  findPlaces:
+    vi.fn<() => Promise<{ label: string; lat: number; lon: number }[]>>(),
   generateText: vi.fn<(options: Options) => Promise<Answered>>(),
+  officialRateLines: vi.fn<() => Promise<{ lines: string; quoted: number }>>(),
   searchWeb: vi.fn<() => Promise<Page[]>>(),
   remindOnce: vi.fn<() => Promise<string>>(),
+  weatherAt: vi.fn<() => Promise<string>>(),
 }));
 
 vi.mock("ai", async (importOriginal) => ({
@@ -55,6 +60,16 @@ vi.mock("@agent/lib/web-search/search", () => ({
 vi.mock("@agent/lib/voice/quick/remind", async (importOriginal) => ({
   ...(await importOriginal<typeof Remind>()),
   remindOnce: mocks.remindOnce,
+}));
+vi.mock("@agent/lib/routes/openstreetmap", () => ({
+  findPlaces: mocks.findPlaces,
+}));
+vi.mock("@agent/lib/weather/metno", () => ({
+  placeZone: () => "Europe/Moscow",
+  weatherAt: mocks.weatherAt,
+}));
+vi.mock("@agent/lib/rates/cbr", () => ({
+  officialRateLines: mocks.officialRateLines,
 }));
 
 const person = {
@@ -93,6 +108,16 @@ beforeEach(() => {
       url: "https://pogoda.mail.ru",
     },
   ]);
+  mocks.findPlaces.mockResolvedValue([
+    { label: "Москва", lat: 55.75, lon: 37.62 },
+  ]);
+  mocks.weatherAt.mockResolvedValue(
+    "Завтра, четверг, 29 октября: днём от +4° до +10°, пасмурно, без осадков, ветер до 3 м/с."
+  );
+  mocks.officialRateLines.mockResolvedValue({
+    lines: "Курс ЦБ РФ на 28.10.2026:\nUSD — Доллар США: 80 руб. 53 коп.",
+    quoted: 1,
+  });
 });
 
 describe("the quick answer of /talk", () => {
@@ -234,6 +259,65 @@ describe("the quick answer of /talk", () => {
     searchesThenSays("Плюс восемь.", russian);
     await quickVoiceAnswer(scope(), "Какая погода завтра?", person);
     expect(russian[0]).toContain("по-русски");
+  });
+
+  it("answers the home weather and rates in one call, from the data read before the question", async () => {
+    let told = "";
+    mocks.generateText.mockImplementationOnce(async (options) => {
+      told = options.instructions;
+      return await Promise.resolve({
+        steps: [said],
+        text: "Доллар сегодня 80 рублей 53 копейки.",
+      });
+    });
+
+    expect(
+      await quickVoiceAnswer(scope(), "Сколько стоит доллар?", person)
+    ).toBe("Доллар сегодня 80 рублей 53 копейки.");
+    expect(told).toContain("Прогноз MET Norway для Москва");
+    expect(told).toContain("USD — Доллар США: 80 руб. 53 коп.");
+  });
+
+  it("hands an answer with no call to Bro unless each of its numbers is in the home data", async () => {
+    mocks.generateText.mockResolvedValueOnce({
+      steps: [said],
+      text: "Путину 74 года.",
+    });
+    expect(
+      await quickVoiceAnswer(scope(), "Сколько лет Путину?", person)
+    ).toBeUndefined();
+
+    // Nothing to check against: «Канберра», «пасмурно».
+    mocks.generateText.mockResolvedValueOnce({
+      steps: [said],
+      text: "Завтра пасмурно.",
+    });
+    expect(
+      await quickVoiceAnswer(scope(), "Какая завтра погода?", person)
+    ).toBeUndefined();
+
+    // «4» is in the forecast («+4°»), but the question is no weather or rate.
+    mocks.generateText.mockResolvedValueOnce({ steps: [said], text: "4." });
+    expect(
+      await quickVoiceAnswer(scope(), "Сколько будет 2 плюс 2?", person)
+    ).toBeUndefined();
+  });
+
+  it("asks the model without the home data that is not read in time", async () => {
+    mocks.officialRateLines.mockImplementation(
+      async () => await new Promise(() => undefined)
+    );
+    mocks.weatherAt.mockRejectedValue(new Error("MET Norway answered 503"));
+    let told = "";
+    mocks.generateText.mockImplementationOnce(async (options) => {
+      told = options.instructions;
+      return await Promise.resolve({ steps: [said], text: "80 рублей." });
+    });
+
+    expect(
+      await quickVoiceAnswer(scope(), "Сколько стоит доллар?", person)
+    ).toBeUndefined();
+    expect(told).not.toContain("Уже известно");
   });
 
   it("sends a workspace's words to Bro past twenty quick answers in five minutes", async () => {

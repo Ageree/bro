@@ -1,8 +1,9 @@
 import { generateText, hasToolCall, stepCountIs, tool } from "ai";
 import * as z from "zod";
+import { within } from "@agent/lib/browser-use/deadline";
 import { directModelSelection } from "@agent/lib/model/direct";
 import { officialRateLines } from "@agent/lib/rates/cbr";
-import { findPlaces } from "@agent/lib/routes/openstreetmap";
+import { findPlaces, type MapPlace } from "@agent/lib/routes/openstreetmap";
 import { calculateLines } from "@agent/tools/calculate";
 import {
   plainReminder,
@@ -36,6 +37,19 @@ const answerLimit = 600;
 /** Quick answers a workspace gets in a window; past it the words go to Bro. */
 const windowLimit = 20;
 const windowMs = 5 * 60_000;
+/** The wait for the person's home data before the model is asked without it. */
+const homeWaitMs = 400;
+/** The home data's own limit: past the question's wait it goes on filling the caches for the next one. */
+const homeTimeoutMs = 5000;
+/** The currencies asked about most, read before the question. */
+const homeCurrencies = ["USD", "EUR", "CNY"];
+/** A city found on the map, kept: a city does not move. */
+const placeKeptMs = 24 * 60 * 60_000;
+
+const placesFound = new Map<
+  string,
+  { readonly place: MapPlace; readonly until: number }
+>();
 
 const asked = new Map<string, number[]>();
 
@@ -52,10 +66,112 @@ function withinLimit(workspaceId: string, now: number) {
   return true;
 }
 
+/** The place a city or place name stands for on the map, the best known of the first three. */
+async function placeNamed(name: string, signal: AbortSignal) {
+  const key = name.toLowerCase();
+  const known = placesFound.get(key);
+  if (known && known.until > Date.now()) return known.place;
+  const found = await findPlaces(name, undefined, { remaining: 1 }, signal, 3);
+  const place = found.toSorted(
+    (a, b) => (b.importance ?? 0) - (a.importance ?? 0)
+  )[0];
+  if (place !== undefined)
+    placesFound.set(key, { place, until: Date.now() + placeKeptMs });
+  return place;
+}
+
+/** A place's forecast as the model reads it, with whose it is. */
+async function forecastFor(
+  place: MapPlace,
+  person: { readonly now: Date; readonly timeZone: string },
+  signal: AbortSignal
+) {
+  const lines = await weatherAt(
+    place,
+    {
+      now: person.now,
+      timeZone: placeZone(place, person.timeZone, person.now),
+    },
+    signal
+  );
+  return `Прогноз MET Norway для ${place.label}:\n${lines}`;
+}
+
+/**
+ * The person's own city's forecast and the bank's dollar, euro and yuan, read before the question: «какая
+ * завтра погода?» and «сколько стоит доллар?» answer from them in one call of the model, ~1 s sooner than
+ * with a tool's call and a second one (prod 28.10: 2.1–2.4 s, two calls of 0.7–1.4 s). MET and the bank
+ * are kept half an hour and a quarter (`metno.ts`, `cbr.ts`), so after the first question this is no wait.
+ */
+async function homeData(
+  person: {
+    readonly now: Date;
+    readonly timeZone: string;
+    readonly city: string | undefined;
+  },
+  signal: AbortSignal
+) {
+  const [weather, rates] = await Promise.all([
+    person.city === undefined
+      ? undefined
+      : placeNamed(person.city, signal)
+          .then((place) =>
+            place === undefined ? undefined : forecastFor(place, person, signal)
+          )
+          .catch(() => undefined),
+    officialRateLines(homeCurrencies, person.now, signal)
+      .then((read) => read.lines)
+      .catch(() => undefined),
+  ]);
+  const parts = [weather, rates].filter((part) => part !== undefined);
+  return parts.length > 0 ? parts.join("\n\n") : undefined;
+}
+
+/**
+ * Reads the home data into the caches when /talk opens, so the first question finds it there. Nothing waits
+ * for it, and a failure only leaves the question to read it itself.
+ */
+export function warmQuickAnswer(person: {
+  readonly now: Date;
+  readonly timeZone: string;
+  readonly city: string | undefined;
+}) {
+  void homeData(person, AbortSignal.timeout(homeTimeoutMs));
+}
+
+/** A text's numbers as written the one way: «07» and «7», «80,50» and «80.5» are each one number. */
+function numbersIn(text: string) {
+  return (text.match(/\d+(?:[.,]\d+)?/gu) ?? []).map((number) =>
+    String(Number(number.replace(",", ".")))
+  );
+}
+
+/**
+ * Whether an answer given straight from the home data rests on it: at least one number, and every number
+ * in the home data or the person's words. With no tool's call behind it, an answer from what the model
+ * knows — «Канберра», an age, a score — has nothing to check it against and goes to Bro.
+ */
+function restsOn(answer: string, data: string) {
+  const numbers = numbersIn(answer);
+  const known = new Set(numbersIn(data));
+  return numbers.length > 0 && numbers.every((number) => known.has(number));
+}
+
+/**
+ * Words of the weather or a rate, in the person's words or the voice's lines before them («А евро?» after
+ * the dollar, «а послезавтра?» after «без осадков»). The home data is full of small numbers — degrees,
+ * winds, dates — and «сколько будет 2 плюс 2» answered «4» would rest on «+4°»: an answer straight from it
+ * stands only in such a conversation.
+ */
+const homeTopic =
+  /погод|дожд|снег|температур|градус|холод|тепл|жар|мороз|ветр|ветер|зонт|осадк|облач|пасмурн|солн|курс|доллар|евро|юан|валют|weather|rain|snow|temperature|cold|warm|hot|wind|umbrella|sunny|dollar|euro|yuan|exchange rate/iu;
+
 function instructions(input: {
   now: Date;
   timeZone: string;
   city: string | undefined;
+  home: string | undefined;
+  english: boolean;
 }) {
   const wall = new Intl.DateTimeFormat("sv-SE", {
     dateStyle: "short",
@@ -74,7 +190,15 @@ function instructions(input: {
     "Погода, восход и закат — weather; официальный курс валют ЦБ — rates; арифметика, проценты, дни между датами — calculate; всё прочее, что отвечает интернет (новости, факты, расписания, цены, часы работы, матчи, криптовалюта), — web_search (в запросе — город и дата, когда они важны).",
     "Разовое напоминание на время, которое назвал человек («через 20 минут», «завтра в 9»), о деле из его слов — remind. Повторяющееся («каждый день»), с условием («если…»), без времени или с действием («напомни и позвони») — to_bro.",
     "Если это просьба сделать что-то другое (позвонить, написать, заказать, купить, записать, запомнить, отправить, открыть), если нужны данные самого человека (его почта, календарь, заказы, близкие, память), если это ответ на твой вопрос или слова о деле, которое ты уже делаешь (поиск, заказ, запись), — сразу вызови to_bro, ничего не ища. Так же — если слова без прежнего разговора непонятны («а сколько это стоит?», «а подробнее»).",
-    "Ответ — одна-две короткие фразы для произнесения вслух, до 30 слов: без ссылок, списков и разметки, без «по данным». Не упоминай поиск, выдержки и Бро.",
+    "Ответ — одна-две короткие фразы для произнесения вслух, до 30 слов: без ссылок, списков и разметки, без «по данным», числа — цифрами. Не упоминай поиск, выдержки и Бро.",
+    ...(input.home === undefined
+      ? []
+      : [
+          `Уже известно — на вопрос о погоде в городе человека или о курсе этих валют отвечай сразу по этим строкам, ничего не вызывая и ничего не добавляя от себя; о другом месте, другой валюте или другом — инструменты:\n${input.home}`,
+        ]),
+    // Last, after the data: an answer straight from it reads no tool's note (an English question got a
+    // Russian answer 3 times in 3, prototype 28.10).
+    languageNote(input.english),
   ].join("\n");
 }
 
@@ -130,17 +254,13 @@ const freeNumbers = new Set([
  * answer — or is a small or unit one: «100 * 92» with a dollar rate the model remembers is no answer.
  */
 function numbersSeen(line: string, seen: string) {
-  const known = new Set(
-    seen.match(/\d+(?:[.,]\d+)?/gu)?.map((n) => n.replace(",", "."))
+  const known = new Set(numbersIn(seen));
+  return numbersIn(line).every(
+    (number) =>
+      known.has(number) ||
+      freeNumbers.has(number) ||
+      (Number.isInteger(Number(number)) && Number(number) <= 31)
   );
-  return (line.match(/\d+(?:[.,]\d+)?/gu) ?? []).every((number) => {
-    const plain = number.replace(",", ".");
-    return (
-      known.has(plain) ||
-      freeNumbers.has(plain) ||
-      (Number.isInteger(Number(plain)) && Number(plain) <= 31)
-    );
-  });
 }
 
 /**
@@ -203,13 +323,18 @@ export async function quickVoiceAnswer(
     ...(signal ? [signal] : []),
   ]);
   try {
-    const selection = directModelSelection(await getWorkspaceModelId(scope), {
+    const [modelId, homeRead] = await Promise.all([
+      getWorkspaceModelId(scope),
+      within(homeData(person, AbortSignal.timeout(homeTimeoutMs)), homeWaitMs),
+    ]);
+    const home = homeRead.timedOut ? undefined : homeRead.value;
+    const selection = directModelSelection(modelId, {
       reasoningOff: true,
       toolChoice: "auto",
     });
     const result = await generateText({
       abortSignal: aborted,
-      instructions: instructions(person),
+      instructions: instructions({ ...person, home, english }),
       // An answer over ~65 tokens took 0.9–1.8 s against 0.5–0.9 s for a
       // short one (probe 28.10); the voice retells a sentence or two.
       maxOutputTokens: 160,
@@ -251,36 +376,23 @@ export async function quickVoiceAnswer(
         }),
         weather: tool({
           description:
-            "Прогноз погоды на сегодня, завтра и послезавтра и погода сейчас. place — город или место в именительном падеже, официальным названием («Санкт-Петербург», не «Питер»); не указывай его, если человек места не назвал.",
+            "Погода сейчас и прогноз на неделю вперёд по дням. place — город или место в именительном падеже, официальным названием («Санкт-Петербург», не «Питер»); не указывай его, если человек места не назвал.",
           inputSchema: z.object({ place: z.string().trim().min(1).optional() }),
           execute: async ({ place }) => {
             const name = place ?? person.city;
             if (name === undefined)
               return "Где — неизвестно. Вызови to_bro и ничего не пиши.";
             try {
-              const found = await findPlaces(
+              const point = await placeNamed(
                 name,
-                undefined,
-                { remaining: 1 },
-                AbortSignal.any([aborted, AbortSignal.timeout(placeTimeoutMs)]),
-                3
+                AbortSignal.any([aborted, AbortSignal.timeout(placeTimeoutMs)])
               );
-              const point = found.toSorted(
-                (a, b) => (b.importance ?? 0) - (a.importance ?? 0)
-              )[0];
               if (point === undefined)
                 return "Место не нашлось. Вызови web_search.";
-              const lines = await weatherAt(
-                point,
-                {
-                  now: person.now,
-                  timeZone: placeZone(point, person.timeZone, person.now),
-                },
-                aborted
-              );
+              const forecast = await forecastFor(point, person, aborted);
               search.found = true;
-              seen.text += lines;
-              return `Прогноз MET Norway для ${point.label}:\n${lines}\n\n${dataNote(english)}`;
+              seen.text += forecast;
+              return `${forecast}\n\n${dataNote(english)}`;
             } catch {
               return "Прогноз не ответил. Вызови web_search.";
             }
@@ -366,6 +478,13 @@ export async function quickVoiceAnswer(
     }
     // One line: the page hands it to Bro later inside a voice line.
     const answer = result.text.replaceAll(/\s+/gu, " ").trim();
+    // Straight from the home data, no tool called: only its own numbers stand.
+    const fromHome =
+      calls.length === 0 &&
+      home !== undefined &&
+      homeTopic.test(words) &&
+      restsOn(answer, `${home}\n${own}`);
+    if (fromHome) search.found = true;
     // An answer with no pages behind it is a guess at what changes: the
     // rate, the weather, the score.
     // «В выдержках нет конкретных новостей…» told the person nothing: the
@@ -379,7 +498,7 @@ export async function quickVoiceAnswer(
       outcome(search.found ? "no_answer" : "unsearched", steps);
       return undefined;
     }
-    outcome("answered", steps);
+    outcome(fromHome ? "home" : "answered", steps);
     return answer;
   } catch (error) {
     outcome(error instanceof Error ? error.name : "failed");
