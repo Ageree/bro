@@ -7,7 +7,7 @@ import {
   talkInstructions,
   voiceAcknowledgementDelayMs,
 } from "@agent/lib/voice/instructions";
-import { quickVoiceAnswer } from "@agent/lib/voice/quick";
+import { quickVoiceAnswer } from "@agent/lib/voice/quick/answer";
 import { warmVoicePrompt } from "@agent/lib/model/routerai/warm";
 import { getAuthSession } from "@db/services/auth/session";
 import { getFormOfAddress } from "@db/services/settings";
@@ -48,7 +48,11 @@ const briefWaitMs = 1500;
 const sessionTimeoutMs = 8000;
 
 /** The person's words as the page hands them over, after Bro's last message and earlier answers. */
-const quickRequestSchema = z.object({ words: z.string().min(1).max(4000) });
+const quickRequestSchema = z.object({
+  words: z.string().min(1).max(4000),
+  // The page's Bro chat, where a reminder it sets is made.
+  chat: z.string().min(1).max(200).optional(),
+});
 
 const answerSchema = z.object({
   session: z.object({ id: z.string() }),
@@ -219,7 +223,7 @@ export default defineChannel({
       });
     }),
     // A question the web answers, before the page hands the words to Bro:
-    // `answer` null sends them on to Bro (`agent/lib/voice/quick.ts`).
+    // `answer` null sends them on to Bro (`agent/lib/voice/quick/answer.ts`).
     POST(voiceQuickPath, async (request) => {
       if (request.headers.get("origin") !== applicationOrigin())
         return new Response("Not found", { status: 404 });
@@ -240,6 +244,7 @@ export default defineChannel({
           now: new Date(),
           timeZone: resolveTimeZone(profile.timezone),
           city: profile.city ?? undefined,
+          chat: asked.data.chat,
         },
         // A conversation that ended stops paying for its question.
         request.signal

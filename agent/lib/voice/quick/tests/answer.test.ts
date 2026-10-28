@@ -1,9 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type * as Ai from "ai";
-import { quickVoiceAnswer } from "@agent/lib/voice/quick";
+import { quickVoiceAnswer } from "@agent/lib/voice/quick/answer";
+import type * as Remind from "@agent/lib/voice/quick/remind";
 
 interface Options {
   readonly tools: {
+    readonly remind: {
+      readonly execute: (input: {
+        text: string;
+        inMinutes?: number;
+      }) => Promise<string>;
+    };
     readonly web_search: {
       readonly execute: (input: { query: string }) => Promise<string>;
     };
@@ -25,6 +32,7 @@ interface Page {
 const mocks = vi.hoisted(() => ({
   generateText: vi.fn<(options: Options) => Promise<Answered>>(),
   searchWeb: vi.fn<() => Promise<Page[]>>(),
+  remindOnce: vi.fn<() => Promise<string>>(),
 }));
 
 vi.mock("ai", async (importOriginal) => ({
@@ -44,11 +52,16 @@ vi.mock("@db/services/settings", () => ({
 vi.mock("@agent/lib/web-search/search", () => ({
   searchWeb: mocks.searchWeb,
 }));
+vi.mock("@agent/lib/voice/quick/remind", async (importOriginal) => ({
+  ...(await importOriginal<typeof Remind>()),
+  remindOnce: mocks.remindOnce,
+}));
 
 const person = {
   now: new Date("2026-10-28T09:00:00Z"),
   timeZone: "Europe/Moscow",
   city: "Москва",
+  chat: undefined,
 };
 let workspace = 0;
 /** Each test its own workspace: the limit counts per workspace. */
@@ -70,7 +83,8 @@ function searchesThenSays(text: string, read: string[] = []) {
 }
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  // A queued answer a test left unused must not reach the next one.
+  vi.resetAllMocks();
   mocks.searchWeb.mockResolvedValue([
     {
       date: "2 часа назад",
@@ -108,11 +122,61 @@ describe("the quick answer of /talk", () => {
     ).toBeUndefined();
   });
 
-  it("hands words with an errand to Bro without asking the model", async () => {
+  it("says a reminder it set as the line made for it, with no step after", async () => {
+    mocks.remindOnce.mockResolvedValueOnce(
+      "Поставил напоминание завтра в 09:00: позвонить маме. Придёт в Telegram."
+    );
+    mocks.generateText.mockImplementationOnce(async (options) => {
+      await options.tools.remind.execute({ text: "позвонить маме" });
+      return { steps: [{ toolCalls: [{ toolName: "remind" }] }], text: "" };
+    });
+
+    expect(
+      await quickVoiceAnswer(
+        scope(),
+        "Напомни завтра в девять позвонить маме",
+        person
+      )
+    ).toBe(
+      "Поставил напоминание завтра в 09:00: позвонить маме. Придёт в Telegram."
+    );
+  });
+
+  it("hands a reminder it may not set to Bro", async () => {
+    const { RemindRefusal } = await vi.importActual<typeof Remind>(
+      "@agent/lib/voice/quick/remind"
+    );
+    mocks.remindOnce.mockRejectedValueOnce(new RemindRefusal("no time"));
+    mocks.generateText.mockImplementationOnce(async (options) => {
+      await options.tools.remind.execute({ text: "позвонить маме" });
+      return { steps: [{ toolCalls: [{ toolName: "remind" }] }], text: "" };
+    });
+
+    expect(
+      await quickVoiceAnswer(
+        scope(),
+        "Напомни завтра в девять позвонить маме",
+        person
+      )
+    ).toBeUndefined();
+  });
+
+  it("hands a reminder with a condition or a question beside it to Bro whole, without the model", async () => {
     expect(
       await quickVoiceAnswer(
         scope(),
         "Какая завтра погода? Если дождь — напомни взять зонт",
+        person
+      )
+    ).toBeUndefined();
+    expect(mocks.generateText).not.toHaveBeenCalled();
+  });
+
+  it("hands words with an errand to Bro without asking the model", async () => {
+    expect(
+      await quickVoiceAnswer(
+        scope(),
+        "Какая завтра погода? Если дождь — закажи такси к восьми",
         person
       )
     ).toBeUndefined();
@@ -136,6 +200,14 @@ describe("the quick answer of /talk", () => {
       await quickVoiceAnswer(scope(), "Какой курс доллара?", person)
     ).toBeUndefined();
     expect(read[0]).toContain("to_bro");
+  });
+
+  it("hands the words to Bro when the model only says the pages hold no answer", async () => {
+    searchesThenSays("В выдержках нет конкретных новостей, только заголовки.");
+
+    expect(
+      await quickVoiceAnswer(scope(), "Что нового в новостях?", person)
+    ).toBeUndefined();
   });
 
   it("hands the words to Bro when the model fails", async () => {

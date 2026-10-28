@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { asksPerson, notePieces, spokenText } from "./retell";
+import { asksPerson, notePieces, quietNotePieces, spokenText } from "./retell";
 
 describe("Bro's message as the voice gets it", () => {
   it("keeps the words of links and drops pictures, addresses and markup", () => {
@@ -39,5 +39,19 @@ describe("Bro's message as the voice gets it", () => {
     expect(pieces.length).toBeGreaterThan(1);
     expect(pieces.every((piece) => piece.length <= 200)).toBe(true);
     expect(pieces.join("\n")).toBe(lines.join("\n"));
+  });
+
+  it("leads every piece of a silent note with the line that keeps the voice from reading it out", () => {
+    const pieces = quietNotePieces(
+      Array.from(
+        { length: 30 },
+        (_, index) =>
+          `- вт 28.10 ${String(index)}:00 «Встреча с командой по проекту ${String(index)}»`
+      ).join("\n")
+    );
+
+    expect(pieces.length).toBeGreaterThan(1);
+    for (const piece of pieces)
+      expect(piece).toMatch(/^Справка на потом: вслух её не пересказывай/u);
   });
 });

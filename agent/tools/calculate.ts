@@ -600,7 +600,7 @@ const lineSchema = z
   .describe("One expression, or `name = expression` to reuse its value below.");
 
 /** Evaluates lines in order; a named line's value is visible to later lines. */
-function calculateLines(lines: readonly string[]) {
+export function calculateLines(lines: readonly string[]) {
   const variables = new Map<string, Rational>();
   return lines.map((line) => {
     const assignment = /^([\p{L}_][\p{L}\p{N}_]*)\s*=(?!=)\s*(.+)$/su.exec(

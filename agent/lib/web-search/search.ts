@@ -7,12 +7,23 @@ import {
 } from "@agent/lib/model/routerai/errors";
 import { routerAiFetchOnce } from "@agent/lib/model/routerai/fetch";
 import {
+  ExaSearchError,
+  exaConfigured,
+  searchExa,
+} from "@agent/lib/web-search/exa";
+import {
+  searchTinyFish,
+  TinyFishSearchError,
+  tinyFishConfigured,
+} from "@agent/lib/web-search/tinyfish";
+import {
   type InstantEngine,
   instantEngines,
   InstantSearchError,
   instantSearchEnabled,
   searchInstant,
 } from "@agent/lib/web-search/instant";
+import { alertOwner, clearOwnerAlert } from "@agent/lib/owner-alert";
 import { ComposioError } from "@shared/composio/api";
 import { env } from "@shared/environment";
 
@@ -148,22 +159,52 @@ export class WebSearchError extends Error {
 type SearchEndpoint = NonNullable<ReturnType<typeof modelEndpoint>>;
 
 /**
- * Runs one web search and returns the pages it found: on Composio Instant's
- * engines first (`instant.ts`), each failure or empty answer handing the
- * query to the next, then through the `web` plugin of the direct model
- * backend (RouterAI or OpenRouter). Nothing is retried once `signal` aborts
- * the turn.
+ * Runs one web search and returns the pages it found: on the owner's own
+ * keys first — TinyFish, free (`tinyfish.ts`), then Exa (`exa.ts`) — then on
+ * Composio Instant's TinyFish when there is no TinyFish key (`instant.ts`),
+ * each failure or empty answer handing the query to the next, then through
+ * the `web` plugin of the direct model backend (RouterAI or OpenRouter). An
+ * engine out of its allowance rests a while (`rest`). Nothing is retried
+ * once `signal` aborts the turn.
  */
 export async function searchWeb(
   input: WebSearchInput,
   signal: AbortSignal
 ): Promise<readonly WebSearchResult[]> {
   const endpoint = modelEndpoint();
-  if (instantSearchEnabled()) {
+  const domains = searchDomains(input.sites);
+  for (const engine of directEngines()) {
+    try {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- The next engine only when this one failed.
+      const pages = await engine.search(input.query, domains, signal);
+      const results = pagesToResults(pages, instantMaxResults);
+      if (results.length > 0) {
+        answered(engine.name);
+        return results;
+      }
+    } catch (error) {
+      if (signal.aborted) throw error;
+      console.warn("[web_search] engine failed", {
+        engine: engine.name,
+        reason:
+          error instanceof Error
+            ? `${error.name}: ${error.message}`
+            : "unknown",
+      });
+      if (
+        error instanceof TinyFishSearchError ||
+        error instanceof ExaSearchError
+      )
+        refused(engine.name, error.status);
+    }
+  }
+  if (instantSearchEnabled() && !tinyFishConfigured() && awake("composio")) {
     for (const engine of instantEngines) {
       try {
         // oxlint-disable-next-line eslint/no-await-in-loop -- The next engine only when this one failed.
-        return await searchOnInstant(input, engine, signal);
+        const found = await searchOnInstant(input, engine, signal);
+        answered("composio");
+        return found;
       } catch (error) {
         if (signal.aborted) throw error;
         // The engine's limit or outage, for the log; the query stays out.
@@ -171,6 +212,15 @@ export async function searchWeb(
           engine,
           reason: instantFailure(error),
         });
+        // An empty wallet refuses every engine alike.
+        if (
+          error instanceof ComposioError &&
+          error.status === 402 &&
+          error.slug === "Metering_WalletBalanceExhausted"
+        ) {
+          refused("composio", 402);
+          break;
+        }
       }
     }
   }
@@ -182,28 +232,106 @@ export async function searchWeb(
   return await searchOnModelBackend(input, endpoint, signal);
 }
 
-async function searchOnInstant(
-  input: WebSearchInput,
-  engine: InstantEngine,
-  signal: AbortSignal
-) {
-  // Instant's engines take domains; a path such as `yandex.ru/maps` widens
-  // to its site.
-  const domains = [
+/** The search engines the owner's own keys open, in order, those resting left out. */
+function directEngines() {
+  return [
+    ...(tinyFishConfigured() && awake("tinyfish")
+      ? [
+          {
+            name: "tinyfish",
+            search: async (
+              query: string,
+              domains: readonly string[],
+              signal: AbortSignal
+            ) => await searchTinyFish(query, domains, signal),
+          },
+        ]
+      : []),
+    ...(exaConfigured() && awake("exa")
+      ? [
+          {
+            name: "exa",
+            search: async (
+              query: string,
+              domains: readonly string[],
+              signal: AbortSignal
+            ) => await searchExa(query, domains, instantMaxResults, signal),
+          },
+        ]
+      : []),
+  ];
+}
+
+/** The engines take domains; a path such as `yandex.ru/maps` widens to its site. */
+function searchDomains(sites: WebSearchInput["sites"]) {
+  return [
     ...new Set(
-      siteFilter(input.sites).flatMap((site) => {
+      siteFilter(sites).flatMap((site) => {
         const domain = site.split("/")[0];
         return domain ? [domain] : [];
       })
     ),
   ];
-  const pages = await searchInstant(
+}
+
+/**
+ * An engine out of its allowance (402: Composio's wallet ran dry on 28.10, a key's free quota) or
+ * throttled (429). Each search still asked it, ~0.5 s for a refusal before the next engine: it is left
+ * alone for a while instead, and an empty allowance is told to the owner once a day, as only they can top
+ * it up. Per instance.
+ */
+const emptyRestMs = 10 * 60_000;
+const throttledRestMs = 60_000;
+const emptyAlertRepeatMs = 24 * 60 * 60_000;
+const engineNames = {
+  composio: "Кошелёк Composio пуст",
+  exa: "Лимит ключа Exa исчерпан",
+  tinyfish: "Бесплатный лимит ключа TinyFish исчерпан",
+} as const;
+type Engine = keyof typeof engineNames;
+const restsUntil = new Map<string, number>();
+/** Engines this instance saw out of allowance: one answering again clears the owner's alert. */
+const alerted = new Set<string>();
+
+function awake(engine: Engine) {
+  return Date.now() >= (restsUntil.get(engine) ?? 0);
+}
+
+function refused(engine: string, status: number | undefined) {
+  if (status !== 402 && status !== 429) return;
+  restsUntil.set(
     engine,
-    input.query,
-    domains,
-    instantMaxResults,
-    signal
+    Date.now() + (status === 402 ? emptyRestMs : throttledRestMs)
   );
+  if (status !== 402) return;
+  // Each rest asks; the stored alert keeps it to once a day.
+  alerted.add(engine);
+  const name =
+    engine === "exa" || engine === "tinyfish"
+      ? engineNames[engine]
+      : engineNames.composio;
+  void alertOwner(
+    `web-search-${engine}`,
+    `${name} (402): веб-поиск Бро идёт через запасной движок — медленнее и дороже. Пополните или замените ключ.`,
+    { repeatAfterMs: emptyAlertRepeatMs }
+  ).catch(() => {
+    console.warn("[web_search] the allowance alert was not sent");
+  });
+}
+
+/** An engine answers again: its next empty allowance is news to the owner. */
+function answered(engine: string) {
+  if (!alerted.delete(engine)) return;
+  void clearOwnerAlert(`web-search-${engine}`).catch(() => undefined);
+}
+
+async function searchOnInstant(
+  input: WebSearchInput,
+  engine: InstantEngine,
+  signal: AbortSignal
+) {
+  const domains = searchDomains(input.sites);
+  const pages = await searchInstant(engine, input.query, domains, signal);
   const results = pagesToResults(pages, instantMaxResults);
   if (results.length === 0) {
     throw new InstantSearchError(`${engine} returned no usable page`);

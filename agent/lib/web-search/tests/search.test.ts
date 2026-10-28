@@ -74,6 +74,12 @@ function namedError(name: string) {
   return Object.assign(new Error(`${name} from fetch`), { name });
 }
 
+const ownerAlerts = vi.hoisted(() => ({
+  alertOwner: vi.fn<(key: string, text: string) => Promise<boolean>>(),
+  clearOwnerAlert: vi.fn<(key: string) => Promise<void>>(),
+}));
+vi.mock("@agent/lib/owner-alert", () => ownerAlerts);
+
 async function loadSearchWeb() {
   const search = await import("@agent/lib/web-search/search");
   return search.searchWeb;
@@ -576,6 +582,7 @@ describe("Composio Instant web search", () => {
     // `unstubAllEnvs` above drops the setup's key too.
     vi.stubEnv("COMPOSIO_API_KEY", "test-composio-key");
     vi.stubEnv("WEB_SEARCH_INSTANT", "on");
+    ownerAlerts.alertOwner.mockClear();
   });
 
   it("searches on TinyFish in Russian, held to the sites' domains", async () => {
@@ -696,7 +703,7 @@ describe("Composio Instant web search", () => {
     expect(results.at(-1)?.title).toBe("https://untitled.example/x");
   });
 
-  it("hands the query to Tavily when TinyFish refuses it", async () => {
+  it("hands the query to the model backend when TinyFish refuses it", async () => {
     fetchMock
       .mockResolvedValueOnce(
         new Response(
@@ -707,45 +714,53 @@ describe("Composio Instant web search", () => {
           })
         )
       )
-      .mockResolvedValueOnce(
-        instantAnswer([
-          {
-            content: "Средний чек 1500 ₽",
-            title: "Чичико",
-            url: "https://a.example/c",
-          },
-        ])
-      );
+      .mockResolvedValueOnce(oneCitation());
 
     const searchWeb = await loadSearchWeb();
-    const results = await searchWeb({ query: "Chichiko bill" }, turnSignal());
+    expect(
+      await searchWeb({ query: "Chichiko bill" }, turnSignal())
+    ).toHaveLength(1);
 
-    const fallback = instantRequestAt(1);
-    expect(fallback.url).toMatch(/\/tools\/execute\/TAVILY_SEARCH$/u);
-    expect(fallback.body.arguments).toEqual({
-      max_results: 8,
-      query: "Chichiko bill",
-      search_depth: "basic",
-    });
-    expect(results.map((result) => result.snippet)).toEqual([
-      "Средний чек 1500 ₽",
-    ]);
+    // Tavily is asked no more: its terms name Russia as embargoed.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(requestAt(1).url).toBe(
+      "https://openrouter.ai/api/v1/chat/completions"
+    );
   });
 
-  it("falls back to the model backend's engines when Composio's balance is empty", async () => {
+  it("falls back to the model backend's engines when Composio's balance is empty, and tells the owner", async () => {
+    ownerAlerts.alertOwner.mockResolvedValue(true);
     fetchMock
-      .mockResolvedValueOnce(walletEmpty())
       .mockResolvedValueOnce(walletEmpty())
       .mockResolvedValueOnce(oneCitation());
 
     const searchWeb = await loadSearchWeb();
     expect(await searchWeb({ query: "rates" }, turnSignal())).toHaveLength(1);
 
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(requestAt(1).url).toBe(
+      "https://openrouter.ai/api/v1/chat/completions"
+    );
+    expect(requestAt(1).body.plugins[0]?.engine).toBe("exa");
+    expect(ownerAlerts.alertOwner).toHaveBeenCalledOnce();
+  });
+
+  it("leaves Composio alone for a while once its wallet is empty", async () => {
+    ownerAlerts.alertOwner.mockResolvedValue(true);
+    fetchMock
+      .mockResolvedValueOnce(walletEmpty())
+      .mockResolvedValueOnce(oneCitation())
+      .mockResolvedValueOnce(oneCitation());
+
+    const searchWeb = await loadSearchWeb();
+    await searchWeb({ query: "rates" }, turnSignal());
+    await searchWeb({ query: "news" }, turnSignal());
+
     expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(requestAt(2).url).toBe(
       "https://openrouter.ai/api/v1/chat/completions"
     );
-    expect(requestAt(2).body.plugins[0]?.engine).toBe("exa");
+    expect(ownerAlerts.alertOwner).toHaveBeenCalledOnce();
   });
 
   it("asks no other engine once the turn itself was aborted", async () => {
@@ -761,5 +776,111 @@ describe("Composio Instant web search", () => {
       "AbortError from fetch"
     );
     expect(fetchMock).toHaveBeenCalledOnce();
+  });
+});
+
+function tinyFishAnswer() {
+  return Response.json({
+    results: [
+      {
+        date: "2 часа назад",
+        position: 1,
+        site_name: "ЦБ",
+        snippet: "Курс доллара на 28 октября — 80,53 руб.",
+        title: "Курс ЦБ",
+        url: "https://cbr.ru/currency_base/daily/",
+      },
+    ],
+  });
+}
+
+function exaAnswer() {
+  return Response.json({
+    results: [
+      {
+        highlights: ["Завтра в Москве +8", "без осадков"],
+        publishedDate: "2026-10-28T06:00:00.000Z",
+        title: "Погода",
+        url: "https://pogoda.example/moscow",
+      },
+    ],
+  });
+}
+
+describe("the owner's own search keys", () => {
+  beforeEach(() => {
+    vi.stubEnv("COMPOSIO_API_KEY", "test-composio-key");
+    vi.stubEnv("WEB_SEARCH_INSTANT", "on");
+    vi.stubEnv("TINYFISH_API_KEY", "tf-test-key");
+    ownerAlerts.alertOwner.mockClear();
+  });
+
+  it("searches TinyFish directly, in Russian from Russia, and never Composio", async () => {
+    fetchMock.mockResolvedValueOnce(tinyFishAnswer());
+
+    const searchWeb = await loadSearchWeb();
+    const results = await searchWeb(
+      { query: "курс доллара", sites: ["cbr.ru", "yandex.ru/maps"] },
+      turnSignal()
+    );
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [url, init] = fetchMock.mock.calls[0] ?? [];
+    const asked = new URL(String(url));
+    expect(asked.origin).toBe("https://api.search.tinyfish.ai");
+    expect(Object.fromEntries(asked.searchParams)).toEqual({
+      include_domains: "cbr.ru,yandex.ru",
+      language: "ru",
+      location: "RU",
+      query: "курс доллара",
+    });
+    expect(new Headers(init?.headers).get("x-api-key")).toBe("tf-test-key");
+    expect(results).toEqual([
+      {
+        date: "2 часа назад",
+        snippet: "Курс доллара на 28 октября — 80,53 руб.",
+        title: "Курс ЦБ",
+        url: "https://cbr.ru/currency_base/daily/",
+      },
+    ]);
+  });
+
+  it("hands the query to Exa once TinyFish's allowance is spent, leaves TinyFish alone and tells the owner once", async () => {
+    vi.stubEnv("EXA_API_KEY", "exa-test-key");
+    ownerAlerts.alertOwner.mockResolvedValue(true);
+    fetchMock
+      .mockResolvedValueOnce(
+        Response.json({ error: "FREE_ALLOWANCE_EXHAUSTED" }, { status: 402 })
+      )
+      .mockResolvedValueOnce(exaAnswer())
+      .mockResolvedValueOnce(exaAnswer());
+
+    const searchWeb = await loadSearchWeb();
+    const first = await searchWeb({ query: "погода завтра" }, turnSignal());
+    await searchWeb({ query: "погода в Казани" }, turnSignal());
+
+    expect(first).toEqual([
+      {
+        date: "2026-10-28",
+        snippet: "Завтра в Москве +8 … без осадков",
+        title: "Погода",
+        url: "https://pogoda.example/moscow",
+      },
+    ]);
+    const [exaUrl, exaInit] = fetchMock.mock.calls[1] ?? [];
+    expect(String(exaUrl)).toBe("https://api.exa.ai/search");
+    expect(JSON.parse(exaInit?.body ?? "{}")).toEqual({
+      contents: { highlights: true },
+      numResults: 8,
+      query: "погода завтра",
+      type: "fast",
+      userLocation: "RU",
+    });
+    // The second search goes straight to Exa.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(String(fetchMock.mock.calls[2]?.[0])).toBe(
+      "https://api.exa.ai/search"
+    );
+    expect(ownerAlerts.alertOwner).toHaveBeenCalledOnce();
   });
 });
