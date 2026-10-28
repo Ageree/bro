@@ -107,6 +107,24 @@ describe("what Bro did, read back in a new chat", () => {
     expect(brief).not.toContain("домофон");
   });
 
+  it("says in the voice's brief where an answer was cut, and gives Bro's turn the whole of it", async () => {
+    const report = `Посчитал квартал. ${"Выручка росла каждый месяц. ".repeat(20)}Падают ИП Смирнов и ФармЛайн.`;
+    mocks.readWorkLines.mockResolvedValue([
+      line("person", "Посчитай квартал", 0),
+      line("bro", report, 1),
+    ]);
+
+    const [brief] = await workLogBriefLines(scope, {
+      now,
+      timeZone: "Europe/Moscow",
+    });
+    const [context] = await workLogVoiceContext(scope, { now });
+
+    expect(brief).toMatch(/… \[дальше обрезано — остальное знает Бро\]»$/u);
+    expect(brief).not.toContain("Смирнов");
+    expect(context).toContain("Падают ИП Смирнов и ФармЛайн.»");
+  });
+
   it("keeps the newest requests that fit", async () => {
     mocks.readWorkLines.mockResolvedValue(
       Array.from({ length: 60 }, (_, index) =>
