@@ -18,10 +18,20 @@ interface Utterance {
   readonly startMs: number;
 }
 
+/** A question the quick answer took and what the voice was given to say. */
+export interface QuickAnswer {
+  readonly words: string;
+  readonly answer: string;
+}
+
 /** Silence that ends one utterance and starts the next. */
 const utteranceGapMs = 1200;
 /** The person's utterances a request carries at most: older talk stays out. */
 const keptUtterances = 4;
+/** Quick answers the next words to Bro carry at most. */
+const keptQuickAnswers = 2;
+/** Of Bro's last message, what the quick answer reads. */
+const broSaidChars = 400;
 
 export class Hearing {
   readonly #heard: Piece[] = [];
@@ -67,6 +77,52 @@ export class Hearing {
       .map((line) => (line.by === "person" ? line.text : voiceLine(line.text)))
       .join("\n");
   }
+}
+
+/** Text as one line: a voice line must be one, or its readers lose it. */
+function oneLine(text: string) {
+  return text.replaceAll(/\s+/gu, " ").trim();
+}
+
+/**
+ * The words going to Bro after the quick answers the voice gave since Bro last
+ * heard from the page (VOICE_QUICK_WORKSPACES): Bro never saw those turns, and
+ * «напомни утром взять зонт, если так» after the weather would reach it bare.
+ * Each goes as one voice line, never as the person's words: a «да» to Bro's
+ * «Оплачиваю?» after the weather must still be nothing but «да» to the readers
+ * of consent (`spokenWords`), and Bro must not answer the weather again.
+ */
+export function withQuickAnswers(
+  words: string,
+  answered: readonly QuickAnswer[]
+) {
+  return [
+    ...answered
+      .slice(-keptQuickAnswers)
+      .map((quick) =>
+        voiceLine(
+          `уже ответил голосом на «${oneLine(quick.words)}»: ${oneLine(quick.answer)}`
+        )
+      ),
+    words,
+  ].join("\n");
+}
+
+/**
+ * What the quick answer reads: the person's words after its own earlier
+ * answers and Bro's last message, as voice lines, so «а какая там погода?»
+ * after Bro wrote of Sochi is Sochi's, and «ну что, нашёл?» is Bro's work.
+ */
+export function forQuickAnswer(
+  words: string,
+  answered: readonly QuickAnswer[],
+  broSaid: string | undefined
+) {
+  const said =
+    broSaid === undefined
+      ? []
+      : [voiceLine(oneLine(broSaid).slice(0, broSaidChars))];
+  return [...said, withQuickAnswers(words, answered)].join("\n");
 }
 
 function utterances(pieces: readonly Piece[], by: Utterance["by"]) {

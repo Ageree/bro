@@ -33,3 +33,16 @@ export function voiceFastListed(workspaceId: string) {
   const list = env.VOICE_FAST_WORKSPACES ?? [];
   return list.includes("*") || list.includes(workspaceId);
 }
+
+/**
+ * Whether a question of /talk the web answers is answered by one small model
+ * call with a search before Bro's turn (VOICE_QUICK_WORKSPACES, ids or `*`,
+ * within the fast voice): `agent/lib/voice/quick.ts`.
+ */
+export function voiceQuickEnabled(workspaceId: string) {
+  const list = env.VOICE_QUICK_WORKSPACES ?? [];
+  return (
+    voiceFastEnabled(workspaceId) &&
+    (list.includes("*") || list.includes(workspaceId))
+  );
+}

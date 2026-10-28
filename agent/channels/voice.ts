@@ -7,6 +7,7 @@ import {
   talkInstructions,
   voiceAcknowledgementDelayMs,
 } from "@agent/lib/voice/instructions";
+import { quickVoiceAnswer } from "@agent/lib/voice/quick";
 import { warmVoicePrompt } from "@agent/lib/model/routerai/warm";
 import { getAuthSession } from "@db/services/auth/session";
 import { getFormOfAddress } from "@db/services/settings";
@@ -16,10 +17,16 @@ import { applicationOrigin } from "@shared/environment/origin";
 import { accessScopeForUser } from "@shared/identity/access-scope";
 import { liveVoice } from "@shared/phone/persona";
 import { resolveTimeZone } from "@shared/user-profile/schema";
-import { voiceFastEnabled, voiceTalkEnabled } from "@shared/voice/pilot";
+import {
+  voiceFastEnabled,
+  voiceQuickEnabled,
+  voiceTalkEnabled,
+} from "@shared/voice/pilot";
 import {
   voiceCalendarPath,
   voicePaceHeader,
+  voiceQuickHeader,
+  voiceQuickPath,
   voiceSessionPath,
 } from "@shared/voice/routes";
 
@@ -39,6 +46,9 @@ const maximumOfferLength = 64 * 1024;
 const briefWaitMs = 1500;
 /** Each of the two tries at opening the session: it answers in 0.6–1.5 s. */
 const sessionTimeoutMs = 8000;
+
+/** The person's words as the page hands them over, after Bro's last message and earlier answers. */
+const quickRequestSchema = z.object({ words: z.string().min(1).max(4000) });
 
 const answerSchema = z.object({
   session: z.object({ id: z.string() }),
@@ -68,10 +78,11 @@ function within<T>(promise: Promise<T>, ms: number, fallback: T) {
 
 /**
  * /talk's doors in the agent (`app/(talk)/talk`), which alone reads Google:
- * the session the page opens with its SDP offer, and the person's calendar
- * the page hands the voice once the line is up. Outside the voice pilot
- * neither exists; the calendar only for VOICE_FAST_WORKSPACES. The OpenAI key
- * stays on the server.
+ * the session the page opens with its SDP offer, the person's calendar the
+ * page hands the voice once the line is up, and the quick answer it asks
+ * before Bro. Outside the voice pilot none exists; the calendar only for
+ * VOICE_FAST_WORKSPACES, the quick answer for VOICE_QUICK_WORKSPACES. The
+ * OpenAI key stays on the server.
  */
 export default defineChannel({
   audience() {
@@ -201,8 +212,39 @@ export default defineChannel({
           "Content-Type": "application/sdp",
           // The page paces the fast voice's wait itself.
           ...(fast && { [voicePaceHeader]: "page" }),
+          ...(voiceQuickEnabled(scope.workspaceId) && {
+            [voiceQuickHeader]: "on",
+          }),
         },
       });
+    }),
+    // A question the web answers, before the page hands the words to Bro:
+    // `answer` null sends them on to Bro (`agent/lib/voice/quick.ts`).
+    POST(voiceQuickPath, async (request) => {
+      if (request.headers.get("origin") !== applicationOrigin())
+        return new Response("Not found", { status: 404 });
+      const scope = await personOf(request);
+      if (scope === undefined)
+        return new Response("Unauthorized", { status: 401 });
+      if (!voiceQuickEnabled(scope.workspaceId))
+        return new Response("Not found", { status: 404 });
+      const asked = quickRequestSchema.safeParse(
+        await request.json().catch(() => undefined)
+      );
+      if (!asked.success) return new Response("Bad words", { status: 400 });
+      const profile = await readUserProfile(scope);
+      const answer = await quickVoiceAnswer(
+        scope,
+        asked.data.words,
+        {
+          now: new Date(),
+          timeZone: resolveTimeZone(profile.timezone),
+          city: profile.city ?? undefined,
+        },
+        // A conversation that ended stops paying for its question.
+        request.signal
+      );
+      return Response.json({ answer: answer ?? null }, { headers: noStore });
     }),
     // The next week of the person's calendar, as lines the page appends to
     // the voice's context: Google through Composio takes a second or two,

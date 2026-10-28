@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { Hearing } from "./hearing";
+import { voiceLinePattern } from "@shared/voice/marker";
+import { forQuickAnswer, Hearing, withQuickAnswers } from "./hearing";
 
 function heard(hearing: Hearing, text: string, startMs: number) {
   hearing.hear({ text, startMs, endMs: startMs + 300 });
@@ -44,5 +45,42 @@ describe("the words the voice hands to Bro", () => {
     expect(hearing.takeRequest()).toBeUndefined();
     heard(hearing, "А японский?", 3000);
     expect(hearing.hasRequest()).toBe(true);
+  });
+});
+
+describe("the words going to Bro after quick answers", () => {
+  it("carry the last two quick answers before them, each as one voice line", () => {
+    expect(
+      withQuickAnswers("Напомни утром взять зонт, если так", [
+        { words: "Какой курс доллара?", answer: "Восемьдесят с половиной." },
+        { words: "Какая погода завтра?", answer: "Плюс восемь,\nдождь." },
+        { words: "А в Казани?", answer: "Плюс шесть, сухо." },
+      ])
+    ).toBe(
+      "(ты: «уже ответил голосом на «Какая погода завтра?»: Плюс восемь, дождь.»)\n(ты: «уже ответил голосом на «А в Казани?»: Плюс шесть, сухо.»)\nНапомни утром взять зонт, если так"
+    );
+    expect(withQuickAnswers("Позвони маме", [])).toBe("Позвони маме");
+  });
+
+  it("leave a «да» to Bro's question nothing but «да» once the voice's lines are struck out", () => {
+    // As the readers of consent read it (`spokenWords`): «да» after the
+    // weather still pays.
+    expect(
+      withQuickAnswers("да", [
+        { words: "Какая погода завтра?", answer: "Плюс восемь,\nдождь." },
+      ])
+        .replaceAll(voiceLinePattern, "")
+        .trim()
+    ).toBe("да");
+  });
+
+  it("give the quick answer Bro's last message to read the words by", () => {
+    expect(
+      forQuickAnswer(
+        "А какая там погода?",
+        [],
+        "Нашёл три отеля в Сочи.\nКакой берём?"
+      )
+    ).toBe("(ты: «Нашёл три отеля в Сочи. Какой берём?»)\nА какая там погода?");
   });
 });

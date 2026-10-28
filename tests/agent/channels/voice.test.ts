@@ -8,6 +8,13 @@ const mocks = vi.hoisted(() => ({
   authSession: vi.fn<() => Promise<{ user: { id: string } } | null>>(),
   calendar: vi.fn<() => Promise<string | undefined>>(),
   brief: vi.fn<() => Promise<string>>(),
+  quick:
+    vi.fn<
+      (
+        scope: { workspaceId: string },
+        words: string
+      ) => Promise<string | undefined>
+    >(),
   fetch: vi.fn<(url: string, init: { body: string }) => Promise<Response>>(),
 }));
 
@@ -29,13 +36,17 @@ vi.mock("@agent/lib/voice/brief", () => ({
   voiceBrief: mocks.brief,
   voiceCalendar: mocks.calendar,
 }));
+vi.mock("@agent/lib/voice/quick", () => ({ quickVoiceAnswer: mocks.quick }));
 
-// Alice has the fast voice, Bob the voice alone, Carol no voice at all.
+// Alice has the fast voice with quick answers, Dan the fast voice alone, Bob
+// the voice alone, Carol no voice at all.
 const fast = accessScopeForUser("better-auth:alice").workspaceId;
+const fastOnly = accessScopeForUser("better-auth:dan").workspaceId;
 const plain = accessScopeForUser("better-auth:bob").workspaceId;
 vi.stubEnv("OPENAI_API_KEY", "sk-test-voice");
-vi.stubEnv("VOICE_WORKSPACES", `${fast},${plain}`);
-vi.stubEnv("VOICE_FAST_WORKSPACES", fast);
+vi.stubEnv("VOICE_WORKSPACES", `${fast},${fastOnly},${plain}`);
+vi.stubEnv("VOICE_FAST_WORKSPACES", `${fast},${fastOnly}`);
+vi.stubEnv("VOICE_QUICK_WORKSPACES", fast);
 vi.stubEnv("BETTER_AUTH_URL", "https://bro.example");
 const channel = (await import("@agent/channels/voice")).default;
 
@@ -150,6 +161,55 @@ describe("opening a voice session", () => {
     expect((await offer()).status).toBe(401);
     expect((await offer("https://evil.example")).status).toBe(404);
     expect(mocks.fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe("the quick answer", () => {
+  async function ask(words: string, origin = "https://bro.example") {
+    return await route("/eve/v1/voice/quick")(
+      new Request("https://bro.example/eve/v1/voice/quick", {
+        body: JSON.stringify({ words }),
+        headers: { origin },
+        method: "POST",
+      }),
+      context
+    );
+  }
+
+  it("is offered to the page in its pilot and answers its words", async () => {
+    mocks.authSession.mockResolvedValue({ user: { id: "alice" } });
+    expect((await offer()).headers.get("x-bro-voice-quick")).toBe("on");
+    mocks.quick.mockResolvedValueOnce("Завтра плюс восемь.");
+
+    const answered = await ask("Какая погода завтра?");
+
+    expect(await answered.json()).toStrictEqual({
+      answer: "Завтра плюс восемь.",
+    });
+    expect(mocks.quick.mock.calls[0]?.[1]).toBe("Какая погода завтра?");
+  });
+
+  it("answers null when the words go to Bro", async () => {
+    mocks.authSession.mockResolvedValue({ user: { id: "alice" } });
+    mocks.quick.mockResolvedValueOnce(undefined);
+
+    expect(await (await ask("Напомни позвонить маме")).json()).toStrictEqual({
+      answer: null,
+    });
+  });
+
+  it("does not exist outside its pilot, for a stranger or another site", async () => {
+    mocks.authSession.mockResolvedValue({ user: { id: "dan" } });
+    expect((await offer()).headers.get("x-bro-voice-quick")).toBeNull();
+    expect((await ask("Какая погода?")).status).toBe(404);
+    mocks.authSession.mockResolvedValue({ user: { id: "alice" } });
+    expect((await ask("Какая погода?", "https://evil.example")).status).toBe(
+      404
+    );
+    expect((await ask("")).status).toBe(400);
+    mocks.authSession.mockResolvedValue(null);
+    expect((await ask("Какая погода?")).status).toBe(401);
+    expect(mocks.quick).not.toHaveBeenCalled();
   });
 });
 

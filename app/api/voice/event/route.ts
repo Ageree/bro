@@ -24,6 +24,7 @@ const eventSchema = z.object({
     "unsent",
     "failed",
     "closed",
+    "quick",
   ]),
 });
 

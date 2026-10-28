@@ -277,6 +277,10 @@ export const env = createEnv({
     // says no filler before a quick answer, and Bro's turns from it skip the
     // heads-up and the tool router. Only within VOICE_WORKSPACES.
     VOICE_FAST_WORKSPACES: workspaceListSchema.optional(),
+    // Ids or `*`, within VOICE_FAST_WORKSPACES (`shared/voice/pilot.ts`): a
+    // question of /talk the web answers gets one small model call with a
+    // search (`agent/lib/voice/quick.ts`) before it would go to Bro's turn.
+    VOICE_QUICK_WORKSPACES: workspaceListSchema.optional(),
     OPENAI_API_KEY: pastedKeySchema.optional(),
     OPENAI_PROXY_URL: z
       .url()
