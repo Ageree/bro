@@ -176,7 +176,7 @@ export async function dialLive(input: {
       n: asked,
     });
     return said
-      ? `Из данных пользователя: ${JSON.stringify(said)}. Скажи это собеседнику своими словами, коротко, и продолжай задачу.`
+      ? `Из данных пользователя: ${JSON.stringify(said)}. Скажи собеседнику только это, своими словами и коротко, ничего не добавляя от себя, и продолжай задачу.`
       : noAnswer;
   };
   const answerDelegation = async (id: string) => {

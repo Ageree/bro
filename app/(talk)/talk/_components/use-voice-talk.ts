@@ -472,6 +472,11 @@ function openCall(input: {
   };
 
   const delegate = async (delegationId: string) => {
+    // The first delegation's new chat is opened while the words settle, not
+    // after, when there are words to send: a failure here is retried by the
+    // send.
+    if (input.bro.current === undefined && hearing.hasRequest())
+      void broSession().catch(() => null);
     await settled();
     if (following.signal.aborted) return;
     const words = hearing.takeRequest();

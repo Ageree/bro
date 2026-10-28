@@ -131,6 +131,18 @@ describe("opening a voice session", () => {
     expect(session.instructions).toContain("брат Лёша");
   });
 
+  it("asks OpenAI once more when its first answer is its own error", async () => {
+    mocks.fetch.mockResolvedValueOnce(
+      Response.json({ error: { message: "server error" } }, { status: 500 })
+    );
+
+    const response = await offer();
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("v=0 answer");
+    expect(mocks.fetch).toHaveBeenCalledTimes(2);
+  });
+
   it("does not exist for a workspace outside the pilot, a stranger or another site", async () => {
     mocks.authSession.mockResolvedValueOnce({ user: { id: "carol" } });
     expect((await offer()).status).toBe(404);

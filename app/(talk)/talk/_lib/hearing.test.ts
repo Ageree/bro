@@ -40,6 +40,9 @@ describe("the words the voice hands to Bro", () => {
     hearing.takeRequest();
     spoke(hearing, "Сейчас гляну.", 800);
 
+    expect(hearing.hasRequest()).toBe(false);
     expect(hearing.takeRequest()).toBeUndefined();
+    heard(hearing, "А японский?", 3000);
+    expect(hearing.hasRequest()).toBe(true);
   });
 });
