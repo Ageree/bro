@@ -73,11 +73,13 @@ const liveError = z.object({
 });
 
 /**
- * How long the person's transcript may still arrive after a delegation. It
- * was 700 ms; in 23 delegations of 23 no word came after one, the last 190 ms
- * before it at the median (prod 28.10), and every question waited ~0.6 s.
+ * How long the person's transcript may still arrive after a delegation. In
+ * 23 delegations of 23 no word came after one, the last 190 ms before it at
+ * the median (prod 28.10): a quick answer waits 250 ms. Bro's errands keep
+ * 700, where a late tail («…не дороже 5000») would be a purchase's limit.
  */
-const settleMs = 250;
+const settleMs = 700;
+const quickSettleMs = 250;
 const settleLimitMs = 2500;
 /** Words sent this recently answer a second delegation for them too. */
 const recentSendMs = 8000;
@@ -460,12 +462,12 @@ function openCall(input: {
 
   // The person's last words may still be on their way when the voice
   // delegates: wait for their transcript to go quiet, within a limit.
-  const settled = () =>
+  const settled = (quietMs: number) =>
     new Promise<void>((resolve) => {
       const from = clock();
       const timer = setInterval(() => {
         const now = clock();
-        if (now - lastHeardAt < settleMs && now - from < settleLimitMs) return;
+        if (now - lastHeardAt < quietMs && now - from < settleLimitMs) return;
         clearInterval(timer);
         resolve();
       }, 100);
@@ -510,11 +512,9 @@ function openCall(input: {
         }),
         headers: { "Content-Type": "application/json" },
         method: "POST",
-        // Ending the conversation stops the question; its words go to Bro.
-        signal: AbortSignal.any([
-          following.signal,
-          AbortSignal.timeout(quickLimitMs),
-        ]),
+        // Not stopped when the conversation ends: a reminder made by then
+        // must not be made again by Bro, and words left unanswered go to Bro.
+        signal: AbortSignal.timeout(quickLimitMs),
       });
       if (!response.ok) return undefined;
       const parsed = quickAnswerSchema.safeParse(await response.json());
@@ -533,7 +533,7 @@ function openCall(input: {
     // quick answers leaves no empty chat.
     if (!quick && input.bro.current === undefined && hearing.hasRequest())
       void broSession().catch(() => null);
-    await settled();
+    await settled(quick ? quickSettleMs : settleMs);
     if (following.signal.aborted) return;
     const words = hearing.takeRequest();
     if (words === undefined && clock() - lastQuickAt < recentSendMs) {

@@ -234,6 +234,32 @@ export function weatherLines(
   return lines.join("\n");
 }
 
+/**
+ * The time zone a place's days are told in: the person's own when the place is near it, else one from
+ * the place's longitude. From Moscow, Vladivostok's «днём» on Moscow's clock was its night (review 28.10);
+ * a longitude's zone is off by an hour at most for most places, enough for day and night.
+ */
+export function placeZone(
+  point: { readonly lon: number },
+  personZone: string,
+  now: Date
+) {
+  const offset = new Intl.DateTimeFormat("en-US", {
+    timeZone: personZone,
+    timeZoneName: "longOffset",
+  })
+    .formatToParts(now)
+    .find((part) => part.type === "timeZoneName")
+    ?.value.match(/GMT([+-]\d\d)?/u)?.[1];
+  const personHours = offset === undefined ? 0 : Number(offset);
+  const placeHours = Math.round(point.lon / 15);
+  if (Math.abs(placeHours - personHours) < 2) return personZone;
+  // Etc/GMT zones count the other way: UTC+7 is Etc/GMT-7.
+  return placeHours === 0
+    ? "Etc/GMT"
+    : `Etc/GMT${placeHours > 0 ? "-" : "+"}${String(Math.abs(placeHours))}`;
+}
+
 /** The forecast for a place as lines for the model. */
 export async function weatherAt(
   point: { readonly lat: number; readonly lon: number },

@@ -98,7 +98,7 @@ function rateLine(rate: OfficialRate) {
 
 /**
  * The bank's rates for `codes` (ISO, such as USD, EUR, CNY) today and, once set, tomorrow, as lines for the
- * model; codes the bank does not quote are named as such.
+ * model, and how many of the codes the bank quotes; those it does not are named as such.
  */
 export async function officialRateLines(
   codes: readonly string[],
@@ -127,5 +127,5 @@ export async function officialRateLines(
   }
   if (missing.length > 0)
     lines.push(`ЦБ не устанавливает курс для: ${missing.join(", ")}.`);
-  return lines.join("\n");
+  return { lines: lines.join("\n"), quoted: wanted.length - missing.length };
 }

@@ -50,7 +50,8 @@ describe("the bank's official rates", () => {
     );
 
     expect(
-      await officialRateLines(["usd", "JPY"], now, AbortSignal.timeout(1000))
+      (await officialRateLines(["usd", "JPY"], now, AbortSignal.timeout(1000)))
+        .lines
     ).toBe(
       [
         "Курс ЦБ РФ на 28.10.2026:",
@@ -68,9 +69,13 @@ describe("the bank's official rates", () => {
     // Asked for the 29th before it is set, the bank answers with the 28th's.
     bankHas({}, rateSet("28.10.2026", "80,5307"));
 
-    expect(
-      await officialRateLines(["USD", "BTC"], now, AbortSignal.timeout(1000))
-    ).toBe(
+    const read = await officialRateLines(
+      ["USD", "BTC"],
+      now,
+      AbortSignal.timeout(1000)
+    );
+    expect(read.quoted).toBe(1);
+    expect(read.lines).toBe(
       [
         "Курс ЦБ РФ на 28.10.2026:",
         "USD — Доллар США: 80 руб. 53 коп.",

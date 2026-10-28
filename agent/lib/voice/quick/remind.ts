@@ -1,8 +1,9 @@
 import * as z from "zod";
-import { textSaid } from "@agent/lib/location/words";
+import { labelSaid } from "@agent/lib/location/words";
 import { readRememberedConversations } from "@db/services/proactive";
 import {
   createScheduledAgentJob,
+  getScheduledAgentJob,
   reportConversations,
 } from "@db/services/scheduled-agent-jobs";
 import { isSessionOwned } from "@db/services/sessions";
@@ -49,9 +50,63 @@ export class RemindRefusal extends Error {
   override name = "RemindRefusal";
 }
 
-/** The same reminder asked twice within this long is made once. */
+/** The person asked for a reminder in their own words. */
+const reminderAsked = /(?<!\p{L})(?:напомн|напоминани|remind)/iu;
+/** A moment named: «через час», «завтра», «в 9», «в девять вечера», a weekday. */
+const momentNamed =
+  /\d|(?<!\p{L})(?:через|завтра|сегодня|послезавтра|утр|вечер|днём|днем|ноч|полдень|полночь|понедельник|вторник|сред[уа]|четверг|пятниц|суббот|воскресень|час|минут|один|два|две|три|четыр|пять|шесть|семь|восемь|девять|десять|одиннадцать|двенадцать)/iu;
+/**
+ * What only Bro sets: a condition («если дождь»), a repeat («каждый день», «по будням»), an alarm or an
+ * event in the calendar. Bro's schedules tool asks about duplicates and holds conditions and actions.
+ */
+const notOneOff =
+  /(?<!\p{L})(?:если|когда|кажд|ежедн|еженед|по будням|по выходным|будильник|календар)/iu;
+/** A reminder of «об этом» names nothing its run could tell. */
+const pointers = new Set([
+  "об",
+  "о",
+  "про",
+  "это",
+  "этом",
+  "этого",
+  "том",
+  "то",
+  "нем",
+  "нём",
+  "ней",
+  "них",
+  "всё",
+  "все",
+  "этих",
+]);
+
+/**
+ * Whether the person's own words (the voice's lines left out) are a plain one-off reminder the quick
+ * answer may set itself: asked for, with a moment, no condition, repeat, alarm or calendar, and nothing
+ * else asked beside it («какая погода? если дождь — напомни» goes to Bro whole, or the reminder would be
+ * lost to the weather answer). Code decides, not the model: it dropped such a reminder or set one with a
+ * time no one named (review 28.10).
+ */
+export function plainReminder(own: string) {
+  return (
+    reminderAsked.test(own) &&
+    momentNamed.test(own) &&
+    !notOneOff.test(own) &&
+    !own.includes("?")
+  );
+}
+
+/** The person mentioned a reminder at all: what is not `plainReminder` then goes to Bro. */
+export function reminderMentioned(own: string) {
+  return reminderAsked.test(own);
+}
+
+/** The same reminder asked twice within this long is made once, while its job stands. */
 const repeatMs = 10 * 60_000;
-const made = new Map<string, { readonly line: string; readonly at: number }>();
+const made = new Map<
+  string,
+  { readonly at: number; readonly jobId: string; readonly line: string }
+>();
 
 const channelWords = {
   eve: "в чат",
@@ -89,9 +144,19 @@ async function madeIn(scope: AccessScope, chat: string | undefined) {
   );
 }
 
+/** Where its runs report, named for the voice; a failed lookup leaves it out. */
+async function deliveredTo(job: Parameters<typeof reportConversations>[0]) {
+  try {
+    const { delivery } = await reportConversations(job);
+    return ` Придёт ${channelWords[delivery.conversationChannel]}.`;
+  } catch {
+    return "";
+  }
+}
+
 /**
- * Sets the reminder and gives the line the voice says, or throws a `RemindRefusal`: no time or both, a
- * reminder about words the person did not say, no chat to make it in, a moment past.
+ * Sets the reminder and gives the line the voice says, or throws a `RemindRefusal`: not a plain one-off
+ * reminder in the person's words, a text they did not say, no time, no chat to make it in, a moment past.
  */
 export async function remindOnce(
   scope: AccessScope,
@@ -104,16 +169,26 @@ export async function remindOnce(
     readonly words: string;
   }
 ) {
-  if ((input.inMinutes === undefined) === (input.at === undefined))
-    throw new RemindRefusal("A reminder needs one time: inMinutes or at.");
   // The model writes what to remind of; it must be what the person said.
   const own = context.words.replaceAll(voiceLinePattern, " ");
-  if (!textSaid(input.text, [own]))
+  if (!plainReminder(own))
+    throw new RemindRefusal("Not a plain one-off reminder.");
+  const named = input.text
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter((word) => word !== "" && !pointers.has(word));
+  if (named.length === 0 || !labelSaid(input.text, [own]))
     throw new RemindRefusal("The reminder is not in the person's words.");
+  // Weak models fill every field: with both, the person's «через» picks.
+  const relative =
+    input.inMinutes !== undefined &&
+    (input.at === undefined || /(?<!\p{L})через(?!\p{L})/iu.test(own));
+  if (!relative && input.at === undefined)
+    throw new RemindRefusal("A reminder needs a time.");
   const timing = resolveScheduleTiming(
-    input.inMinutes === undefined
-      ? { at: input.at ?? "", kind: "once" }
-      : { inMinutes: input.inMinutes, kind: "relative" },
+    relative
+      ? { inMinutes: input.inMinutes ?? 0, kind: "relative" }
+      : { at: input.at ?? "", kind: "once" },
     context.timeZone
   );
   if (timing.kind !== "once" || Date.parse(timing.at) <= context.now.getTime())
@@ -121,13 +196,16 @@ export async function remindOnce(
   const prompt = `Напомни человеку: ${input.text}`;
   const key = `${scope.workspaceId}|${prompt}|${timing.at}`;
   const earlier = made.get(key);
-  if (earlier && context.now.getTime() - earlier.at < repeatMs)
-    return earlier.line;
+  if (earlier && context.now.getTime() - earlier.at < repeatMs) {
+    // Bro may have cancelled or moved it since.
+    const job = await getScheduledAgentJob(scope, earlier.jobId);
+    if (job?.status === "active" && job.nextRunAt?.toISOString() === timing.at)
+      return earlier.line;
+  }
   const conversationId = await madeIn(scope, context.chat);
   if (conversationId === undefined)
     throw new RemindRefusal("No chat to make the reminder in.");
-  // A conversation that ended before this point makes nothing: its words go
-  // to Bro, which would make it again.
+  // A conversation that ended before this point makes nothing.
   if (context.signal.aborted)
     throw new RemindRefusal("The conversation ended.");
   const job = await createScheduledAgentJob(scope, {
@@ -137,8 +215,7 @@ export async function remindOnce(
     prompt,
     timing,
   });
-  const { delivery } = await reportConversations(job);
-  const line = `Поставил напоминание ${spokenWhen(job.nextRunAt ?? new Date(timing.at), context.now, context.timeZone)}: ${input.text}. Придёт ${channelWords[delivery.conversationChannel]}.`;
-  made.set(key, { line, at: context.now.getTime() });
+  const line = `Поставил напоминание ${spokenWhen(job.nextRunAt ?? new Date(timing.at), context.now, context.timeZone)}: ${input.text}.${await deliveredTo(job)}`;
+  made.set(key, { at: context.now.getTime(), jobId: job.id, line });
   return line;
 }

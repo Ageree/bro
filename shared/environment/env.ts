@@ -281,6 +281,10 @@ export const env = createEnv({
     // question of /talk the web answers gets one small model call with a
     // search (`agent/lib/voice/quick.ts`) before it would go to Bro's turn.
     VOICE_QUICK_WORKSPACES: workspaceListSchema.optional(),
+    // The owner's own search keys (`agent/lib/web-search/`): TinyFish's search
+    // is free, Exa's free up to $10 a month; both go before Composio and RouterAI.
+    TINYFISH_API_KEY: pastedKeySchema.optional(),
+    EXA_API_KEY: pastedKeySchema.optional(),
     OPENAI_API_KEY: pastedKeySchema.optional(),
     OPENAI_PROXY_URL: z
       .url()

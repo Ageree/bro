@@ -5,11 +5,13 @@ import { officialRateLines } from "@agent/lib/rates/cbr";
 import { findPlaces } from "@agent/lib/routes/openstreetmap";
 import { calculateLines } from "@agent/tools/calculate";
 import {
+  plainReminder,
+  reminderMentioned,
   remindInputSchema,
   remindOnce,
   RemindRefusal,
 } from "@agent/lib/voice/quick/remind";
-import { weatherAt } from "@agent/lib/weather/metno";
+import { placeZone, weatherAt } from "@agent/lib/weather/metno";
 import { searchWeb } from "@agent/lib/web-search/search";
 import { getWorkspaceModelId } from "@db/services/settings";
 import type { AccessScope } from "@shared/identity/access-scope";
@@ -82,9 +84,10 @@ function personWords(words: string) {
 }
 
 /**
- * An errand in the person's words: it goes to Bro without the model's step (0.4–1.3 s), and a mixed «какая
- * завтра погода, если дождь — напомни взять зонт» never loses its reminder to a weather answer. Imperatives
- * only: «во сколько отправление», «сколько стоит купе» are questions.
+ * An errand in the person's words: it goes to Bro without the model's step (0.4–1.3 s). Imperatives only:
+ * «во сколько отправление», «сколько стоит купе» are questions. «Напомни» is the quick answer's own when it
+ * is a plain one-off (`plainReminder`); anything else with it — «какая завтра погода? если дождь — напомни
+ * взять зонт» — goes to Bro whole, or the reminder would be lost to the weather answer.
  */
 const errandWords =
   /(?<!\p{L})(?:позвони|набери|закажи|купи|оплати|запиши|отправь|напиши|забронируй|удали|запомни|забудь|переведи|отмени|вызови|включи|выключи|подпиши|скинь|пришли|сохрани|добавь)(?:те)?(?:-ка)?(?!\p{L})/iu;
@@ -108,6 +111,36 @@ function languageNote(english: boolean) {
 /** What a data tool's answer is held to, read last as the search's note is. */
 function dataNote(english: boolean) {
   return `Отвечай этими числами, ничего не добавляя от себя: только о дне и том, о чём спросили. ${languageNote(english)}`;
+}
+
+/** Numbers a count may use without having been seen: units, days, months, percents. */
+const freeNumbers = new Set([
+  "7",
+  "12",
+  "24",
+  "60",
+  "100",
+  "365",
+  "366",
+  "1000",
+]);
+
+/**
+ * Whether every number of a calculator line was seen — in the person's words, today's date or a tool's
+ * answer — or is a small or unit one: «100 * 92» with a dollar rate the model remembers is no answer.
+ */
+function numbersSeen(line: string, seen: string) {
+  const known = new Set(
+    seen.match(/\d+(?:[.,]\d+)?/gu)?.map((n) => n.replace(",", "."))
+  );
+  return (line.match(/\d+(?:[.,]\d+)?/gu) ?? []).every((number) => {
+    const plain = number.replace(",", ".");
+    return (
+      known.has(plain) ||
+      freeNumbers.has(plain) ||
+      (Number.isInteger(Number(plain)) && Number(plain) <= 31)
+    );
+  });
 }
 
 /**
@@ -143,7 +176,12 @@ export async function quickVoiceAnswer(
   };
   if (!directModelActive()) return undefined;
   const own = personWords(words);
-  if (errandWords.test(own)) {
+  // A reminder with a condition, a repeat or a question beside it goes to
+  // Bro whole: answered here, its reminder would be lost to the answer.
+  if (
+    errandWords.test(own) ||
+    (reminderMentioned(own) && !plainReminder(own))
+  ) {
     outcome("errand");
     return undefined;
   }
@@ -156,7 +194,10 @@ export async function quickVoiceAnswer(
   // no ground for the model's text after it. A reminder that was set is the
   // answer itself.
   const search = { found: false };
-  const reminder = { line: "" };
+  const reminder = { calls: 0, line: "" };
+  // What a count may rest on: the person's words, today's date and what the
+  // tools brought back — not a rate the model remembers.
+  const seen = { text: `${own} ${person.now.toISOString()}` };
   const aborted = AbortSignal.any([
     AbortSignal.timeout(quickTimeoutMs),
     ...(signal ? [signal] : []),
@@ -192,7 +233,7 @@ export async function quickVoiceAnswer(
             const from = performance.now();
             const pages = await searchWeb(
               { query },
-              AbortSignal.timeout(searchTimeoutMs)
+              AbortSignal.any([aborted, AbortSignal.timeout(searchTimeoutMs)])
             ).catch(() => []);
             searchMs = Math.round(performance.now() - from);
             if (pages.length === 0)
@@ -231,10 +272,14 @@ export async function quickVoiceAnswer(
                 return "Место не нашлось. Вызови web_search.";
               const lines = await weatherAt(
                 point,
-                { now: person.now, timeZone: person.timeZone },
+                {
+                  now: person.now,
+                  timeZone: placeZone(point, person.timeZone, person.now),
+                },
                 aborted
               );
               search.found = true;
+              seen.text += lines;
               return `Прогноз MET Norway для ${point.label}:\n${lines}\n\n${dataNote(english)}`;
             } catch {
               return "Прогноз не ответил. Вызови web_search.";
@@ -249,9 +294,11 @@ export async function quickVoiceAnswer(
           }),
           execute: async ({ codes }) => {
             try {
-              const lines = await officialRateLines(codes, person.now, aborted);
-              search.found = true;
-              return `${lines}\n\n${dataNote(english)} Если нужной валюты у ЦБ нет — вызови web_search.`;
+              const read = await officialRateLines(codes, person.now, aborted);
+              seen.text += read.lines;
+              // A code the bank does not quote is no ground for a figure.
+              if (read.quoted > 0) search.found = true;
+              return `${read.lines}\n\n${dataNote(english)} Если нужной валюты у ЦБ нет — вызови web_search.`;
             } catch {
               return "ЦБ не ответил. Вызови web_search.";
             }
@@ -264,8 +311,13 @@ export async function quickVoiceAnswer(
             lines: z.array(z.string().trim().min(1).max(300)).min(1).max(10),
           }),
           execute: ({ lines }) => {
-            search.found = true;
-            return JSON.stringify(calculateLines(lines));
+            const counted = calculateLines(lines);
+            if (
+              counted.every((line) => !("error" in line)) &&
+              lines.every((line) => numbersSeen(line, seen.text))
+            )
+              search.found = true;
+            return JSON.stringify(counted);
           },
         }),
         remind: tool({
@@ -273,6 +325,9 @@ export async function quickVoiceAnswer(
             "Поставить разовое напоминание на названное человеком время — inMinutes для «через N минут», иначе at.",
           inputSchema: remindInputSchema,
           execute: async (input) => {
+            reminder.calls += 1;
+            if (reminder.calls > 1)
+              return "Одно напоминание за раз: второе не поставлено.";
             try {
               reminder.line = await remindOnce(scope, input, {
                 chat: person.chat,

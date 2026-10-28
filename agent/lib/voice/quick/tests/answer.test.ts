@@ -83,7 +83,8 @@ function searchesThenSays(text: string, read: string[] = []) {
 }
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  // A queued answer a test left unused must not reach the next one.
+  vi.resetAllMocks();
   mocks.searchWeb.mockResolvedValue([
     {
       date: "2 часа назад",
@@ -152,8 +153,23 @@ describe("the quick answer of /talk", () => {
     });
 
     expect(
-      await quickVoiceAnswer(scope(), "Напомни позвонить маме", person)
+      await quickVoiceAnswer(
+        scope(),
+        "Напомни завтра в девять позвонить маме",
+        person
+      )
     ).toBeUndefined();
+  });
+
+  it("hands a reminder with a condition or a question beside it to Bro whole, without the model", async () => {
+    expect(
+      await quickVoiceAnswer(
+        scope(),
+        "Какая завтра погода? Если дождь — напомни взять зонт",
+        person
+      )
+    ).toBeUndefined();
+    expect(mocks.generateText).not.toHaveBeenCalled();
   });
 
   it("hands words with an errand to Bro without asking the model", async () => {

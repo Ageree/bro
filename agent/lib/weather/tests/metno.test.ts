@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { weatherLines } from "@agent/lib/weather/metno";
+import { placeZone, weatherLines } from "@agent/lib/weather/metno";
 
 /** One hour of MET's forecast. */
 function hour(
@@ -47,5 +47,19 @@ describe("the forecast as the voice's model reads it", () => {
         "Завтра, четверг, 29 октября: днём от +4° до +7°, ночью от +2° до +3°, небольшой дождь, осадки около 1 мм, ветер до 7 м/с.",
       ].join("\n")
     );
+  });
+});
+
+describe("the clock a place's forecast is told on", () => {
+  const now = new Date("2026-10-28T09:00:00Z");
+
+  it("is the person's own near them, and the place's own far away", () => {
+    expect(placeZone({ lon: 49.1 }, "Europe/Moscow", now)).toBe(
+      "Europe/Moscow"
+    );
+    // Vladivostok from Moscow: its «днём» on Moscow's clock was its night.
+    expect(placeZone({ lon: 131.9 }, "Europe/Moscow", now)).toBe("Etc/GMT-9");
+    expect(placeZone({ lon: -0.1 }, "Europe/Moscow", now)).toBe("Etc/GMT");
+    expect(placeZone({ lon: -74 }, "Europe/Moscow", now)).toBe("Etc/GMT+5");
   });
 });

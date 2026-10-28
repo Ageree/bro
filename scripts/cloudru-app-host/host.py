@@ -845,7 +845,7 @@ SENSITIVE_ON_VERCEL = {
     "MTS_EXOLVE_API_KEY", "ELEVENLABS_API_KEY", "ELEVENLABS_PROXY_URL",
     "OPENROUTER_API_KEY", "SANDBOX_SIGNING_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_BOT_USERNAME",
     "TELEGRAM_OWNER_CHAT_ID", "TELEGRAM_WEBHOOK_SECRET_TOKEN", "YOOKASSA_SECRET_KEY", "YOOKASSA_SHOP_ID",
-    "MODEL_PROVIDER", "ROUTERAI_API_KEY"}
+    "MODEL_PROVIDER", "ROUTERAI_API_KEY", "TINYFISH_API_KEY", "EXA_API_KEY"}
 # Made for the move (new-secrets.json) and ahead of what the session or Vercel has: the code host's signing
 # key (sbx-* hosts derive theirs from it), the browser VMs' signing key, the secrets Telegram and Browser Use
 # send back. The stand drops the last two with their families.

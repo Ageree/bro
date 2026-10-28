@@ -9,10 +9,12 @@ import { env } from "@shared/environment";
  * 14.10 (10 Russian queries, blind judges, 0–3 each, of 30): Bro's search
  * through RouterAI 28–29 at 2.22 ₽ a search; Tavily 27 at $0.008; TinyFish
  * 24 with short excerpts and no charge; Exa through Instant 13, since
- * Composio's managed Exa returns no excerpts. TinyFish leads because the
- * owner chose a free search; Tavily takes over when it fails.
+ * Composio's managed Exa returns no excerpts. Only TinyFish now: Tavily's
+ * terms (§17.1, 04.05.2026) name Russia as an embargoed nation. With the
+ * owner's own TinyFish key the search goes there directly (`tinyfish.ts`),
+ * free, and Composio, which bills its wallet for each call, is not asked.
  */
-export const instantEngines = ["tinyfish", "tavily"] as const;
+export const instantEngines = ["tinyfish"] as const;
 
 export type InstantEngine = (typeof instantEngines)[number];
 
@@ -69,16 +71,14 @@ export async function searchInstant(
   engine: InstantEngine,
   query: string,
   domains: readonly string[],
-  pages: number,
   signal: AbortSignal
 ) {
-  const slug = engine === "tinyfish" ? "TINYFISH_SEARCH_WEB" : "TAVILY_SEARCH";
   const execution = await composioRequest(
     executionSchema,
-    `/tools/execute/${slug}`,
+    "/tools/execute/TINYFISH_SEARCH_WEB",
     {
       body: {
-        arguments: instantArguments(engine, query, domains, pages),
+        arguments: instantArguments(query, domains),
         user_id: instantUserId,
       },
       method: "POST",
@@ -106,16 +106,8 @@ export async function searchInstant(
  * TinyFish answers in English from the US unless told otherwise; a query in
  * Cyrillic is searched in Russian from Russia.
  */
-function instantArguments(
-  engine: InstantEngine,
-  query: string,
-  domains: readonly string[],
-  pages: number
-) {
+function instantArguments(query: string, domains: readonly string[]) {
   const included = domains.length > 0 ? { include_domains: domains } : {};
-  if (engine === "tavily") {
-    return { max_results: pages, query, search_depth: "basic", ...included };
-  }
   const russian = /\p{Script=Cyrillic}/u.test(query)
     ? { language: "ru", location: "RU" }
     : {};

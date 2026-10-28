@@ -16,12 +16,14 @@ const mocks = vi.hoisted(() => ({
         job: Made
       ) => Promise<Made & { nextRunAt: Date }>
     >(),
+  job: vi.fn<() => Promise<{ status: string; nextRunAt: Date } | undefined>>(),
   owned: vi.fn<() => Promise<boolean>>(),
   remembered: vi.fn<() => Promise<{ webConversationId: string } | undefined>>(),
 }));
 
 vi.mock("@db/services/scheduled-agent-jobs", () => ({
   createScheduledAgentJob: mocks.create,
+  getScheduledAgentJob: mocks.job,
   reportConversations: async () =>
     await Promise.resolve({
       delivery: { conversationChannel: "telegram", conversationId: "tg:1" },
@@ -93,14 +95,45 @@ describe("a reminder the voice sets itself", () => {
     expect(mocks.create.mock.calls[0]?.[1].conversationId).toBe("wrun_last");
   });
 
-  it("makes the same reminder asked twice once", async () => {
+  it("makes the same reminder asked twice once, and again once Bro cancelled it", async () => {
     const asked = context("Напомни в шесть вечера забрать посылку");
     const input = { text: "забрать посылку", at: "2026-10-28T18:00" };
 
     await remindOnce(scope, input, asked);
+    mocks.job.mockResolvedValueOnce({
+      nextRunAt: new Date("2026-10-28T15:00:00.000Z"),
+      status: "active",
+    });
     await remindOnce(scope, input, asked);
-
     expect(mocks.create).toHaveBeenCalledOnce();
+
+    mocks.job.mockResolvedValueOnce({
+      nextRunAt: new Date("2026-10-28T15:00:00.000Z"),
+      status: "deleted",
+    });
+    await remindOnce(scope, input, asked);
+    expect(mocks.create).toHaveBeenCalledTimes(2);
+  });
+
+  it("leaves to Bro a reminder with a condition, a repeat, no time, a question beside it, or of nothing named", async () => {
+    const refused = async (words: string, text: string) => {
+      await expect(
+        remindOnce(scope, { text, at: "2026-10-29T09:00" }, context(words))
+      ).rejects.toBeInstanceOf(RemindRefusal);
+    };
+
+    await refused("Если завтра дождь, напомни взять зонт", "взять зонт");
+    await refused(
+      "Напоминай каждый день в девять пить таблетки",
+      "пить таблетки"
+    );
+    await refused("Напомни позвонить маме", "позвонить маме");
+    await refused(
+      "Какая завтра погода? Напомни в восемь взять зонт",
+      "взять зонт"
+    );
+    await refused("Напомни мне об этом завтра в девять", "об этом");
+    expect(mocks.create).not.toHaveBeenCalled();
   });
 
   it("refuses what the person did not say, a time missing or past, no chat, or a conversation that ended", async () => {
@@ -118,23 +151,23 @@ describe("a reminder the voice sets itself", () => {
       { text: "перевести деньги Лёше", at: "2026-10-29T09:00" },
       "Какая завтра погода?\n(ты: «Напомню перевести деньги Лёше»)"
     );
-    await refused({ text: "позвонить маме" }, "Напомни позвонить маме");
+    await refused({ text: "позвонить маме" }, "Напомни завтра позвонить маме");
     await refused(
       { text: "позвонить маме", at: "2026-10-27T09:00" },
-      "Напомни позвонить маме"
+      "Напомни в девять позвонить маме"
     );
     const ended = new AbortController();
     ended.abort();
     await refused(
       { text: "позвонить маме", inMinutes: 5 },
-      "Напомни позвонить маме",
+      "Через пять минут напомни позвонить маме",
       ended.signal
     );
     mocks.owned.mockResolvedValue(false);
     mocks.remembered.mockResolvedValue(undefined);
     await refused(
       { text: "позвонить маме", inMinutes: 5 },
-      "Напомни позвонить маме"
+      "Через пять минут напомни позвонить маме"
     );
     expect(mocks.create).not.toHaveBeenCalled();
   });
