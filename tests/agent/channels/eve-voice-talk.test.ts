@@ -1,6 +1,7 @@
 import type { EveChannelInput } from "eve/channels/eve";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type * as ScopeService from "@db/services/scope";
+import type * as UserProfile from "@db/services/user-profile";
 import { accessScopeForUser } from "@shared/identity/access-scope";
 import {
   clearSandboxSettings,
@@ -21,6 +22,35 @@ vi.mock(import("eve/channels/eve"), async (importOriginal) => {
     },
   };
 });
+vi.mock("@db/services/work-log", () => ({
+  lastWorkLineOfSession: async () => {
+    await Promise.resolve();
+    return undefined;
+  },
+  readWorkLines: async () =>
+    await Promise.resolve([
+      {
+        createdAt: new Date("2026-10-28T11:00:00Z"),
+        files: ["Договор.pdf"],
+        role: "person",
+        sessionId: "docs",
+        text: "Разбери договор",
+        turnId: "turn_1",
+      },
+      {
+        createdAt: new Date("2026-10-28T11:01:00Z"),
+        files: [],
+        role: "bro",
+        sessionId: "docs",
+        text: "Штраф — 0,1% за каждый час сверх шести.",
+        turnId: "turn_1",
+      },
+    ]),
+}));
+vi.mock("@db/services/user-profile", async (importOriginal) => ({
+  ...(await importOriginal<typeof UserProfile>()),
+  readWorkspaceTimeZone: async () => await Promise.resolve("Europe/Moscow"),
+}));
 vi.mock("@db/services/scope", async (importOriginal) => ({
   ...(await importOriginal<typeof ScopeService>()),
   claimWorkspaceIntroduction: async () => await Promise.resolve(false),
@@ -75,6 +105,27 @@ describe("words from the voice page", { timeout: 60_000 }, () => {
     const result = await onMessage(context, "[голосом] что у меня завтра?");
 
     expect(result.context).toHaveLength(1);
+  });
+
+  // 28.10: /talk opens a new chat each time, and Bro's turns from it knew
+  // nothing of a contract it had read in another chat.
+  it("carry what Bro did in the other chats, in the work log pilot", async () => {
+    const onMessage = await onMessageWith({
+      ...base,
+      VOICE_WORKSPACES: scope.workspaceId,
+      WORK_LOG_WORKSPACES: scope.workspaceId,
+    });
+
+    // /talk sends to the chat it has just made empty (`use-voice-talk.ts`).
+    const result = await onMessage(
+      { ...context, eve: { ...context.eve, sessionId: "voice-chat" } },
+      "[голосом] какой там штраф?"
+    );
+
+    expect(result.context).toHaveLength(2);
+    expect(result.context?.[1]).toContain(
+      "просьба «Разбери договор» (файлы: Договор.pdf) → Бро: «Штраф — 0,1% за каждый час сверх шести.»"
+    );
   });
 
   it("are an ordinary message outside the pilot", async () => {

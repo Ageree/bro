@@ -3,6 +3,7 @@ import { z } from "zod";
 import { schedulesEnabled } from "@agent/lib/schedules/enabled";
 import { expireConversationLines } from "@db/services/conversation-log";
 import { expireLocationPoints } from "@db/services/location";
+import { expireWorkLines } from "@db/services/work-log";
 import {
   recordUntrackedMemories,
   trimForgottenMemoryHistory,
@@ -24,6 +25,7 @@ export default defineSchedule({
   cron: "17 * * * *",
   run({ waitUntil }) {
     waitUntil(runPass("conversation-log", expireConversationLines));
+    waitUntil(runPass("work-log", expireWorkLines));
     waitUntil(runPass("location", () => expireLocationPoints(new Date())));
     if (!schedulesEnabled()) return;
     waitUntil(maintainMemoryHistory());

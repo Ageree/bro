@@ -281,6 +281,11 @@ export const env = createEnv({
     // question of /talk the web answers gets one small model call with a
     // search (`agent/lib/voice/quick.ts`) before it would go to Bro's turn.
     VOICE_QUICK_WORKSPACES: workspaceListSchema.optional(),
+    // Ids or `*` whose chats keep what Bro did for 30 days (`work_log`): the
+    // person's requests with their files' names and Bro's messages, which
+    // /talk's voice and its turns read back in a new chat
+    // (`agent/lib/work-log/`). Unset, nothing is kept.
+    WORK_LOG_WORKSPACES: workspaceListSchema.optional(),
     // The owner's own search keys (`agent/lib/web-search/`): TinyFish's search
     // is free, Exa's free up to $10 a month; both go before Composio and RouterAI.
     TINYFISH_API_KEY: pastedKeySchema.optional(),

@@ -19,10 +19,15 @@ const mocks = vi.hoisted(() => ({
       }[]
     >
   >(),
+  done: vi.fn<() => Promise<string[]>>(),
   workstreams:
     vi.fn<
       () => Promise<{ nextStep: string; status: string; title: string }[]>
     >(),
+}));
+
+vi.mock("@agent/lib/work-log/recall", () => ({
+  workLogBriefLines: mocks.done,
 }));
 
 vi.mock("@db/services/memory/records", () => ({
@@ -69,6 +74,7 @@ beforeEach(() => {
   mocks.jobs.mockResolvedValue([]);
   mocks.workstreams.mockResolvedValue([]);
   mocks.calls.mockResolvedValue([]);
+  mocks.done.mockResolvedValue([]);
 });
 
 describe("the brief the voice gets of its person", () => {
@@ -103,6 +109,9 @@ describe("the brief the voice gets of its person", () => {
         task: "Забронировать стол",
       },
     ]);
+    mocks.done.mockResolvedValue([
+      "- вт 27.10 12:00: просьба «Посчитай выручку» → Бро: «Сентябрь — 35,77 млн»",
+    ]);
 
     const brief = await voiceBrief(scope, at);
 
@@ -113,6 +122,7 @@ describe("the brief the voice gets of its person", () => {
       "ср 28.10 09:00: Пришли погоду на день",
       "«Бронь в клубе» (ждёт); дальше: ждём ответа клуба",
       "Договорились на 20:30",
+      "просьба «Посчитай выручку» → Бро: «Сентябрь — 35,77 млн»",
     ])
       expect(brief).toContain(kept);
     for (const left of ["Диагноз", "4512", "123456", "Старое"])

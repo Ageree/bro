@@ -5,6 +5,8 @@ import {
 } from "@agent/lib/google-workspace/calendar";
 import { googleClient, googleUrl } from "@agent/lib/google-workspace/client";
 import { sayableAloud } from "@agent/lib/privacy/spoken";
+import { workLogEnabled } from "@agent/lib/work-log/pilot";
+import { workLogBriefLines } from "@agent/lib/work-log/recall";
 import {
   listCurrentMemories,
   readCabinetMemoryScopeKey,
@@ -38,6 +40,9 @@ const budgets = {
 } as const;
 const memoryRecords = 1000;
 const memoryChars = 240;
+// The work log pilot's: at 240 a long record lost its tail — the credit in
+// the end of one record of suppliers never reached the voice (28.10).
+const workLogMemoryChars = 400;
 const scheduleChars = 140;
 /** The newest open work; the budget keeps what fits of it. */
 const workstreams = 12;
@@ -107,7 +112,10 @@ async function memoryLines(scope: AccessScope) {
   const lines = (rule: boolean) =>
     kept
       .filter(({ category }) => (category === "rule") === rule)
-      .map(({ text }) => `- ${oneLine(text, memoryChars)}`);
+      .map(
+        ({ text }) =>
+          `- ${oneLine(text, workLogEnabled(scope.workspaceId) ? workLogMemoryChars : memoryChars)}`
+      );
   return {
     facts: within(lines(false), budgets.memory, true),
     rules: within(lines(true), budgets.rules, true),
@@ -189,19 +197,21 @@ function section(heading: string, lines: readonly string[]) {
 /**
  * The person's brief from Bro's own records, for the voice's instructions:
  * schedules, the work Bro carries in other chats, the record of its latest
- * calls, their rules for Bro and memory — the short parts first, each within
- * its own share. A part that cannot be read is left out; empty when nothing
+ * calls, what it did in the person's chats this week (the work log pilot),
+ * their rules for Bro and memory — the short parts first, each within its
+ * own share. A part that cannot be read is left out; empty when nothing
  * could.
  */
 export async function voiceBrief(
   scope: AccessScope,
   input: { readonly now: Date; readonly timeZone: string }
 ) {
-  const [memory, schedules, work, calls] = await Promise.all([
+  const [memory, schedules, work, calls, done] = await Promise.all([
     quiet(memoryLines(scope), { facts: [], rules: [] }),
     quiet(scheduleLines(scope, input.timeZone), []),
     quiet(workstreamLines(scope), []),
     quiet(callLines(scope, input.now, input.timeZone), []),
+    quiet(workLogBriefLines(scope, input), []),
   ]);
   return [
     ...section("Напоминания и расписания (когда сработают):", schedules),
@@ -209,6 +219,10 @@ export async function voiceBrief(
     ...section(
       "Последние звонки Бро (новые выше; что договорено, говорит только конец записи):",
       calls
+    ),
+    ...section(
+      "Что Бро сделал в чатах за неделю (просьба человека → начало ответа Бро; новые ниже; где ответ оборван «…», подробности — у Бро):",
+      done
     ),
     ...section("Его правила для Бро:", memory.rules),
     ...section("Что Бро помнит о человеке (новые записи ниже):", memory.facts),

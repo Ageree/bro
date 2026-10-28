@@ -1,6 +1,10 @@
 import type { ModelMessage } from "ai";
+import type { SessionContext } from "eve/context";
 import { personMessages } from "@agent/lib/browser-use/said";
-import { pilotVerdictOfTurn } from "@agent/lib/workspace-list";
+import {
+  knownTurnVerdict,
+  pilotVerdictOfTurn,
+} from "@agent/lib/workspace-list";
 import { voiceTalkMarker } from "@shared/voice/marker";
 import { voiceFastEnabled } from "@shared/voice/pilot";
 
@@ -28,5 +32,23 @@ export async function fastVoiceTurn(
     Promise.resolve(
       personMessages(messages).at(-1)?.startsWith(voiceTalkMarker) === true
     )
+  );
+}
+
+/**
+ * Whether a tool call runs in a turn of /talk's voice, as the turn's steps
+ * found (`fastVoiceTurn`): a tool has no messages to look at. A turn whose
+ * step this process did not see is taken as not one.
+ */
+export async function voiceTurnOfCall(
+  ctx: Pick<SessionContext, "session">,
+  workspaceId: string
+) {
+  if (!voiceFastEnabled(workspaceId)) return false;
+  return (
+    (await knownTurnVerdict("voice-fast", {
+      sessionId: ctx.session.id,
+      turnId: ctx.session.turn.id,
+    })) ?? false
   );
 }

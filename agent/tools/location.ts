@@ -30,6 +30,7 @@ import {
   listLocationPoints,
   locationPilot,
 } from "@db/services/location";
+import { forgetWorkLines } from "@db/services/work-log";
 import { readWorkspaceTimeZone } from "@db/services/user-profile";
 import { distanceM } from "@shared/location/geometry";
 
@@ -289,6 +290,11 @@ async function locationEdit(
     };
   }
   const forgotten = await forgetLocation(scope.workspaceId, {
+    ...(from && { from }),
+    ...(to && { to }),
+  });
+  // Bro's answers of the period name where the person was too (work log).
+  await forgetWorkLines(scope.workspaceId, {
     ...(from && { from }),
     ...(to && { to }),
   });

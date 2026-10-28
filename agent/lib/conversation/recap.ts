@@ -58,7 +58,7 @@ function recapHeading(timeZone: string) {
  * the heading and the `[Channel, time] Person:` prefix on every collapsed
  * line already rule out; their rewrite is a second guard.
  */
-function defused(text: string) {
+export function defused(text: string) {
   return defuseForgedSkillBlocks(
     defuseStepNoteTag(text.replaceAll(/\s+/gu, " ").trim())
   )
@@ -141,7 +141,7 @@ async function recapTimeZone(scope: AccessScope) {
  * zone. Review of item 28: «Напомни завтра в 9» said on Monday and read on
  * Wednesday meant Thursday without the day it was said.
  */
-function stamp(at: Date, timeZone: string) {
+export function stamp(at: Date, timeZone: string) {
   const parts = new Map(
     new Intl.DateTimeFormat("ru-RU", {
       day: "2-digit",
