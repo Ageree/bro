@@ -184,9 +184,17 @@ export function weatherLines(
     ),
   ].slice(0, daysTold);
   // Named by the date, not by the place in the list: a day the forecast skips must not shift the names.
+  // Calendar days from today's, not 24 hours: a day of 23 or 25 hours at a clock change would name
+  // the wrong one.
+  const [todayYear = 0, todayMonth = 1, todayDate = 1] = dayOf
+    .format(input.now)
+    .split("-")
+    .map(Number);
   const named = new Map(
     ["Сегодня", "Завтра", "Послезавтра"].map((name, ahead) => [
-      dayOf.format(new Date(input.now.getTime() + ahead * 24 * 60 * 60_000)),
+      new Date(Date.UTC(todayYear, todayMonth - 1, todayDate + ahead))
+        .toISOString()
+        .slice(0, 10),
       name,
     ])
   );

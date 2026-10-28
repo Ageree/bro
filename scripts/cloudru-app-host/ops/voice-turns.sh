@@ -16,21 +16,24 @@ SINCE=${1:-$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)}
 db_lock
 connection SRC app
 export PGOPTIONS="-c default_transaction_read_only=on -c statement_timeout=120s -c TimeZone=Europe/Moscow"
-psql_on SRC -v since="$SINCE" <<'SQL'
+# The voice turns, given before each query: the session is read only, so no temporary table.
+VOICE="WITH voice AS (
+  SELECT t.id, t.workspace_id, t.tools, t.outcome, t.duration_ms
+  FROM turn_log t
+  WHERE t.kind = 'person'
+    AND t.started_at >= :'since'::timestamptz
+    AND EXISTS (
+      SELECT 1 FROM turn_log_entries e
+      WHERE e.session_id = t.session_id AND e.turn_id = t.turn_id AND e.role = 'person'
+        AND e.created_at >= t.started_at AND e.created_at <= coalesce(t.ended_at, now())
+        AND e.text LIKE '[голосом]%')
+)"
+psql_on SRC -v since="$SINCE" <<SQL
 \pset format aligned
 \pset border 1
 \pset tuples_only off
-CREATE TEMP TABLE voice AS
-SELECT t.id, t.workspace_id, t.tools, t.outcome, t.duration_ms
-FROM turn_log t
-WHERE t.kind = 'person'
-  AND t.started_at >= :'since'::timestamptz
-  AND EXISTS (
-    SELECT 1 FROM turn_log_entries e
-    WHERE e.session_id = t.session_id AND e.turn_id = t.turn_id AND e.role = 'person'
-      AND e.created_at >= t.started_at AND e.created_at <= coalesce(t.ended_at, now())
-      AND e.text LIKE '[голосом]%');
 \echo === voice turns
+$VOICE
 SELECT count(*) AS turns,
        count(DISTINCT workspace_id) AS workspaces,
        count(*) FILTER (WHERE outcome = 'completed') AS completed,
@@ -38,6 +41,7 @@ SELECT count(*) AS turns,
        round((percentile_cont(0.5) WITHIN GROUP (ORDER BY duration_ms) / 1000)::numeric, 1) AS median_s
 FROM voice;
 \echo === tools of voice turns
+$VOICE
 SELECT tool,
        count(*) AS turns,
        count(DISTINCT workspace_id) AS workspaces,

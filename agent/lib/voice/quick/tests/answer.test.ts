@@ -3,8 +3,17 @@ import type * as Ai from "ai";
 import { quickVoiceAnswer } from "@agent/lib/voice/quick/answer";
 import type * as Remind from "@agent/lib/voice/quick/remind";
 
+/** A part of a tool's call or result that the quick answer hands the model. */
+interface HandedPart {
+  readonly output?: { readonly value: string };
+  readonly type: string;
+}
 interface Options {
-  readonly instructions: string;
+  // The person's words, then any home data as tools' calls and results.
+  readonly messages: readonly [
+    { readonly content: string },
+    ...{ readonly content: readonly HandedPart[] }[],
+  ];
   readonly tools: {
     readonly remind: {
       readonly execute: (input: {
@@ -209,6 +218,10 @@ describe("the quick answer of /talk", () => {
   });
 
   it("never says what no search showed", async () => {
+    // Nor the bank: no rates handed over before the question.
+    mocks.officialRateLines.mockRejectedValue(
+      new Error("The bank answered 503")
+    );
     mocks.generateText.mockResolvedValueOnce({
       steps: [said],
       text: "Курс доллара — восемьдесят рублей.",
@@ -261,63 +274,61 @@ describe("the quick answer of /talk", () => {
     expect(russian[0]).toContain("по-русски");
   });
 
-  it("answers the home weather and rates in one call, from the data read before the question", async () => {
-    let told = "";
+  /** What the model is handed besides the person's words: the home data's results, as tools' would be. */
+  function askHanded(words: string) {
+    let handed = "";
     mocks.generateText.mockImplementationOnce(async (options) => {
-      told = options.instructions;
+      const [, ...data] = options.messages;
+      handed = data
+        .flatMap((message) =>
+          message.content.map((part) => part.output?.value ?? part.type)
+        )
+        .join("\n");
       return await Promise.resolve({
         steps: [said],
         text: "Доллар сегодня 80 рублей 53 копейки.",
       });
     });
+    return async () => {
+      const answer = await quickVoiceAnswer(scope(), words, person);
+      return { answer, handed };
+    };
+  }
 
-    expect(
-      await quickVoiceAnswer(scope(), "Сколько стоит доллар?", person)
-    ).toBe("Доллар сегодня 80 рублей 53 копейки.");
-    expect(told).toContain("Прогноз MET Norway для Москва");
-    expect(told).toContain("USD — Доллар США: 80 руб. 53 коп.");
+  it("answers the home weather or rates in one call, handed the data read before the question", async () => {
+    const dollar = await askHanded("Сколько стоит доллар?")();
+    expect(dollar.answer).toBe("Доллар сегодня 80 рублей 53 копейки.");
+    expect(dollar.handed).toContain("USD — Доллар США: 80 руб. 53 коп.");
+    expect(dollar.handed).not.toContain("MET Norway");
+
+    const weather = await askHanded("Какая завтра погода?")();
+    expect(weather.handed).toContain("Прогноз MET Norway для Москва");
   });
 
-  it("hands an answer with no call to Bro unless each of its numbers is in the home data", async () => {
-    mocks.generateText.mockResolvedValueOnce({
-      steps: [said],
-      text: "Путину 74 года.",
-    });
-    expect(
-      await quickVoiceAnswer(scope(), "Сколько лет Путину?", person)
-    ).toBeUndefined();
-
-    // Nothing to check against: «Канберра», «пасмурно».
-    mocks.generateText.mockResolvedValueOnce({
-      steps: [said],
-      text: "Завтра пасмурно.",
-    });
-    expect(
-      await quickVoiceAnswer(scope(), "Какая завтра погода?", person)
-    ).toBeUndefined();
-
-    // «4» is in the forecast («+4°»), but the question is no weather or rate.
-    mocks.generateText.mockResolvedValueOnce({ steps: [said], text: "4." });
-    expect(
-      await quickVoiceAnswer(scope(), "Сколько будет 2 плюс 2?", person)
-    ).toBeUndefined();
+  it("hands no home data to another question, another city or a day past the week", async () => {
+    // With the data in the instructions, a week of degrees held nearly every small number (review 28.10).
+    for (const words of [
+      "Сколько будет 2 плюс 2?",
+      "Какая погода в Казани завтра?",
+      "Какая погода будет в следующую пятницу?",
+    ]) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- One question after another.
+      const { answer, handed } = await askHanded(words)();
+      expect(handed).toBe("");
+      // An answer with nothing behind it goes to Bro.
+      expect(answer).toBeUndefined();
+    }
   });
 
   it("asks the model without the home data that is not read in time", async () => {
     mocks.officialRateLines.mockImplementation(
       async () => await new Promise(() => undefined)
     );
-    mocks.weatherAt.mockRejectedValue(new Error("MET Norway answered 503"));
-    let told = "";
-    mocks.generateText.mockImplementationOnce(async (options) => {
-      told = options.instructions;
-      return await Promise.resolve({ steps: [said], text: "80 рублей." });
-    });
 
-    expect(
-      await quickVoiceAnswer(scope(), "Сколько стоит доллар?", person)
-    ).toBeUndefined();
-    expect(told).not.toContain("Уже известно");
+    const { answer, handed } = await askHanded("Сколько стоит доллар?")();
+
+    expect(handed).toBe("");
+    expect(answer).toBeUndefined();
   });
 
   it("sends a workspace's words to Bro past twenty quick answers in five minutes", async () => {

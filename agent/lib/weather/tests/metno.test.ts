@@ -88,6 +88,22 @@ describe("the forecast for the days ahead", () => {
   });
 });
 
+describe("the days' names at a clock change", () => {
+  it("names tomorrow by the calendar, not 24 hours on", () => {
+    // 23:30 in Berlin before the 23-hour Sunday of summer time: 24 hours on is Monday.
+    const told = weatherLines(
+      [
+        hour("2027-03-28T10:00:00Z", 9, "fair_day"),
+        hour("2027-03-29T10:00:00Z", 11, "fair_day"),
+      ],
+      { now: new Date("2027-03-27T22:30:00Z"), timeZone: "Europe/Berlin" }
+    ).split("\n");
+
+    expect(told[1]).toMatch(/^Завтра, воскресенье, 28 марта:/u);
+    expect(told[2]).toMatch(/^Послезавтра, понедельник, 29 марта:/u);
+  });
+});
+
 describe("the clock a place's forecast is told on", () => {
   const now = new Date("2026-10-28T09:00:00Z");
 
