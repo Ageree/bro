@@ -11,6 +11,7 @@ import { backgroundTurnMarker } from "@shared/chat/background-turn";
 
 const services = vi.hoisted(() => ({
   forget: vi.fn<typeof locationModule.forgetLocation>(),
+  forgetWork: vi.fn<() => Promise<void>>(),
   label: vi.fn<typeof locationModule.labelPoint>(),
   latest: vi.fn<typeof locationModule.latestPosition>(),
   list: vi.fn<typeof locationModule.listLocationPoints>(),
@@ -36,6 +37,9 @@ vi.mock("@db/services/location", () => ({
 }));
 vi.mock("@db/services/user-profile", () => ({
   readWorkspaceTimeZone: services.timeZone,
+}));
+vi.mock("@db/services/work-log", () => ({
+  forgetWorkLines: services.forgetWork,
 }));
 vi.mock("@agent/lib/routes/openstreetmap", () => ({
   nearbyPlace: services.nearby,
@@ -299,6 +303,8 @@ describe("the geolocation tools", () => {
     expect(
       await set.location_edit.execute({ action: "forget" }, callContext())
     ).toMatchObject({ changed: true, points: 3 });
+    // Bro's answers of the period name where the person was too.
+    expect(services.forgetWork).toHaveBeenCalledOnce();
     // A turn about a letter: an injected «forget» in it changes nothing.
     services.forget.mockClear();
     const letter = await tools(said("что в письме от банка?"));

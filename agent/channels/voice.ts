@@ -2,6 +2,7 @@ import { defineChannel, GET, POST } from "eve/channels";
 import { fetch, ProxyAgent } from "undici";
 import * as z from "zod";
 import { voiceBrief, voiceCalendar } from "@agent/lib/voice/brief";
+import { workLogEnabled } from "@agent/lib/work-log/pilot";
 import {
   fastTalkInstructions,
   talkInstructions,
@@ -139,6 +140,7 @@ export default defineChannel({
               briefWaitMs,
               ""
             ),
+            workLog: workLogEnabled(scope.workspaceId),
           })
         : talkInstructions(person);
       const startedAt = performance.now();

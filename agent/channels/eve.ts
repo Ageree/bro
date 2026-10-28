@@ -15,6 +15,7 @@ import { firstContactContext } from "@agent/lib/first-contact";
 import { documentByteCap } from "@agent/lib/inbound-media/media-type";
 import { webFileNotes } from "@agent/lib/inbound-media/web";
 import { webLocationContext } from "@agent/lib/location/context";
+import { workLogVoiceContext } from "@agent/lib/work-log/recall";
 import { locationPilot } from "@db/services/location";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { taskFilesEnabled } from "@agent/lib/sandbox/pilot";
@@ -180,6 +181,13 @@ const channel = eveChannel({
             fastVoice
               ? `${voiceTalkContext} ${quickVoiceSearch}`
               : voiceTalkContext,
+            // /talk opens a new chat each time: what Bro did in the others,
+            // for a question about it (work log pilot); the chat's later
+            // turns only what came since, the history keeps the rest.
+            ...(await workLogVoiceContext(scope, {
+              now: new Date(),
+              sessionId,
+            })),
           ]
         : []),
     ];

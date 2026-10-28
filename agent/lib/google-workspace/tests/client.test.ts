@@ -10,8 +10,14 @@ vi.mock("@db/services/settings", () => ({
   getGoogleWorkspaceAccess: async () => "full",
 }));
 
+const voice = vi.hoisted(() => ({ turn: vi.fn<() => Promise<boolean>>() }));
+vi.mock("@agent/lib/voice/turn", () => ({ voiceTurnOfCall: voice.turn }));
+vi.mock("@agent/lib/work-log/pilot", () => ({ workLogEnabled: () => true }));
+
+import { ConnectionAuthorizationRequiredError } from "eve/connections";
 import {
   GoogleApiError,
+  GoogleNotConnectedAloudError,
   GoogleUnreadableAnswerError,
   withGoogleAuth,
 } from "@agent/lib/google-workspace/client";
@@ -22,6 +28,7 @@ let composio: FakeComposio;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  voice.turn.mockResolvedValue(false);
   composio = fakeComposio();
   composio.connect({ id: "ca_google", toolkit: "googlesuper" });
 });
@@ -54,7 +61,35 @@ async function readProfile() {
   return { ctx, outcome };
 }
 
+/** A Google read of a person with no Google connected: what it throws. */
+async function unconnected() {
+  const ctx = composioToolContext("ca_google");
+  // eve's getToken wraps the provider's own error.
+  const wrapped = new Error("Authorization required", {
+    cause: new ConnectionAuthorizationRequiredError("google-workspace"),
+  });
+  wrapped.name = "ScopedAuthorizationRequiredError";
+  ctx.getToken.mockRejectedValue(wrapped);
+  try {
+    return await withGoogleAuth(ctx, async () => "read");
+  } catch (cause) {
+    return cause;
+  }
+}
+
 describe("withGoogleAuth", () => {
+  // 28.10: five of fourteen spoken questions about Bro's own work ended in
+  // «открой чат» — the card waits in a chat the voice's person does not see.
+  it("tells a voice turn in words that Google is not connected, and shows others the card", async () => {
+    voice.turn.mockResolvedValue(true);
+    expect(await unconnected()).toBeInstanceOf(GoogleNotConnectedAloudError);
+
+    voice.turn.mockResolvedValue(false);
+    expect(await unconnected()).toMatchObject({
+      name: "ScopedAuthorizationRequiredError",
+    });
+  });
+
   it("calls Google through Composio's proxy with the person's account", async () => {
     composio.proxy.mockResolvedValue({
       data: { emailAddress: "ada@example.com" },

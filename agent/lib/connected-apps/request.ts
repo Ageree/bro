@@ -1,27 +1,13 @@
-import { isConnectionAuthorizationRequiredError } from "eve/connections";
 import type { SessionContext } from "eve/context";
 import type { ToolContext } from "eve/tools";
 import type { ApprovalStatus } from "eve/tools/approval";
 import { composioProxy } from "@agent/lib/composio/proxy";
+import { signInRequired } from "@agent/lib/composio/sign-in";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { activeConnectedAccount } from "@shared/composio/accounts";
 import { isMissingConnectedAccount } from "@shared/composio/api";
 import { type ConnectedApp, connectedAppNames } from "@shared/composio/catalog";
 import { connectedAppAuth, connectedAppAuthKey } from "./auth";
-
-/**
- * Whether a tool call stopped on the app's sign-in: eve's `getToken` and
- * `requireAuth` throw an error the tool runner turns into the sign-in card,
- * which parks the whole turn until the person connects.
- */
-function signInRequired(cause: unknown) {
-  return (
-    cause instanceof Error &&
-    (cause.name === "ScopedAuthorizationRequiredError" ||
-      isConnectionAuthorizationRequiredError(cause) ||
-      isConnectionAuthorizationRequiredError(cause.cause))
-  );
-}
 
 /** What the model hears for an app the person has not connected nor named. */
 function notConnectedNote(app: ConnectedApp) {

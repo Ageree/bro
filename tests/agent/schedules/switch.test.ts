@@ -5,6 +5,7 @@ const switchState = vi.hoisted(() => ({
   enabled: false,
   expireConversationLines: vi.fn<() => Promise<void>>(),
   expireLocationPoints: vi.fn<() => Promise<void>>(),
+  expireWorkLines: vi.fn<() => Promise<void>>(),
   recordUntrackedMemories: vi.fn<() => Promise<void>>(),
   trimForgottenMemoryHistory: vi.fn<() => Promise<void>>(),
 }));
@@ -18,6 +19,9 @@ vi.mock("@db/services/conversation-log", () => ({
 }));
 vi.mock("@db/services/location", () => ({
   expireLocationPoints: switchState.expireLocationPoints,
+}));
+vi.mock("@db/services/work-log", () => ({
+  expireWorkLines: switchState.expireWorkLines,
 }));
 vi.mock("@db/services/memory/records", () => ({
   recordUntrackedMemories: switchState.recordUntrackedMemories,
@@ -73,18 +77,20 @@ describe("EVE_SCHEDULES=off", () => {
     }
   );
 
-  // The 14 days of the cross-channel log and the 90 of shared locations
-  // are promises to the person, and their only sweep is this tick
-  // (`agent/schedules/memory-history.ts`).
-  it("memoryHistory only expires the cross-channel log and locations", async () => {
+  // The 14 days of the cross-channel log, the 30 of the work log and the
+  // 90 of shared locations are promises to the person, and their only sweep
+  // is this tick (`agent/schedules/memory-history.ts`).
+  it("memoryHistory only expires the cross-channel and work logs and locations", async () => {
     switchState.expireConversationLines.mockResolvedValue();
     switchState.expireLocationPoints.mockResolvedValue();
+    switchState.expireWorkLines.mockResolvedValue();
     const { args, waitUntil } = tickArguments();
     memoryHistory.run(args);
     await Promise.all(waitUntil.mock.calls.map(([work]) => work));
 
-    expect(waitUntil).toHaveBeenCalledTimes(2);
+    expect(waitUntil).toHaveBeenCalledTimes(3);
     expect(switchState.expireConversationLines).toHaveBeenCalledOnce();
+    expect(switchState.expireWorkLines).toHaveBeenCalledOnce();
     expect(switchState.expireLocationPoints).toHaveBeenCalledOnce();
     expect(switchState.trimForgottenMemoryHistory).not.toHaveBeenCalled();
     expect(switchState.recordUntrackedMemories).not.toHaveBeenCalled();

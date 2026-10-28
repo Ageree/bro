@@ -94,6 +94,16 @@ function recall<T>(map: Map<string, T>, key: string) {
 }
 
 /**
+ * The verdict a pilot already has for this turn in this process, or
+ * undefined: for what runs inside the turn without its messages (a tool).
+ * Never stored, so it cannot set a turn's verdict before its step does.
+ */
+export async function knownTurnVerdict(pilot: string, turn: PilotTurn) {
+  if (turn.turnId === undefined) return undefined;
+  return turnVerdicts.get(`${pilot}\n${turn.sessionId}\n${turn.turnId}`);
+}
+
+/**
  * A pilot's verdict, the same for every step of a turn: a pilot that flips
  * between steps changes what the step sends (its notes, its tools) and
  * breaks the prompt cache of the whole turn. `lookup` answers undefined when

@@ -39,6 +39,7 @@ export * from "./turn-log";
 export * from "./usage";
 export * from "./usage-costs";
 export * from "./vault";
+export * from "./work-log";
 export * from "./workspaces";
 export * from "./workstreams";
 export * from "./yandex-purchases";

@@ -1,6 +1,7 @@
 import { defineDynamic, defineTool } from "eve/tools";
 import { z } from "zod";
 import { crossChannelPilot } from "@agent/lib/conversation/pilot";
+import { workLogEnabled } from "@agent/lib/work-log/pilot";
 import { memoryDigestPilot } from "@agent/lib/memory/digest/pilot";
 import { taskJobsDecided } from "@agent/lib/model/router/task";
 import { taskKitRoutedWorkspace } from "@agent/lib/sandbox/pilot";
@@ -105,6 +106,7 @@ export const privacy = defineTool({
         ...(locationWatchPilot(scope) && { locationWatch: true }),
         phone,
         signature,
+        workLog: workLogEnabled(scope.workspaceId),
       }),
       processors: dataProcessors(modelId, {
         memoryDigest,

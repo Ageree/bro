@@ -659,6 +659,13 @@
       "when": 1793039403036,
       "tag": "0093_browser_site_operation_adopted",
       "breakpoints": true
+    },
+    {
+      "idx": 94,
+      "version": "7",
+      "when": 1793191969890,
+      "tag": "0094_work_log",
+      "breakpoints": true
     }
   ]
 }

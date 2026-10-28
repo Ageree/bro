@@ -6,8 +6,11 @@ import type { ApprovalStatus } from "eve/tools/approval";
 import { z } from "zod";
 import { composioAuthorization } from "@agent/lib/composio/authorization";
 import { composioProxy, proxyBodyBytes } from "@agent/lib/composio/proxy";
+import { signInRequired } from "@agent/lib/composio/sign-in";
 import { startedByPerson } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
+import { voiceTurnOfCall } from "@agent/lib/voice/turn";
+import { workLogEnabled } from "@agent/lib/work-log/pilot";
 import { wakeProactiveWatch } from "@db/services/proactive";
 import { getGoogleWorkspaceAccess } from "@db/services/settings";
 import { ComposioError, isMissingConnectedAccount } from "@shared/composio/api";
@@ -70,11 +73,16 @@ const googleWorkspaceAuth = {
 export async function googleWorkspaceAccess(
   ctx: Pick<SessionContext, "session">
 ) {
+  return getGoogleWorkspaceAccess(googleCaller(ctx));
+}
+
+/** The workspace user this session acts for. */
+function googleCaller(ctx: Pick<SessionContext, "session">) {
   const caller = ctx.session.auth.current ?? ctx.session.auth.initiator;
   if (!caller) {
     throw new Error("Google Workspace requires an authenticated Bro user.");
   }
-  return getGoogleWorkspaceAccess(scopeFromPrincipal(caller));
+  return scopeFromPrincipal(caller);
 }
 
 /**
@@ -86,11 +94,48 @@ export async function googleConnectedAccount(ctx: ToolContext) {
   const access = await googleWorkspaceAccess(ctx);
   const provider = googleWorkspaceAuth[access];
   const options = { authKey: googleWorkspaceAuthKeys[access] };
-  const { token } = await ctx.getToken(provider, options);
-  return {
-    connectedAccountId: token,
-    requireAuth: () => ctx.requireAuth(provider, options),
-  };
+  const aloud = await voiceSignIn(ctx);
+  try {
+    const { token } = await ctx.getToken(provider, options);
+    return {
+      connectedAccountId: token,
+      requireAuth: () => {
+        if (aloud) throw new GoogleNotConnectedAloudError();
+        return ctx.requireAuth(provider, options);
+      },
+    };
+  } catch (error) {
+    if (aloud && signInRequired(error)) {
+      throw new GoogleNotConnectedAloudError({ cause: error });
+    }
+    throw error;
+  }
+}
+
+/**
+ * Whether a sign-in card of this call would wait in a chat nobody looks at:
+ * a turn of /talk's voice in the work log pilot. On 28.10 five of fourteen
+ * spoken questions about Bro's own work ended in «открой чат» after a Gmail
+ * or Drive search the person never asked for.
+ */
+async function voiceSignIn(ctx: ToolContext) {
+  const { workspaceId } = googleCaller(ctx);
+  return workLogEnabled(workspaceId) && voiceTurnOfCall(ctx, workspaceId);
+}
+
+/**
+ * What the model reads when a Google tool of a voice turn meets no
+ * connection: the card would wait in a chat the person does not look at.
+ */
+export class GoogleNotConnectedAloudError extends Error {
+  override readonly name = "GoogleNotConnectedAloudError";
+
+  constructor(options?: ErrorOptions) {
+    super(
+      "Не сделано: Google (почта, диск, календарь) у человека не подключён, а голосом его не подключить. Не вызывай Google в этом ходе. Скажи одной фразой, что почта и документы Google не подключены и подключить их можно в чате, и ответь тем, что знаешь без них.",
+      options
+    );
+  }
 }
 
 /**
