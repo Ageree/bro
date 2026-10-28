@@ -35,7 +35,10 @@ export default defineHook({
       );
       // A shared location's context line names where the person was; from
       // /talk, the voice marker and the voice's own lines are no request.
-      const said = spokenWords(withoutLocationLines(event.data.message)).trim();
+      const words = spokenWords(withoutLocationLines(event.data.message));
+      const said = (
+        files.length > 0 ? words.replaceAll(fileNotes, "") : words
+      ).trim();
       const text = said === "" ? files.join(", ") : said;
       await keep(ctx, event, "person", text, files);
     },
@@ -54,6 +57,15 @@ export default defineHook({
 });
 
 const fileNameLimit = 200;
+
+/**
+ * The notes eve or a channel writes into the message for a file it carries
+ * (`[file: name (type)]`, `[файл: …]`, `Attached file …`): the line keeps
+ * the names apart, and on 28.10 the notes took half of the voice brief's
+ * room for a request.
+ */
+const fileNotes =
+  /\[(?:file|файл):[^\]\n]*\]|^Attached file .*$|^Attachment .* could not be retrieved: .*$/gmu;
 
 /**
  * A line without its links, their words kept: a link of Bro's own (a card,

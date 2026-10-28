@@ -164,7 +164,8 @@ async function workLines(
  * The voice's part of its brief (`agent/lib/voice/brief.ts`): the week's
  * requests with the start of Bro's answers, said aloud, so the voice knows
  * what was done and answers the plain ones at once (the brief's own budget
- * keeps the newest).
+ * keeps the newest: at 6000 one test person's single day, 14 requests,
+ * already lost its first — the contract the voice was asked about, 28.10).
  */
 export async function workLogBriefLines(
   scope: AccessScope,
@@ -173,7 +174,7 @@ export async function workLogBriefLines(
   return workLines(scope, {
     ...input,
     aloud: true,
-    budget: 6000,
+    budget: 10_000,
     days: 7,
     limits: { answer: 500, request: 160 },
   });

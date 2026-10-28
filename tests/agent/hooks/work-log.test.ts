@@ -110,8 +110,9 @@ beforeEach(() => {
 
 describe("the work log hook", () => {
   it("keeps the person's request with its files' names and Bro's delivered message", async () => {
+    // eve's summary of a web message names each file again, with its type.
     await receive(
-      received("Разбери договор", [
+      received("Разбери договор\n[file: Договор.pdf (application/pdf)]", [
         { text: "Разбери договор", type: "text" },
         {
           filename: "Договор.pdf",
