@@ -292,11 +292,11 @@ s3put:<ключ>`; без звонка её гоняют локально: `sip.
   поиск бесплатный, 30 в минуту) и Exa (`EXA_API_KEY`, $10 в месяц бесплатно, `highlights`), затем Composio Instant (только
   TinyFish и только без своего ключа), затем RouterAI exa/perplexity. Tavily убран: его условия (§17.1, 04.05.2026) называют
   Россию страной под эмбарго. Движок на 402 отдыхает 10 мин, на 429 — минуту, о 402 — тревога владельцу (`refused` в
-  `search.ts`). Доступность TinyFish и Exa с VM в России до первого выката с ключами не проверена: строка `[web_search] engine
-  failed` покажет.
+  `search.ts`). Доступность TinyFish и Exa с VM в России до первого выката с ключами не проверена: покажет строка
+  `[web_search] engine failed`.
 - Кошелёк Composio опустел 28.10 ~08:05 (402 `Metering_WalletBalanceExhausted`; во многом — ~690 поисков субагента-замерщика за
   35 мин): весь веб-поиск Бро ушёл в RouterAI exa — 2,3–3,7 с и ≈2,2 ₽ за поиск. Теперь после 402 Instant 10 мин не
-  спрашивается, а владельцу уходит тревога (`walletEmpty` в `agent/lib/web-search/search.ts`). Замеры поиска — не сотнями
+  спрашивается, а владельцу уходит тревога (`refused` в `agent/lib/web-search/search.ts`). Замеры поиска — не сотнями
   через Composio прода: он общий с Бро.
 - Telegram — главный канал (21.10, владелец; Photon остаётся вторым): бот заводит аккаунт с первого
   сообщения (`ensureTelegramUser`, почта `…@telegram.local-vault.invalid` — по ней `getAuthSession`
