@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Hearing } from "./hearing";
+import { Hearing, withQuickAnswers } from "./hearing";
 
 function heard(hearing: Hearing, text: string, startMs: number) {
   hearing.hear({ text, startMs, endMs: startMs + 300 });
@@ -44,5 +44,20 @@ describe("the words the voice hands to Bro", () => {
     expect(hearing.takeRequest()).toBeUndefined();
     heard(hearing, "А японский?", 3000);
     expect(hearing.hasRequest()).toBe(true);
+  });
+});
+
+describe("the words going to Bro after quick answers", () => {
+  it("carry the last two quick answers before them, as the voice's lines", () => {
+    expect(
+      withQuickAnswers("Напомни утром взять зонт, если так", [
+        { words: "Какой курс доллара?", answer: "Восемьдесят с половиной." },
+        { words: "Какая погода завтра?", answer: "Плюс восемь, дождь." },
+        { words: "А в Казани?", answer: "Плюс шесть, сухо." },
+      ])
+    ).toBe(
+      "Какая погода завтра?\n(ты: «Плюс восемь, дождь.»)\nА в Казани?\n(ты: «Плюс шесть, сухо.»)\nНапомни утром взять зонт, если так"
+    );
+    expect(withQuickAnswers("Позвони маме", [])).toBe("Позвони маме");
   });
 });

@@ -18,10 +18,18 @@ interface Utterance {
   readonly startMs: number;
 }
 
+/** A question the quick answer took and what the voice was given to say. */
+export interface QuickAnswer {
+  readonly words: string;
+  readonly answer: string;
+}
+
 /** Silence that ends one utterance and starts the next. */
 const utteranceGapMs = 1200;
 /** The person's utterances a request carries at most: older talk stays out. */
 const keptUtterances = 4;
+/** Quick answers the next words to Bro carry at most. */
+const keptQuickAnswers = 2;
 
 export class Hearing {
   readonly #heard: Piece[] = [];
@@ -67,6 +75,23 @@ export class Hearing {
       .map((line) => (line.by === "person" ? line.text : voiceLine(line.text)))
       .join("\n");
   }
+}
+
+/**
+ * The words going to Bro after the quick answers the voice gave since Bro last
+ * heard from the page (VOICE_QUICK_WORKSPACES): Bro never saw those turns, and
+ * «напомни утром взять зонт, если так» after the weather would reach it bare.
+ */
+export function withQuickAnswers(
+  words: string,
+  answered: readonly QuickAnswer[]
+) {
+  return [
+    ...answered
+      .slice(-keptQuickAnswers)
+      .map((quick) => `${quick.words}\n${voiceLine(quick.answer)}`),
+    words,
+  ].join("\n");
 }
 
 function utterances(pieces: readonly Piece[], by: Utterance["by"]) {

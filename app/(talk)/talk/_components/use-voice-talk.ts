@@ -8,9 +8,11 @@ import { voiceTalkMarker } from "@shared/voice/marker";
 import {
   voiceCalendarPath,
   voicePaceHeader,
+  voiceQuickHeader,
+  voiceQuickPath,
   voiceSessionPath,
 } from "@shared/voice/routes";
-import { Hearing } from "../_lib/hearing";
+import { Hearing, type QuickAnswer, withQuickAnswers } from "../_lib/hearing";
 import {
   alreadySentCommentary,
   asksPerson,
@@ -59,6 +61,7 @@ const transcriptDelta = z.object({
 const delegationCreated = z.object({
   delegation: z.object({ id: z.string() }),
 });
+const quickAnswerSchema = z.object({ answer: z.string().min(1).nullable() });
 const liveError = z.object({
   error: z.object({ message: z.string().optional() }).optional(),
 });
@@ -70,6 +73,8 @@ const settleLimitMs = 2500;
 const recentSendMs = 8000;
 /** Quiet after the person's answer to Bro's question before it goes to Bro. */
 const answerSettleMs = 1500;
+/** The quick answer's own limit is 7 s; past this the words go to Bro. */
+const quickLimitMs = 9000;
 /** A conversation with nothing said and nothing in work ends by itself. */
 const idleLimitMs = 90_000;
 const connectLimitMs = 15_000;
@@ -83,6 +88,7 @@ type PageEvent =
   | "closed"
   | "delegated"
   | "failed"
+  | "quick"
   | "sent"
   | "unheard"
   | "unsent";
@@ -262,6 +268,10 @@ function openCall(input: {
   // VOICE_FAST_WORKSPACES, as the session's answer says: the page tells the
   // voice what to say while Bro works, and Bro's messages go over bare.
   let pagePaced = false;
+  // VOICE_QUICK_WORKSPACES: a question the web answers is asked of the quick
+  // answer first, and what it said goes to Bro with the next words.
+  let quickAnswers = false;
+  const answered: QuickAnswer[] = [];
   // Bro's question the person has not answered yet: GPT-Live may take their
   // reply for part of the task under way and delegate nothing (20.10 the
   // owner's choice after «Что берём?» never reached Bro), and its docs leave
@@ -456,14 +466,17 @@ function openCall(input: {
     // Before the send: a delegation for these words while it is on its way
     // finds them sent, not unheard.
     lastSentAt = clock();
+    const earlier = answered.splice(0);
     try {
       const session = await broSession();
-      await session.send(`${voiceTalkMarker} ${words}`, {
-        turnPolicy: "steer",
-      });
+      await session.send(
+        `${voiceTalkMarker} ${withQuickAnswers(words, earlier)}`,
+        { turnPolicy: "steer" }
+      );
       sentSinceBoundary += 1;
       report(kind);
     } catch {
+      answered.unshift(...earlier);
       console.warn("[voice] the request did not reach Bro");
       input.onWorking(false);
       comment(delegationId, unsentCommentary);
@@ -471,11 +484,31 @@ function openCall(input: {
     }
   };
 
-  const delegate = async (delegationId: string) => {
+  /** The quick answer's line for the words, or undefined: they go to Bro. */
+  const askQuick = async (words: string) => {
+    try {
+      const response = await fetch(voiceQuickPath, {
+        body: JSON.stringify({ words }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+        signal: AbortSignal.timeout(quickLimitMs),
+      });
+      if (!response.ok) return undefined;
+      const parsed = quickAnswerSchema.safeParse(await response.json());
+      return parsed.success ? (parsed.data.answer ?? undefined) : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+
+  const ended = () => following.signal.aborted;
+
+  const delegate = async (delegationId: string, quick: boolean) => {
     // The first delegation's new chat is opened while the words settle, not
     // after, when there are words to send: a failure here is retried by the
-    // send.
-    if (input.bro.current === undefined && hearing.hasRequest())
+    // send. Words the quick answer may take open none: a conversation of
+    // quick answers leaves no empty chat.
+    if (!quick && input.bro.current === undefined && hearing.hasRequest())
       void broSession().catch(() => null);
     await settled();
     if (following.signal.aborted) return;
@@ -485,6 +518,24 @@ function openCall(input: {
       comment(delegationId, sent ? alreadySentCommentary : unheardCommentary);
       report(sent ? "already_sent" : "unheard");
       return;
+    }
+    if (quick) {
+      input.onRequest(words);
+      input.onWorking(true);
+      // A second delegation for these words while the answer is on its way
+      // finds them taken, not unheard.
+      lastSentAt = clock();
+      // With its own earlier answers: «А в Казани?» follows the weather.
+      const answer = await askQuick(withQuickAnswers(words, answered));
+      // The conversation may have ended while the answer was on its way.
+      if (ended()) return;
+      if (answer !== undefined) {
+        input.onWorking(false);
+        answered.push({ words, answer });
+        comment(delegationId, spokenText(answer));
+        report("quick");
+        return;
+      }
     }
     await sendToBro(delegationId, words, "sent");
   };
@@ -520,11 +571,15 @@ function openCall(input: {
       if (!created.success) return;
       latestDelegation = created.data.delegation.id;
       lastActivityAt = now;
+      // Words that answer Bro's question or come while Bro works belong to
+      // that work: they go to Bro, not to the quick answer.
+      const quick =
+        quickAnswers && answerOwed === undefined && sentSinceBoundary === 0;
       answerOwed = undefined;
       report("delegated");
       // Within GPT-Live's 800 ms, before its own «Секунду, смотрю».
       if (pagePaced) comment(created.data.delegation.id, progressCommentary);
-      void delegate(created.data.delegation.id);
+      void delegate(created.data.delegation.id, quick);
     } else if (event.type === "session.closed") {
       report("closed");
       input.onFailure("Голос закрыл разговор.");
@@ -570,6 +625,7 @@ function openCall(input: {
         `Сервер не открыл голосовую сессию (${String(response.status)}).`
       );
     pagePaced = response.headers.get(voicePaceHeader) === "page";
+    quickAnswers = response.headers.get(voiceQuickHeader) === "on";
     await peer.setRemoteDescription({
       sdp: await response.text(),
       type: "answer",
