@@ -12,13 +12,19 @@ import {
   voiceQuickPath,
   voiceSessionPath,
 } from "@shared/voice/routes";
-import { Hearing, type QuickAnswer, withQuickAnswers } from "../_lib/hearing";
+import {
+  forQuickAnswer,
+  Hearing,
+  type QuickAnswer,
+  withQuickAnswers,
+} from "../_lib/hearing";
 import {
   alreadySentCommentary,
   asksPerson,
   failedCommentary,
   notePieces,
   progressCommentary,
+  quickGivenCommentary,
   replyCommentary,
   spokenText,
   unheardCommentary,
@@ -75,6 +81,8 @@ const recentSendMs = 8000;
 const answerSettleMs = 1500;
 /** The quick answer's own limit is 7 s; past this the words go to Bro. */
 const quickLimitMs = 9000;
+/** Bro's message this recent tells the quick answer what the words are about. */
+const broContextMs = 10 * 60_000;
 /** A conversation with nothing said and nothing in work ends by itself. */
 const idleLimitMs = 90_000;
 const connectLimitMs = 15_000;
@@ -272,6 +280,8 @@ function openCall(input: {
   // answer first, and what it said goes to Bro with the next words.
   let quickAnswers = false;
   const answered: QuickAnswer[] = [];
+  let lastQuickAt = Number.NEGATIVE_INFINITY;
+  let broSaid: { text: string; at: number } | undefined;
   // Bro's question the person has not answered yet: GPT-Live may take their
   // reply for part of the task under way and delegate nothing (20.10 the
   // owner's choice after «Что берём?» never reached Bro), and its docs leave
@@ -359,6 +369,7 @@ function openCall(input: {
             : (output.text ?? "Прислал файл в чат.");
         deliveredSinceBoundary += 1;
         lastActivityAt = clock();
+        broSaid = { text: spokenText(text), at: clock() };
         // The fast voice gets the bare text: wrapped as «сообщение уже ушло
         // человеку в чат», it opened with «Я уже ему написал:» in 21 of 45
         // answers (probe 27.10), and the bare text never.
@@ -491,7 +502,11 @@ function openCall(input: {
         body: JSON.stringify({ words }),
         headers: { "Content-Type": "application/json" },
         method: "POST",
-        signal: AbortSignal.timeout(quickLimitMs),
+        // Ending the conversation stops the question; its words go to Bro.
+        signal: AbortSignal.any([
+          following.signal,
+          AbortSignal.timeout(quickLimitMs),
+        ]),
       });
       if (!response.ok) return undefined;
       const parsed = quickAnswerSchema.safeParse(await response.json());
@@ -513,6 +528,11 @@ function openCall(input: {
     await settled();
     if (following.signal.aborted) return;
     const words = hearing.takeRequest();
+    if (words === undefined && clock() - lastQuickAt < recentSendMs) {
+      comment(delegationId, quickGivenCommentary);
+      report("already_sent");
+      return;
+    }
     if (words === undefined) {
       const sent = clock() - lastSentAt < recentSendMs;
       comment(delegationId, sent ? alreadySentCommentary : unheardCommentary);
@@ -525,14 +545,21 @@ function openCall(input: {
       // A second delegation for these words while the answer is on its way
       // finds them taken, not unheard.
       lastSentAt = clock();
-      // With its own earlier answers: «А в Казани?» follows the weather.
-      const answer = await askQuick(withQuickAnswers(words, answered));
-      // The conversation may have ended while the answer was on its way.
-      if (ended()) return;
+      // With its own earlier answers and Bro's last message: «А в Казани?»
+      // follows the weather, «а какая там погода?» Bro's Sochi.
+      const context =
+        broSaid !== undefined && clock() - broSaid.at < broContextMs
+          ? broSaid.text
+          : undefined;
+      const answer = await askQuick(forQuickAnswer(words, answered, context));
       if (answer !== undefined) {
-        input.onWorking(false);
+        // Nobody hears an answer once the conversation ended.
+        if (ended()) return;
+        if (sentSinceBoundary === 0) input.onWorking(false);
         answered.push({ words, answer });
-        comment(delegationId, spokenText(answer));
+        lastQuickAt = clock();
+        // As Bro's messages: a later delegation for the same words waits on it.
+        comment(latestDelegation, spokenText(answer));
         report("quick");
         return;
       }

@@ -2,9 +2,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type * as Ai from "ai";
 import { quickVoiceAnswer } from "@agent/lib/voice/quick";
 
-interface Step {
-  readonly toolCalls: readonly { readonly toolName: string }[];
-}
 interface Options {
   readonly tools: {
     readonly web_search: {
@@ -12,18 +9,22 @@ interface Options {
     };
   };
 }
+interface Answered {
+  readonly steps: readonly {
+    readonly toolCalls: readonly { readonly toolName: string }[];
+  }[];
+  readonly text: string;
+}
+interface Page {
+  readonly date: string;
+  readonly snippet: string;
+  readonly title: string;
+  readonly url: string;
+}
 
 const mocks = vi.hoisted(() => ({
-  generateText:
-    vi.fn<
-      (options: Options) => Promise<{ steps: readonly Step[]; text: string }>
-    >(),
-  searchWeb:
-    vi.fn<
-      () => Promise<
-        { date: string; snippet: string; title: string; url: string }[]
-      >
-    >(),
+  generateText: vi.fn<(options: Options) => Promise<Answered>>(),
+  searchWeb: vi.fn<() => Promise<Page[]>>(),
 }));
 
 vi.mock("ai", async (importOriginal) => ({
@@ -60,6 +61,14 @@ const searched = { toolCalls: [{ toolName: "web_search" }] };
 const handedOver = { toolCalls: [{ toolName: "to_bro" }] };
 const said = { toolCalls: [] };
 
+/** The model searches, reads what the search tool gave it, then writes `text`. */
+function searchesThenSays(text: string, read: string[] = []) {
+  mocks.generateText.mockImplementationOnce(async (options) => {
+    read.push(await options.tools.web_search.execute({ query: "погода" }));
+    return { steps: [searched, said], text };
+  });
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.searchWeb.mockResolvedValue([
@@ -73,11 +82,8 @@ beforeEach(() => {
 });
 
 describe("the quick answer of /talk", () => {
-  it("says what a search found", async () => {
-    mocks.generateText.mockResolvedValueOnce({
-      steps: [searched, said],
-      text: " Завтра около плюс восьми, облачно. ",
-    });
+  it("says what a search found, as one line", async () => {
+    searchesThenSays(" Завтра около плюс восьми,\nоблачно. ");
 
     expect(
       await quickVoiceAnswer(scope(), "Какая погода завтра?", person)
@@ -90,7 +96,7 @@ describe("the quick answer of /talk", () => {
       text: "",
     });
     expect(
-      await quickVoiceAnswer(scope(), "Напомни завтра позвонить маме", person)
+      await quickVoiceAnswer(scope(), "Что у меня завтра в календаре?", person)
     ).toBeUndefined();
 
     mocks.generateText.mockResolvedValueOnce({
@@ -102,15 +108,34 @@ describe("the quick answer of /talk", () => {
     ).toBeUndefined();
   });
 
+  it("hands words with an errand to Bro without asking the model", async () => {
+    expect(
+      await quickVoiceAnswer(
+        scope(),
+        "Какая завтра погода? Если дождь — напомни взять зонт",
+        person
+      )
+    ).toBeUndefined();
+    expect(mocks.generateText).not.toHaveBeenCalled();
+  });
+
   it("never says what no search showed", async () => {
     mocks.generateText.mockResolvedValueOnce({
       steps: [said],
       text: "Курс доллара — восемьдесят рублей.",
     });
-
     expect(
       await quickVoiceAnswer(scope(), "Какой курс доллара?", person)
     ).toBeUndefined();
+
+    // A search that failed stands behind nothing the model writes after it.
+    mocks.searchWeb.mockRejectedValueOnce(new Error("timeout"));
+    const read: string[] = [];
+    searchesThenSays("Не удалось найти, но обычно около восьмидесяти.", read);
+    expect(
+      await quickVoiceAnswer(scope(), "Какой курс доллара?", person)
+    ).toBeUndefined();
+    expect(read[0]).toContain("to_bro");
   });
 
   it("hands the words to Bro when the model fails", async () => {
@@ -122,33 +147,27 @@ describe("the quick answer of /talk", () => {
   });
 
   it("gives the pages with the rule to hand over in the language asked", async () => {
-    mocks.generateText.mockResolvedValue({ steps: [searched], text: "" });
-
+    const english: string[] = [];
+    searchesThenSays("Tomorrow, plus eight.", english);
     await quickVoiceAnswer(
       scope(),
-      "What's the weather tomorrow?\n(ты: «Сейчас посмотрю»)",
+      "(ты: «Нашёл три отеля в Лондоне.»)\nWhat's the weather tomorrow?",
       person
     );
-    const english =
-      await mocks.generateText.mock.calls[0]?.[0].tools.web_search.execute({
-        query: "weather",
-      });
-    expect(english).toContain("Завтра в Москве +8");
-    expect(english).toContain("to_bro");
-    expect(english).toContain("not in Russian");
+    expect(english[0]).toContain("Завтра в Москве +8");
+    expect(english[0]).toContain("to_bro");
+    expect(english[0]).toContain("not in Russian");
 
+    const russian: string[] = [];
+    searchesThenSays("Плюс восемь.", russian);
     await quickVoiceAnswer(scope(), "Какая погода завтра?", person);
-    const russian =
-      await mocks.generateText.mock.calls[1]?.[0].tools.web_search.execute({
-        query: "погода",
-      });
-    expect(russian).toContain("по-русски");
+    expect(russian[0]).toContain("по-русски");
   });
 
   it("sends a workspace's words to Bro past twenty quick answers in five minutes", async () => {
     mocks.generateText.mockResolvedValue({
-      steps: [searched, said],
-      text: "Плюс восемь.",
+      steps: [said],
+      text: "",
     });
     const own = scope();
     for (let index = 0; index < 20; index += 1)

@@ -45,6 +45,10 @@ export const unheardCommentary =
 export const alreadySentCommentary =
   "Эти слова уже переданы, результат придёт сам: человека не переспрашивай.";
 
+/** A delegation for words the quick answer already answered. */
+export const quickGivenCommentary =
+  "Ответ на эти слова ты уже получил и сказал: не повторяй его и не переспрашивай.";
+
 export const waitingCommentary =
   "Чтобы продолжить, человеку нужно нажать кнопку или войти по ссылке в чате: скажи ему открыть чат.";
 

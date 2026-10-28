@@ -47,8 +47,8 @@ const briefWaitMs = 1500;
 /** Each of the two tries at opening the session: it answers in 0.6–1.5 s. */
 const sessionTimeoutMs = 8000;
 
-/** The person's words as the page hands them over: a few utterances. */
-const quickRequestSchema = z.object({ words: z.string().min(1).max(2000) });
+/** The person's words as the page hands them over, after Bro's last message and earlier answers. */
+const quickRequestSchema = z.object({ words: z.string().min(1).max(4000) });
 
 const answerSchema = z.object({
   session: z.object({ id: z.string() }),
@@ -233,11 +233,17 @@ export default defineChannel({
       );
       if (!asked.success) return new Response("Bad words", { status: 400 });
       const profile = await readUserProfile(scope);
-      const answer = await quickVoiceAnswer(scope, asked.data.words, {
-        now: new Date(),
-        timeZone: resolveTimeZone(profile.timezone),
-        city: profile.city ?? undefined,
-      });
+      const answer = await quickVoiceAnswer(
+        scope,
+        asked.data.words,
+        {
+          now: new Date(),
+          timeZone: resolveTimeZone(profile.timezone),
+          city: profile.city ?? undefined,
+        },
+        // A conversation that ended stops paying for its question.
+        request.signal
+      );
       return Response.json({ answer: answer ?? null }, { headers: noStore });
     }),
     // The next week of the person's calendar, as lines the page appends to

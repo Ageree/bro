@@ -51,8 +51,8 @@ function instructions(input: {
   return [
     "Ты отвечаешь за голос Бро на вопросы, на которые отвечает поиск в интернете: погода, курсы, новости, факты, расписания, цены, часы работы, результаты матчей.",
     `Сейчас ${local} (${input.timeZone}).${input.city ? ` Город человека — ${input.city}: бери его, когда вопрос о месте, а город не назван.` : ""}`,
-    "Ниже — слова человека из голосового разговора; строки «(ты: «…»)» — реплики голоса между ними, для понимания.",
-    "Если это просьба что-то сделать (напомнить, позвонить, написать, заказать, купить, записать, запомнить, отправить, открыть), если нужны данные самого человека (его почта, календарь, заказы, близкие, память) или ответ на вопрос голоса — сразу вызови to_bro, ничего не ища. Так же — если последние слова продолжают разговор, которого здесь нет, и без него непонятны («а сколько это стоит?», «а подробнее»).",
+    "Ниже — слова человека из голосового разговора; строки «(ты: «…»)» — твои прежние реплики (голосом и в чате), для понимания: по ним узнавай, о чём речь — город, предмет.",
+    "Если это просьба что-то сделать (напомнить, позвонить, написать, заказать, купить, записать, запомнить, отправить, открыть), если нужны данные самого человека (его почта, календарь, заказы, близкие, память), если это ответ на твой вопрос или слова о деле, которое ты уже делаешь (поиск, заказ, запись), — сразу вызови to_bro, ничего не ища. Так же — если слова без прежнего разговора непонятны («а сколько это стоит?», «а подробнее»).",
     "Иначе вызови web_search (в запросе — город и дата, когда они важны) и ответь одной-двумя короткими фразами для произнесения вслух: без ссылок, списков и разметки, без «по данным». Не упоминай поиск, выдержки и Бро.",
   ].join("\n");
 }
@@ -61,6 +61,14 @@ function instructions(input: {
 function personWords(words: string) {
   return words.replaceAll(voiceLinePattern, " ");
 }
+
+/**
+ * An errand in the person's words: it goes to Bro without the model's step (0.4–1.3 s), and a mixed «какая
+ * завтра погода, если дождь — напомни взять зонт» never loses its reminder to a weather answer. Imperatives
+ * only: «во сколько отправление», «сколько стоит купе» are questions.
+ */
+const errandWords =
+  /(?<!\p{L})(?:напомни|позвони|набери|закажи|купи|оплати|запиши|отправь|напиши|забронируй|поставь|удали|запомни|забудь|переведи|отмени|вызови|включи|выключи|подпиши|скинь|пришли|сохрани|добавь)(?:те)?(?:-ка)?(?!\p{L})/iu;
 
 /**
  * The rule the model reads last, after the pages: given in the instructions alone, it answered «в
@@ -79,7 +87,8 @@ function answerNote(english: boolean) {
 export async function quickVoiceAnswer(
   scope: AccessScope,
   words: string,
-  person: { now: Date; timeZone: string; city: string | undefined }
+  person: { now: Date; timeZone: string; city: string | undefined },
+  signal?: AbortSignal
 ) {
   const startedAt = performance.now();
   let searchMs: number | undefined;
@@ -93,18 +102,29 @@ export async function quickVoiceAnswer(
     });
   };
   if (!directModelActive()) return undefined;
+  const own = personWords(words);
+  if (errandWords.test(own)) {
+    outcome("errand");
+    return undefined;
+  }
   if (!withinLimit(scope.workspaceId, Date.now())) {
     outcome("limit");
     return undefined;
   }
-  const english = !/\p{Script=Cyrillic}/u.test(personWords(words));
+  const english = !/\p{Script=Cyrillic}/u.test(own);
+  // Only pages a search brought back stand behind an answer: a failed one is
+  // no ground for the model's text after it.
+  const search = { found: false };
   try {
     const selection = directModelSelection(await getWorkspaceModelId(scope), {
       reasoningOff: true,
       toolChoice: "auto",
     });
     const result = await generateText({
-      abortSignal: AbortSignal.timeout(quickTimeoutMs),
+      abortSignal: AbortSignal.any([
+        AbortSignal.timeout(quickTimeoutMs),
+        ...(signal ? [signal] : []),
+      ]),
       instructions: instructions(person),
       maxOutputTokens: 300,
       model: selection.model,
@@ -121,8 +141,11 @@ export async function quickVoiceAnswer(
             const pages = await searchWeb(
               { query },
               AbortSignal.timeout(searchTimeoutMs)
-            );
+            ).catch(() => []);
             searchMs = Math.round(performance.now() - from);
+            if (pages.length === 0)
+              return "Поиск ничего не дал. Вызови to_bro и ничего не пиши.";
+            search.found = true;
             const excerpts = pages
               .slice(0, pagesRead)
               .map(
@@ -142,17 +165,17 @@ export async function quickVoiceAnswer(
       },
     });
     const calls = result.steps.flatMap((step) => step.toolCalls);
-    const searched = calls.some((call) => call.toolName === "web_search");
     const steps = result.steps.length;
     if (calls.some((call) => call.toolName === "to_bro")) {
-      outcome(searched ? "unanswered" : "to_bro", steps);
+      outcome(search.found ? "unanswered" : "to_bro", steps);
       return undefined;
     }
-    const answer = result.text.trim();
-    // An answer with no search behind it is a guess at what changes: the
+    // One line: the page hands it to Bro later inside a voice line.
+    const answer = result.text.replaceAll(/\s+/gu, " ").trim();
+    // An answer with no pages behind it is a guess at what changes: the
     // rate, the weather, the score.
-    if (!searched || answer === "" || answer.length > answerLimit) {
-      outcome(searched ? "no_answer" : "unsearched", steps);
+    if (!search.found || answer === "" || answer.length > answerLimit) {
+      outcome(search.found ? "no_answer" : "unsearched", steps);
       return undefined;
     }
     outcome("answered", steps);
