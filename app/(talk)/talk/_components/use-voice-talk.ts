@@ -22,7 +22,7 @@ import {
   alreadySentCommentary,
   asksPerson,
   failedCommentary,
-  notePieces,
+  quietNotePieces,
   progressCommentary,
   quickGivenCommentary,
   replyCommentary,
@@ -72,8 +72,12 @@ const liveError = z.object({
   error: z.object({ message: z.string().optional() }).optional(),
 });
 
-/** How long the person's transcript may still arrive after a delegation. */
-const settleMs = 700;
+/**
+ * How long the person's transcript may still arrive after a delegation. It
+ * was 700 ms; in 23 delegations of 23 no word came after one, the last 190 ms
+ * before it at the median (prod 28.10), and every question waited ~0.6 s.
+ */
+const settleMs = 250;
 const settleLimitMs = 2500;
 /** Words sent this recently answer a second delegation for them too. */
 const recentSendMs = 8000;
@@ -322,7 +326,7 @@ function openCall(input: {
     .catch(() => undefined);
   const noteCalendar = (text: string | undefined) => {
     if (text === undefined || channel.readyState !== "open") return;
-    for (const [index, content] of notePieces(text).entries()) {
+    for (const [index, content] of quietNotePieces(text).entries()) {
       channel.send(
         JSON.stringify({
           type: "session.thinking.append",
@@ -499,7 +503,11 @@ function openCall(input: {
   const askQuick = async (words: string) => {
     try {
       const response = await fetch(voiceQuickPath, {
-        body: JSON.stringify({ words }),
+        // Bro's chat of this page, where a reminder it sets is made.
+        body: JSON.stringify({
+          words,
+          chat: input.bro.current?.session.state.sessionId,
+        }),
         headers: { "Content-Type": "application/json" },
         method: "POST",
         // Ending the conversation stops the question; its words go to Bro.

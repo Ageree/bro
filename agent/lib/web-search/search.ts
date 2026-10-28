@@ -13,6 +13,7 @@ import {
   instantSearchEnabled,
   searchInstant,
 } from "@agent/lib/web-search/instant";
+import { alertOwner, clearOwnerAlert } from "@agent/lib/owner-alert";
 import { ComposioError } from "@shared/composio/api";
 import { env } from "@shared/environment";
 
@@ -159,11 +160,13 @@ export async function searchWeb(
   signal: AbortSignal
 ): Promise<readonly WebSearchResult[]> {
   const endpoint = modelEndpoint();
-  if (instantSearchEnabled()) {
+  if (instantSearchEnabled() && Date.now() >= instantRestsUntil) {
     for (const engine of instantEngines) {
       try {
         // oxlint-disable-next-line eslint/no-await-in-loop -- The next engine only when this one failed.
-        return await searchOnInstant(input, engine, signal);
+        const found = await searchOnInstant(input, engine, signal);
+        instantAnswered();
+        return found;
       } catch (error) {
         if (signal.aborted) throw error;
         // The engine's limit or outage, for the log; the query stays out.
@@ -171,6 +174,11 @@ export async function searchWeb(
           engine,
           reason: instantFailure(error),
         });
+        // An empty wallet refuses every engine alike.
+        if (error instanceof ComposioError && error.status === 402) {
+          walletEmpty();
+          break;
+        }
       }
     }
   }
@@ -180,6 +188,37 @@ export async function searchWeb(
     );
   }
   return await searchOnModelBackend(input, endpoint, signal);
+}
+
+/**
+ * Composio's wallet ran dry (402 `Metering_WalletBalanceExhausted`, prod 28.10): each search still asked
+ * both of its engines, ~0.5 s for two refusals before RouterAI's 2–4 s search. Instant is left alone for a
+ * while, and the owner hears of it once a day, as only they can top it up. Per instance.
+ */
+const instantRestMs = 10 * 60_000;
+const walletAlertKey = "composio-wallet";
+const walletAlertRepeatMs = 24 * 60 * 60_000;
+let instantRestsUntil = 0;
+let walletAlerted = false;
+
+function walletEmpty() {
+  instantRestsUntil = Date.now() + instantRestMs;
+  if (walletAlerted) return;
+  walletAlerted = true;
+  void alertOwner(
+    walletAlertKey,
+    "Кошелёк Composio пуст (402): веб-поиск Бро идёт через RouterAI — медленнее (2–4 с против ~1 с) и дороже (≈2,2 ₽ за поиск). Пополните баланс Composio.",
+    { repeatAfterMs: walletAlertRepeatMs }
+  ).catch(() => {
+    console.warn("[web_search] the wallet alert was not sent");
+  });
+}
+
+/** Instant answers again: the next empty wallet is news to the owner. */
+function instantAnswered() {
+  if (!walletAlerted) return;
+  walletAlerted = false;
+  void clearOwnerAlert(walletAlertKey).catch(() => undefined);
 }
 
 async function searchOnInstant(

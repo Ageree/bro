@@ -59,6 +59,20 @@ export const unsentCommentary =
   "Просьбу не удалось передать: связь с сервером оборвалась. Скажи человеку, что не получилось, и предложи повторить.";
 
 /**
+ * What each piece of a silent note opens with. The calendar note alone made
+ * the voice speak first: in 25 of 28 conversations it talked before the
+ * person said a word, in 17 reading the calendar aloud for 6–11 s; told this,
+ * it read none in 3 (prod 28.10, only a greeting left).
+ */
+const quietNoteLead =
+  "Справка на потом: вслух её не пересказывай и разговор с неё не начинай; называй из неё только то, о чём человек спросит.";
+
+/** A silent note's pieces, each led by the line that keeps it silent. */
+export function quietNotePieces(text: string) {
+  return notePieces(text).map((piece) => `${quietNoteLead}\n${piece}`);
+}
+
+/**
  * A note for the voice's context (`session.thinking.append`, 500 tokens at
  * most) in pieces of whole lines, each well under that: calendar lines are
  * mostly digits, near two characters a token, and the person's week is longer

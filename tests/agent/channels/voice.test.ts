@@ -36,7 +36,9 @@ vi.mock("@agent/lib/voice/brief", () => ({
   voiceBrief: mocks.brief,
   voiceCalendar: mocks.calendar,
 }));
-vi.mock("@agent/lib/voice/quick", () => ({ quickVoiceAnswer: mocks.quick }));
+vi.mock("@agent/lib/voice/quick/answer", () => ({
+  quickVoiceAnswer: mocks.quick,
+}));
 
 // Alice has the fast voice with quick answers, Dan the fast voice alone, Bob
 // the voice alone, Carol no voice at all.

@@ -74,6 +74,12 @@ function namedError(name: string) {
   return Object.assign(new Error(`${name} from fetch`), { name });
 }
 
+const ownerAlerts = vi.hoisted(() => ({
+  alertOwner: vi.fn<(key: string, text: string) => Promise<boolean>>(),
+  clearOwnerAlert: vi.fn<(key: string) => Promise<void>>(),
+}));
+vi.mock("@agent/lib/owner-alert", () => ownerAlerts);
+
 async function loadSearchWeb() {
   const search = await import("@agent/lib/web-search/search");
   return search.searchWeb;
@@ -576,6 +582,7 @@ describe("Composio Instant web search", () => {
     // `unstubAllEnvs` above drops the setup's key too.
     vi.stubEnv("COMPOSIO_API_KEY", "test-composio-key");
     vi.stubEnv("WEB_SEARCH_INSTANT", "on");
+    ownerAlerts.alertOwner.mockClear();
   });
 
   it("searches on TinyFish in Russian, held to the sites' domains", async () => {
@@ -732,20 +739,40 @@ describe("Composio Instant web search", () => {
     ]);
   });
 
-  it("falls back to the model backend's engines when Composio's balance is empty", async () => {
+  it("falls back to the model backend's engines when Composio's balance is empty, and tells the owner", async () => {
+    ownerAlerts.alertOwner.mockResolvedValue(true);
     fetchMock
-      .mockResolvedValueOnce(walletEmpty())
       .mockResolvedValueOnce(walletEmpty())
       .mockResolvedValueOnce(oneCitation());
 
     const searchWeb = await loadSearchWeb();
     expect(await searchWeb({ query: "rates" }, turnSignal())).toHaveLength(1);
 
+    // An empty wallet refuses every engine alike: Tavily is not asked too.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(requestAt(1).url).toBe(
+      "https://openrouter.ai/api/v1/chat/completions"
+    );
+    expect(requestAt(1).body.plugins[0]?.engine).toBe("exa");
+    expect(ownerAlerts.alertOwner).toHaveBeenCalledOnce();
+  });
+
+  it("leaves Composio alone for a while once its wallet is empty", async () => {
+    ownerAlerts.alertOwner.mockResolvedValue(true);
+    fetchMock
+      .mockResolvedValueOnce(walletEmpty())
+      .mockResolvedValueOnce(oneCitation())
+      .mockResolvedValueOnce(oneCitation());
+
+    const searchWeb = await loadSearchWeb();
+    await searchWeb({ query: "rates" }, turnSignal());
+    await searchWeb({ query: "news" }, turnSignal());
+
     expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(requestAt(2).url).toBe(
       "https://openrouter.ai/api/v1/chat/completions"
     );
-    expect(requestAt(2).body.plugins[0]?.engine).toBe("exa");
+    expect(ownerAlerts.alertOwner).toHaveBeenCalledOnce();
   });
 
   it("asks no other engine once the turn itself was aborted", async () => {
