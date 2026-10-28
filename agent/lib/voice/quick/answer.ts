@@ -1,8 +1,17 @@
-import { generateText, hasToolCall, stepCountIs, tool } from "ai";
+import {
+  generateText,
+  hasToolCall,
+  type ModelMessage,
+  stepCountIs,
+  tool,
+  type ToolCallPart,
+  type ToolResultPart,
+} from "ai";
 import * as z from "zod";
+import { within } from "@agent/lib/browser-use/deadline";
 import { directModelSelection } from "@agent/lib/model/direct";
 import { officialRateLines } from "@agent/lib/rates/cbr";
-import { findPlaces } from "@agent/lib/routes/openstreetmap";
+import { findPlaces, type MapPlace } from "@agent/lib/routes/openstreetmap";
 import { calculateLines } from "@agent/tools/calculate";
 import {
   plainReminder,
@@ -36,6 +45,12 @@ const answerLimit = 600;
 /** Quick answers a workspace gets in a window; past it the words go to Bro. */
 const windowLimit = 20;
 const windowMs = 5 * 60_000;
+/** The wait for each part of the person's home data before the question goes on without it. */
+const homeWaitMs = 400;
+/** The home data's own limit: past the question's wait it goes on filling the caches for the next one. */
+const homeTimeoutMs = 5000;
+/** The currencies asked about most, read before the question. */
+const homeCurrencies = ["USD", "EUR", "CNY"];
 
 const asked = new Map<string, number[]>();
 
@@ -52,10 +67,184 @@ function withinLimit(workspaceId: string, now: number) {
   return true;
 }
 
+/**
+ * The place a city or place name stands for on the map, the best known of the first three. `findPlaces`
+ * keeps its answers a day, so a city is looked up once.
+ */
+async function placeNamed(name: string, signal: AbortSignal) {
+  const found = await findPlaces(name, undefined, { remaining: 1 }, signal, 3);
+  return found.toSorted((a, b) => (b.importance ?? 0) - (a.importance ?? 0))[0];
+}
+
+/** A place's forecast as the model reads it, with whose it is. */
+async function forecastFor(
+  place: MapPlace,
+  person: { readonly now: Date; readonly timeZone: string },
+  signal: AbortSignal
+) {
+  const lines = await weatherAt(
+    place,
+    {
+      now: person.now,
+      timeZone: placeZone(place, person.timeZone, person.now),
+    },
+    signal
+  );
+  return `Прогноз MET Norway для ${place.label}:\n${lines}`;
+}
+
+interface HomePerson {
+  readonly now: Date;
+  readonly timeZone: string;
+  readonly city: string | undefined;
+}
+
+/** The forecast of the person's own city, or nothing without a city or a place for it. */
+async function homeForecast(person: HomePerson, signal: AbortSignal) {
+  if (person.city === undefined) return undefined;
+  const place = await placeNamed(person.city, signal);
+  return place === undefined ? undefined : forecastFor(place, person, signal);
+}
+
+/**
+ * Reads the home city's forecast and the bank's dollar, euro and yuan into the caches when /talk opens
+ * (MET is kept half an hour, the bank a quarter: `metno.ts`, `cbr.ts`), so the first question finds them.
+ * Nothing waits for it, and a failure only leaves the question to read them itself.
+ */
+export function warmQuickAnswer(person: HomePerson) {
+  const signal = AbortSignal.timeout(homeTimeoutMs);
+  homeForecast(person, signal).catch(() => undefined);
+  officialRateLines(homeCurrencies, person.now, signal).catch(() => undefined);
+}
+
+/** Weather words in the person's own words, at a word's start: «дождь», not «пожар» or «train». */
+const weatherAsked =
+  /(?<!\p{L})(?:погод|дожд|снег|температур|градус|холодн|тепл|жарк|мороз|ветр|ветер|зонт|осадк|солнечн|weather|rain|snow|temperature|cold|warm|hot|wind|umbrella|sunny)/iu;
+/** One of the currencies read ahead, named in the person's own words. */
+const ratesAsked = /(?<!\p{L})(?:доллар|евро|юан|dollar|euro|yuan)/iu;
+/** A day past the week the forecast tells. */
+const farDay = /(?<!\p{L})(?:следующ|через недел|через месяц|next|in a week)/iu;
+
+/**
+ * Whether the person's words name a place other than their own city: a capitalised word past a sentence's
+ * first («Какая погода в Казани?», «in London»). A place written small is missed; the forecast handed over
+ * then says whose it is, and the model asks the weather tool for the other one.
+ */
+function namesOtherPlace(own: string, city: string | undefined) {
+  const stem = city?.toLowerCase().slice(0, 4);
+  return own.split(/(?<=[.!?])\s+/u).some((sentence) =>
+    sentence
+      .trim()
+      .split(/\s+/u)
+      .slice(1)
+      .some(
+        (word) =>
+          /^\p{Lu}\p{Ll}/u.test(word) &&
+          (stem === undefined || !word.toLowerCase().startsWith(stem))
+      )
+  );
+}
+
+/** What the weather tool gives the model: the forecast and the rule its answer keeps. */
+function weatherResult(forecast: string, english: boolean) {
+  return `${forecast}\n\n${dataNote(english)}`;
+}
+
+/** What the rates tool gives the model. */
+function ratesResult(lines: string, english: boolean) {
+  return `${lines}\n\n${dataNote(english)} Если нужной валюты у ЦБ нет — вызови web_search.`;
+}
+
+/**
+ * The weather tool's and the rates tool's answers, as if the model had already called them, when the
+ * person's own words ask the weather of their own city within the week or a rate of the dollar, euro or
+ * yuan: «какая завтра погода?» and «сколько стоит доллар?» then take one call of the model, not a tool's
+ * call and a second one (prod 28.10: 2.1–2.4 s, two calls of 0.7–1.4 s). Code decides, from the person's
+ * own words: with the data in the instructions instead, the model answered other questions from it, and
+ * no check of its numbers held — a week of degrees and dates holds nearly every small one (review 28.10).
+ * A part not read within its wait is left out, and the model calls the tool itself as before.
+ */
+async function homeCalls(own: string, person: HomePerson, english: boolean) {
+  const signal = AbortSignal.timeout(homeTimeoutMs);
+  const weather =
+    weatherAsked.test(own) &&
+    !farDay.test(own) &&
+    !namesOtherPlace(own, person.city);
+  const [forecast, rates] = await Promise.all([
+    weather
+      ? within(
+          homeForecast(person, signal).catch(() => undefined),
+          homeWaitMs
+        )
+      : undefined,
+    ratesAsked.test(own)
+      ? within(
+          officialRateLines(homeCurrencies, person.now, signal).catch(
+            () => undefined
+          ),
+          homeWaitMs
+        )
+      : undefined,
+  ]);
+  const calls: ToolCallPart[] = [];
+  const results: ToolResultPart[] = [];
+  let data = "";
+  if (forecast?.timedOut === false && forecast.value !== undefined) {
+    calls.push({
+      input: {},
+      toolCallId: "call_home_weather",
+      toolName: "weather",
+      type: "tool-call",
+    });
+    results.push({
+      output: { type: "text", value: weatherResult(forecast.value, english) },
+      toolCallId: "call_home_weather",
+      toolName: "weather",
+      type: "tool-result",
+    });
+    data += forecast.value;
+  }
+  if (
+    rates?.timedOut === false &&
+    rates.value !== undefined &&
+    rates.value.quoted > 0
+  ) {
+    calls.push({
+      input: { codes: homeCurrencies },
+      toolCallId: "call_home_rates",
+      toolName: "rates",
+      type: "tool-call",
+    });
+    results.push({
+      output: { type: "text", value: ratesResult(rates.value.lines, english) },
+      toolCallId: "call_home_rates",
+      toolName: "rates",
+      type: "tool-result",
+    });
+    data += rates.value.lines;
+  }
+  const messages: ModelMessage[] =
+    calls.length === 0
+      ? []
+      : [
+          { content: calls, role: "assistant" },
+          { content: results, role: "tool" },
+        ];
+  return { data, handed: calls.map((call) => call.toolName), messages };
+}
+
+/** A text's numbers as written the one way: «07» and «7», «80,50» and «80.5» are each one number. */
+function numbersIn(text: string) {
+  return (text.match(/\d+(?:[.,]\d+)?/gu) ?? []).map((number) =>
+    String(Number(number.replace(",", ".")))
+  );
+}
+
 function instructions(input: {
   now: Date;
   timeZone: string;
   city: string | undefined;
+  english: boolean;
 }) {
   const wall = new Intl.DateTimeFormat("sv-SE", {
     dateStyle: "short",
@@ -74,7 +263,8 @@ function instructions(input: {
     "Погода, восход и закат — weather; официальный курс валют ЦБ — rates; арифметика, проценты, дни между датами — calculate; всё прочее, что отвечает интернет (новости, факты, расписания, цены, часы работы, матчи, криптовалюта), — web_search (в запросе — город и дата, когда они важны).",
     "Разовое напоминание на время, которое назвал человек («через 20 минут», «завтра в 9»), о деле из его слов — remind. Повторяющееся («каждый день»), с условием («если…»), без времени или с действием («напомни и позвони») — to_bro.",
     "Если это просьба сделать что-то другое (позвонить, написать, заказать, купить, записать, запомнить, отправить, открыть), если нужны данные самого человека (его почта, календарь, заказы, близкие, память), если это ответ на твой вопрос или слова о деле, которое ты уже делаешь (поиск, заказ, запись), — сразу вызови to_bro, ничего не ища. Так же — если слова без прежнего разговора непонятны («а сколько это стоит?», «а подробнее»).",
-    "Ответ — одна-две короткие фразы для произнесения вслух, до 30 слов: без ссылок, списков и разметки, без «по данным». Не упоминай поиск, выдержки и Бро.",
+    "Ответ — одна-две короткие фразы для произнесения вслух, до 30 слов: без ссылок, списков и разметки, без «по данным», числа — цифрами. Не упоминай поиск, выдержки и Бро.",
+    languageNote(input.english),
   ].join("\n");
 }
 
@@ -130,17 +320,13 @@ const freeNumbers = new Set([
  * answer — or is a small or unit one: «100 * 92» with a dollar rate the model remembers is no answer.
  */
 function numbersSeen(line: string, seen: string) {
-  const known = new Set(
-    seen.match(/\d+(?:[.,]\d+)?/gu)?.map((n) => n.replace(",", "."))
+  const known = new Set(numbersIn(seen));
+  return numbersIn(line).every(
+    (number) =>
+      known.has(number) ||
+      freeNumbers.has(number) ||
+      (Number.isInteger(Number(number)) && Number(number) <= 31)
   );
-  return (line.match(/\d+(?:[.,]\d+)?/gu) ?? []).every((number) => {
-    const plain = number.replace(",", ".");
-    return (
-      known.has(plain) ||
-      freeNumbers.has(plain) ||
-      (Number.isInteger(Number(plain)) && Number(plain) <= 31)
-    );
-  });
 }
 
 /**
@@ -164,13 +350,18 @@ export async function quickVoiceAnswer(
   // How long each call of the model took, the tools' time aside.
   const stepMs: number[] = [];
   let stepFrom = startedAt;
+  // The tools the model ran, and the home data handed to it as tools' answers.
+  const used: string[] = [];
+  const handed: string[] = [];
   const outcome = (kind: string, steps?: number) => {
     console.info("[voice] quick", {
+      handed,
       kind,
       ms: Math.round(performance.now() - startedAt),
       searchMs,
       stepMs,
       steps,
+      tools: used,
       workspaceId: scope.workspaceId,
     });
   };
@@ -203,18 +394,28 @@ export async function quickVoiceAnswer(
     ...(signal ? [signal] : []),
   ]);
   try {
-    const selection = directModelSelection(await getWorkspaceModelId(scope), {
+    const [modelId, home] = await Promise.all([
+      getWorkspaceModelId(scope),
+      homeCalls(own, person, english),
+    ]);
+    handed.push(...home.handed);
+    // The home data handed over stands behind the answer as a tool's would.
+    if (home.data !== "") {
+      search.found = true;
+      seen.text += home.data;
+    }
+    const selection = directModelSelection(modelId, {
       reasoningOff: true,
       toolChoice: "auto",
     });
     const result = await generateText({
       abortSignal: aborted,
-      instructions: instructions(person),
+      instructions: instructions({ ...person, english }),
       // An answer over ~65 tokens took 0.9–1.8 s against 0.5–0.9 s for a
       // short one (probe 28.10); the voice retells a sentence or two.
       maxOutputTokens: 160,
+      messages: [{ content: words, role: "user" }, ...home.messages],
       model: selection.model,
-      prompt: words,
       providerOptions: selection.modelOptions.providerOptions,
       // A reminder's line is said as it is: no step after it.
       stopWhen: [stepCountIs(3), hasToolCall("remind")],
@@ -230,6 +431,7 @@ export async function quickVoiceAnswer(
             "Ищет в интернете. Запрос — по-русски, с городом и датой, когда они важны.",
           inputSchema: z.object({ query: z.string().min(1) }),
           execute: async ({ query }) => {
+            used.push("web_search");
             const from = performance.now();
             const pages = await searchWeb(
               { query },
@@ -251,36 +453,24 @@ export async function quickVoiceAnswer(
         }),
         weather: tool({
           description:
-            "Прогноз погоды на сегодня, завтра и послезавтра и погода сейчас. place — город или место в именительном падеже, официальным названием («Санкт-Петербург», не «Питер»); не указывай его, если человек места не назвал.",
+            "Погода сейчас и прогноз на неделю вперёд по дням. place — город или место в именительном падеже, официальным названием («Санкт-Петербург», не «Питер»); не указывай его, если человек места не назвал.",
           inputSchema: z.object({ place: z.string().trim().min(1).optional() }),
           execute: async ({ place }) => {
+            used.push("weather");
             const name = place ?? person.city;
             if (name === undefined)
               return "Где — неизвестно. Вызови to_bro и ничего не пиши.";
             try {
-              const found = await findPlaces(
+              const point = await placeNamed(
                 name,
-                undefined,
-                { remaining: 1 },
-                AbortSignal.any([aborted, AbortSignal.timeout(placeTimeoutMs)]),
-                3
+                AbortSignal.any([aborted, AbortSignal.timeout(placeTimeoutMs)])
               );
-              const point = found.toSorted(
-                (a, b) => (b.importance ?? 0) - (a.importance ?? 0)
-              )[0];
               if (point === undefined)
                 return "Место не нашлось. Вызови web_search.";
-              const lines = await weatherAt(
-                point,
-                {
-                  now: person.now,
-                  timeZone: placeZone(point, person.timeZone, person.now),
-                },
-                aborted
-              );
+              const forecast = await forecastFor(point, person, aborted);
               search.found = true;
-              seen.text += lines;
-              return `Прогноз MET Norway для ${point.label}:\n${lines}\n\n${dataNote(english)}`;
+              seen.text += forecast;
+              return weatherResult(forecast, english);
             } catch {
               return "Прогноз не ответил. Вызови web_search.";
             }
@@ -293,12 +483,13 @@ export async function quickVoiceAnswer(
             codes: z.array(z.string().trim().min(3).max(3)).min(1).max(5),
           }),
           execute: async ({ codes }) => {
+            used.push("rates");
             try {
               const read = await officialRateLines(codes, person.now, aborted);
               seen.text += read.lines;
               // A code the bank does not quote is no ground for a figure.
               if (read.quoted > 0) search.found = true;
-              return `${read.lines}\n\n${dataNote(english)} Если нужной валюты у ЦБ нет — вызови web_search.`;
+              return ratesResult(read.lines, english);
             } catch {
               return "ЦБ не ответил. Вызови web_search.";
             }
@@ -311,6 +502,7 @@ export async function quickVoiceAnswer(
             lines: z.array(z.string().trim().min(1).max(300)).min(1).max(10),
           }),
           execute: ({ lines }) => {
+            used.push("calculate");
             const counted = calculateLines(lines);
             if (
               counted.every((line) => !("error" in line)) &&
@@ -325,6 +517,7 @@ export async function quickVoiceAnswer(
             "Поставить разовое напоминание на названное человеком время — inMinutes для «через N минут», иначе at.",
           inputSchema: remindInputSchema,
           execute: async (input) => {
+            used.push("remind");
             reminder.calls += 1;
             if (reminder.calls > 1)
               return "Одно напоминание за раз: второе не поставлено.";
@@ -361,11 +554,14 @@ export async function quickVoiceAnswer(
       return reminder.line === "" ? undefined : reminder.line;
     }
     if (calls.some((call) => call.toolName === "to_bro")) {
+      used.push("to_bro");
       outcome(search.found ? "unanswered" : "to_bro", steps);
       return undefined;
     }
     // One line: the page hands it to Bro later inside a voice line.
     const answer = result.text.replaceAll(/\s+/gu, " ").trim();
+    // Answered from the home data handed over, with no call of its own.
+    const fromHome = home.data !== "" && calls.length === 0;
     // An answer with no pages behind it is a guess at what changes: the
     // rate, the weather, the score.
     // «В выдержках нет конкретных новостей…» told the person nothing: the
@@ -379,7 +575,7 @@ export async function quickVoiceAnswer(
       outcome(search.found ? "no_answer" : "unsearched", steps);
       return undefined;
     }
-    outcome("answered", steps);
+    outcome(fromHome ? "home" : "answered", steps);
     return answer;
   } catch (error) {
     outcome(error instanceof Error ? error.name : "failed");

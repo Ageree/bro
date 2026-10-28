@@ -50,6 +50,60 @@ describe("the forecast as the voice's model reads it", () => {
   });
 });
 
+/** Six hours of MET's forecast, as it gives them past the first two and a half days. */
+function sixHours(time: string, temperature: number, symbol: string, rain = 0) {
+  return {
+    time,
+    data: {
+      instant: { details: { air_temperature: temperature } },
+      next_6_hours: {
+        summary: { symbol_code: symbol },
+        details: { precipitation_amount: rain },
+      },
+    },
+  };
+}
+
+describe("the forecast for the days ahead", () => {
+  it("tells the weekend from a Wednesday, each day past the day after tomorrow by its date", () => {
+    // Told three days, the voice answered «на выходные прогноза пока нет» (prod 28.10).
+    const series = [
+      hour("2026-10-28T09:00:00Z", 6.4, "clearsky_day"),
+      sixHours("2026-10-31T06:00:00Z", 3.1, "snow", 2.2),
+      sixHours("2026-10-31T12:00:00Z", 1.8, "snow", 1.1),
+      sixHours("2026-11-01T12:00:00Z", 0.2, "cloudy"),
+    ];
+
+    expect(
+      weatherLines(series, {
+        now: new Date("2026-10-28T09:20:00Z"),
+        timeZone: "Europe/Moscow",
+      }).split("\n")
+    ).toEqual([
+      "Сейчас: +6°, ясно, ветер 3 м/с.",
+      "Сегодня, среда, 28 октября: днём +6°, ясно, без осадков, ветер до 3 м/с.",
+      "Суббота, 31 октября: днём от +2° до +3°, снег, осадки около 3 мм.",
+      "Воскресенье, 1 ноября: днём 0°, пасмурно, без осадков.",
+    ]);
+  });
+});
+
+describe("the days' names at a clock change", () => {
+  it("names tomorrow by the calendar, not 24 hours on", () => {
+    // 23:30 in Berlin before the 23-hour Sunday of summer time: 24 hours on is Monday.
+    const told = weatherLines(
+      [
+        hour("2027-03-28T10:00:00Z", 9, "fair_day"),
+        hour("2027-03-29T10:00:00Z", 11, "fair_day"),
+      ],
+      { now: new Date("2027-03-27T22:30:00Z"), timeZone: "Europe/Berlin" }
+    ).split("\n");
+
+    expect(told[1]).toMatch(/^Завтра, воскресенье, 28 марта:/u);
+    expect(told[2]).toMatch(/^Послезавтра, понедельник, 29 марта:/u);
+  });
+});
+
 describe("the clock a place's forecast is told on", () => {
   const now = new Date("2026-10-28T09:00:00Z");
 

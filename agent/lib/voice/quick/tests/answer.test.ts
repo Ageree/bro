@@ -3,7 +3,17 @@ import type * as Ai from "ai";
 import { quickVoiceAnswer } from "@agent/lib/voice/quick/answer";
 import type * as Remind from "@agent/lib/voice/quick/remind";
 
+/** A part of a tool's call or result that the quick answer hands the model. */
+interface HandedPart {
+  readonly output?: { readonly value: string };
+  readonly type: string;
+}
 interface Options {
+  // The person's words, then any home data as tools' calls and results.
+  readonly messages: readonly [
+    { readonly content: string },
+    ...{ readonly content: readonly HandedPart[] }[],
+  ];
   readonly tools: {
     readonly remind: {
       readonly execute: (input: {
@@ -30,9 +40,13 @@ interface Page {
 }
 
 const mocks = vi.hoisted(() => ({
+  findPlaces:
+    vi.fn<() => Promise<{ label: string; lat: number; lon: number }[]>>(),
   generateText: vi.fn<(options: Options) => Promise<Answered>>(),
+  officialRateLines: vi.fn<() => Promise<{ lines: string; quoted: number }>>(),
   searchWeb: vi.fn<() => Promise<Page[]>>(),
   remindOnce: vi.fn<() => Promise<string>>(),
+  weatherAt: vi.fn<() => Promise<string>>(),
 }));
 
 vi.mock("ai", async (importOriginal) => ({
@@ -55,6 +69,16 @@ vi.mock("@agent/lib/web-search/search", () => ({
 vi.mock("@agent/lib/voice/quick/remind", async (importOriginal) => ({
   ...(await importOriginal<typeof Remind>()),
   remindOnce: mocks.remindOnce,
+}));
+vi.mock("@agent/lib/routes/openstreetmap", () => ({
+  findPlaces: mocks.findPlaces,
+}));
+vi.mock("@agent/lib/weather/metno", () => ({
+  placeZone: () => "Europe/Moscow",
+  weatherAt: mocks.weatherAt,
+}));
+vi.mock("@agent/lib/rates/cbr", () => ({
+  officialRateLines: mocks.officialRateLines,
 }));
 
 const person = {
@@ -93,6 +117,16 @@ beforeEach(() => {
       url: "https://pogoda.mail.ru",
     },
   ]);
+  mocks.findPlaces.mockResolvedValue([
+    { label: "Москва", lat: 55.75, lon: 37.62 },
+  ]);
+  mocks.weatherAt.mockResolvedValue(
+    "Завтра, четверг, 29 октября: днём от +4° до +10°, пасмурно, без осадков, ветер до 3 м/с."
+  );
+  mocks.officialRateLines.mockResolvedValue({
+    lines: "Курс ЦБ РФ на 28.10.2026:\nUSD — Доллар США: 80 руб. 53 коп.",
+    quoted: 1,
+  });
 });
 
 describe("the quick answer of /talk", () => {
@@ -184,6 +218,10 @@ describe("the quick answer of /talk", () => {
   });
 
   it("never says what no search showed", async () => {
+    // Nor the bank: no rates handed over before the question.
+    mocks.officialRateLines.mockRejectedValue(
+      new Error("The bank answered 503")
+    );
     mocks.generateText.mockResolvedValueOnce({
       steps: [said],
       text: "Курс доллара — восемьдесят рублей.",
@@ -234,6 +272,63 @@ describe("the quick answer of /talk", () => {
     searchesThenSays("Плюс восемь.", russian);
     await quickVoiceAnswer(scope(), "Какая погода завтра?", person);
     expect(russian[0]).toContain("по-русски");
+  });
+
+  /** What the model is handed besides the person's words: the home data's results, as tools' would be. */
+  function askHanded(words: string) {
+    let handed = "";
+    mocks.generateText.mockImplementationOnce(async (options) => {
+      const [, ...data] = options.messages;
+      handed = data
+        .flatMap((message) =>
+          message.content.map((part) => part.output?.value ?? part.type)
+        )
+        .join("\n");
+      return await Promise.resolve({
+        steps: [said],
+        text: "Доллар сегодня 80 рублей 53 копейки.",
+      });
+    });
+    return async () => {
+      const answer = await quickVoiceAnswer(scope(), words, person);
+      return { answer, handed };
+    };
+  }
+
+  it("answers the home weather or rates in one call, handed the data read before the question", async () => {
+    const dollar = await askHanded("Сколько стоит доллар?")();
+    expect(dollar.answer).toBe("Доллар сегодня 80 рублей 53 копейки.");
+    expect(dollar.handed).toContain("USD — Доллар США: 80 руб. 53 коп.");
+    expect(dollar.handed).not.toContain("MET Norway");
+
+    const weather = await askHanded("Какая завтра погода?")();
+    expect(weather.handed).toContain("Прогноз MET Norway для Москва");
+  });
+
+  it("hands no home data to another question, another city or a day past the week", async () => {
+    // With the data in the instructions, a week of degrees held nearly every small number (review 28.10).
+    for (const words of [
+      "Сколько будет 2 плюс 2?",
+      "Какая погода в Казани завтра?",
+      "Какая погода будет в следующую пятницу?",
+    ]) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- One question after another.
+      const { answer, handed } = await askHanded(words)();
+      expect(handed).toBe("");
+      // An answer with nothing behind it goes to Bro.
+      expect(answer).toBeUndefined();
+    }
+  });
+
+  it("asks the model without the home data that is not read in time", async () => {
+    mocks.officialRateLines.mockImplementation(
+      async () => await new Promise(() => undefined)
+    );
+
+    const { answer, handed } = await askHanded("Сколько стоит доллар?")();
+
+    expect(handed).toBe("");
+    expect(answer).toBeUndefined();
   });
 
   it("sends a workspace's words to Bro past twenty quick answers in five minutes", async () => {

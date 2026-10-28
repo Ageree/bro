@@ -1,3 +1,4 @@
+import { fetch, ProxyAgent } from "undici";
 import * as z from "zod";
 import { env } from "@shared/environment";
 
@@ -9,6 +10,10 @@ import { env } from "@shared/environment";
  */
 const searchUrl = "https://api.exa.ai/search";
 const attemptTimeoutMs = 5000;
+
+// Exa answers 403 to the VM in Russia with the same key that searches from elsewhere (28.10), as AgentMail
+// does: only its requests go through this proxy, TLS checked through the CONNECT tunnel.
+const proxy = env.EXA_PROXY_URL ? new ProxyAgent(env.EXA_PROXY_URL) : undefined;
 
 const answerSchema = z.object({
   results: z
@@ -72,6 +77,7 @@ export async function searchExa(
   if (domains.length > 0) request.includeDomains = domains;
   const response = await fetch(searchUrl, {
     body: JSON.stringify(request),
+    dispatcher: proxy,
     headers: { "content-type": "application/json", "x-api-key": key },
     method: "POST",
     signal: AbortSignal.any([signal, AbortSignal.timeout(attemptTimeoutMs)]),

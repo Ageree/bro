@@ -1,3 +1,4 @@
+import type * as Undici from "undici";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
@@ -36,6 +37,7 @@ const requestBodySchema = z.object({
 
 interface SearchRequest {
   readonly body: string;
+  readonly dispatcher?: object;
   readonly headers: Record<string, string>;
   readonly method: string;
   readonly signal: AbortSignal;
@@ -85,8 +87,14 @@ async function loadSearchWeb() {
   return search.searchWeb;
 }
 
-const fetchMock =
-  vi.fn<(url: string, init: SearchRequest) => Promise<Response>>();
+const fetchMock = vi.hoisted(() =>
+  vi.fn<(url: string, init: SearchRequest) => Promise<Response>>()
+);
+// Exa's requests go through undici's fetch, which takes a proxy: the same stub answers them.
+vi.mock("undici", async (importOriginal) => ({
+  ...(await importOriginal<typeof Undici>()),
+  fetch: fetchMock,
+}));
 
 function requestAt(index: number) {
   const call = fetchMock.mock.calls[index];
@@ -882,5 +890,25 @@ describe("the owner's own search keys", () => {
       "https://api.exa.ai/search"
     );
     expect(ownerAlerts.alertOwner).toHaveBeenCalledOnce();
+  });
+
+  it("asks Exa through its own proxy when one is set, and directly otherwise", async () => {
+    vi.stubEnv("TINYFISH_API_KEY", undefined);
+    vi.stubEnv("EXA_API_KEY", "exa-test-key");
+    fetchMock.mockImplementation(
+      async () => await Promise.resolve(exaAnswer())
+    );
+
+    await (
+      await loadSearchWeb()
+    )({ query: "погода" }, turnSignal());
+    expect(fetchMock.mock.calls[0]?.[1].dispatcher).toBeUndefined();
+
+    vi.resetModules();
+    vi.stubEnv("EXA_PROXY_URL", "http://user:pass@proxy.example:3128");
+    await (
+      await loadSearchWeb()
+    )({ query: "погода" }, turnSignal());
+    expect(fetchMock.mock.calls[1]?.[1].dispatcher).toBeDefined();
   });
 });

@@ -7,7 +7,10 @@ import {
   talkInstructions,
   voiceAcknowledgementDelayMs,
 } from "@agent/lib/voice/instructions";
-import { quickVoiceAnswer } from "@agent/lib/voice/quick/answer";
+import {
+  quickVoiceAnswer,
+  warmQuickAnswer,
+} from "@agent/lib/voice/quick/answer";
 import { warmVoicePrompt } from "@agent/lib/model/routerai/warm";
 import { getAuthSession } from "@db/services/auth/session";
 import { getFormOfAddress } from "@db/services/settings";
@@ -118,6 +121,9 @@ export default defineChannel({
         readUserProfile(scope),
       ]);
       const timeZone = resolveTimeZone(profile.timezone);
+      // The first quick question finds the home weather and rates read.
+      if (voiceQuickEnabled(scope.workspaceId))
+        warmQuickAnswer({ now, timeZone, city: profile.city ?? undefined });
       const person = {
         name: form.name ?? profile.firstName ?? undefined,
         formal: form.formal,

@@ -285,6 +285,15 @@ export const env = createEnv({
     // is free, Exa's free up to $10 a month; both go before Composio and RouterAI.
     TINYFISH_API_KEY: pastedKeySchema.optional(),
     EXA_API_KEY: pastedKeySchema.optional(),
+    // A CONNECT proxy for Exa's search alone, with TLS checked: Exa answers
+    // 403 to the VM in Russia (28.10).
+    EXA_PROXY_URL: z
+      .url()
+      .refine(
+        (value) => ["http:", "https:"].includes(new URL(value).protocol),
+        "EXA_PROXY_URL must be an HTTP or HTTPS proxy URL"
+      )
+      .optional(),
     OPENAI_API_KEY: pastedKeySchema.optional(),
     OPENAI_PROXY_URL: z
       .url()

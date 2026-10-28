@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
       ) => Promise<string | undefined>
     >(),
   fetch: vi.fn<(url: string, init: { body: string }) => Promise<Response>>(),
+  warm: vi.fn<(person: { city: string | undefined }) => void>(),
 }));
 
 vi.mock("undici", async (importOriginal) => ({
@@ -38,6 +39,7 @@ vi.mock("@agent/lib/voice/brief", () => ({
 }));
 vi.mock("@agent/lib/voice/quick/answer", () => ({
   quickVoiceAnswer: mocks.quick,
+  warmQuickAnswer: mocks.warm,
 }));
 
 // Alice has the fast voice with quick answers, Dan the fast voice alone, Bob
@@ -181,6 +183,8 @@ describe("the quick answer", () => {
   it("is offered to the page in its pilot and answers its words", async () => {
     mocks.authSession.mockResolvedValue({ user: { id: "alice" } });
     expect((await offer()).headers.get("x-bro-voice-quick")).toBe("on");
+    // The home weather and rates are read as the conversation opens.
+    expect(mocks.warm).toHaveBeenCalledTimes(1);
     mocks.quick.mockResolvedValueOnce("Завтра плюс восемь.");
 
     const answered = await ask("Какая погода завтра?");
@@ -203,6 +207,7 @@ describe("the quick answer", () => {
   it("does not exist outside its pilot, for a stranger or another site", async () => {
     mocks.authSession.mockResolvedValue({ user: { id: "dan" } });
     expect((await offer()).headers.get("x-bro-voice-quick")).toBeNull();
+    expect(mocks.warm).not.toHaveBeenCalled();
     expect((await ask("Какая погода?")).status).toBe(404);
     mocks.authSession.mockResolvedValue({ user: { id: "alice" } });
     expect((await ask("Какая погода?", "https://evil.example")).status).toBe(
