@@ -486,6 +486,10 @@ s3put:<ключ>`; без звонка её гоняют локально: `sip.
   вычёркивайте там же в своём PR); как гонять бенчмарки и их итоги —
   `docs/benchmarks/README.md`; промпт сессии, которая запускает исполнителей и
   мёрджит их PR, — `docs/orchestrator-prompt.md`.
+- Кошелёк Бро на Монете (план 20.10) — `docs/moneta.md`. Спецификация MerchantAPI
+  — PDF: WebFetch текст не достаёт, нужен `pdftotext -layout`. JSON-конверт
+  `demo.moneta.ru/services` отвечает из облачной сессии и без договора, но прокси
+  изредка рвёт соединение — `scripts/moneta/probe.sh` повторяет несостоявшееся.
 - Куда уходят деньги и что снижать — `docs/agent-costs.md`; пул браузеров —
   `docs/browser-pool.md` (прод с 10.10 — постоянный сервер Selectel,
   Firecracker; хосты Cloud.ru — история); заметки по браузерной
