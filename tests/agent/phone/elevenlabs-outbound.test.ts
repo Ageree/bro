@@ -32,6 +32,8 @@ vi.mock("@shared/phone/elevenlabs-http", () => ({
 }));
 
 const { elevenlabsFetch } = await import("@shared/phone/elevenlabs-http");
+const { findOwnedNumber, findSip, readSipCredentials } =
+  await import("@shared/phone/exolve");
 const { CallNotSubmittedError, startCall } =
   await import("@shared/phone/elevenlabs");
 
@@ -152,25 +154,30 @@ function answer(method: string, path: string) {
 let outboundBody: unknown;
 let withoutEndCall = false;
 
+async function provider(
+  path: string,
+  options: Parameters<typeof elevenlabsFetch>[1]
+) {
+  const method = options.method ?? "GET";
+  if (path === "/v1/convai/sip-trunk/outbound-call" && method === "POST") {
+    outboundBody = JSON.parse(z.string().parse(options.body));
+    return new Response(
+      JSON.stringify({
+        success: true,
+        conversation_id: "conversation-out-1",
+      }),
+      { status: 200 }
+    );
+  }
+  const body = answer(method, path);
+  if (body === undefined) throw new Error(`Unexpected ${method} ${path}`);
+  return new Response(JSON.stringify(body), { status: 200 });
+}
+
 beforeEach(() => {
   outboundBody = undefined;
   withoutEndCall = false;
-  vi.mocked(elevenlabsFetch).mockImplementation(async (path, options) => {
-    const method = options.method ?? "GET";
-    if (path === "/v1/convai/sip-trunk/outbound-call" && method === "POST") {
-      outboundBody = JSON.parse(z.string().parse(options.body));
-      return new Response(
-        JSON.stringify({
-          success: true,
-          conversation_id: "conversation-out-1",
-        }),
-        { status: 200 }
-      );
-    }
-    const body = answer(method, path);
-    if (body === undefined) throw new Error(`Unexpected ${method} ${path}`);
-    return new Response(JSON.stringify(body), { status: 200 });
-  });
+  vi.mocked(elevenlabsFetch).mockImplementation(provider);
 });
 
 const task = "Уточни, открыт ли сегодня магазин и до которого часа.";
@@ -216,6 +223,44 @@ function sentPrompt() {
 }
 
 describe("outbound Bro call initiation", () => {
+  // Первым: повторы чтений упавшего теста ниже идут в фоне и попали бы в счёт.
+  it("runs the pre-dial reads of Exolve and ElevenLabs at once", async () => {
+    let open = 0;
+    let peak = 0;
+    async function slow<const T>(result: T) {
+      open += 1;
+      peak = Math.max(peak, open);
+      await new Promise((resolve) => {
+        setTimeout(resolve, 5);
+      });
+      open -= 1;
+      return result;
+    }
+    vi.mocked(findOwnedNumber).mockImplementationOnce(async () =>
+      slow({ numberId: "74950000001", number: "+74950000001" })
+    );
+    vi.mocked(findSip).mockImplementationOnce(async () =>
+      slow({ sipId: "1001" })
+    );
+    vi.mocked(readSipCredentials).mockImplementationOnce(async () =>
+      slow({
+        username: "70000000001",
+        password: "sip-test-password",
+        hostname: "sip.exolve.ru",
+        publicNumber: "+74950000001",
+      })
+    );
+    vi.mocked(elevenlabsFetch).mockImplementation(async (path, options) =>
+      options.method === "POST"
+        ? provider(path, options)
+        : slow(await provider(path, options))
+    );
+
+    await expect(placeCall()).resolves.toMatchObject({ accepted: true });
+    // Три чтения Exolve, номер, его транк и агент ElevenLabs — все разом.
+    expect(peak).toBe(6);
+  });
+
   it("reports a failed pre-dial read as not submitted, without posting a call", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     vi.mocked(elevenlabsFetch).mockImplementation(async () => {
