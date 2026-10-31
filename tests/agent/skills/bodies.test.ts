@@ -46,6 +46,51 @@ function body(name: SkillName) {
   return bodies.get(name) ?? "";
 }
 
+describe("delivery of substantial results", () => {
+  it.each(["full", "core"] as const)(
+    "keeps file-first guidance in the %s task instructions",
+    (layout) => {
+      const text = instructionText("task-agent", layout);
+      expect(text).toContain("Не урезай полезное из-за длины чата");
+      expect(text).toContain("без отдельной просьбы о файле");
+      expect(text).toContain("короткий ответ не превращай в файл");
+      expect(text).toContain("выбор человека соблюдай");
+      expect(text).toContain("не обещай файл");
+      expect(text).toContain("краткое содержательное резюме");
+    }
+  );
+
+  it("asks the task agent for readable, sourced files", () => {
+    const text = readFileSync(
+      new URL("../../../agent/subagents/task/instructions.md", import.meta.url),
+      "utf8"
+    );
+    expect(text).toContain("секции или карточки");
+    expect(text).toContain("читабельная вёрстка");
+    expect(text).toContain("ссылки и даты");
+    expect(text).toContain("не выдумывай источники");
+    expect(text).toContain("проверь на пустые страницы и обрезание");
+    expect(text).toContain("у многостраничных таблиц повторяй заголовки");
+    expect(text).toContain("Чужой входной PDF ради оформления не меняй");
+    expect(text).toContain("#F1F2EE");
+    expect(text).toContain("#141510");
+    expect(text).toContain("#D2D4CB");
+    expect(text).toContain("рамкой 2 px и радиусом 24 px");
+    expect(text).toContain("4/8/12/16/24/32 px");
+    expect(text).toContain("Source Serif 4 или доступный serif");
+    expect(text).toContain("Geist или доступный sans, 16/24");
+    expect(text).toContain("пастельные акценты — только по смыслу");
+    expect(text).toContain("входной документ не перекрашивай");
+    expect(text).toContain("шрифты не скачивай");
+  });
+
+  it("does not restrict the files skill to explicitly requested files", () => {
+    const text = skillBody("files", { ...setup, taskFiles: true }) ?? "";
+    expect(text).not.toContain("файл прикладывай, когда человек просил файл");
+    expect(text).toContain("файл прикладывай и для объёмного результата");
+  });
+});
+
 /** The lines of a file's regions of one kind, without the markers. */
 function regionLines(source: InstructionSource, opening: RegExp) {
   const lines = readFileSync(

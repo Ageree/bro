@@ -66,7 +66,7 @@ export function workerOutcome(
     summary
       ? {
           kind: "result",
-          summary: summary.slice(0, 4_000),
+          summary,
           urgency: urgent ? "time_sensitive" : "normal",
         }
       : {

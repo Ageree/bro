@@ -19,6 +19,7 @@ import type {
 } from "@db/services/scheduled-agent-jobs";
 import type { readSubscriptionDelivery } from "@db/services/subscriptions";
 import type { readProactiveMessages } from "@db/services/user-profile";
+import type { shareSandboxFile } from "@agent/lib/sandbox/files";
 
 const services = vi.hoisted(() => ({
   absorb: vi.fn<typeof absorbHeldProactiveReports>(),
@@ -39,6 +40,8 @@ const profile = vi.hoisted(() => ({
   enabled: vi.fn<typeof readProactiveMessages>(() => Promise.resolve(true)),
   watch: vi.fn<typeof readSubscriptionDelivery>(),
 }));
+const files = vi.hoisted(() => ({ share: vi.fn<typeof shareSandboxFile>() }));
+vi.mock("@agent/lib/sandbox/files", () => ({ shareSandboxFile: files.share }));
 
 vi.mock("@db/services/scheduled-agent-jobs", () => ({
   absorbHeldProactiveReports: services.absorb,
@@ -362,7 +365,253 @@ describe("dynamic schedule dispatch", () => {
 describe("scheduled report delivery", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    files.share.mockReset();
+    files.share.mockResolvedValue({
+      bytes: 20_000,
+      mediaType: "text/html",
+      name: "Результат-2026-09-02.html",
+      url: "https://example.com/synthetic-report.html?sig=test",
+    });
     services.releaseReport.mockResolvedValue(true);
+  });
+
+  it("stores the whole long result in the worker's scope and delivers the exact attachment and reply handle", async () => {
+    const report = scheduledReport();
+    const summary = `${"Раздел 🧭 [Источник](https://example.com/source)\n".repeat(150)}ФИНАЛЬНЫЙ_SENTINEL_🏁`;
+    report.delivery.replyAnchorMessageId = "original-message";
+    report.run.workerSessionId = "worker-session";
+    report.run.outcome = {
+      details: "Последняя деталь 🔚.",
+      kind: "result",
+      summary,
+      urgency: "time_sensitive",
+    };
+    services.claimReports.mockResolvedValue(report);
+    const send = vi
+      .fn<ReturnType<ScheduleToFn>["send"]>()
+      .mockResolvedValue(workerSession());
+
+    await dispatchScheduledReport(
+      { to: vi.fn<ScheduleToFn>(() => ({ send })) },
+      report.run.id
+    );
+
+    expect(files.share).toHaveBeenCalledOnce();
+    const uploaded = files.share.mock.calls[0]?.[0];
+    expect(uploaded?.bytes).toBeInstanceOf(Uint8Array);
+    expect(uploaded).toMatchObject({
+      mediaType: "text/html",
+      name: "Результат-2026-09-02.html",
+      owner: {
+        sessionId: "worker-session",
+        workspaceId: report.job.workspaceId,
+      },
+    });
+    const html = new TextDecoder().decode(files.share.mock.calls[0]?.[0].bytes);
+    expect(html).toContain("ФИНАЛЬНЫЙ_SENTINEL_🏁");
+    expect(html).toContain("Последняя деталь 🔚.");
+    expect(html).not.toContain(report.job.prompt);
+    expect(html).not.toContain(report.job.id);
+    expect(html).not.toContain(report.run.id);
+    expect(html).not.toContain("worker-session");
+    expect(html).toContain("2026-09-02 09:00, Wednesday (America/New_York)");
+    expect(report.run.outcome.summary).toBe(summary);
+    const [prompt, options] = send.mock.calls[0] ?? [];
+    expect(prompt).toContain(
+      '"url":"https://example.com/synthetic-report.html?sig=test"'
+    );
+    expect(prompt).toContain(
+      '"kind":"file","mimeType":"text/html","name":"Результат-2026-09-02.html"'
+    );
+    expect(prompt).toContain("send_message.attachments");
+    expect(prompt).toContain('"urgency":"time_sensitive"');
+    expect(prompt).not.toContain("ФИНАЛЬНЫЙ_SENTINEL_🏁");
+    expect(prompt).toContain(
+      `Reply handle: {"kind":"automation","id":"${report.job.id}"}`
+    );
+    expect(options?.auth?.attributes).toMatchObject({
+      scheduledRunSessionId: "worker-session",
+      photonReplyAnchorMessageId: "original-message",
+    });
+    expect(services.releaseReport).not.toHaveBeenCalled();
+  });
+
+  it.each([4000, 4001])(
+    "creates a document only beyond the 4000-character boundary (%i)",
+    async (size) => {
+      const report = scheduledReport();
+      report.run.workerSessionId = "worker-session";
+      report.run.outcome = {
+        kind: "result",
+        summary: "Я".repeat(size),
+        urgency: "normal",
+      };
+      services.claimReports.mockResolvedValue(report);
+      const send = vi
+        .fn<ReturnType<ScheduleToFn>["send"]>()
+        .mockResolvedValue(workerSession());
+      await dispatchScheduledReport(
+        { to: vi.fn<ScheduleToFn>(() => ({ send })) },
+        report.run.id
+      );
+      expect(files.share).toHaveBeenCalledTimes(size > 4000 ? 1 : 0);
+      expect(send).toHaveBeenCalledOnce();
+      const prompt = send.mock.calls[0]?.[0];
+      expect(
+        z.string().parse(prompt).includes(report.run.outcome.summary)
+      ).toBe(size === 4000);
+    }
+  );
+
+  it("includes long details in the file instead of dropping them from a short summary", async () => {
+    const report = scheduledReport();
+    report.run.workerSessionId = "worker-session";
+    report.run.outcome = {
+      kind: "result",
+      summary: "Краткий итог.",
+      details: `${"Деталь 🧭. ".repeat(600)}КОНЕЦ_ДЕТАЛЕЙ`,
+      urgency: "normal",
+    };
+    services.claimReports.mockResolvedValue(report);
+    const send = vi
+      .fn<ReturnType<ScheduleToFn>["send"]>()
+      .mockResolvedValue(workerSession());
+    await dispatchScheduledReport(
+      { to: vi.fn<ScheduleToFn>(() => ({ send })) },
+      report.run.id
+    );
+    expect(
+      new TextDecoder().decode(files.share.mock.calls[0]?.[0].bytes)
+    ).toContain("КОНЕЦ_ДЕТАЛЕЙ");
+    expect(send.mock.calls[0]?.[0]).not.toContain("КОНЕЦ_ДЕТАЛЕЙ");
+  });
+
+  it.each(["proactive", "subscription"] as const)(
+    "does not turn %s reports into documents",
+    async (kind) => {
+      const report = scheduledReport();
+      report.job.kind = kind;
+      report.run.workerSessionId = "worker-session";
+      const summary = `${"Полный результат. ".repeat(500)}ФИНАЛ`;
+      report.run.outcome = { kind: "result", summary, urgency: "normal" };
+      services.claimReports.mockResolvedValue(report);
+      const send = vi
+        .fn<ReturnType<ScheduleToFn>["send"]>()
+        .mockResolvedValue(workerSession());
+      await dispatchScheduledReport(
+        { to: vi.fn<ScheduleToFn>(() => ({ send })) },
+        report.run.id
+      );
+      expect(files.share).not.toHaveBeenCalled();
+      expect(send.mock.calls[0]?.[0]).toContain(summary);
+    }
+  );
+
+  it("releases the report for retry on upload failure without delivering success or losing the outcome", async () => {
+    const report = scheduledReport();
+    report.run.workerSessionId = "worker-session";
+    const summary = `${"Результат. ".repeat(500)}ФИНАЛ`;
+    report.run.outcome = { kind: "result", summary, urgency: "normal" };
+    services.claimReports.mockResolvedValue(report);
+    files.share.mockRejectedValueOnce(new Error("Object Storage unavailable"));
+    const send = vi
+      .fn<ReturnType<ScheduleToFn>["send"]>()
+      .mockResolvedValue(workerSession());
+    const delivery = { to: vi.fn<ScheduleToFn>(() => ({ send })) };
+    await dispatchScheduledReport(delivery, report.run.id);
+    expect(send).not.toHaveBeenCalled();
+    expect(services.dropReport).not.toHaveBeenCalled();
+    expect(services.releaseReport).toHaveBeenCalledExactlyOnceWith(
+      report.run.id,
+      report.run.reportLeaseToken,
+      "Object Storage unavailable"
+    );
+    expect(report.run.outcome.summary).toBe(summary);
+    await dispatchScheduledReport(delivery, report.run.id);
+    expect(send).toHaveBeenCalledOnce();
+    expect(files.share).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the complete text fallback when no owning worker session is available", async () => {
+    const report = scheduledReport();
+    const summary = `${"Результат. ".repeat(500)}ФИНАЛ`;
+    report.run.outcome = { kind: "result", summary, urgency: "normal" };
+    services.claimReports.mockResolvedValue(report);
+    const send = vi
+      .fn<ReturnType<ScheduleToFn>["send"]>()
+      .mockResolvedValue(workerSession());
+    await dispatchScheduledReport(
+      { to: vi.fn<ScheduleToFn>(() => ({ send })) },
+      report.run.id
+    );
+    expect(files.share).not.toHaveBeenCalled();
+    expect(send.mock.calls[0]?.[0]).toContain(summary);
+    expect(send.mock.calls[0]?.[0]).not.toContain("Prepared document");
+  });
+
+  it("keeps a pending question ahead of a long stored result", async () => {
+    const report = scheduledReport();
+    report.run.workerSessionId = "worker-session";
+    report.run.pendingInputRequests = answeredClaim().run.pendingInputRequests;
+    report.run.outcome = {
+      kind: "result",
+      summary: "Результат. ".repeat(500),
+      urgency: "normal",
+    };
+    services.claimReports.mockResolvedValue(report);
+    const send = vi
+      .fn<ReturnType<ScheduleToFn>["send"]>()
+      .mockResolvedValue(workerSession());
+    await dispatchScheduledReport(
+      { to: vi.fn<ScheduleToFn>(() => ({ send })) },
+      report.run.id
+    );
+    expect(files.share).not.toHaveBeenCalled();
+    expect(send.mock.calls[0]?.[0]).toContain("Which airport should I use?");
+    expect(send.mock.calls[0]?.[0]).not.toContain("Prepared document");
+  });
+
+  it("reuses one prepared file when an ended web chat falls back to a messenger", async () => {
+    const report = scheduledReport();
+    report.fallbacks = [
+      { ...report.delivery, replyAnchorMessageId: "original-message" },
+    ];
+    report.delivery = {
+      conversationChannel: "eve",
+      conversationId: "ended-web",
+      replyAnchorMessageId: null,
+    };
+    report.run.workerSessionId = "worker-session";
+    report.run.outcome = {
+      kind: "result",
+      summary: "Результат. ".repeat(500),
+      urgency: "normal",
+    };
+    services.claimReports.mockResolvedValue(report);
+    const webSend = vi
+      .fn<Session["send"]>()
+      .mockResolvedValue({ status: "session_not_active", retryable: false });
+    const send = vi
+      .fn<ReturnType<ScheduleToFn>["send"]>()
+      .mockResolvedValue(workerSession());
+    await dispatchScheduledReport(
+      {
+        attachSession: () => workerSession("ended-web", webSend),
+        to: vi.fn<ScheduleToFn>(() => ({ send })),
+      },
+      report.run.id
+    );
+    expect(files.share).toHaveBeenCalledOnce();
+    expect(webSend.mock.calls[0]?.[0]).toContain(
+      "https://example.com/synthetic-report.html?sig=test"
+    );
+    expect(send.mock.calls[0]?.[0]).toContain(
+      "https://example.com/synthetic-report.html?sig=test"
+    );
+    expect(send.mock.calls[0]?.[0]).toContain(
+      `Reply handle: {"kind":"automation","id":"${report.job.id}"}`
+    );
+    expect(services.dropReport).not.toHaveBeenCalled();
   });
 
   it("routes iMessage reports to the stored conversation", async () => {

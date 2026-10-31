@@ -108,6 +108,12 @@ importers:
       mailparser:
         specifier: ^3.9.36
         version: 3.9.36
+      micromark:
+        specifier: 4.0.2
+        version: 4.0.2(supports-color@7.2.0)
+      micromark-extension-gfm-table:
+        specifier: 2.1.1
+        version: 2.1.1
       motion:
         specifier: 13.1.1
         version: 13.1.1(react-dom@19.2.8(react@19.2.8))(react@19.2.8)

@@ -12,10 +12,10 @@ export const scheduledRunOutcomeSchema = z.discriminatedUnion("kind", [
   }),
   z.strictObject({
     artifacts: z.array(artifactSchema).max(4).optional(),
-    details: z.string().trim().min(1).max(8_000).optional(),
+    details: z.string().trim().min(1).optional(),
     expiresAt: z.iso.datetime({ offset: true }).optional(),
     kind: z.literal("result"),
-    summary: z.string().trim().min(1).max(4_000),
+    summary: z.string().trim().min(1),
     urgency: z.enum(["normal", "time_sensitive"]),
   }),
   z.strictObject({
