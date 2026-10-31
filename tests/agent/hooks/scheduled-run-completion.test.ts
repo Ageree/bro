@@ -430,13 +430,14 @@ describe("scheduled run completion hook", () => {
     );
   });
 
-  it("bounds a long final handoff before persisting it", async () => {
+  it("persists a long final handoff without losing its end", async () => {
+    const summary = `${"a".repeat(4_100)} ФИНАЛЬНЫЙ_SENTINEL_🏁`;
     const completed = completionHook.events?.["message.completed"];
     await completed?.(
       {
         data: {
           finishReason: "stop",
-          message: "a".repeat(4_001),
+          message: summary,
           sequence: 0,
           stepIndex: 0,
           turnId: "turn-1",
@@ -453,7 +454,7 @@ describe("scheduled run completion hook", () => {
       "turn-1",
       {
         kind: "result",
-        summary: "a".repeat(4_000),
+        summary,
         urgency: "normal",
       },
       new Date("2026-09-01T13:01:00.000Z")
