@@ -72,6 +72,16 @@ describe("delivery of substantial results", () => {
     expect(text).toContain("проверь на пустые страницы и обрезание");
     expect(text).toContain("у многостраничных таблиц повторяй заголовки");
     expect(text).toContain("Чужой входной PDF ради оформления не меняй");
+    expect(text).toContain("#F1F2EE");
+    expect(text).toContain("#141510");
+    expect(text).toContain("#D2D4CB");
+    expect(text).toContain("рамкой 2 px и радиусом 24 px");
+    expect(text).toContain("4/8/12/16/24/32 px");
+    expect(text).toContain("Source Serif 4 или доступный serif");
+    expect(text).toContain("Geist или доступный sans, 16/24");
+    expect(text).toContain("пастельные акценты — только по смыслу");
+    expect(text).toContain("входной документ не перекрашивай");
+    expect(text).toContain("шрифты не скачивай");
   });
 
   it("does not restrict the files skill to explicitly requested files", () => {

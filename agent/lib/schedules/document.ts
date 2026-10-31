@@ -24,7 +24,10 @@ function renderMarkdown(value: string) {
   return micromark(value, {
     extensions: [gfmTable(), { disable: { null: ["labelStartImage"] } }],
     htmlExtensions: [gfmTableHtml()],
-  }).replace(/ href="(?!https?:\/\/)[^"]*"/giu, "");
+  })
+    .replace(/ href="(?!https?:\/\/)[^"]*"/giu, "")
+    .replaceAll("<table>", '<div class="table-scroll"><table>')
+    .replaceAll("</table>", "</table></div>");
 }
 
 export function scheduledResultDocument(input: {
@@ -45,20 +48,26 @@ export function scheduledResultDocument(input: {
 <meta name="referrer" content="no-referrer">
 <title>bro</title>
 <style>
-:root{color-scheme:light;--paper:#f7f3eb;--ink:#252a28;--muted:#626960;--line:#d7d9cc;--accent:#2d5943}
-*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:18px/1.7 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;overflow-wrap:anywhere}
-main{max-width:840px;margin:48px auto;padding:0 32px 64px}header{display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:24px;margin-bottom:36px}.brand{color:var(--accent);font-size:24px;font-weight:700;letter-spacing:-.04em}
-h1,h2,h3,h4,h5,h6{line-height:1.25;text-wrap:balance}h1{font-size:clamp(30px,5vw,44px);letter-spacing:-.035em;margin:16px 0 24px}h2{font-size:28px;margin:44px 0 18px;padding-bottom:12px;border-bottom:1px solid var(--line)}h3{font-size:22px;margin:32px 0 14px}p{margin:16px 0}header p{color:var(--muted)}time{font-size:14px;color:var(--muted)}a{color:var(--accent);text-underline-offset:.18em}li+li{margin-top:8px}ul,ol{padding-left:26px}
-blockquote{margin:24px 0;padding:4px 24px;border-left:3px solid var(--accent);background:#eeeee3}table{display:block;width:100%;overflow-x:auto;border-collapse:collapse;font-size:15px;margin:24px 0}th,td{border:1px solid var(--line);padding:12px 16px;text-align:left;vertical-align:top}th{background:#e8ecdf;font-weight:650}tbody tr:nth-child(even){background:#f0f0e6}
-pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#eeeee5;padding:20px;border-radius:8px;font-size:13px;line-height:1.65}code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}p code,li code{background:#eeeee5;padding:2px 5px;border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin:36px 0}article>section{margin-top:40px;padding-top:16px;border-top:1px solid var(--line)}
-@media(max-width:600px){body{font-size:16px}main{margin:24px auto;padding:0 20px 40px}h2{font-size:24px}th,td{padding:9px 12px}}
-@media print{body{background:#fff;color:#000;font-size:11pt}main{max-width:none;margin:0;padding:0}h1,h2,h3,h4,h5,h6{break-after:avoid}tr,blockquote{break-inside:avoid}table{display:table;font-size:9pt}a{color:inherit}@page{margin:18mm}}
+:root{color-scheme:light;--background:#f1f2ee;--foreground:#141510;--card:#fff;--secondary:#e7e8e2;--muted-foreground:#6a6c62;--bro-line:#d2d4cb;--bro-family-display:"Source Serif 4",Georgia,"Times New Roman",serif;--bro-family-text:Geist,system-ui,-apple-system,sans-serif}
+*{box-sizing:border-box}body{margin:0;background:var(--background);color:var(--foreground);font:400 16px/24px var(--bro-family-text);overflow-wrap:anywhere;-webkit-font-smoothing:antialiased}
+main{max-width:816px;margin:32px auto;padding:0 32px 64px}.bro-plate{overflow:hidden;background:var(--card);border:2px solid var(--foreground);border-radius:24px;box-shadow:0 8px 30px rgb(20 21 16 / 8%)}.bro-plate:before{content:"";display:block;height:8px;background:var(--secondary)}.card-content{padding:24px}
+header{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px 16px;margin-bottom:24px}.brand{font-size:20px;line-height:20px;font-weight:600;letter-spacing:-.04em}.metadata{max-width:100%;padding:4px 12px;border-radius:999px;background:var(--secondary);color:var(--muted-foreground);font-size:12px;line-height:16px;font-weight:600}
+h1,h2,h3,h4,h5,h6{font-family:var(--bro-family-display);font-weight:400;letter-spacing:0;text-wrap:balance}h1{font-size:28px;line-height:31px;margin:0 0 16px}h2,h3,h4,h5,h6{font-size:20px;line-height:24px;margin:32px 0 16px}p{margin:16px 0}.report-content>:first-child,section>:first-child{margin-top:0}.report-content>:last-child,section>:last-child{margin-bottom:0}strong{font-weight:600}a{color:inherit;text-underline-offset:4px}a:focus-visible{outline:2px solid var(--foreground);outline-offset:4px}
+ul,ol{padding-left:24px;margin:16px 0;font-size:15px;line-height:22px}li{padding:12px 0}li+li{border-top:1px solid var(--bro-line)}li>p{margin:0}li>p+p{margin-top:8px}li>ul,li>ol{margin:8px 0 0}blockquote{margin:24px 0;padding:16px;border:1px solid var(--bro-line);border-radius:16px;background:var(--secondary)}blockquote>:first-child{margin-top:0}blockquote>:last-child{margin-bottom:0}
+.table-scroll{overflow-x:auto;margin:24px 0}table{width:100%;border-collapse:separate;border-spacing:0;font-size:15px;line-height:22px}th,td{min-width:120px;border:0;border-bottom:1px solid var(--bro-line);padding:12px 8px;text-align:left;vertical-align:top}th{color:var(--muted-foreground);font-size:12px;line-height:16px;font-weight:600}tbody tr:last-child td{border-bottom:0}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;background:var(--secondary);padding:16px;border-radius:16px;font-size:12px;line-height:20px}code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}:not(pre)>code{background:var(--secondary);padding:0 4px;border-radius:4px}hr{border:0;border-top:1px solid var(--bro-line);margin:24px 0}.report-content>section{margin-top:24px;padding-top:24px;border-top:1px solid var(--bro-line)}
+@media(max-width:600px){main{margin:16px auto;padding:0 16px 32px}.card-content{padding:24px 16px}header{align-items:flex-start;flex-direction:column;gap:12px}}
+@media print{body{background:#fff}main{max-width:none;margin:0;padding:0}.bro-plate{overflow:visible;box-shadow:none;box-decoration-break:clone;-webkit-box-decoration-break:clone}.bro-plate:before{display:none}.card-content{padding:24px}h1,h2,h3,h4,h5,h6{break-after:avoid}p,li{orphans:3;widows:3}tr{break-inside:avoid}.table-scroll{overflow:visible}table{table-layout:fixed}th,td{min-width:0;overflow-wrap:anywhere}thead{display:table-header-group}pre,blockquote{background:none}a{color:inherit}@page{size:A4;margin:16mm}}
 </style>
 </head>
 <body>
 <main>
-<header><div class="brand">bro</div><time datetime="${input.scheduledFor.toISOString()}">${escapeHtml(dateLabel)}</time></header>
-<article>${renderMarkdown(outcome.summary)}${outcome.details ? `<section>${renderMarkdown(outcome.details)}</section>` : ""}</article>
+<article class="bro-plate" data-tone="neutral">
+<div class="card-content">
+<header><div class="brand">bro</div><time class="metadata" datetime="${input.scheduledFor.toISOString()}">${escapeHtml(dateLabel)}</time></header>
+<div class="report-content">${renderMarkdown(outcome.summary)}${outcome.details ? `<section>${renderMarkdown(outcome.details)}</section>` : ""}</div>
+</div>
+</article>
 </main>
 </body>
 </html>`;

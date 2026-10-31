@@ -456,9 +456,10 @@ describe("scheduled report delivery", () => {
       );
       expect(files.share).toHaveBeenCalledTimes(size > 4000 ? 1 : 0);
       expect(send).toHaveBeenCalledOnce();
-      expect(send.mock.calls[0]?.[0].includes(report.run.outcome.summary)).toBe(
-        size === 4000
-      );
+      const prompt = send.mock.calls[0]?.[0];
+      expect(
+        z.string().parse(prompt).includes(report.run.outcome.summary)
+      ).toBe(size === 4000);
     }
   );
 
