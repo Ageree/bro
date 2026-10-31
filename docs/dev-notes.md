@@ -20,6 +20,7 @@
 
 ## С чего начать
 
+- Длинный итог расписания нельзя обрезать по лимиту чата: `agent/lib/schedules/report.ts` отдаёт полный результат подписанным безопасным HTML, не расширяя полномочия worker. Нативная доставка HTML принимает только действительную подписанную ссылку на `.html` (`agent/lib/outbound-media/attachments.ts`).
 - Телефония — `docs/telephony.md`: провайдеры стоят в `shared/phone`, потому
   что ими пользуются и инструменты агента, и HTTP-обработчики. `PHONE_WORKSPACES`
   принимает id или *; PHONE_AUTO_PROVISION=on ставит новый workspace в очередь

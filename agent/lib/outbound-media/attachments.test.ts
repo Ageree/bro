@@ -2,6 +2,10 @@ import type * as Dns from "node:dns";
 import type * as PublicFetch from "@agent/lib/sandbox/public-fetch";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  clearSandboxSettings,
+  importWithSandbox,
+} from "@tests/helpers/sandbox";
+import {
   maximumAttachmentBatchBytes,
   maximumAttachmentBytes,
   prepareAttachmentDelivery,
@@ -92,7 +96,200 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  clearSandboxSettings();
   vi.unstubAllGlobals();
+  vi.resetModules();
+});
+
+async function signedHtml(name = "Отчёт.html") {
+  const modules = await importWithSandbox(async () => ({
+    attachments: await import("./attachments"),
+    files: await import("@agent/lib/sandbox/files"),
+  }));
+  fetchMock.mockResolvedValueOnce(new Response(null, { status: 200 }));
+  const shared = await modules.files.shareSandboxFile({
+    bytes: new TextEncoder().encode(
+      "<!doctype html><html><body>Итог 🧭</body></html>"
+    ),
+    mediaType: "text/html",
+    name,
+  });
+  fetchMock.mockReset();
+  expect(modules.files.isSharedFileLink(shared.url)).toBe(true);
+  return { ...shared, prepare: modules.attachments.prepareAttachmentDelivery };
+}
+
+describe("signed HTML document attachments", () => {
+  it("follows the public storage redirect and normalizes a misleading name and type to HTML", async () => {
+    const shared = await signedHtml();
+    const bytes = new TextEncoder().encode(
+      "<!doctype html><html><body>Итог 🧭</body></html>"
+    );
+    fetchMock.mockResolvedValueOnce(
+      new Response(null, {
+        status: 302,
+        headers: { location: "https://storage.example.com/report" },
+      })
+    );
+    fetchMock.mockResolvedValueOnce(served(bytes, "application/octet-stream"));
+    const delivery = await shared.prepare([
+      {
+        kind: "file",
+        url: shared.url,
+        name: "Результат.pdf",
+        mimeType: "image/jpeg",
+      },
+    ]);
+    expect(delivery.failures).toEqual([]);
+    expect(delivery.files[0]).toMatchObject({
+      filename: "Результат.html",
+      kind: "document",
+      mimeType: "text/html",
+      sourceUrl: shared.url,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1]?.[0].toString()).toBe(
+      "https://storage.example.com/report"
+    );
+  });
+
+  it("keeps DNS-based SSRF protection for a genuine signed link", async () => {
+    const shared = await signedHtml();
+    dns.answer = [{ address: "127.0.0.1", family: 4 }];
+    dns.connect = true;
+    const delivery = await shared.prepare([{ kind: "file", url: shared.url }]);
+    expect(delivery.failures).toEqual([
+      { reason: "blocked-host", url: shared.url },
+    ]);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("uploads an actual signed shared HTML file as a document", async () => {
+    const shared = await signedHtml();
+    const bytes = new TextEncoder().encode(
+      "<!doctype html><html><body>Итог 🧭</body></html>"
+    );
+    fetchMock.mockResolvedValueOnce(served(bytes, "text/html; charset=utf-8"));
+    const delivery = await shared.prepare([
+      { kind: "file", url: shared.url, name: shared.name },
+    ]);
+    expect(delivery.failures).toEqual([]);
+    expect(delivery.files).toEqual([
+      {
+        data: Buffer.from(bytes),
+        filename: "Отчёт.html",
+        kind: "document",
+        mimeType: "text/html",
+        sourceUrl: shared.url,
+      },
+    ]);
+  });
+
+  it.each(["signature", "origin", "path"] as const)(
+    "rejects HTML after tampering with the %s of a genuine signed link",
+    async (change) => {
+      const shared = await signedHtml();
+      const url = new URL(shared.url);
+      if (change === "signature") url.searchParams.set("sig", "forged");
+      if (change === "origin") url.hostname = "external.example.com";
+      if (change === "path") url.pathname = "/ordinary-page.html";
+      fetchMock.mockResolvedValueOnce(
+        served(
+          new TextEncoder().encode("<!doctype html><html>page</html>"),
+          "text/html"
+        )
+      );
+      const delivery = await shared.prepare([
+        {
+          kind: "file",
+          url: url.href,
+          name: "Отчёт.html",
+          mimeType: "text/html",
+        },
+      ]);
+      expect(delivery.files).toEqual([]);
+      expect(delivery.failures).toEqual([
+        { reason: "not-a-file", url: url.href },
+      ]);
+    }
+  );
+
+  it("does not treat a signed non-HTML filename as permission to upload a page", async () => {
+    const shared = await signedHtml("Отчёт.pdf");
+    fetchMock.mockResolvedValueOnce(
+      served(
+        new TextEncoder().encode("<!doctype html><html>page</html>"),
+        "text/html"
+      )
+    );
+    const delivery = await shared.prepare([
+      { kind: "file", url: shared.url, name: "Отчёт.html" },
+    ]);
+    expect(delivery.failures).toEqual([
+      { reason: "not-a-file", url: shared.url },
+    ]);
+  });
+
+  it("does not trust a final redirect to a signed file when the original URL is an ordinary page", async () => {
+    const shared = await signedHtml();
+    fetchMock.mockResolvedValueOnce(
+      new Response(null, { status: 302, headers: { location: shared.url } })
+    );
+    fetchMock.mockResolvedValueOnce(
+      served(
+        new TextEncoder().encode("<!doctype html><html>page</html>"),
+        "text/html"
+      )
+    );
+    const url = "https://external.example.com/page.html";
+    const delivery = await shared.prepare([{ kind: "file", url }]);
+    expect(delivery.failures).toEqual([{ reason: "not-a-file", url }]);
+  });
+
+  it("preserves byte caps for signed HTML", async () => {
+    const shared = await signedHtml();
+    fetchMock.mockResolvedValueOnce(
+      new Response("<!doctype html>", {
+        headers: {
+          "content-type": "text/html",
+          "content-length": String(maximumAttachmentBytes + 1),
+        },
+      })
+    );
+    expect(
+      (await shared.prepare([{ kind: "file", url: shared.url }])).failures
+    ).toEqual([{ reason: "oversize", url: shared.url }]);
+  });
+
+  it("preserves HTTP error handling for signed HTML", async () => {
+    const shared = await signedHtml();
+    fetchMock.mockResolvedValueOnce(
+      new Response("<!doctype html><html>Error</html>", {
+        status: 403,
+        headers: { "content-type": "text/html" },
+      })
+    );
+    const delivery = await shared.prepare([{ kind: "file", url: shared.url }]);
+    expect(delivery.files).toEqual([]);
+    expect(delivery.failures).toEqual([
+      { reason: "http 403", url: shared.url },
+    ]);
+  });
+
+  it("still rejects a signed file's redirect to a private host before fetching it", async () => {
+    const shared = await signedHtml();
+    fetchMock.mockResolvedValueOnce(
+      new Response(null, {
+        status: 302,
+        headers: { location: "https://127.0.0.1/private.html" },
+      })
+    );
+    const delivery = await shared.prepare([{ kind: "file", url: shared.url }]);
+    expect(delivery.failures).toEqual([
+      { reason: "blocked-host", url: shared.url },
+    ]);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
 });
 
 describe("prepareAttachmentDelivery", () => {

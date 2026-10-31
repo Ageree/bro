@@ -10,6 +10,7 @@ import type { MessageAttachment } from "@shared/chat/message-delivery";
 import { downloadWithin } from "../inbound-media/download";
 import { documentByteCap, resolveMediaType } from "../inbound-media/media-type";
 import { fetchPublic } from "../sandbox/public-fetch";
+import { isSharedFileLink } from "../sandbox/files";
 
 /**
  * Telegram refuses a photo upload past 10 MB, which is also the cap the
@@ -87,6 +88,7 @@ const pageMediaTypes: ReadonlySet<string> = new Set([
 ]);
 
 const mediaTypeExtensions: ReadonlyMap<string, string> = new Map([
+  ["text/html", ".html"],
   ["application/pdf", ".pdf"],
   ["audio/aac", ".aac"],
   ["audio/mp4", ".m4a"],
@@ -203,12 +205,21 @@ async function prepareAttachment(
   if (download.bytes.byteLength === 0) {
     return { reason: "empty", url: attachment.url };
   }
-  const mediaType = resolveMediaType(
-    download.bytes,
-    download.mediaType ?? attachment.mimeType
-  );
+  const sharedHtmlDocument =
+    startsPage(download.bytes) &&
+    url.pathname.toLowerCase().endsWith(".html") &&
+    isSharedFileLink(attachment.url);
+  const mediaType = sharedHtmlDocument
+    ? "text/html"
+    : resolveMediaType(
+        download.bytes,
+        download.mediaType ?? attachment.mimeType
+      );
   if (!mediaType) return { reason: "unknown-media-type", url: attachment.url };
-  if (pageMediaTypes.has(mediaType) || startsPage(download.bytes)) {
+  if (
+    !sharedHtmlDocument &&
+    (pageMediaTypes.has(mediaType) || startsPage(download.bytes))
+  ) {
     return { reason: "not-a-file", url: attachment.url };
   }
 

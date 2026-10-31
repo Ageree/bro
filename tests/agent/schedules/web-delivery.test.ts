@@ -31,6 +31,7 @@ import {
 } from "@db/services/scheduled-agent-jobs";
 import dynamicSchedule from "@agent/schedules/dynamic";
 import { backgroundTurnMarker } from "@shared/chat/background-turn";
+import { shareSandboxFile } from "@agent/lib/sandbox/files";
 
 // The real `dynamic` tick runs against a real schema; only the channels it
 // hands work to and the credit check stay outside.
@@ -44,6 +45,14 @@ vi.mock("@agent/channels/scheduled-run", () => ({
 vi.mock("@agent/lib/model/credits", () => ({
   checkModelCredits: vi.fn<() => Promise<void>>(),
   creditCheckDue: () => false,
+}));
+vi.mock("@agent/lib/sandbox/files", () => ({
+  shareSandboxFile: vi.fn<typeof shareSandboxFile>(async () => ({
+    bytes: 20_000,
+    mediaType: "text/html",
+    name: "Результат.html",
+    url: "https://example.com/synthetic-report.html?sig=test",
+  })),
 }));
 
 const client = new PGlite();
@@ -91,6 +100,47 @@ afterAll(async () => {
 });
 
 describe("reports reach the web chat", () => {
+  it("persists the complete worker result while handing the web chat a prepared document", async () => {
+    await recordProactiveTarget(alice, web, now);
+    const summary = `${"Раздел 🧭 [Источник](https://example.com/source)\n".repeat(200)}ФИНАЛЬНЫЙ_SENTINEL_🏁`;
+    const runId = await completedTask(web, summary, "original-message");
+    const delivery = reportDelivery();
+    await runDynamicTick(delivery);
+    const stored = await database.query.scheduledAgentRuns.findFirst({
+      where: eq(schema.scheduledAgentRuns.id, runId),
+    });
+    expect(stored).toMatchObject({
+      outcome: { summary },
+      reportStatus: "queued",
+      workerSessionId: "worker-session",
+    });
+    expect(vi.mocked(shareSandboxFile).mock.lastCall?.[0]).toMatchObject({
+      owner: { sessionId: "worker-session", workspaceId: alice.workspaceId },
+    });
+    const prompt = delivery.send.mock.calls[0]?.[0];
+    expect(prompt).toContain(
+      "https://example.com/synthetic-report.html?sig=test"
+    );
+    expect(prompt).toContain("send_message.attachments");
+    expect(prompt).not.toContain("ФИНАЛЬНЫЙ_SENTINEL_🏁");
+    const leaseToken = z
+      .uuid()
+      .parse(
+        delivery.send.mock.calls[0]?.[1].auth?.attributes
+          .scheduledReportLeaseToken
+      );
+    expect(await finalizeScheduledReport(runId, leaseToken, "delivered")).toBe(
+      true
+    );
+    const delivered = await database.query.scheduledAgentRuns.findFirst({
+      where: eq(schema.scheduledAgentRuns.id, runId),
+    });
+    expect(delivered).toMatchObject({
+      outcome: { summary },
+      reportStatus: "delivered",
+    });
+  });
+
   it("writes first into the web chat of a person with no messenger", async () => {
     expect(await recordProactiveTarget(alice, web, now)).toBe("created");
     const runId = await completedFlightCheck();
