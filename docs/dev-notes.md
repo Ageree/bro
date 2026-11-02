@@ -531,6 +531,8 @@ postgres:17-alpine`, Docker в облачной сессии есть; Google �
   Проверка эффекта: `usage-stats.sh` — `input_p50` по «Interactive steps by their place» у `channel:telegram`. Консоль VM
   `bro-app-sel-2` 02.11 root-пароль из состояния не принимала (`vnc.py run`): env правился только кодом и выкатом.
   `host.py deploy` из облачной сессии: `NODE_OPTIONS=--max-old-space-size=8192` (иначе куча на `next build`), Node 24, `zstd`.
+  Проверено вживую 02.11 (веб-чат владельца, 5 сообщений по ~33k токенов): сжатие срабатывает с 2-го хода, шаг держится ~111k;
+  вызов сжатия ≈ 0,5 ₽ и +3 с. Расход на человека — `host.py ops NAME cost-per-user.sh [SINCE]`.
 
 ## Процесс
 
