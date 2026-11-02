@@ -77,6 +77,7 @@ import { turnCostSource } from "@agent/lib/costs/turns";
 import { clockModes, localClock } from "@agent/lib/local-time";
 import { resolveModeValue } from "@agent/lib/mode";
 import { emptyTurnSelection } from "@agent/lib/model/empty-turn";
+import { namedInBackendPilot } from "@agent/lib/model/routerai/backend-workspace";
 import { promptWarmWorkspace } from "@agent/lib/model/routerai/warm";
 import { modelSelection } from "@agent/lib/model/selection";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
@@ -514,6 +515,10 @@ export default defineAgent({
           earlierPhotos: earlierPhotosPilot(scope.workspaceId)
             ? true
             : undefined,
+          // The cheaper backends are a pilot by workspace.
+          ...(namedInBackendPilot(scope.workspaceId) && {
+            backendWorkspace: scope.workspaceId,
+          }),
           // A person's conversation stays in RunInfra's prompt cache through
           // a pause, so the reply after it does not read its prompt cold.
           warmConversation:

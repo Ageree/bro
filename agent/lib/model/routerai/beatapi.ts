@@ -22,5 +22,6 @@ export const withBeatApiFirst = compatibleBackend({
   ]),
   name: "BeatAPI",
   rates: { cached: 0.0015, input: 0.075, output: 0.3 },
+  workspaces: () => env.BEATAPI_WORKSPACES,
   tag: "beatapi",
 });

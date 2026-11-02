@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { env } from "@shared/environment";
 import { watchedModelFetch } from "../stream-watchdog";
+import { backendCoversCall } from "./backend-workspace";
 import { failed, runInfraBody, servedCall, type ChatCall } from "./runinfra";
 
 /**
@@ -161,6 +162,8 @@ interface BackendSettings {
   readonly models: ReadonlyMap<string, string>;
   readonly name: string;
   readonly rates: Rates;
+  /** Whose steps go there: workspace ids or `*`; none, nobody's. */
+  readonly workspaces: () => readonly string[] | undefined;
 }
 
 async function askBackend(
@@ -253,6 +256,7 @@ export function compatibleBackend(settings: BackendSettings) {
     init: RequestInit | undefined,
     next: () => Promise<Response>
   ): Promise<Response> {
+    if (!backendCoversCall(settings.workspaces())) return next();
     const key = settings.key();
     const served =
       key === undefined ? undefined : servedCall(input, init, settings.models);

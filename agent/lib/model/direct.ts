@@ -40,6 +40,7 @@ import { dsmlToolCallsMiddleware } from "./dsml";
 import { modelEndpoint } from "./endpoint";
 import type { Prompt, PromptMessage, ToolOutput } from "./prompt";
 import { routerAiModelFetch } from "./routerai/fetch";
+import { backendWorkspaceMiddleware } from "./routerai/backend-workspace";
 import { warmCallMiddleware } from "./routerai/warm";
 import { watchedModelFetch } from "./stream-watchdog";
 import { toolImagesMiddleware } from "./tool-images";
@@ -1521,6 +1522,11 @@ export function directModelSelection(
      * (`warmVoicePrompt`).
      */
     readonly warmVoice?: string;
+    /**
+     * The workspace of the step: the cheaper backends are a pilot by
+     * workspace (`routerai/compatible.ts`, ORCAROUTER_WORKSPACES).
+     */
+    readonly backendWorkspace?: string;
     /** Tools this step may not call, though the turn has them. */
     readonly withheldTools?: readonly string[];
   }
@@ -1560,6 +1566,9 @@ export function directModelSelection(
       : options.toolChoice;
 
   const middleware = [
+    ...(options.backendWorkspace === undefined
+      ? []
+      : [backendWorkspaceMiddleware(options.backendWorkspace)]),
     // Around every other: the call that reaches RunInfra is the
     // conversation's, whichever middleware makes it.
     ...(options.warmConversation

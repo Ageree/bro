@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
 const requiredEnvironment = {
+  BEATAPI_WORKSPACES: "*",
+  ORCAROUTER_WORKSPACES: "*",
   BEATAPI_API_KEY: "beatapi-test-key",
   BETTER_AUTH_SECRET: "test-auth-secret-0123456789abcdefghijklmnop",
   BETTER_AUTH_URL: "https://bro.example",

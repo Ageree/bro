@@ -19,5 +19,6 @@ export const withOrcaRouterFirst = compatibleBackend({
   ]),
   name: "OrcaRouter",
   rates: { cached: 0.003, input: 0.15, output: 0.6 },
+  workspaces: () => env.ORCAROUTER_WORKSPACES,
   tag: "orcarouter",
 });

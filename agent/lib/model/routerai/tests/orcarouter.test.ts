@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
 const requiredEnvironment = {
+  BEATAPI_WORKSPACES: "*",
+  ORCAROUTER_WORKSPACES: "*",
   BEATAPI_API_KEY: "beatapi-test-key",
   BETTER_AUTH_SECRET: "test-auth-secret-0123456789abcdefghijklmnop",
   BETTER_AUTH_URL: "https://bro.example",
@@ -139,5 +141,26 @@ describe("a chat call for a model OrcaRouter hosts", () => {
     expect(sent.map(({ url }) => url)).toEqual([orcaUrl, beatApiUrl]);
     // BeatAPI does not force a tool, so it was told to call one.
     expect(sent[1]?.messages).toBe(2);
+  });
+
+  it("is a pilot by workspace: with ids, only the steps marked as theirs go there", async () => {
+    vi.stubEnv("ORCAROUTER_WORKSPACES", "ws-1");
+    vi.stubEnv("BEATAPI_WORKSPACES", "");
+    const { runAsBackendWorkspace } =
+      await import("@agent/lib/model/routerai/backend-workspace");
+    const fetchModel = await modelFetch();
+    const sent = network({
+      [orcaUrl]: [new Response(orcaAnswer)],
+      [routerAiUrl]: [new Response(orcaAnswer)],
+    });
+    const asWorkspace = async (id: string) =>
+      runAsBackendWorkspace(id, async () =>
+        (await fetchModel(routerAiUrl, call)).text()
+      );
+
+    await asWorkspace("ws-2");
+    await asWorkspace("ws-1");
+
+    expect(sent.map(({ url }) => url)).toEqual([routerAiUrl, orcaUrl]);
   });
 });

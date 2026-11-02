@@ -60,12 +60,14 @@ export function modelSelection(
     readonly toolImages?: Parameters<
       typeof directModelSelection
     >[1]["toolImages"];
+    readonly backendWorkspace?: string;
     readonly warmConversation?: string;
     readonly withheldTools?: readonly string[];
   } = {}
 ) {
   return directModelActive()
     ? directModelSelection(modelId, {
+        backendWorkspace: options.backendWorkspace,
         compaction: options.compaction,
         delivered: options.delivered,
         earlierPhotos: options.earlierPhotos,

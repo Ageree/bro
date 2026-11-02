@@ -1082,6 +1082,9 @@ export const env = createEnv({
     // OrcaRouter serves it ahead of BeatAPI, with the same model Bro runs on
     // (`agent/lib/model/routerai/orcarouter.ts`).
     ORCAROUTER_API_KEY: pastedKeySchema.optional(),
+    // Whose chat steps go to OrcaRouter: workspace ids or `*`. Unset, nobody's
+    // do, with the key set or not (a pilot first, then everyone).
+    ORCAROUTER_WORKSPACES: workspaceListSchema.optional(),
     // The key goes to this address with every call: https only.
     ORCAROUTER_BASE_URL: requiredValue
       .refine(
@@ -1093,6 +1096,8 @@ export const env = createEnv({
       "deepseek/deepseek-v4.1-flash-1017"
     ),
     BEATAPI_API_KEY: pastedKeySchema.optional(),
+    // Whose chat steps go to BeatAPI: workspace ids or `*`; unset, nobody's.
+    BEATAPI_WORKSPACES: workspaceListSchema.optional(),
     // The key goes to this address with every call: https only.
     BEATAPI_BASE_URL: requiredValue
       .refine(
