@@ -1293,6 +1293,13 @@ export const env = createEnv({
     // trace (`agent/lib/history/`). Only with the direct model. Unset, every
     // step sends the whole history as before.
     HISTORY_TRIM_WORKSPACES: workspaceListSchema.optional(),
+    // Whether that pilot runs at all. Off by default (02.11): with a cached
+    // read at $0.003 per million, the ~5k tokens a trace saves cost nothing,
+    // while each shift of its boundary (every 8 turns) rewrites old results
+    // and the prompt cache breaks there: one Telegram step read 72k of 82k
+    // tokens cold (≈ 0.9 ₽). Compaction at 100k covers growth. Production's
+    // list stays `*`; only `pilot` here turns the trimming back on.
+    HISTORY_TRIM_MODE: z.enum(["pilot", "off"]).default("off"),
     // The pilot of event subscriptions (docs/roadmap.md, 27): workspace ids
     // or owners' emails, or `*` for every workspace, whose Bro may set up a
     // price or parcel watch that code checks without the model
