@@ -536,7 +536,7 @@ postgres:17-alpine`, Docker в облачной сессии есть; Google �
   Обрезка старых результатов (`HISTORY_TRIM_WORKSPACES`) с 02.11 выключена `HISTORY_TRIM_MODE=off` (по умолчанию): её сдвиг границы
   раз в 8 ходов рвёт кэш с места правки (живой шаг Telegram: 72k из 82k токенов без кэша ≈ 0,9 ₽), а выигрыш в токенах при кэше
   $0,003/M ничтожен; рост истории держит сжатие. Кэш Orca живёт ≥ 15 мин (замер 02.11); прогрев `warm.ts` пингует только RunInfra,
-  а чат идёт через Orca. Карточки: в журнале `send_card`/`update_card` «non-serializable capture» (были и до 02.11).
+  а чат идёт через Orca. Карточки с 02.11 выключены `CARDS_MODE=off` (по умолчанию; владелец): `send_card`/`update_card` падали с «non-serializable capture»; список `CARDS_WORKSPACES=*` на проде остаётся, вернуть — `CARDS_MODE=pilot` после починки.
 
 ## Процесс
 

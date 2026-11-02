@@ -6,6 +6,7 @@ import { env } from "@shared/environment";
  * card, and the card's page before it takes an answer.
  */
 export function cardsEnabled(scope: { readonly workspaceId: string }) {
+  if (env.CARDS_MODE !== "pilot") return false;
   const list = env.CARDS_WORKSPACES ?? [];
   return list.includes("*") || list.includes(scope.workspaceId);
 }

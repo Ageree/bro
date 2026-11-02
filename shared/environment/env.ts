@@ -204,6 +204,9 @@ export const env = createEnv({
     // Telegram chat as a button to a Mini App (`agent/tools/send_card.ts`,
     // `docs/cards.md`): workspace ids or *. Unset, nobody.
     CARDS_WORKSPACES: workspaceListSchema.optional(),
+    // Master switch: the list above does nothing unless this is `pilot`
+    // (02.11: cards are off, `send_card` fails with a non-serializable capture).
+    CARDS_MODE: z.enum(["pilot", "off"]).default("off"),
     // Bro ↔ Bro (docs/bro-to-bro.md): workspace ids or *. Unset, off for
     // everyone, links included; set, also on for every workspace with an
     // active link, so the person who accepted an invite gets it with the link.
