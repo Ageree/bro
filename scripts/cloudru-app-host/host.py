@@ -1079,8 +1079,11 @@ def cmd_env(args):
 
 # DEPLOY_SIGNING_KEY, the consoles' passwords, BACKUP_ENCRYPTION_KEY and the env files live in this session's
 # container and on the VMs only (BETTER_AUTH_SECRET and SECRET_ENCRYPTION_KEY too, once Vercel Blob is gone).
-# Sealed under a key derived from CLOUDRU_KEY_SECRET, which the environment keeps for every session: whoever
-# has it controls the project anyway. A rotated Cloud.ru key needs `state save` again.
+# Sealed under a key derived from OPERATOR_STATE_KEY; sessions without it use the legacy CLOUDRU_KEY_SECRET (the name
+# is from the days of Cloud.ru, and the state saved then opens only with it) and, with neither, the Object Storage
+# secret key the session reaches the bucket with. Whoever has any of them reaches the bucket anyway, so the last
+# one costs a session no secret of its own, but protects nothing beyond the bucket's own keys. `state save` seals
+# under the first one set; `state restore` tries each in turn, so a state sealed under the legacy key still opens.
 STATE_KEY = "operator/state.bin"
 STATE_MAGIC = b"BRO-OPERATOR-STATE-1\n"
 CODE_HOST_STATE = Path(os.environ.get("BRO_CODE_HOST_DIR", Path.home() / ".bro-code-host"))
@@ -1095,6 +1098,12 @@ def state_keys(secret):
         return hmac.new(raw, f"bro-operator-state:{label}".encode(), hashlib.sha256).hexdigest()
 
     return derive("encrypt"), bytes.fromhex(derive("mac"))
+
+
+def state_secrets():
+    """The secrets a sealed state may be under, the one `state save` uses first."""
+    names = ("OPERATOR_STATE_KEY", "CLOUDRU_KEY_SECRET", "S3_SECRET_ACCESS_KEY")
+    return [os.environ[name] for name in names if os.environ.get(name, "").strip()]
 
 
 def seal(data, secret):
@@ -1112,13 +1121,18 @@ def seal(data, secret):
     return STATE_MAGIC + hmac.new(mac_key, cipher, hashlib.sha256).digest() + cipher
 
 
-def unseal(blob, secret):
-    passphrase, mac_key = state_keys(secret)
+def unseal(blob, secrets):
+    """The state, opened with the first of `secrets` it is sealed under (one secret is accepted too)."""
     if not blob.startswith(STATE_MAGIC):
         sys.exit("not a sealed operator state")
     tag, cipher = blob[len(STATE_MAGIC):len(STATE_MAGIC) + 32], blob[len(STATE_MAGIC) + 32:]
-    if not hmac.compare_digest(tag, hmac.new(mac_key, cipher, hashlib.sha256).digest()):
-        sys.exit("the operator state does not open with this CLOUDRU_KEY_SECRET (rotated since `state save`?)")
+    for secret in [secrets] if isinstance(secrets, str) else secrets:
+        passphrase, mac_key = state_keys(secret)
+        if hmac.compare_digest(tag, hmac.new(mac_key, cipher, hashlib.sha256).digest()):
+            break
+    else:
+        sys.exit("the operator state does not open with OPERATOR_STATE_KEY, CLOUDRU_KEY_SECRET or S3_SECRET_ACCESS_KEY "
+                 "(rotated since `state save`?)")
     read, write = os.pipe()
     os.write(write, passphrase.encode() + b"\n")
     os.close(write)
@@ -1184,13 +1198,13 @@ def state_roots():
 
 
 def cmd_state(args):
-    secret = os.environ.get("CLOUDRU_KEY_SECRET", "")
-    if not secret.strip():
-        sys.exit("CLOUDRU_KEY_SECRET is required")
+    secrets = state_secrets()
+    if not secrets:
+        sys.exit("OPERATOR_STATE_KEY (or CLOUDRU_KEY_SECRET, or S3_SECRET_ACCESS_KEY) is required")
     if args.action == "save":
         data = state_archive(state_roots())
-        sealed = seal(data, secret)
-        if unseal(sealed, secret) != data:
+        sealed = seal(data, secrets[0])
+        if unseal(sealed, secrets[:1]) != data:
             sys.exit("the sealed state does not open again: nothing uploaded")
         with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
             count = len(tar.getmembers())
@@ -1200,7 +1214,7 @@ def cmd_state(args):
     code, body = s3.send(urllib.request.Request(s3.presign("GET", STATE_KEY, 600)))
     if code != 200:
         sys.exit(f"get {STATE_KEY}: {code}")
-    written, kept = restore_archive(unseal(body, secret), state_roots(), force=args.force)
+    written, kept = restore_archive(unseal(body, secrets), state_roots(), force=args.force)
     print(f"restored {written} files, kept {kept} already here (--force replaces them)")
 
 
