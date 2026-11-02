@@ -2461,6 +2461,9 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   быстрее deepinfra (вызов browser-use — медиана 2,2 с против 5,6 с), но
   дороже вдвое; без `require_parameters` его вызовы шли без ошибок
   (`docs/browser-speed.md`).
+- С 02.11 пилот ниже **выключен** `BROWSER_FAST_MODE=off` (по умолчанию; владелец: поручения могут быть медленнее, если дешевле): список
+  `BROWSER_FAST_WORKSPACES` на проде остаётся `*`, но ничего не включает; вернуть — `BROWSER_FAST_MODE=pilot` в `/etc/bro/env`.
+  Проверено вживую 02.11: поиск чайников на dns-shop — DeepInfra, 18 шагов, 118 с, 0,77 ₽ модели.
 - Пилот `BROWSER_FAST_WORKSPACES` (05.10; с 19.10 в проде `*`, владелец — сразу всем):
   DeepSeek worker на Together без `requireParameters`, `llmTimeoutSeconds` 25 (worker
   ≥ 2026-10-05.6), flash для поиска — `FLASH_SEARCH` с ним не нужен
