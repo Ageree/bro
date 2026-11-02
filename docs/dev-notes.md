@@ -1781,6 +1781,9 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   входа, 15 запросов в минуту): для основного хода дороже RouterAI. На эвалах (`eve eval`, 5 наборов по 5 повторов) вердикты
   совпали с RouterAI; `conversation/0003` оценивает LLM-судья и шумит на любом backend. Запасной путь с теми же гарантиями —
   официальный `deepseek-flash` 1017 (кэш $0,003, 2500 одновременных запросов), но карты РФ он не берёт.
+  Прод ходит с id `deepseek/deepseek-v4.1-flash-1017` (так он назван у RouterAI), а карта моделей RunInfra знает только
+  `deepseek/deepseek-v4.1-flash`: 02.11 по журналу все шаги прода шли напрямую на RouterAI, RunInfra не спрашивался. Карты Orca и
+  BeatAPI держат оба id; id нового backend сверяйте с полем `model` в `[model] call`.
 - RouterAI: ошибки приходят и HTTP 200 `{"error":"<JSON строкой>"}`, и кадром
   SSE `data:{"error":…}`; без `routerai/fetch.ts` провайдер AI SDK принимал их
   за пустой ответ, и «скоро вернусь» не видел 402/429/5xx.
