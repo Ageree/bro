@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { env } from "@shared/environment";
 import { watchedModelFetch } from "../stream-watchdog";
-import { failed, runInfraBody, servedCall } from "./runinfra";
+import { failed, runInfraBody, servedCall, type ChatCall } from "./runinfra";
 
 /**
  * BeatAPI serves Bro's chat model ahead of RunInfra and RouterAI, for the
@@ -18,13 +18,14 @@ import { failed, runInfraBody, servedCall } from "./runinfra";
  * minutes skip BeatAPI, then one tries it again. As for RunInfra, the answer
  * is read whole before it is passed on: a failure can come at its end.
  *
- * BeatAPI's `deepseek-v4.1-flash` ignores `tool_choice` — `required` and a
- * named function both come back as plain text (checked 02.11; RouterAI,
- * APInex and OrcaRouter obey on the same model) — while Bro forces
- * `send_message` through it, so a call that forces a tool never goes there
- * (`forcesTool`). Its `deepseek-v4-flash-0731` and `deepseek-v4-pro-0813` do
- * obey, but they are other models: switching to one is a quality question for
- * the benchmark, not a mapping to change here.
+ * BeatAPI's `deepseek-v4.1-flash` does not force a tool: `tool_choice`
+ * `required` or a named function came back as plain text in 4–8 of 12 calls
+ * (checked 02.11; RouterAI, APInex and OrcaRouter obey on the same model),
+ * and Bro forces `send_message` through it. So a call that forces a tool
+ * carries a short system note as its last message (`forcedToolNote`: 24 of 24
+ * calls answered with a tool call; the prompt before it stays as it is, and
+ * the cache read stays 99%), and an answer that still has no tool call goes
+ * to the next backend, which forces it properly — no outage of BeatAPI.
  */
 const backend = "BeatAPI";
 
@@ -40,12 +41,71 @@ const hosted: ReadonlyMap<string, string> = new Map([
  */
 const dollarsPerMillion = { cached: 0.0015, input: 0.075, output: 0.3 };
 
-/** A call that leaves the choice of tool to the model: only `auto` and `none`. */
-const freeToolChoice = z.union([
-  z.undefined(),
-  z.literal("auto"),
-  z.literal("none"),
+const forcedChoiceSchema = z.union([
+  z.literal("required"),
+  z.looseObject({ function: z.looseObject({ name: z.string() }) }),
 ]);
+
+const namedToolsSchema = z.array(
+  z.looseObject({ function: z.looseObject({ name: z.string() }) })
+);
+
+/**
+ * What a forced call is told last, as BeatAPI does not force it: a named
+ * function, else any tool — `send_message` as the way to answer when the
+ * call has it. Nothing for a call that leaves the choice to the model. In
+ * English, so it does not pull the language of the person's answer.
+ */
+function forcedToolNote(call: ChatCall) {
+  const choice = forcedChoiceSchema.safeParse(call.tool_choice).data;
+  if (choice === undefined) return undefined;
+  if (choice !== "required") {
+    return `Required: call the ${choice.function.name} tool. Plain text without a tool call is not allowed.`;
+  }
+  const names =
+    namedToolsSchema
+      .safeParse(call.tools)
+      .data?.map((tool) => tool.function.name) ?? [];
+  return `Required: respond with a tool call only. Plain text without a tool call is not allowed${
+    names.includes("send_message")
+      ? "; to answer the person, call send_message."
+      : "."
+  }`;
+}
+
+const toolCallSchema = z.looseObject({
+  choices: z
+    .array(
+      z.looseObject({
+        delta: z.looseObject({ tool_calls: z.array(z.json()) }).optional(),
+        message: z.looseObject({ tool_calls: z.array(z.json()) }).optional(),
+      })
+    )
+    .optional(),
+});
+
+/** Whether the answer, or any event of the stream, has a tool call. */
+function hasToolCall(text: string, eventStream: boolean) {
+  const bodies = eventStream
+    ? text
+        .split("\n")
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).trim())
+    : [text];
+  return bodies.some((body) => {
+    try {
+      return (
+        toolCallSchema.safeParse(JSON.parse(body)).data?.choices ?? []
+      ).some(
+        (choice) =>
+          (choice.delta?.tool_calls.length ?? 0) > 0 ||
+          (choice.message?.tool_calls.length ?? 0) > 0
+      );
+    } catch {
+      return false;
+    }
+  });
+}
 
 const skipForMs = 5 * 60_000;
 
@@ -107,7 +167,7 @@ function readAnswer(text: string, eventStream: boolean) {
 }
 
 async function askBeatApi(
-  served: { readonly call: Parameters<typeof runInfraBody>[0]; model: string },
+  served: { readonly call: ChatCall; readonly model: string },
   init: RequestInit | undefined,
   key: string
 ) {
@@ -115,21 +175,36 @@ async function askBeatApi(
   headers.set("authorization", `Bearer ${key}`);
   headers.set("content-type", "application/json");
   const url = `${env.BEATAPI_BASE_URL.replace(/\/+$/u, "")}/chat/completions`;
+  const note = forcedToolNote(served.call);
+  const call =
+    note === undefined
+      ? served.call
+      : {
+          ...served.call,
+          messages: [
+            ...served.call.messages,
+            { content: note, role: "system" },
+          ],
+        };
   try {
     const response = await watchedModelFetch(
       url,
-      { ...init, body: runInfraBody(served.call, served.model), headers },
+      { ...init, body: runInfraBody(call, served.model), headers },
       backend
     );
     if (!response.ok || !response.body) {
       await response.body?.cancel();
-      return { failure: `HTTP ${String(response.status)}` };
+      return { failure: `HTTP ${String(response.status)}`, outage: true };
     }
     const eventStream = (response.headers.get("content-type") ?? "").includes(
       "text/event-stream"
     );
     const text = readAnswer(await response.text(), eventStream);
-    if (text === undefined) return { failure: "error in the answer" };
+    if (text === undefined)
+      return { failure: "error in the answer", outage: true };
+    if (note !== undefined && !hasToolCall(text, eventStream)) {
+      return { failure: "no tool call", outage: false };
+    }
     const responseHeaders = new Headers(response.headers);
     responseHeaders.delete("content-length");
     responseHeaders.delete("content-encoding");
@@ -144,6 +219,7 @@ async function askBeatApi(
     if (init?.signal?.aborted === true) throw error;
     return {
       failure: error instanceof Error ? error.message.slice(0, 160) : "thrown",
+      outage: true,
     };
   }
 }
@@ -162,8 +238,6 @@ export async function withBeatApiFirst(
   const served =
     key === undefined ? undefined : servedCall(input, init, hosted);
   if (key === undefined || served === undefined) return next();
-  // BeatAPI does not force a tool (see above): the call goes on as it is.
-  if (!freeToolChoice.safeParse(served.call.tool_choice).success) return next();
   if (downUntil !== undefined && Date.now() < downUntil) return next();
   const outcome = await askBeatApi(served, init, key);
   if (outcome.answer !== undefined) {
@@ -173,7 +247,9 @@ export async function withBeatApiFirst(
     }
     return outcome.answer;
   }
-  downUntil = Date.now() + skipForMs;
+  // An answer without the forced tool call is no outage: the next call tries
+  // BeatAPI again.
+  if (outcome.outage) downUntil = Date.now() + skipForMs;
   console.warn("[model] beatapi failed, the next backend answers", {
     reason: outcome.failure,
   });

@@ -80,15 +80,24 @@ function network(answers: {
     [routerAiUrl, [...(answers.router ?? [])]],
     [runInfraUrl, [...(answers.runInfra ?? [])]],
   ]);
-  const sent: { readonly model: string; readonly url: string }[] = [];
+  const sent: {
+    readonly lastMessage: string;
+    readonly model: string;
+    readonly url: string;
+  }[] = [];
   vi.stubGlobal(
     "fetch",
     vi.fn<typeof fetch>(async (input, init) => {
       const url = input instanceof Request ? input.url : input.toString();
+      const body = z
+        .looseObject({
+          messages: z.array(z.looseObject({ content: z.string() })),
+          model: z.string(),
+        })
+        .parse(JSON.parse(z.string().parse(init?.body)));
       sent.push({
-        model: z
-          .looseObject({ model: z.string() })
-          .parse(JSON.parse(z.string().parse(init?.body))).model,
+        lastMessage: body.messages.at(-1)?.content ?? "",
+        model: body.model,
         url,
       });
       const answer = pending.get(url)?.shift();
@@ -133,13 +142,48 @@ afterEach(() => {
 });
 
 describe("a chat call for a model BeatAPI hosts", () => {
-  it("does not go to BeatAPI when it forces a tool, which BeatAPI ignores", async () => {
-    const sent = network({ router: [new Response("{}", { status: 200 })] });
+  it("tells a forced call to answer with a tool, and keeps the answer that does", async () => {
+    const toolStream = `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ function: { name: "send_message" } }] }, index: 0 }] })}\n\n${beatStream}`;
+    const sent = network({ beat: [streamed(toolStream)] });
+
+    await (
+      await (
+        await modelFetch()
+      )(routerAiUrl, call({ toolChoice: "required" }))
+    ).text();
+
+    expect(backends(sent)).toEqual(["beatapi"]);
+    expect(sent[0]?.lastMessage).toContain("call send_message");
+  });
+
+  it("sends a forced call's plain-text answer to the next backend, and asks BeatAPI again next time", async () => {
+    const toolStream = `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ function: { name: "send_message" } }] }, index: 0 }] })}\n\n${beatStream}`;
+    const sent = network({
+      beat: [streamed(beatStream), streamed(toolStream)],
+      runInfra: [streamed(beatStream)],
+    });
     const fetchModel = await modelFetch();
 
-    await fetchModel(routerAiUrl, call({ toolChoice: "required" }));
+    await (
+      await fetchModel(routerAiUrl, call({ toolChoice: "required" }))
+    ).text();
+    await (
+      await fetchModel(routerAiUrl, call({ toolChoice: "required" }))
+    ).text();
 
-    expect(backends(sent)).not.toContain("beatapi");
+    expect(backends(sent)).toEqual(["beatapi", "runinfra", "beatapi"]);
+  });
+
+  it("adds no note to a call that leaves the choice of tool to the model", async () => {
+    const sent = network({ beat: [streamed(beatStream)] });
+
+    await (
+      await (
+        await modelFetch()
+      )(routerAiUrl, call({ toolChoice: "auto" }))
+    ).text();
+
+    expect(sent[0]?.lastMessage).toBe("Привет");
   });
 
   it("goes to BeatAPI first with its model id, and its usage is priced in roubles", async () => {
@@ -151,7 +195,11 @@ describe("a chat call for a model BeatAPI hosts", () => {
       )(routerAiUrl, call({ toolChoice: "auto" }))
     ).text();
 
-    expect(sent).toEqual([{ model: "deepseek-v4.1-flash", url: beatApiUrl }]);
+    expect(sent[0]).toMatchObject({
+      model: "deepseek-v4.1-flash",
+      url: beatApiUrl,
+    });
+    expect(sent).toHaveLength(1);
     // 100k missed at $0.075, 900k cached at $0.0015, 1k out at $0.30 per
     // million: $0.00915 at 80 ₽ per dollar.
     const usage = text
