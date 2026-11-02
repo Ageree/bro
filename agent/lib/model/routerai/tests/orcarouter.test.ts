@@ -118,6 +118,24 @@ describe("a chat call for a model OrcaRouter hosts", () => {
     expect(cost).toBeCloseTo(0.0183 * 80, 6);
   });
 
+  it("serves the id prod runs on too: the -1017 build", async () => {
+    const sent = network({ [orcaUrl]: [new Response(orcaAnswer)] });
+
+    await (
+      await (
+        await modelFetch()
+      )(routerAiUrl, {
+        ...call,
+        body: call.body.replace(
+          "deepseek/deepseek-v4.1-flash",
+          "deepseek/deepseek-v4.1-flash-1017"
+        ),
+      })
+    ).text();
+
+    expect(sent.map(({ url }) => url)).toEqual([orcaUrl]);
+  });
+
   it("falls to BeatAPI when OrcaRouter fails", async () => {
     const sent = network({
       [beatApiUrl]: [

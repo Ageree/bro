@@ -19,6 +19,7 @@ export const withBeatApiFirst = compatibleBackend({
   key: () => env.BEATAPI_API_KEY,
   models: new Map([
     ["deepseek/deepseek-v4.1-flash", env.BEATAPI_DEEPSEEK_FLASH_MODEL],
+    ["deepseek/deepseek-v4.1-flash-1017", env.BEATAPI_DEEPSEEK_FLASH_MODEL],
   ]),
   name: "BeatAPI",
   rates: { cached: 0.0015, input: 0.075, output: 0.3 },

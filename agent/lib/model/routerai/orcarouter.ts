@@ -14,8 +14,10 @@ export const withOrcaRouterFirst = compatibleBackend({
   baseUrl: () => env.ORCAROUTER_BASE_URL,
   forcesTools: true,
   key: () => env.ORCAROUTER_API_KEY,
+  // Both ids: prod runs `…-1017` (RouterAI's id of the build), the default is the bare one.
   models: new Map([
     ["deepseek/deepseek-v4.1-flash", env.ORCAROUTER_DEEPSEEK_FLASH_MODEL],
+    ["deepseek/deepseek-v4.1-flash-1017", env.ORCAROUTER_DEEPSEEK_FLASH_MODEL],
   ]),
   name: "OrcaRouter",
   rates: { cached: 0.003, input: 0.15, output: 0.6 },
