@@ -1601,13 +1601,24 @@ class HostCliTest(unittest.TestCase):
         self.assertNotIn(b"keys", sealed)
         # A pasted key's whitespace does not change the key.
         self.assertEqual(self.host.unseal(sealed, " cloud-rusecret "), b"keys")
-        with self.assertRaisesRegex(SystemExit, "does not open with this CLOUDRU_KEY_SECRET"):
+        with self.assertRaisesRegex(SystemExit, "does not open with OPERATOR_STATE_KEY"):
             self.host.unseal(sealed, "another secret")
         tampered = sealed[:-1] + bytes([sealed[-1] ^ 1])
-        with self.assertRaisesRegex(SystemExit, "does not open with this CLOUDRU_KEY_SECRET"):
+        with self.assertRaisesRegex(SystemExit, "does not open with OPERATOR_STATE_KEY"):
             self.host.unseal(tampered, "cloud-ru secret")
+        # A state sealed under the legacy key still opens when a newer key is tried first.
+        self.assertEqual(self.host.unseal(sealed, ["new key", "cloud-ru secret"]), b"keys")
         with self.assertRaisesRegex(SystemExit, "not a sealed operator state"):
             self.host.unseal(b"plain", "cloud-ru secret")
+
+    def test_the_operator_state_key_comes_from_the_first_secret_that_is_set(self):
+        names = ("OPERATOR_STATE_KEY", "CLOUDRU_KEY_SECRET", "S3_SECRET_ACCESS_KEY")
+        with mock.patch.dict(os.environ, {name: "" for name in names}):
+            self.assertEqual(self.host.state_secrets(), [])
+            with mock.patch.dict(os.environ, {"S3_SECRET_ACCESS_KEY": "s3", "CLOUDRU_KEY_SECRET": "legacy"}):
+                self.assertEqual(self.host.state_secrets(), ["legacy", "s3"])
+                with mock.patch.dict(os.environ, {"OPERATOR_STATE_KEY": "new"}):
+                    self.assertEqual(self.host.state_secrets(), ["new", "legacy", "s3"])
 
     def test_the_operator_state_keeps_keys_not_builds_and_restores_without_overwriting(self):
         source, target = Path(tempfile.mkdtemp()), Path(tempfile.mkdtemp())

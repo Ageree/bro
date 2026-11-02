@@ -55,9 +55,14 @@ cloud-init в `/etc/bro/deployd.json`; сам `DEPLOY_SIGNING_KEY` на VM не 
 Ключи оператора (`~/.bro-app-host` без `build/` и `vendor/`, `~/.bro-code-host`)
 есть только в контейнере сессии и на VM. `host.py state save` после каждой их
 смены кладёт их в Object Storage (`operator/state.bin`): AES-256-CBC `openssl`
-и HMAC-SHA256, ключи — из `CLOUDRU_KEY_SECRET` окружения. Новая сессия
-начинает с `host.py state restore` (файлы, что уже есть, не трогает;
-`--force` — заменить). После смены ключа Cloud.ru — снова `state save`.
+и HMAC-SHA256, ключи — из `OPERATOR_STATE_KEY`, а если его нет, из прежнего
+`CLOUDRU_KEY_SECRET` (имя с времён Cloud.ru: состояние, сохранённое тогда,
+открывается только им) и, если нет и его, из `S3_SECRET_ACCESS_KEY`, с которым
+сессия ходит в бакет. `state save` запечатывает первым из заданных, `state
+restore` перебирает все. Отдельный секрет не нужен, но последний вариант
+защищает не больше, чем ключ бакета. Новая сессия начинает с `host.py state
+restore` (файлы, что уже есть, не трогает; `--force` — заменить). После
+смены ключа — снова `state save`.
 
 `host.py vendor` качает по пинам `vendor.json` Caddy (GitHub), Node
 (nodejs.org) и пакеты `libpq5`, `postgresql-client-common`,
