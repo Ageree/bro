@@ -756,12 +756,10 @@ postgres:17-alpine`, Docker в облачной сессии есть; Google �
   `scripts/cloudru-code-host/host.py` — тот же `BRO_CLOUD`. Ключи — в env
   облачной сессии: `SELECTEL_API_KEY` (или `SELECTEL_TOKEN`),
   `SELECTEL_ACCOUNT`, `SELECTEL_PROJECT`, `S3_*` бакета `bro-bucket`
-  (`PROBE_BUCKET`); ключи оператора (выкат, env прода, `updateKey` хостов) —
-  `host.py state restore`, им нужен прежний `CLOUDRU_KEY_SECRET`: им
-  зашифровано состояние, хоть Cloud.ru и закрыт. Env прода —
-  `host.py env bro-app-sel-2 --profile prod --allow-missing
---no-alert-webhook`; инфраструктура Selectel (`S3_*`, пул `static`,
-  хост песочниц) — в `prod.json` этого каталога.
+  (`PROBE_BUCKET`); ключи оператора (выкат, `updateKey` хостов) —
+  `host.py state restore` с `OPERATOR_STATE_KEY` (запись «Операторское состояние
+  после 02.11» ниже). **Env прода больше нельзя собирать `host.py env … --profile
+prod`** (та же запись): живой источник — `/etc/bro/env` на VM.
 - Выкат из свежей облачной сессии без `SELECTEL_PROJECT`/`SELECTEL_ACCOUNT`:
   `state restore`, `env`, `deploy`, `logs`, `ops` им не нужны (VM берётся из
   кэша `bro-app-sel-2.json`), нужен только S3: `S3_ENDPOINT=https://s3.ru-1.storage.selcloud.ru`,
@@ -769,6 +767,33 @@ postgres:17-alpine`, Docker в облачной сессии есть; Google �
   `status` Selectel API ходит и без проекта падает. Сборке нужны Node 24 и `zstd`
   (`apt-get update` перед `install`). Тон звонка — ops-скрипт `phone-setup.sh` с флагами
   `--public-url https://brobro.tech --apply --output /tmp/x.env`.
+- Операторское состояние после 02.11 (PR #710): прежний `operator/state.bin` был запечатан
+  `CLOUDRU_KEY_SECRET`, значение потерялось, и состояние пересоздано. Теперь оно под `OPERATOR_STATE_KEY`
+  (значение у владельца; кладите его в env сессии вместе с `S3_ACCESS_KEY_ID`/`S3_SECRET_ACCESS_KEY` бакета
+  `bro-bucket`: `AWS_*` из env сессии — не его ключи, дают 403). `state_secrets` в `host.py` перебирает
+  `OPERATOR_STATE_KEY`, `CLOUDRU_KEY_SECRET`, `S3_SECRET_ACCESS_KEY` (ключ из S3-секрета не переживёт
+  перевыпуск S3-ключа: задавайте явный). В новом состоянии лишь `DEPLOY_SIGNING_KEY` (`env/new-secrets.json`),
+  кэш VM и пароль root; профили env (`new-secrets.json` с прочими ключами, слои `prod.json`,
+  `installation-secrets.json`) **потеряны**. Прежние версии объекта лежат в бакете (версии включены): найдётся
+  `CLOUDRU_KEY_SECRET` — старое состояние откроется.
+- Env прода правьте только на VM (02.11): `host.py env --profile prod` составил бы неполный env, а
+  `PUT /ops/v1/env` заменяет файл целиком (`GET` отдаёт лишь имена, значений нет); новый `BETTER_AUTH_SECRET`
+  разлогинил бы всех и закрыл сейф. Рабочий путь: `scripts/selectel/vnc.py run bro-app-sel-2 "<команда>"` (например,
+  `sed -i`/`printf >>` в `/etc/bro/env`; копия до правки Orca — `/etc/bro/env.before-orca`, 182 строки) и
+  `host.py restart bro-app-sel-2`. Везде ниже «откат — снять флаг в `prod.json` и `host.py env`» теперь значит: убрать или
+  опустошить строку в `/etc/bro/env` и перезапустить. Строки, дописанные так, не лежат ни в каком профиле: будущая пересборка
+  env их потеряет. Выкат кода (`host.py deploy`) env не трогает. Значения при нужде можно снять с VM ops-скриптом
+  через S3 (не в журнал job) и собрать профиль заново.
+- Доступ к VM без пароля root и без состояния (02.11, простой ≈ 8 мин): `changePassword` Nova принимает
+  (202), но без гостевого агента ничего не меняет; рабочий путь — rescue. `POST /servers/<id>/action
+{"rescue":{"adminPass":…}}` (`scripts/selectel/cloud.py` `compute`; `SELECTEL_PROJECT` — `GET
+api.selectel.ru/vpc/resell/v2/projects`, `SELECTEL_ACCOUNT` — номер аккаунта), и консоль VPC-Rescue сама
+  открывает root-оболочку на tty1; `infiltrate-root` входит chroot'ом в диск прода. Там
+  `/etc/bro/deployd.json` = `{"host": "<имя VM>", "key": HMAC-SHA256(DEPLOY_SIGNING_KEY, "bro-app-host:" +
+имя) в hex}` (0600; прежний — `deployd.json.old`) и `chpasswd` для root; `{"unrescue":null}` возвращает VM.
+  Команды печатайте `vnc.Console(имя).keys("строка\n", пауза_с, …)`, экран — `.screen()` (PNG): в rescue нет
+  схемы «скрипт из S3». Пароль root положите в `<VM>.password` и сохраните состояние. Соединение с API консоли
+  из сессии изредка рвётся (`Connection reset`): до набора команд повтор безопасен, после — сверьте экран.
 - Адрес deployd в кэше `bro-app-sel-2.json` из `state restore` может отстать от
   VM (15.10: старый адрес deployd в 17:10 начал рвать TLS, `deploy` падал на
   «Connection reset by peer», а сайт отвечал). Если `status` по кэшу рвётся, сверьте
@@ -943,7 +968,7 @@ self-test WORKSPACE_ID`, письмо только самому агенту. П
   взят из живой базы: `0053_phone`, почта `0054`, `0055_browser_delegation`
   с прежними `when` прода — их не перегенерируйте и не переименовывайте:
   Drizzle сравнивает время миграций, а не имена, и пропустил бы или повторил их.
-- Env прода собирает `host.py env <VM> --profile prod` с `--allow-missing` и
+- (До 02.11; профили потеряны, путь не работает — см. «Env прода правьте только на VM» выше.) Env прода собирал `host.py env <VM> --profile prod` с `--allow-missing` и
   `--no-alert-webhook` (до 09.10 ещё `--with-neon`, иначе с VM уйдёт адрес
   Neon), потом `host.py state save`; последний слой — `prod.json` (`compose_env`).
   Пилоты — там же, `null` снимает имя. Ключ из `SENSITIVE_ON_VERCEL` без
@@ -1306,6 +1331,13 @@ user-data`, `sandbox/README.md`); runsc едет на хост объектом 
   `agent` здесь — префикс путей: `eve eval agent <id>` гоняет весь набор.
   `eve dev` при старте продолжает незаконченные ходы из `.eve/.workflow-data`
   (и платит за них): прерванный прогон перед следующим уберите оттуда.
+
+- Ловушки сессии (02.11): `pkill -f`/`pgrep -f` по имени скрипта, которое есть и в вашей же команде, убивает собственную
+  оболочку (код 144); Postgres для эвалов гаснет с рестартом воркера сессии (`pg_isready`, потом
+  `pg_ctl … start` от `postgres`, стейл `postmaster.pid` удалить); ключи сессии (`ORCAROUTER_API_KEY`,
+  `RUNINFRA_API_KEY`) протекают в тесты через `unstubAllEnvs` — `env -u` обоих; серию `eve eval`, идущую во время
+  правки кода, не доверяйте (запуски после правки шли на другом коде: `ORCAROUTER_WORKSPACES` в тестовом env не задан, и Orca
+  молчит). Сравнение backend на эвалах — коды проверок, не `judge.boolean`: судье нужен Gateway, и он падает всегда.
 
 ## Геолокация
 
@@ -1781,6 +1813,12 @@ subscriptions WHERE template = 'flight')`, строки уйдут каскад�
   входа, 15 запросов в минуту): для основного хода дороже RouterAI. На эвалах (`eve eval`, 5 наборов по 5 повторов) вердикты
   совпали с RouterAI; `conversation/0003` оценивает LLM-судья и шумит на любом backend. Запасной путь с теми же гарантиями —
   официальный `deepseek-flash` 1017 (кэш $0,003, 2500 одновременных запросов), но карты РФ он не берёт.
+  С 02.11 в проде `ORCAROUTER_WORKSPACES=*` (владелец, сразу всем): ключ и флаг дописаны в `/etc/bro/env` руками (см. «Env
+  прода правьте только на VM»), BeatAPI выключен (10 запросов в минуту). Замер у владельца до → после: шаг модели на ~55k
+  токенов 1,9–3,6 → 1,2–1,8 с, ход ≈ 7 → ≈ 4–4,5 с, кэш 98,9%, шаг ≈ 0,02 ₽ вместо ≈ 0,05 ₽. Откат — пустой
+  `ORCAROUTER_WORKSPACES` и `host.py restart`. Баланса по API у Orca нет: «Расход за этот месяц» в кабинете (кошелёк $20, промо
+  $5,93 до 01.01.2027 списывается первым); кончится — 402, вызовы сами уйдут на RouterAI (потеря экономии, не ответа), тревоги
+  нет. Вызовы с `plugins` и медиа остаются на RouterAI по дизайну.
   Прод ходит с id `deepseek/deepseek-v4.1-flash-1017` (так он назван у RouterAI), а карта моделей RunInfra знает только
   `deepseek/deepseek-v4.1-flash`: 02.11 по журналу все шаги прода шли напрямую на RouterAI, RunInfra не спрашивался. Карты Orca и
   BeatAPI держат оба id; id нового backend сверяйте с полем `model` в `[model] call`.
