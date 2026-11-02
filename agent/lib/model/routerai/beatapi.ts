@@ -46,15 +46,12 @@ const forcedChoiceSchema = z.union([
   z.looseObject({ function: z.looseObject({ name: z.string() }) }),
 ]);
 
-const namedToolsSchema = z.array(
-  z.looseObject({ function: z.looseObject({ name: z.string() }) })
-);
-
 /**
- * What a forced call is told last, as BeatAPI does not force it: a named
- * function, else any tool — `send_message` as the way to answer when the
- * call has it. Nothing for a call that leaves the choice to the model. In
- * English, so it does not pull the language of the person's answer.
+ * What a forced call is told last, as BeatAPI does not force it: the tool
+ * named, else any tool. It names no tool Bro would rather have called: a note
+ * pointing at `send_message` made the model reply in words where a reaction
+ * was due (a smoke eval, 02.11). Nothing for a call that leaves the choice
+ * to the model. In English, so it does not pull the language of the answer.
  */
 function forcedToolNote(call: ChatCall) {
   const choice = forcedChoiceSchema.safeParse(call.tool_choice).data;
@@ -62,15 +59,7 @@ function forcedToolNote(call: ChatCall) {
   if (choice !== "required") {
     return `Required: call the ${choice.function.name} tool. Plain text without a tool call is not allowed.`;
   }
-  const names =
-    namedToolsSchema
-      .safeParse(call.tools)
-      .data?.map((tool) => tool.function.name) ?? [];
-  return `Required: respond with a tool call only. Plain text without a tool call is not allowed${
-    names.includes("send_message")
-      ? "; to answer the person, call send_message."
-      : "."
-  }`;
+  return "Required: respond with a tool call only. Plain text without a tool call is not allowed.";
 }
 
 const toolCallSchema = z.looseObject({
@@ -194,16 +183,34 @@ async function askBeatApi(
     );
     if (!response.ok || !response.body) {
       await response.body?.cancel();
-      return { failure: `HTTP ${String(response.status)}`, outage: true };
+      // A key over its requests per minute (a lifetime top-up decides how
+      // many) is asked again when BeatAPI says so, not in five minutes.
+      const wait = Number(response.headers.get("retry-after"));
+      return {
+        failure: `HTTP ${String(response.status)}`,
+        outage: true,
+        retryAfterMs:
+          response.status === 429 && wait > 0
+            ? Math.min(wait, 60) * 1000
+            : undefined,
+      };
     }
     const eventStream = (response.headers.get("content-type") ?? "").includes(
       "text/event-stream"
     );
     const text = readAnswer(await response.text(), eventStream);
     if (text === undefined)
-      return { failure: "error in the answer", outage: true };
+      return {
+        failure: "error in the answer",
+        outage: true,
+        retryAfterMs: undefined,
+      };
     if (note !== undefined && !hasToolCall(text, eventStream)) {
-      return { failure: "no tool call", outage: false };
+      return {
+        failure: "no tool call",
+        outage: false,
+        retryAfterMs: undefined,
+      };
     }
     const responseHeaders = new Headers(response.headers);
     responseHeaders.delete("content-length");
@@ -220,6 +227,7 @@ async function askBeatApi(
     return {
       failure: error instanceof Error ? error.message.slice(0, 160) : "thrown",
       outage: true,
+      retryAfterMs: undefined,
     };
   }
 }
@@ -249,7 +257,9 @@ export async function withBeatApiFirst(
   }
   // An answer without the forced tool call is no outage: the next call tries
   // BeatAPI again.
-  if (outcome.outage) downUntil = Date.now() + skipForMs;
+  if (outcome.outage) {
+    downUntil = Date.now() + (outcome.retryAfterMs ?? skipForMs);
+  }
   console.warn("[model] beatapi failed, the next backend answers", {
     reason: outcome.failure,
   });

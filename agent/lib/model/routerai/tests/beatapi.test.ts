@@ -153,7 +153,7 @@ describe("a chat call for a model BeatAPI hosts", () => {
     ).text();
 
     expect(backends(sent)).toEqual(["beatapi"]);
-    expect(sent[0]?.lastMessage).toContain("call send_message");
+    expect(sent[0]?.lastMessage).toContain("tool call only");
   });
 
   it("sends a forced call's plain-text answer to the next backend, and asks BeatAPI again next time", async () => {
@@ -232,6 +232,36 @@ describe("a chat call for a model BeatAPI hosts", () => {
     await (await fetchModel(routerAiUrl, call({ toolChoice: "auto" }))).text();
 
     expect(backends(sent)).toEqual(["beatapi", "runinfra", "runinfra"]);
+  });
+
+  it("asks BeatAPI again when its Retry-After has passed, not five minutes later", async () => {
+    vi.useFakeTimers();
+    const runInfraAnswer = () =>
+      streamed(
+        'data: {"choices":[],"usage":{"completion_tokens":1,"cost":0.001,"prompt_tokens":2}}\n\ndata: [DONE]\n\n'
+      );
+    const sent = network({
+      beat: [
+        new Response("{}", { headers: { "retry-after": "20" }, status: 429 }),
+        streamed(beatStream),
+      ],
+      runInfra: [runInfraAnswer(), runInfraAnswer()],
+    });
+    const fetchModel = await modelFetch();
+    const ask = async () =>
+      (await fetchModel(routerAiUrl, call({ toolChoice: "auto" }))).text();
+
+    await ask();
+    await ask();
+    vi.advanceTimersByTime(21_000);
+    await ask();
+
+    expect(backends(sent)).toEqual([
+      "beatapi",
+      "runinfra",
+      "runinfra",
+      "beatapi",
+    ]);
   });
 
   it("treats an error inside the answer as a failure", async () => {
