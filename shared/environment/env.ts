@@ -370,6 +370,11 @@ export const env = createEnv({
     // flash mode when they only search (`agent/lib/browser-vm/pilot.ts`,
     // docs/browser-speed.md). Unset, every errand runs as before.
     BROWSER_FAST_WORKSPACES: workspaceListSchema.optional(),
+    // Whether that pilot runs at all. Off by default (02.11, owner: a slower
+    // errand is fine when it costs less; Together is twice DeepInfra's price
+    // per step, ≈ 3.7 ₽ an errand): production's list stays `*`, and only
+    // `pilot` here turns it back on.
+    BROWSER_FAST_MODE: z.enum(["pilot", "off"]).default("off"),
     // Whose errand reports wait at most two seconds for the picture of the
     // run's last page when the run saved no item photos, rather than for the
     // download and store of it (1.3–19.1 s on 19.10): workspace ids or

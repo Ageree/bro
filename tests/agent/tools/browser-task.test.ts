@@ -10307,6 +10307,7 @@ describe("browser_task flash mode for errands that only search", () => {
   afterEach(() => {
     vi.stubEnv("FLASH_SEARCH_WORKSPACES", "");
     vi.stubEnv("BROWSER_FAST_WORKSPACES", "");
+    vi.stubEnv("BROWSER_FAST_MODE", "");
   });
 
   /** Whether the run started last runs in flash mode. */
@@ -10332,6 +10333,7 @@ describe("browser_task flash mode for errands that only search", () => {
   }, 20_000);
 
   it("starts a search in flash mode in the fast browser's pilot too", async () => {
+    vi.stubEnv("BROWSER_FAST_MODE", "pilot");
     vi.stubEnv("BROWSER_FAST_WORKSPACES", workspaceId);
     await startErrand("");
     expect(lastSearch()).toBe(true);
