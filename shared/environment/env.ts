@@ -1079,6 +1079,19 @@ export const env = createEnv({
     // prompt cache at $0.075 per million input tokens, $0.0015 cached and
     // $0.30 output (their public price, the `deepseek` group's 0.5 ratio
     // confirmed by a balance check on 02.11). Unset, it is never asked.
+    // OrcaRouter serves it ahead of BeatAPI, with the same model Bro runs on
+    // (`agent/lib/model/routerai/orcarouter.ts`).
+    ORCAROUTER_API_KEY: pastedKeySchema.optional(),
+    // The key goes to this address with every call: https only.
+    ORCAROUTER_BASE_URL: requiredValue
+      .refine(
+        (value) => URL.parse(value)?.protocol === "https:",
+        "ORCAROUTER_BASE_URL must be an absolute https URL"
+      )
+      .default("https://api.orcarouter.ai/v1"),
+    ORCAROUTER_DEEPSEEK_FLASH_MODEL: requiredValue.default(
+      "deepseek/deepseek-v4.1-flash-1017"
+    ),
     BEATAPI_API_KEY: pastedKeySchema.optional(),
     // The key goes to this address with every call: https only.
     BEATAPI_BASE_URL: requiredValue
