@@ -2,6 +2,7 @@ import { z } from "zod";
 import { watchedModelFetch } from "../stream-watchdog";
 import { failureStatus, reportedErrorSchema } from "./errors";
 import { withFoundationModelsFallback } from "./fallback";
+import { withBeatApiFirst } from "./beatapi";
 import { withRunInfraFirst } from "./runinfra";
 import { noteFailedHost, routedAroundFailedHosts } from "./hosts";
 import { notePrefix } from "./prefix";
@@ -210,8 +211,9 @@ const attempts = 3;
  * nothing of a failed answer may reach eve. Bro sends its words through
  * `send_message`, so no person waits on the streamed text.
  *
- * A chat call for a model RunInfra hosts goes there first when its key is
- * set, and to RouterAI on any failure (`runinfra.ts`). A chat call whose
+ * A chat call for a model BeatAPI hosts goes there first when its key is
+ * set (`beatapi.ts`), then to RunInfra the same way (`runinfra.ts`), and to
+ * RouterAI on any failure of both. A chat call whose
  * route to RouterAI failed goes to Cloud.ru Foundation Models when its key
  * is set (`fallback.ts`).
  */
@@ -224,9 +226,11 @@ export async function routerAiModelFetch(
   if (body !== undefined && url?.pathname.endsWith("/chat/completions")) {
     notePrefix(body);
   }
-  return withRunInfraFirst(input, init, () =>
-    withFoundationModelsFallback(input, init, async () =>
-      attemptRouterAiFetch(input, init, 1)
+  return withBeatApiFirst(input, init, async () =>
+    withRunInfraFirst(input, init, () =>
+      withFoundationModelsFallback(input, init, async () =>
+        attemptRouterAiFetch(input, init, 1)
+      )
     )
   );
 }
