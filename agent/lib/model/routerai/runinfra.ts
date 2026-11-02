@@ -60,7 +60,7 @@ const chatCallSchema = z.object({
   top_p: z.number().optional(),
 });
 
-type ChatCall = z.infer<typeof chatCallSchema>;
+export type ChatCall = z.infer<typeof chatCallSchema>;
 
 /**
  * Message parts RunInfra's text-only model refuses (400
@@ -88,10 +88,15 @@ function carriesMedia(call: ChatCall) {
   );
 }
 
-/** The call's JSON body, when it is a chat call RunInfra can serve. */
-function servedCall(
+/**
+ * The call's JSON body, when it is a chat call an OpenAI-compatible backend
+ * can serve: no web search, no picture or file, a model of `models`
+ * (RunInfra's by default; `beatapi.ts` brings its own).
+ */
+export function servedCall(
   input: string | URL | Request,
-  init: RequestInit | undefined
+  init: RequestInit | undefined,
+  models: ReadonlyMap<string, string> = hosted
 ) {
   const url = URL.parse(input instanceof Request ? input.url : input);
   const body = z.string().safeParse(init?.body).data;
@@ -102,7 +107,7 @@ function servedCall(
     const call = chatCallSchema.safeParse(JSON.parse(body)).data;
     if (call === undefined || (call.plugins?.length ?? 0) > 0) return undefined;
     if (carriesMedia(call)) return undefined;
-    const model = hosted.get(call.model);
+    const model = models.get(call.model);
     return model === undefined ? undefined : { call, model };
   } catch {
     return undefined;
@@ -117,7 +122,7 @@ function reasoningEffort(reasoning: ChatCall["reasoning"]) {
 }
 
 /** The body RunInfra gets: OpenAI's fields, its model id, usage asked for. */
-function runInfraBody(call: ChatCall, model: string) {
+export function runInfraBody(call: ChatCall, model: string) {
   return JSON.stringify({
     frequency_penalty: call.frequency_penalty,
     max_tokens: call.max_tokens,
@@ -164,7 +169,7 @@ function inRoubles(json: string) {
 const failedAnswerSchema = z.looseObject({ error: z.json() });
 
 /** Whether one JSON answer, or one event of a stream, is a failure. */
-function failed(json: string) {
+export function failed(json: string) {
   try {
     return failedAnswerSchema.safeParse(JSON.parse(json)).success;
   } catch {
