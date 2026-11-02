@@ -1381,12 +1381,13 @@ export const env = createEnv({
     COMPACTION_WORKSPACES: workspaceListSchema.optional(),
     // The whole input of a step, instructions and tools included, past which
     // a pilot turn compacts. Compaction is a model call and a miss of the
-    // prompt cache, so never below 100k.
+    // prompt cache, so never below 100k. 100k by default: a step at 360k
+    // tokens with a cold cache costs ~4,6 ₽ against ~0,2 ₽ at 100k.
     COMPACTION_INPUT_TOKENS: z.coerce
       .number()
       .int()
       .min(100_000)
-      .default(150_000),
+      .default(100_000),
     // The pilot of one history across channels (docs/roadmap.md, item 28):
     // workspace ids or owners' emails, or `*` for every workspace, whose
     // chats log what the person said (`conversation_log`) and whose

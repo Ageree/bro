@@ -82,19 +82,35 @@ describe("whether a step may compact the conversation", () => {
     ).toBe(false);
   });
 
-  it("never compacts the task agent's report, a retry or a context message last", () => {
+  it("never compacts the task agent's report, a retry or the checkpoint last", () => {
     for (const kind of [
       "execution.background_task",
       "execution.retry",
       "execution.continuation",
-      "context.state",
-      "context.instruction",
       "context.compaction",
     ]) {
       expect(compactsAtTurnStart([...earlier, opener, tagged("x", kind)])).toBe(
         false
       );
     }
+  });
+
+  it("looks past a few short context lines after the opener, not past many", () => {
+    const line = (n: number) => tagged(`Геопозиция ${n}`, "context.location");
+    expect(compactsAtTurnStart([...earlier, opener, line(1), line(2)])).toBe(
+      true
+    );
+    expect(
+      compactsAtTurnStart([
+        ...earlier,
+        opener,
+        line(1),
+        line(2),
+        line(3),
+        line(4),
+        line(5),
+      ])
+    ).toBe(false);
   });
 
   it("never compacts after a step or an approval's answer", () => {
