@@ -11,7 +11,11 @@ import {
 import { agencyApproval, type AgencyDetails } from "@agent/lib/agency/approval";
 import { journaledAgencyCall } from "@agent/lib/agency/journal";
 import { domesticPhoneSchema } from "@shared/phone/policy";
-import { activatePhone, releasePhone } from "@db/services/phone/lifecycle";
+import {
+  activatePhone,
+  provisionClaimedRequest,
+  releasePhone,
+} from "@db/services/phone/lifecycle";
 import { quoteNumber } from "@shared/phone/exolve";
 import {
   CallNotSubmittedError,
@@ -21,8 +25,10 @@ import {
 import {
   changePhoneState,
   claimCallStart,
+  claimPhoneNumberRequestOf,
   hasEarlierConnectedCall,
   listPhoneCalls,
+  numbersOnDemand,
   planOutboundCall,
   phonePilot,
   readHeldPhoneNumbers,
@@ -31,7 +37,9 @@ import {
   recordCallAccepted,
   recordCallNotSubmitted,
   recordCallUncertain,
+  requestPhoneNumberNow,
   savePhoneQuote,
+  type PhoneReportRoute,
 } from "@db/services/phone";
 import { env } from "@shared/environment";
 import { LiveCallUnavailableError } from "@agent/lib/phone/live/call";
@@ -255,14 +263,83 @@ const call = defineTool({
           )
       );
     const serialized = JSON.stringify(input);
+    const scope = phoneScope(context, serialized);
+    const preparing = await numberForCall(context, scope);
+    if (preparing) return preparing;
     return placeCall(
       context,
       input,
-      phoneScope(context, serialized),
+      scope,
       phoneActionTurn(context, serialized)
     );
   },
 });
+
+const numberWaitMs = 90_000;
+const numberPollMs = 3_000;
+
+/**
+ * `on-demand`: a workspace with no line, or with a quote nobody activated, gets its number when the person first asks
+ * to call. The request is worked here, so the call goes through in this same turn if the line comes up in time; the
+ * person's request for the call is their consent for it. Null means dial now.
+ */
+async function numberForCall(
+  context: ToolContext,
+  scope: ReturnType<typeof pilotScope>
+) {
+  if (!numbersOnDemand()) return null;
+  const number = await readPhoneNumber(scope);
+  // Any other state is left to placeCall, which refuses a line that is not active.
+  if (number && number.state !== "quoted") return null;
+  if (await provisionNumberNow(scope, phoneReportRoute(context))) return null;
+  return {
+    state: "number_preparing",
+    note: "Bro's own number for calls is being connected; it takes a few minutes. No call was placed. Tell the person the number is being set up and ask them to repeat the request in a couple of minutes. Do not retry in this turn.",
+  };
+}
+
+/** Whether the line is active when the request has been worked here, or, if the tick holds it, when that attempt ends or the wait runs out. */
+async function provisionNumberNow(
+  scope: ReturnType<typeof pilotScope>,
+  route: PhoneReportRoute
+) {
+  await requestPhoneNumberNow(scope, route);
+  const claimed = await claimPhoneNumberRequestOf(scope);
+  if (claimed)
+    await boundedBy(
+      provisionClaimedRequest(claimed).catch(() => undefined),
+      numberWaitMs
+    );
+  else await waitForTick(scope, Date.now() + numberWaitMs);
+  return (await readPhoneNumber(scope))?.state === "active";
+}
+
+/** The tick holds the request: poll the line while that attempt runs. A request not being worked (due later, in backoff) has nothing to wait for. */
+async function waitForTick(
+  scope: ReturnType<typeof pilotScope>,
+  deadline: number
+): Promise<void> {
+  if ((await readPhoneNumber(scope))?.state === "active") return;
+  if ((await readPhoneNumberRequest(scope))?.state !== "working") return;
+  if (Date.now() >= deadline) return;
+  await new Promise((resolve) => setTimeout(resolve, numberPollMs));
+  return waitForTick(scope, deadline);
+}
+
+/** Waits for `work` up to `ms`; the work itself is not cancelled, and its lease expires if the process ends first. */
+async function boundedBy<T>(work: Promise<T>, ms: number) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      work,
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 async function placeCall(
   context: ToolContext,

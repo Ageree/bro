@@ -9,7 +9,14 @@ import { toolContext } from "@tests/helpers/tool-context";
 
 const services = vi.hoisted(() => ({
   accepted: vi.fn<() => void>(),
+  claimOf:
+    vi.fn<() => Promise<{ leaseToken: string; workspaceId: string } | null>>(),
   liveCalls: vi.fn<() => boolean>(() => false),
+  onDemand: vi.fn<() => boolean>(() => false),
+  provisionClaimed: vi.fn<() => Promise<string>>(),
+  readNumber: vi.fn<() => Promise<{ state: string } | null>>(),
+  readRequest: vi.fn<() => Promise<{ state: string } | null>>(),
+  requestNow: vi.fn<() => Promise<void>>(),
   placeLiveCall:
     vi.fn<
       () => Promise<{ sessionId: string; dial: () => void; cancel: () => void }>
@@ -25,25 +32,24 @@ vi.mock("@db/services/phone", () => ({
   claimCallStart: async () => ({ id: "local-call" }),
   hasEarlierConnectedCall: async () => false,
   listPhoneCalls: vi.fn<() => void>(),
+  claimPhoneNumberRequestOf: services.claimOf,
+  numbersOnDemand: services.onDemand,
   phonePilot: () => true,
   planOutboundCall: async () => ({
     created: true,
     row: { id: "local-call", state: "planned" },
   }),
-  readPhoneNumber: async () => ({
-    agentId: "agent",
-    number: "+74950000001",
-    outboundPhoneNumberId: "outbound",
-    sipId: "sip",
-  }),
-  readPhoneNumberRequest: vi.fn<() => void>(),
+  readPhoneNumber: services.readNumber,
+  readPhoneNumberRequest: services.readRequest,
   recordCallAccepted: services.accepted,
   recordCallNotSubmitted: services.notSubmitted,
   recordCallUncertain: vi.fn<() => void>(),
+  requestPhoneNumberNow: services.requestNow,
   savePhoneQuote: vi.fn<() => void>(),
 }));
 vi.mock("@db/services/phone/lifecycle", () => ({
   activatePhone: vi.fn<() => void>(),
+  provisionClaimedRequest: services.provisionClaimed,
   releasePhone: vi.fn<() => void>(),
 }));
 vi.mock("@shared/phone/exolve", () => ({ quoteNumber: vi.fn<() => void>() }));
@@ -159,9 +165,27 @@ function inContext(run: () => Promise<void>) {
 }
 
 const task = "Забронировать столик на двоих на 20:00.";
+const activeLine = {
+  agentId: "agent",
+  number: "+74950000001",
+  outboundPhoneNumberId: "outbound",
+  sipId: "sip",
+  state: "active",
+};
 
 beforeEach(() => {
   services.accepted.mockReset();
+  services.claimOf.mockReset();
+  services.claimOf.mockResolvedValue(null);
+  services.onDemand.mockReturnValue(false);
+  services.provisionClaimed.mockReset();
+  services.provisionClaimed.mockResolvedValue("complete");
+  services.readNumber.mockReset();
+  services.readNumber.mockResolvedValue(activeLine);
+  services.readRequest.mockReset();
+  services.readRequest.mockResolvedValue(null);
+  services.requestNow.mockReset();
+  services.requestNow.mockResolvedValue(undefined);
   services.liveCalls.mockReturnValue(false);
   services.placeLiveCall.mockReset();
   services.startCall.mockReset();
@@ -244,6 +268,70 @@ describe("phone-call on the person's request", () => {
       await expect(
         phone.dial("call-1", { target: "+79991234567", task })
       ).rejects.toThrow(/root-user message/u);
+      expect(services.startCall).not.toHaveBeenCalled();
+    })
+  );
+});
+
+describe("phone-call on the first request in on-demand mode", () => {
+  const request = { leaseToken: "lease", workspaceId: "workspace" };
+
+  it(
+    "allocates the number now and places the call in the same turn once the line is up",
+    inContext(async () => {
+      services.onDemand.mockReturnValue(true);
+      services.readNumber
+        .mockResolvedValueOnce(null)
+        .mockResolvedValue(activeLine);
+      services.claimOf.mockResolvedValue(request);
+      const phone = await setUp([
+        person("Позвони в салон и узнай про субботу"),
+      ]);
+      const target = "+74951234567";
+      await phone.decide("call-1", { target, task });
+      expect(await phone.dial("call-1", { target, task })).toMatchObject({
+        state: "accepted",
+      });
+      expect(services.requestNow).toHaveBeenCalledTimes(1);
+      expect(services.provisionClaimed).toHaveBeenCalledWith(request);
+      expect(services.startCall).toHaveBeenCalledTimes(1);
+    })
+  );
+
+  it(
+    "answers number_preparing and places no call when the provisioning does not finish",
+    inContext(async () => {
+      services.onDemand.mockReturnValue(true);
+      services.readNumber.mockResolvedValue(null);
+      services.claimOf.mockResolvedValue(request);
+      services.provisionClaimed.mockResolvedValue("retry");
+      const phone = await setUp([
+        person("Позвони в салон и узнай про субботу"),
+      ]);
+      const target = "+74951234567";
+      await phone.decide("call-1", { target, task });
+      expect(await phone.dial("call-1", { target, task })).toMatchObject({
+        state: "number_preparing",
+      });
+      expect(services.startCall).not.toHaveBeenCalled();
+    })
+  );
+
+  it(
+    "does not wait for a request that is not being worked, such as one in backoff",
+    inContext(async () => {
+      services.onDemand.mockReturnValue(true);
+      services.readNumber.mockResolvedValue(null);
+      services.readRequest.mockResolvedValue({ state: "retry" });
+      const phone = await setUp([
+        person("Позвони в салон и узнай про субботу"),
+      ]);
+      const target = "+74951234567";
+      await phone.decide("call-1", { target, task });
+      expect(await phone.dial("call-1", { target, task })).toMatchObject({
+        state: "number_preparing",
+      });
+      expect(services.provisionClaimed).not.toHaveBeenCalled();
       expect(services.startCall).not.toHaveBeenCalled();
     })
   );

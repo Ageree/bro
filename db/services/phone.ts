@@ -48,6 +48,15 @@ export function phonePilot(scope: AccessScope) {
   );
 }
 
+/** The platform allocates a number itself: at workspace creation (`on`) or when the person first asks to call (`on-demand`). */
+export function platformAllocatesNumbers() {
+  return env.PHONE_AUTO_PROVISION !== "off";
+}
+
+export function numbersOnDemand() {
+  return env.PHONE_AUTO_PROVISION === "on-demand";
+}
+
 type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type NumberRow = typeof phoneNumbers.$inferSelect;
 type CallRow = typeof phoneCalls.$inferSelect;
@@ -72,6 +81,25 @@ export async function enqueueNewWorkspacePhone(
     .onConflictDoNothing();
 }
 
+/** `on-demand`: the person's first call asks for the number now, with the report route of that conversation. */
+export async function requestPhoneNumberNow(
+  scope: AccessScope,
+  route: PhoneReportRoute
+) {
+  requirePhoneTransactions();
+  await db.transaction(async (transaction) => {
+    await requireOwner(transaction, scope);
+    await transaction
+      .insert(phoneNumberRequests)
+      .values({
+        workspaceId: scope.workspaceId,
+        ownerUserId: scope.userId,
+        ...route,
+      })
+      .onConflictDoNothing();
+  });
+}
+
 export async function readPhoneNumberRequest(scope: AccessScope) {
   const [row] = await db
     .select({
@@ -93,71 +121,114 @@ export async function readPhoneNumberRequest(scope: AccessScope) {
 
 export async function claimPhoneNumberRequests() {
   requirePhoneTransactions();
-  if (env.PHONE_AUTO_PROVISION !== "on" || !env.PHONE_WORKSPACES?.length)
-    return [];
+  if (!platformAllocatesNumbers() || !env.PHONE_WORKSPACES?.length) return [];
   return db.transaction(async (transaction) => {
-    await transaction.execute(
-      sql`select pg_advisory_xact_lock(hashtextextended('phone:allocation', 0))`
-    );
-    const [active] = await transaction
-      .select({ total: sql<number>`count(*)::int` })
-      .from(phoneNumbers)
-      .where(
-        inArray(phoneNumbers.state, [
-          "provisioning",
-          "uncertain",
-          "active",
-          "disabled",
-          "releasing",
-          "operator-required",
-        ])
-      );
-    const capacity =
-      env.PHONE_MAX_ACTIVE_NUMBERS === undefined ||
-      (active?.total ?? 0) < env.PHONE_MAX_ACTIVE_NUMBERS;
+    await lockAllocation(transaction);
     const rows = await transaction
       .select()
       .from(phoneNumberRequests)
       .where(
         and(
-          inArray(phoneNumberRequests.state, ["pending", "retry", "working"]),
-          lt(phoneNumberRequests.nextAttemptAt, new Date(Date.now() + 1)),
-          or(
-            isNull(phoneNumberRequests.leaseUntil),
-            lt(phoneNumberRequests.leaseUntil, new Date())
-          ),
-          env.PHONE_WORKSPACES?.includes("*")
-            ? undefined
-            : inArray(
-                phoneNumberRequests.workspaceId,
-                env.PHONE_WORKSPACES ?? []
-              ),
-          capacity
-            ? undefined
-            : sql`exists(select 1 from ${phoneNumbers} where ${phoneNumbers.workspaceId}=${phoneNumberRequests.workspaceId} and ${phoneNumbers.state} not in ('quoted','released'))`
+          claimableRequests(),
+          workspacesInPilot(),
+          await capacityFilter(transaction)
         )
       )
       .orderBy(asc(phoneNumberRequests.createdAt))
       .limit(1)
       .for("update", { skipLocked: true });
-    return Promise.all(
-      rows.map(async (row) => {
-        const [claimed] = await transaction
-          .update(phoneNumberRequests)
-          .set({
-            state: "working",
-            attempts: row.attempts + 1,
-            leaseToken: randomUUID(),
-            leaseUntil: new Date(Date.now() + 10 * 60_000),
-            updatedAt: new Date(),
-          })
-          .where(eq(phoneNumberRequests.workspaceId, row.workspaceId))
-          .returning();
-        if (!claimed) throw new Error("Phone allocation request lease lost.");
-        return claimed;
-      })
-    );
+    return Promise.all(rows.map((row) => leaseRequest(transaction, row)));
   });
+}
+
+/** The same claim for one workspace's request, for a call that cannot wait for the minute's tick. */
+export async function claimPhoneNumberRequestOf(scope: AccessScope) {
+  requirePhoneTransactions();
+  if (!platformAllocatesNumbers() || !env.PHONE_WORKSPACES?.length) return null;
+  return db.transaction(async (transaction) => {
+    await lockAllocation(transaction);
+    const [row] = await transaction
+      .select()
+      .from(phoneNumberRequests)
+      .where(
+        and(
+          claimableRequests(),
+          workspacesInPilot(),
+          eq(phoneNumberRequests.workspaceId, scope.workspaceId),
+          eq(phoneNumberRequests.ownerUserId, scope.userId),
+          await capacityFilter(transaction)
+        )
+      )
+      .limit(1)
+      .for("update", { skipLocked: true });
+    return row ? leaseRequest(transaction, row) : null;
+  });
+}
+
+async function lockAllocation(transaction: Transaction) {
+  await transaction.execute(
+    sql`select pg_advisory_xact_lock(hashtextextended('phone:allocation', 0))`
+  );
+}
+
+/** Due, unleased requests; a lease held by a running attempt is not claimable. */
+function claimableRequests() {
+  return and(
+    inArray(phoneNumberRequests.state, ["pending", "retry", "working"]),
+    lt(phoneNumberRequests.nextAttemptAt, new Date(Date.now() + 1)),
+    or(
+      isNull(phoneNumberRequests.leaseUntil),
+      lt(phoneNumberRequests.leaseUntil, new Date())
+    )
+  );
+}
+
+function workspacesInPilot() {
+  return env.PHONE_WORKSPACES?.includes("*")
+    ? undefined
+    : inArray(phoneNumberRequests.workspaceId, env.PHONE_WORKSPACES ?? []);
+}
+
+/** At the active-number limit, only a workspace that already holds a line may claim. */
+async function capacityFilter(transaction: Transaction) {
+  const [active] = await transaction
+    .select({ total: sql<number>`count(*)::int` })
+    .from(phoneNumbers)
+    .where(
+      inArray(phoneNumbers.state, [
+        "provisioning",
+        "uncertain",
+        "active",
+        "disabled",
+        "releasing",
+        "operator-required",
+      ])
+    );
+  const capacity =
+    env.PHONE_MAX_ACTIVE_NUMBERS === undefined ||
+    (active?.total ?? 0) < env.PHONE_MAX_ACTIVE_NUMBERS;
+  return capacity
+    ? undefined
+    : sql`exists(select 1 from ${phoneNumbers} where ${phoneNumbers.workspaceId}=${phoneNumberRequests.workspaceId} and ${phoneNumbers.state} not in ('quoted','released'))`;
+}
+
+async function leaseRequest(
+  transaction: Transaction,
+  row: typeof phoneNumberRequests.$inferSelect
+) {
+  const [claimed] = await transaction
+    .update(phoneNumberRequests)
+    .set({
+      state: "working",
+      attempts: row.attempts + 1,
+      leaseToken: randomUUID(),
+      leaseUntil: new Date(Date.now() + 10 * 60_000),
+      updatedAt: new Date(),
+    })
+    .where(eq(phoneNumberRequests.workspaceId, row.workspaceId))
+    .returning();
+  if (!claimed) throw new Error("Phone allocation request lease lost.");
+  return claimed;
 }
 
 export async function finishPhoneNumberRequest(

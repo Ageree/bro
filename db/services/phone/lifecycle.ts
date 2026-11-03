@@ -9,6 +9,7 @@ import {
   readPhoneNumber,
   savePhoneQuote,
 } from "@db/services/phone";
+import type { claimPhoneNumberRequestOf } from "@db/services/phone";
 import type { AccessScope } from "@shared/identity/access-scope";
 import { env } from "@shared/environment";
 import * as exolve from "@shared/phone/exolve";
@@ -203,104 +204,98 @@ export async function activatePhone(
 
 export async function provisionNewWorkspacePhones() {
   const requests = await claimPhoneNumberRequests();
-  await Promise.all(
-    requests.map(async (request) => {
-      const token = request.leaseToken;
-      if (!token) return;
-      const scope = {
-        workspaceId: request.workspaceId,
-        userId: request.ownerUserId,
-      };
-      try {
-        if (!phonePilot(scope)) {
-          await finishPhoneNumberRequest(
-            scope.workspaceId,
-            token,
-            "retry",
-            "configuration"
-          );
-          return;
-        }
-        let number = await readPhoneNumber(scope);
-        if (
-          number &&
-          ["active", "disabled", "released"].includes(number.state)
-        ) {
-          await finishPhoneNumberRequest(
-            scope.workspaceId,
-            token,
-            "complete",
-            null
-          );
-          return;
-        }
-        if (
-          number?.state === "operator-required" ||
-          number?.state === "releasing"
-        ) {
-          await finishPhoneNumberRequest(
-            scope.workspaceId,
-            token,
-            "operator-required",
-            "uncertain"
-          );
-          return;
-        }
-        if (!number || (number.state === "quoted" && !number.numberId)) {
-          const quote = await exolve.quoteNumber(
-            await readHeldPhoneNumbers(scope)
-          );
-          domesticPhoneSchema.parse(quote.candidate);
-          if (
-            ![quote.setupRub, quote.monthlyRub, quote.sipMonthlyRub].every(
-              (fee) => Number.isInteger(fee) && fee >= 0
-            ) ||
-            quote.setupRub > env.PHONE_MAX_SETUP_RUB ||
-            quote.monthlyRub > env.PHONE_MAX_MONTHLY_RUB ||
-            quote.sipMonthlyRub > env.PHONE_MAX_SIP_MONTHLY_RUB
-          )
-            throw new PhonePreflightError("FEE_CAP_CHANGED");
-          number = await savePhoneQuote(
-            scope,
-            {
-              number: quote.candidate,
-              setupRub: quote.setupRub,
-              monthlyRub: quote.monthlyRub,
-              sipMonthlyRub: quote.sipMonthlyRub,
-              quotedAt: quote.quotedAt,
-            },
-            {
-              sessionId: request.sessionId,
-              conversationId: request.conversationId,
-              conversationChannel: request.conversationChannel,
-            }
-          );
-        }
-        const provisioned = await activatePhone(scope, number.id, true);
-        await finishPhoneNumberRequest(
-          scope.workspaceId,
-          token,
-          provisioned.state === "active"
-            ? "complete"
-            : provisioned.state === "operator-required"
-              ? "operator-required"
-              : "retry",
-          provisioned.state === "active"
-            ? null
-            : provisioned.state === "quoted"
-              ? "preflight"
-              : "uncertain"
-        );
-      } catch (error) {
-        await finishPhoneNumberRequest(
-          scope.workspaceId,
-          token,
-          "retry",
-          error instanceof PhonePreflightError ? "preflight" : "configuration"
-        );
-      }
-    })
+  await Promise.all(requests.map(provisionClaimedRequest));
+}
+
+type ClaimedRequest = NonNullable<
+  Awaited<ReturnType<typeof claimPhoneNumberRequestOf>>
+>;
+type RequestState = "complete" | "retry" | "operator-required";
+interface RequestResult {
+  state: RequestState;
+  failure: "preflight" | "uncertain" | "configuration" | null;
+}
+
+/**
+ * Works one claimed request to its end and releases its lease. Returns the
+ * state the request was finished with; the number itself may still be
+ * unfinished (`retry`), and the caller reads the line for the rest.
+ */
+export async function provisionClaimedRequest(
+  request: ClaimedRequest
+): Promise<RequestState> {
+  const token = request.leaseToken;
+  if (!token) return "retry";
+  const scope = {
+    workspaceId: request.workspaceId,
+    userId: request.ownerUserId,
+  };
+  let result: RequestResult;
+  try {
+    result = await allocateRequest(scope, request);
+  } catch (error) {
+    result = {
+      state: "retry",
+      failure:
+        error instanceof PhonePreflightError ? "preflight" : "configuration",
+    };
+  }
+  await finishPhoneNumberRequest(
+    scope.workspaceId,
+    token,
+    result.state,
+    result.failure
   );
+  return result.state;
+}
+
+async function allocateRequest(
+  scope: AccessScope,
+  request: ClaimedRequest
+): Promise<RequestResult> {
+  if (!phonePilot(scope)) return { state: "retry", failure: "configuration" };
+  let number = await readPhoneNumber(scope);
+  if (number && ["active", "disabled", "released"].includes(number.state))
+    return { state: "complete", failure: null };
+  if (number?.state === "operator-required" || number?.state === "releasing")
+    return { state: "operator-required", failure: "uncertain" };
+  if (!number || (number.state === "quoted" && !number.numberId)) {
+    const quote = await exolve.quoteNumber(await readHeldPhoneNumbers(scope));
+    domesticPhoneSchema.parse(quote.candidate);
+    if (
+      ![quote.setupRub, quote.monthlyRub, quote.sipMonthlyRub].every(
+        (fee) => Number.isInteger(fee) && fee >= 0
+      ) ||
+      quote.setupRub > env.PHONE_MAX_SETUP_RUB ||
+      quote.monthlyRub > env.PHONE_MAX_MONTHLY_RUB ||
+      quote.sipMonthlyRub > env.PHONE_MAX_SIP_MONTHLY_RUB
+    )
+      throw new PhonePreflightError("FEE_CAP_CHANGED");
+    number = await savePhoneQuote(
+      scope,
+      {
+        number: quote.candidate,
+        setupRub: quote.setupRub,
+        monthlyRub: quote.monthlyRub,
+        sipMonthlyRub: quote.sipMonthlyRub,
+        quotedAt: quote.quotedAt,
+      },
+      {
+        sessionId: request.sessionId,
+        conversationId: request.conversationId,
+        conversationChannel: request.conversationChannel,
+      }
+    );
+  }
+  const provisioned = await activatePhone(scope, number.id, true);
+  if (provisioned.state === "active")
+    return { state: "complete", failure: null };
+  if (provisioned.state === "operator-required")
+    return { state: "operator-required", failure: "uncertain" };
+  return {
+    state: "retry",
+    failure: provisioned.state === "quoted" ? "preflight" : "uncertain",
+  };
 }
 
 export async function releasePhone(scope: AccessScope) {

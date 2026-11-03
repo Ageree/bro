@@ -196,7 +196,7 @@ function browserVmProxySchema(name: string) {
 
 export const env = createEnv({
   server: {
-    PHONE_AUTO_PROVISION: z.enum(["on", "off"]).default("off"),
+    PHONE_AUTO_PROVISION: z.enum(["on", "off", "on-demand"]).default("off"),
     PHONE_WORKSPACES: workspaceListSchema.optional(),
     // Bro's own address book (`agent/tools/phone-contacts.ts`): workspace ids or *.
     CONTACTS_WORKSPACES: workspaceListSchema.optional(),
