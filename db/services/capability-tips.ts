@@ -1,4 +1,4 @@
-import { and, count, eq, inArray, max, sql } from "drizzle-orm";
+import { and, count, eq, gt, gte, inArray, lt, max, sql } from "drizzle-orm";
 import { capabilityTips, db, proactiveWatches, turnLog } from "@db";
 
 /**
@@ -102,4 +102,50 @@ export async function claimCapabilityTip(
       });
     return picked;
   });
+}
+
+/**
+ * People who talked to Bro and went quiet: at least `minTurns` turns of
+ * their own in the last `goneMs`, the latest of them more than `quietMs`
+ * ago, longest quiet first. Each comes with the user of their latest turn.
+ */
+export async function listQuietWorkspaces(
+  now: Date,
+  policy: {
+    readonly goneMs: number;
+    readonly limit: number;
+    readonly minTurns: number;
+    readonly quietMs: number;
+  }
+) {
+  const latest = max(turnLog.startedAt);
+  const rows = await db
+    .select({
+      latest,
+      userId: sql<
+        string | null
+      >`(array_agg(${turnLog.userId} order by ${turnLog.startedAt} desc))[1]`,
+      workspaceId: turnLog.workspaceId,
+    })
+    .from(turnLog)
+    .where(
+      and(
+        eq(turnLog.kind, "person"),
+        gt(turnLog.startedAt, new Date(now.getTime() - policy.goneMs))
+      )
+    )
+    .groupBy(turnLog.workspaceId)
+    .having(
+      and(
+        lt(latest, new Date(now.getTime() - policy.quietMs)),
+        gte(count(), policy.minTurns)
+      )
+    )
+    .orderBy(latest)
+    .limit(policy.limit);
+  return rows.flatMap((row) =>
+    row.userId === null
+      ? []
+      : [{ userId: row.userId, workspaceId: row.workspaceId }]
+  );
 }

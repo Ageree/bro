@@ -44,6 +44,11 @@ interface Capability {
   readonly label: string;
   /** What Bro can do for them, as a tip tells the model. */
   readonly hint: string;
+  /**
+   * The same, in Bro's own words after «я могу»: what a message Bro writes
+   * first says when the person has gone quiet (`capability-nudge.ts`).
+   */
+  readonly invite: string;
   /** It works only once the person connects or signs in to something. */
   readonly setup: boolean;
   /** A tool whose call in the person's turns means they have tried it. */
@@ -62,6 +67,8 @@ const capabilities: readonly Capability[] = [
       phonePilot(scope) && (await readPhoneNumber(scope))?.state === "active",
     hint: "позвонить вместо него со своего номера: забронировать столик, записать в сервис или к врачу, что-то узнать или передать",
     id: "call",
+    invite:
+      "позвонить за тебя: забронировать столик, записать к врачу или в сервис, что-то узнать",
     label: "звонки",
     setup: false,
     tried: (tool) => tool === "phone-call",
@@ -70,6 +77,7 @@ const capabilities: readonly Capability[] = [
     available: () => schedulesEnabled(),
     hint: "напомнить о деле в нужный момент — за день до события, к сроку — или повторять дело по расписанию",
     id: "reminders",
+    invite: "напомнить о деле в нужный момент или повторять его по расписанию",
     label: "напоминания",
     setup: false,
     tried: (tool) => tool === "schedules-create",
@@ -78,6 +86,8 @@ const capabilities: readonly Capability[] = [
     available: () => googleWorkspaceConfigured(),
     hint: "подключить его почту и календарь Google: сам напомнишь о встречах, бронях и поездках, а без его слова ничего не отправишь",
     id: "google",
+    invite:
+      "следить за твоей почтой и календарём и напоминать о встречах и поездках",
     label: "почта и календарь",
     setup: true,
     tried: (tool) => /^(?:gmail|calendar|drive)-|^connect_google$/u.test(tool),
@@ -86,6 +96,8 @@ const capabilities: readonly Capability[] = [
     available: (scope) => usesBrowserVm(scope),
     hint: "сходить на любой сайт вместо него: найти и сравнить варианты (билеты, отели, товары, вакансии), а потом, если он скажет, забронировать, записать или оформить — бесплатное сразу, платное только после его «да»",
     id: "errands",
+    invite:
+      "сходить за тебя на любой сайт: найти и сравнить билеты, отели или товары",
     label: "поручения на сайтах",
     setup: false,
     tried: (tool) => tool === "browser_task",
@@ -94,6 +106,7 @@ const capabilities: readonly Capability[] = [
     available: (scope) => yandexPilot(scope),
     hint: "найти место на Картах, события в Афише или товар на Маркете и сразу сказать, что выбрать",
     id: "yandex-search",
+    invite: "найти место на Картах, событие в Афише или товар на Маркете",
     label: "поиск по Яндексу",
     setup: false,
     tried: (tool) => tool === "yandex",
@@ -102,6 +115,8 @@ const capabilities: readonly Capability[] = [
     available: (scope) => contactsPilot(scope),
     hint: "запомнить близких и нужных людей с номерами, чтобы дальше просто говорить «позвони маме» или «закажи такси брату»",
     id: "contacts",
+    invite:
+      "запомнить близких с номерами, чтобы хватало сказать «позвони маме»",
     label: "записная книжка",
     setup: false,
     tried: (tool) => tool.startsWith("contact-"),
@@ -110,6 +125,7 @@ const capabilities: readonly Capability[] = [
     available: (scope) => yandexPurchasePilot(scope),
     hint: "заказать еду, продукты или такси из Яндекса прямо в этом чате — для этого один раз войти в его Яндекс",
     id: "yandex",
+    invite: "заказать еду, продукты или такси прямо в чате",
     label: "заказы в Яндексе",
     setup: true,
     tried: (tool) => tool === "yandex_purchase",
@@ -118,6 +134,8 @@ const capabilities: readonly Capability[] = [
     available: (scope) => taskFilesEnabled(scope.workspaceId),
     hint: "разобрать фото или файл и прислать готовый файл: снимки чеков — таблицей расходов, документ — в Word или PDF; собрать презентацию; заполнить и подписать бланк",
     id: "files",
+    invite:
+      "разобрать фото или файл и вернуть готовое: таблицу расходов, документ, презентацию",
     label: "файлы и документы",
     setup: false,
     tried: (tool) =>
@@ -131,6 +149,7 @@ const capabilities: readonly Capability[] = [
       modelEndpoint() !== undefined && artifactStorageConfigured(),
     hint: "нарисовать открытку, приглашение или картинку — к событию или для кого-то из близких",
     id: "images",
+    invite: "нарисовать открытку или приглашение",
     label: "картинки",
     setup: false,
     tried: (tool) => tool === "generate_image" || tool === "generate_video",
@@ -140,6 +159,8 @@ const capabilities: readonly Capability[] = [
       channel === "telegram" && locationPilot(scope),
     hint: "по геопозиции из Telegram подсказать, что рядом, и напомнить о деле, когда он придёт в нужное место",
     id: "location",
+    invite:
+      "подсказать, что рядом, и напомнить о деле, когда ты придёшь на место",
     label: "геопозиция",
     setup: false,
     tried: (tool) => tool === "place_reminder" || tool.startsWith("location_"),
@@ -148,6 +169,8 @@ const capabilities: readonly Capability[] = [
     available: (scope) => subscriptionsPilot(scope),
     hint: "следить за ценой товара по ссылке или за посылкой Почты России и написать, когда что-то изменится",
     id: "watch",
+    invite:
+      "следить за ценой товара или посылкой и написать, когда что-то изменится",
     label: "слежка за ценой и посылками",
     setup: false,
     tried: (tool) => tool === "watch-create" || tool === "parcel-watch",
@@ -158,10 +181,10 @@ const capabilities: readonly Capability[] = [
  * The person's turns before a tip may come: the introduction's own
  * messages, the first three after it (`first-contact`), go first.
  */
-const tipAfterTurns = 4;
+const tipAfterTurns = 3;
 
 /** At most one tip in this long, whatever was offered. */
-const tipSpacingMs = 6 * 60 * 60_000;
+const tipSpacingMs = 4 * 60 * 60_000;
 
 /** A capability offered rests this long before it is offered again… */
 const tipRestMs = 3 * 24 * 60 * 60_000;
@@ -201,7 +224,7 @@ const tipHeading =
  * in the conversation, so a tip says it is for its own message alone.
  */
 const tipRule =
-  "Он не знает, что ты так умеешь, — покажи, но только к месту. Сначала проверь: человек недоволен, жалуется или раздражён, дело ещё идёт, ты ждёшь от него ответа, без которого дело не сделать, или он просил не предлагать лишнего — тогда ничего из этого не предлагай. Иначе в конце последнего сообщения предложи одно из этого, которое продолжает именно его дело: одной фразой, на его же деле, с конкретикой из разговора, — что сделаешь, и спроси, сделать ли. Свой следующий шаг можешь предложить в том же вопросе. Ничего из этого его дело не продолжает — не предлагай. Без списка и рекламы, об этой подсказке не упоминай, само не начинай. К следующим его сообщениям она не относится: новую код пришлёт сам.";
+  "Он не знает, что ты так умеешь, — покажи, но только к месту. Сначала проверь: человек недоволен, жалуется или раздражён, дело ещё идёт, ты ждёшь от него ответа, без которого дело не сделать, или он просил не предлагать лишнего — тогда ничего из этого не предлагай. Иначе в конце последнего сообщения предложи одно из этого, которое продолжает именно его дело: одной фразой, на его же деле, с конкретикой из разговора, — что сделаешь, и спроси, сделать ли. Лучше всего это звучит, когда ты только что довёл дело до результата: предложи сделать за него и следующий шаг. Свой следующий шаг можешь предложить в том же вопросе. Ничего из этого его дело не продолжает — не предлагай. Без списка и рекламы, об этой подсказке не упоминай, само не начинай. К следующим его сообщениям она не относится: новую код пришлёт сам.";
 
 const askedHeading =
   "Для ответа на вопрос, что ты умеешь, в сообщении сразу после этой строки — от кода, не слова человека.";
@@ -218,7 +241,7 @@ function bullets(list: readonly Capability[]) {
 }
 
 /** Whether the workspace is in the pilot: its id, or `*`. */
-function tipsPilot(scope: Pick<AccessScope, "workspaceId">) {
+export function tipsPilot(scope: Pick<AccessScope, "workspaceId">) {
   const list = env.CAPABILITY_TIPS_WORKSPACES ?? [];
   return list.includes("*") || list.includes(scope.workspaceId);
 }
@@ -250,21 +273,11 @@ export async function capabilityTipContext(
     ) {
       return [];
     }
-    const tried = capabilities.filter(
-      (capability) =>
-        (capability.id === "google" && use.googleConnected) ||
-        use.tools.some((tool) => capability.tried(tool))
+    const { tried, untried } = await untriedCapabilities(
+      scope,
+      message.channel,
+      use
     );
-    const open = await Promise.all(
-      capabilities
-        .filter((capability) => !tried.includes(capability))
-        .map(async (capability) =>
-          (await capability.available(scope, message.channel))
-            ? capability
-            : undefined
-        )
-    );
-    const untried = open.filter((capability) => capability !== undefined);
     if (asked) {
       return askedContext(
         tried,
@@ -296,6 +309,33 @@ export async function capabilityTipContext(
     });
     return [];
   }
+}
+
+/**
+ * What the person has tried with Bro and what Bro could still show them,
+ * from their history, in the order tips offer it.
+ */
+export async function untriedCapabilities(
+  scope: AccessScope,
+  channel: TipChannel,
+  use: Awaited<ReturnType<typeof readCapabilityHistory>>
+) {
+  const tried = capabilities.filter(
+    (capability) =>
+      (capability.id === "google" && use.googleConnected) ||
+      use.tools.some((tool) => capability.tried(tool))
+  );
+  const open = await Promise.all(
+    capabilities
+      .filter((capability) => !tried.includes(capability))
+      .map(async (capability) =>
+        (await capability.available(scope, channel)) ? capability : undefined
+      )
+  );
+  return {
+    tried,
+    untried: open.filter((capability) => capability !== undefined),
+  };
 }
 
 function askedContext(

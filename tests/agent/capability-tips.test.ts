@@ -125,7 +125,7 @@ describe("capability tips", () => {
     mocks.use.mockResolvedValue({
       googleConnected: false,
       lastTipAt: null,
-      personTurns: 3,
+      personTurns: 2,
       tools: [],
     });
     expect(await tipContext("найди бар в центре на шестерых")).toEqual([]);
