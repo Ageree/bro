@@ -617,7 +617,11 @@ describe("starting a run on a workspace's browser VM", () => {
       worker.startBrowserVmWorkerRun.mockClear();
       worker.sendBrowserVmWorkerMessage.mockClear();
       const client = await importWithSettings(
-        { ...browserVmTestEnvironment, BROWSER_FAST_MODE: "pilot", ...settings },
+        {
+          ...browserVmTestEnvironment,
+          BROWSER_FAST_MODE: "pilot",
+          ...settings,
+        },
         async () => import("@agent/lib/browser-use/client")
       );
       await client.createBrowserUseRun({
