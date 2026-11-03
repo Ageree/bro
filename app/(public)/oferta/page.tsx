@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Capsule } from "@web/components/paper/capsule";
 import { SiteFooter } from "@web/components/paper/footer";
+import { cardPriceRub } from "@shared/billing/price";
 import { env } from "@shared/environment";
 
 export const metadata: Metadata = {
@@ -65,7 +66,8 @@ export default function Page() {
             до {env.FREE_MESSAGES_PER_DAY.toLocaleString("ru-RU")} сообщений в
             день и {env.FREE_BROWSER_RUNS_PER_MONTH.toLocaleString("ru-RU")}{" "}
             поручений в браузере в месяц. Платный тариф «Полный доступ» —{" "}
-            {env.PRICE_RUB} ₽ за 30 календарных дней: до{" "}
+            {env.PRICE_RUB} ₽ при оплате через СБП и {cardPriceRub()} ₽ при
+            оплате банковской картой за 30 календарных дней: до{" "}
             {env.PAID_MESSAGES_PER_DAY.toLocaleString("ru-RU")} сообщений в день
             и {env.PAID_BROWSER_RUNS_PER_MONTH.toLocaleString("ru-RU")}{" "}
             поручений в месяц. Тариф не продлевается автоматически.
@@ -75,9 +77,10 @@ export default function Page() {
             3. Порядок оплаты и предоставления доступа
           </h2>
           <p className="type-prose">
-            3.1. Оплата производится банковской картой или иным способом через
-            сервис ЮKassa (ООО НКО «ЮМани»). Кассовый чек направляется в
-            электронном виде.
+            3.1. Оплата производится через СБП или банковской картой через
+            сервис ЮKassa (ООО НКО «ЮМани»). Стоимость при оплате через СБП —
+            {env.PRICE_RUB} ₽, при оплате банковской картой — {cardPriceRub()}{" "}
+            ₽. Кассовый чек направляется в электронном виде.
           </p>
           <p className="type-prose">
             3.2. Доступ по платному тарифу включается автоматически в течение

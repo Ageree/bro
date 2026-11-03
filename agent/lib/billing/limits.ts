@@ -26,7 +26,7 @@ export function withinAllowance(count: number, allowance: number) {
 
 /** Wording the person sees when the day's messages run out. */
 export function messagePaywallText(payUrl: string | undefined) {
-  const price = `${String(env.PRICE_RUB)} ₽/мес`;
+  const price = `от ${String(env.PRICE_RUB)} ₽/мес`;
   return payUrl
     ? `Лимит сообщений на сегодня исчерпан 🙈 Полный доступ — ${price}: ${payUrl}`
     : "Лимит сообщений на сегодня исчерпан 🙈 Завтра счётчик обнулится.";
@@ -34,7 +34,7 @@ export function messagePaywallText(payUrl: string | undefined) {
 
 /** Wording the model gets when the month's browser errands run out. */
 export function browserQuotaNote(payUrl: string | undefined) {
-  const price = `${String(env.PRICE_RUB)} ₽/мес`;
+  const price = `от ${String(env.PRICE_RUB)} ₽/мес`;
   return payUrl
     ? `Лимит браузерных поручений на этот месяц исчерпан. Поручение не запущено. Скажи человеку об этом своими словами, от первого лица («в этом месяце я больше не могу ходить по сайтам»), и дай ссылку на оплату — ${price}: ${payUrl}`
     : "Лимит браузерных поручений на этот месяц исчерпан. Поручение не запущено. Скажи человеку своими словами, от первого лица («в этом месяце я больше не могу ходить по сайтам»), что лимит вернётся в начале следующего месяца.";
@@ -42,7 +42,7 @@ export function browserQuotaNote(payUrl: string | undefined) {
 
 /** Wording the model gets when the month's pictures run out. */
 export function imageQuotaNote(payUrl: string | undefined) {
-  const price = `${String(env.PRICE_RUB)} ₽/мес`;
+  const price = `от ${String(env.PRICE_RUB)} ₽/мес`;
   return payUrl
     ? `Лимит картинок на этот месяц исчерпан. Картинка не нарисована. Скажи человеку об этом и дай ссылку на оплату — ${price}: ${payUrl}`
     : "Лимит картинок на этот месяц исчерпан. Картинка не нарисована. Скажи человеку, что лимит вернётся в начале следующего месяца.";

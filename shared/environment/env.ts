@@ -1063,6 +1063,8 @@ export const env = createEnv({
     PAID_MESSAGES_PER_DAY: z.coerce.number().int().positive().default(500),
     // One month of paid access, in whole roubles.
     PRICE_RUB: z.coerce.number().int().positive().default(2000),
+    // Card price of one month; unset, shared/billing/price.ts derives it.
+    PRICE_CARD_RUB: z.coerce.number().int().positive().optional(),
     // RouterAI (routerai.ru), the OpenRouter-compatible reseller that
     // answers from Russia, selected by MODEL_PROVIDER=routerai. Its prices
     // and `usage.cost` are in roubles. The key and every knob below are its

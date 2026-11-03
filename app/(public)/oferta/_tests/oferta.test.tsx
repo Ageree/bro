@@ -25,7 +25,7 @@ describe("offer page", () => {
     // the tariffs are published: it states them instead of linking away.
     expect(html).toContain("Бесплатный режим — до 30 сообщений в день");
     expect(html).toContain(
-      "Платный тариф «Полный доступ» — 2000 ₽ за 30 календарных дней: до 500 сообщений в день"
+      "Платный тариф «Полный доступ» — 2000 ₽ при оплате через СБП и 2080 ₽ при оплате банковской картой за 30 календарных дней: до 500 сообщений в день"
     );
     expect(html).not.toContain("#pricing");
     expect(html).toContain("ИНН 780159467840 · ОГРНИП 325784700145981");

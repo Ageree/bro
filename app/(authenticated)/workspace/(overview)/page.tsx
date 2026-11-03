@@ -17,6 +17,7 @@ import { readMailConnection } from "@db/services/mail";
 import { mailEnabled } from "@shared/mail/providers";
 import { mailProviderNames, mailProviderSchema } from "@shared/mail/schema";
 import { paidPeriodDays, readBillingState } from "@db/services/billing";
+import { cardPriceRub } from "@shared/billing/price";
 import { openBroInvite } from "@db/services/bro-to-bro/invites";
 import { listBroLinks } from "@db/services/bro-to-bro/links";
 import { broOwnerReachable } from "@db/services/bro-to-bro/route";
@@ -655,6 +656,7 @@ function PaymentsSection({
 }) {
   const billingOn = yooKassaConfigured();
   const price = `${String(env.PRICE_RUB)} ₽`;
+  const cardPrice = `${String(cardPriceRub())} ₽`;
 
   return (
     <Section
@@ -675,13 +677,22 @@ function PaymentsSection({
       )}
       <Actions className="items-center">
         {billingOn ? (
-          <Button
-            nativeButton={false}
-            render={<Link href="/api/pay" prefetch={false} />}
-            variant="paper"
-          >
-            Оплатить месяц
-          </Button>
+          <>
+            <Button
+              nativeButton={false}
+              render={<Link href="/api/pay?method=sbp" prefetch={false} />}
+              variant="paper"
+            >
+              Оплатить через СБП — {price}
+            </Button>
+            <Button
+              nativeButton={false}
+              render={<Link href="/api/pay?method=card" prefetch={false} />}
+              variant="outline"
+            >
+              Картой — {cardPrice}
+            </Button>
+          </>
         ) : (
           <Button disabled variant="paper">
             Оплатить месяц
@@ -690,7 +701,7 @@ function PaymentsSection({
       </Actions>
       <StatusLine className="mt-2">
         {billingOn
-          ? `Полный доступ — ${price} за ${String(paidPeriodDays)} календарных дней. Тариф не продлевается автоматически.`
+          ? `Полный доступ на ${String(paidPeriodDays)} календарных дней. Через СБП дешевле. Тариф не продлевается автоматически.`
           : "Оплата скоро"}
       </StatusLine>
     </Section>

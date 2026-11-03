@@ -54,7 +54,8 @@ describe("YooKassa client", () => {
 
     const created = await createYooKassaPayment(
       "workspace:alice",
-      "https://bro.example/workspace?paid=1"
+      "https://bro.example/workspace?paid=1",
+      "sbp"
     );
 
     expect(created.confirmationUrl).toBe("https://yoomoney.test/confirm");
@@ -74,7 +75,35 @@ describe("YooKassa client", () => {
         type: "redirect",
       },
       description: "Бро — месяц доступа",
-      metadata: { workspaceId: "workspace:alice" },
+      metadata: { method: "sbp", workspaceId: "workspace:alice" },
+      payment_method_data: { type: "sbp" },
+    });
+  });
+
+  it("charges the card price and opens the card method for a card payment", async () => {
+    const { createYooKassaPayment } = await yooKassaClient();
+    fetchMock.mockResolvedValue(
+      jsonResponse(
+        JSON.stringify({
+          confirmation: { confirmation_url: "https://yoomoney.test/confirm" },
+          id: "2f0a-pending",
+          status: "pending",
+        })
+      )
+    );
+
+    await createYooKassaPayment(
+      "workspace:alice",
+      "https://bro.example/workspace?paid=1",
+      "card"
+    );
+
+    const [, init] = fetchMock.mock.calls[0] ?? [];
+    // 2000 / 0.965 rounded up to tens: 2080, see shared/billing/price.ts.
+    expect(JSON.parse(z.string().parse(init?.body))).toMatchObject({
+      amount: { currency: "RUB", value: "2080.00" },
+      metadata: { method: "card", workspaceId: "workspace:alice" },
+      payment_method_data: { type: "bank_card" },
     });
   });
 
@@ -85,7 +114,11 @@ describe("YooKassa client", () => {
     );
 
     await expect(
-      createYooKassaPayment("workspace:alice", "https://bro.example/workspace")
+      createYooKassaPayment(
+        "workspace:alice",
+        "https://bro.example/workspace",
+        "sbp"
+      )
     ).rejects.toThrow(/confirmation URL/u);
   });
 
