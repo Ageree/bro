@@ -52,7 +52,12 @@ import {
   turnDeclinedErrand,
 } from "@agent/lib/delivery/declined-cards";
 import { browserRunReportDelivered } from "@db/services/browser-runs";
-import { earlyReplySplitPilot, fastReplyPilot } from "@agent/lib/delivery/fast";
+import {
+  closingStepSkipPilot,
+  earlyReplySplitPilot,
+  fastReplyPilot,
+} from "@agent/lib/delivery/fast";
+import { answeredAndDone } from "@agent/lib/delivery/closing-step";
 import { earlyReplyPilot } from "@agent/lib/delivery/pilot";
 import { fastVoiceTurn } from "@agent/lib/voice/turn";
 import { taskAtWorkNote, taskHandoff } from "@agent/lib/delivery/task-handoff";
@@ -309,6 +314,29 @@ export default defineAgent({
         const voiceFast =
           kind === "person" &&
           (await fastVoiceTurn(ctx.messages, scope.workspaceId, step));
+        // A person's turn whose answer is out ends here, without the closing
+        // step the model would only write text in, which nobody reads
+        // (`agent/lib/delivery/closing-step.ts`). Nothing it would have
+        // done is left: no owed send, card or report step, no task at work.
+        // The pilot is asked last, so the others' lookups stay unpaid.
+        if (
+          kind === "person" &&
+          !voiceFast &&
+          !requireToolCall &&
+          !resendOwed &&
+          !sendFailed &&
+          !task.atWork &&
+          owedSteps.length === 0 &&
+          reportRunId === undefined &&
+          !staleReport &&
+          answeredAndDone(ctx.messages) &&
+          (await closingStepSkipPilot(scope, step))
+        ) {
+          console.info("[delivery] closing step skipped", {
+            sessionId: ctx.session.id,
+          });
+          return emptyTurnSelection;
+        }
         const [
           modelId,
           formOfAddress,

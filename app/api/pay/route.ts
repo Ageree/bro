@@ -25,6 +25,14 @@ export async function GET(request: Request) {
     );
   }
 
+  const method = new URL(request.url).searchParams.get("method") ?? "sbp";
+  if (method !== "sbp" && method !== "card") {
+    return Response.json(
+      { message: "Выбери способ оплаты: СБП или банковская карта." },
+      { status: 400 }
+    );
+  }
+
   const scope = await signedInScope();
   if (!scope) {
     return Response.json(
@@ -36,6 +44,7 @@ export async function GET(request: Request) {
   const { confirmationUrl, payment } = await createYooKassaPayment(
     scope.workspaceId,
     new URL("/workspace?paid=1", applicationOrigin()).toString(),
+    method,
     request.signal
   );
   // Always `pending` here. Only the webhook's own re-fetch may move a payment

@@ -9,6 +9,12 @@
 # the ops host <public IP with dashes>.sslip.io, the watchdog and backup timers, tg-egress running and
 # tg-bridge installed but off (install-code.sh), journald capped at 1 GB. Stages go to
 # /var/lib/bro/stage and timeline; a failure leaves `failed:<stage>:line N`.
+#
+# Two options of the colocated server (boot.py --shared-caddy --local-postgres, docs/colocated-host.md), both off
+# in the VM's boot settings, which then does exactly what it did before them:
+#   sharedCaddy:  the browser host's Caddy (browser-vm/host) serves the ops domain as a file in sites/; no Caddy
+#                 is installed here and no caddy user made (the browser host's caddy user gets CADDY_EGRESS)
+#   localPostgres: PostgreSQL 18 server on localhost for the app and the world, its passwords in postgres.json
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 BOOT=/etc/bro/app-host-boot.json
@@ -84,7 +90,71 @@ done
 retry "${APT[@]}" install -y "${DEBS[@]}"
 rm -f "${DEBS[@]}"
 /usr/lib/postgresql/18/bin/pg_dump --version | grep -q ' 18\.' || fail "pg_dump is not 18"
+LOCAL_POSTGRES=$(field "$BOOT" localPostgres)
+if [ "$LOCAL_POSTGRES" = True ]; then
+  stage postgresql-server
+  # The server of PostgreSQL 18 from the PostgreSQL project's apt repository (apt.postgresql.org). The key that signs
+  # it is pinned by its full fingerprint, checked here before apt trusts it; apt then checks every package by it.
+  PGDG_FINGERPRINT=B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8
+  retry "${APT[@]}" install -y gnupg
+  for i in 1 2 3 4 5; do
+    curl -fsS --connect-timeout 10 -m 120 -o /root/pgdg.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc && break
+    [ "$i" = 5 ] && fail "the PGDG key"
+    sleep $((i * 5))
+  done
+  [ "$(gpg --batch --with-colons --show-keys /root/pgdg.asc | awk -F: '$1 == "fpr" { print $10; exit }')" \
+    = "$PGDG_FINGERPRINT" ] || fail "the PGDG key is not $PGDG_FINGERPRINT"
+  gpg --batch --yes --dearmor --output /usr/share/keyrings/pgdg.gpg /root/pgdg.asc
+  rm -f /root/pgdg.asc
+  # shellcheck disable=SC1091 # the release file of this host
+  CODENAME=$(. /etc/os-release && echo "$VERSION_CODENAME")
+  [ "$CODENAME" = jammy ] || fail "the PGDG packages checked here are for jammy, not $CODENAME"
+  echo "deb [signed-by=/usr/share/keyrings/pgdg.gpg] https://apt.postgresql.org/pub/repos/apt jammy-pgdg main" \
+    > /etc/apt/sources.list.d/pgdg.list
+  retry "${APT[@]}" update
+  # Before the holds below: the server's own client may move to the repository's build of 18 with it.
+  retry "${APT[@]}" install -y postgresql-18
+  /usr/lib/postgresql/18/bin/postgres --version | grep -q ' 18\.' || fail "postgres is not 18"
+
+  stage postgresql-database
+  PG_CONF=/etc/postgresql/18/main
+  [ -d "$PG_CONF" ] || fail "no PostgreSQL 18 cluster"
+  grep -q "^include_dir = 'conf.d'" "$PG_CONF/postgresql.conf" || fail "the cluster reads no conf.d"
+  # Localhost only, and memory for a server that also runs the browser host and the code host
+  # (docs/colocated-host.md, the memory split): 512 MB of shared buffers, 8 MB per sort, 100 connections.
+  printf "listen_addresses = 'localhost'\nmax_connections = 100\nshared_buffers = 512MB\nwork_mem = 8MB\n" \
+    > "$PG_CONF/conf.d/bro.conf"
+  chmod 644 "$PG_CONF/conf.d/bro.conf"
+  systemctl restart postgresql@18-main
+  # The passwords are made once and kept: a second run sets the same ones again.
+  PGJSON=/etc/bro/postgres.json
+  if [ ! -s "$PGJSON" ]; then
+    PASS=$(python3 -c 'import secrets; print(secrets.token_hex(32))')
+    install -m 600 /dev/null "$PGJSON.tmp"
+    printf '%s' "$PASS" | python3 -c 'import json, sys
+base = "postgresql://bro:" + sys.stdin.read() + "@localhost:5432"
+print(json.dumps({"app": base + "/bro", "world": base + "/bro_workflow"}, indent=1))' > "$PGJSON.tmp"
+    mv "$PGJSON.tmp" "$PGJSON"
+  fi
+  chmod 600 "$PGJSON"
+  PASS=$(python3 -c 'import json, urllib.parse as u
+print(u.urlsplit(json.load(open("/etc/bro/postgres.json"))["app"]).password)')
+  # Databases named as the managed cluster had them (host.py PG_DATABASES): a dump restores under the same names.
+  # The password goes in on psql's input (hex, so safe inside the quotes), never in an argument `ps` shows.
+  { printf "\\set pw '%s'\n" "$PASS"; cat <<'SQL'
+SELECT 'CREATE ROLE bro LOGIN' WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'bro') \gexec
+ALTER ROLE bro WITH LOGIN PASSWORD :'pw';
+SELECT 'CREATE DATABASE bro OWNER bro' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'bro') \gexec
+SELECT 'CREATE DATABASE bro_workflow OWNER bro' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'bro_workflow') \gexec
+SQL
+  } | (cd / && runuser -u postgres -- /usr/lib/postgresql/18/bin/psql -X -q -v ON_ERROR_STOP=1)
+  for db in bro bro_workflow; do
+    [ "$(PGPASSWORD="$PASS" /usr/lib/postgresql/18/bin/psql -X -h localhost -U bro -d "$db" -tAc 'select 1' 2>/dev/null)" = 1 ] \
+      || fail "the $db database does not answer"
+  done
+fi
 apt-mark hold libpq5 postgresql-client-18 postgresql-client-common >/dev/null
+if [ "$LOCAL_POSTGRES" = True ]; then apt-mark hold postgresql-18 postgresql-common >/dev/null; fi
 
 stage layout
 # bro runs the app and the model's tools: it writes only its home, the backups and the unpacked release
@@ -106,42 +176,64 @@ printf '[Journal]\nStorage=persistent\nSystemMaxUse=1G\nSystemMaxFileSize=100M\n
 systemctl restart systemd-journald
 
 stage caddy
-install -m 755 "$HOST/vendor/caddy" /usr/bin/caddy
-getent group caddy >/dev/null || groupadd --system caddy
-id -u caddy >/dev/null 2>&1 || useradd --system --gid caddy --create-home --home-dir /var/lib/caddy \
-  --shell /usr/sbin/nologin caddy
-mkdir -p /etc/caddy
-DOMAIN=$(field "$BOOT" domain)
-if [ -z "$DOMAIN" ]; then
-  # <public IP with dashes>.sslip.io; the public address is Cloud.ru's floating IP, on no interface.
-  IP=""
-  for i in 1 2 3 4 5 6 7 8 9; do
-    case $((i % 3)) in
-      1) URL=https://ipv4-internet.yandex.net/api/v0/ip ;;
-      2) URL=https://api.ipify.org ;;
-      *) URL=https://ipv4.icanhazip.com ;;
-    esac
-    IP=$(curl -fsS -m 5 "$URL" | tr -d '"[:space:]' || true)
-    [[ "$IP" =~ ^[0-9]+(\.[0-9]+){3}$ ]] && break
-    IP=""
-    sleep 2
+SHARED=$(field "$BOOT" sharedCaddy)
+if [ "$SHARED" = True ]; then
+  # A dedicated server shared with the browser host (browser-vm/host): its Caddy is the browser host's, which hostd
+  # rewrites and reloads and which imports sites/*. This host installs no Caddy: it writes its site file there
+  # and has that Caddy reload it (deployd.py, shared mode).
+  DOMAIN=$(field "$BOOT" domain)
+  [ -n "$DOMAIN" ] || fail "a shared Caddy needs the ops domain"
+  for i in $(seq 1 60); do
+    [ -S /run/caddy/admin.sock ] && [ -d /etc/caddy/sites ] && break
+    [ "$i" = 60 ] && fail "the browser host's Caddy is not up"
+    sleep 10
   done
-  [ -n "$IP" ] || fail "no public address"
-  DOMAIN="${IP//./-}.sslip.io"
+else
+  install -m 755 "$HOST/vendor/caddy" /usr/bin/caddy
+  getent group caddy >/dev/null || groupadd --system caddy
+  id -u caddy >/dev/null 2>&1 || useradd --system --gid caddy --create-home --home-dir /var/lib/caddy \
+    --shell /usr/sbin/nologin caddy
+  mkdir -p /etc/caddy
+  DOMAIN=$(field "$BOOT" domain)
+  if [ -z "$DOMAIN" ]; then
+    # <public IP with dashes>.sslip.io; the public address is Cloud.ru's floating IP, on no interface.
+    IP=""
+    for i in 1 2 3 4 5 6 7 8 9; do
+      case $((i % 3)) in
+        1) URL=https://ipv4-internet.yandex.net/api/v0/ip ;;
+        2) URL=https://api.ipify.org ;;
+        *) URL=https://ipv4.icanhazip.com ;;
+      esac
+      IP=$(curl -fsS -m 5 "$URL" | tr -d '"[:space:]' || true)
+      [[ "$IP" =~ ^[0-9]+(\.[0-9]+){3}$ ]] && break
+      IP=""
+      sleep 2
+    done
+    [ -n "$IP" ] || fail "no public address"
+    DOMAIN="${IP//./-}.sslip.io"
+  fi
 fi
 echo "$DOMAIN" > "$STATE/domain"
-install -m 644 "$HOST/caddy.service" "$HOST/bro-egress.service" /etc/systemd/system/
+install -m 644 "$HOST/bro-egress.service" /etc/systemd/system/
+if [ "$SHARED" != True ]; then
+  install -m 644 "$HOST/caddy.service" /etc/systemd/system/
+fi
 systemctl daemon-reload
 # Neither caddy (facing the internet) nor bro's processes reach the metadata service (the user data holds
 # deployd's host key), and bro does not reach deployd: the rules come before Caddy starts.
 systemctl enable --now bro-egress >/dev/null
 iptables -w -C OUTPUT -m owner --uid-owner bro -j BRO_EGRESS || fail "no egress rules for bro"
 iptables -w -C OUTPUT -m owner --uid-owner caddy -j CADDY_EGRESS || fail "no egress rules for caddy"
-# The ops host and the sites of /etc/bro/sites.json (none yet): deployd renders the file.
+# The ops host and the sites of /etc/bro/sites.json (none yet): deployd renders the Caddy text, where this host's
+# Caddy reads it (the Caddyfile, or the site file in shared mode).
 python3 "$HOST/deployd.py" caddyfile
-systemctl daemon-reload
-systemctl enable caddy >/dev/null
-systemctl restart caddy
+if [ "$SHARED" = True ]; then
+  retry /usr/bin/caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile --address unix//run/caddy/admin.sock
+else
+  systemctl daemon-reload
+  systemctl enable caddy >/dev/null
+  systemctl restart caddy
+fi
 
 stage services
 # The units, tg-egress (enabled and started: api.telegram.org answers from Cloud.ru only through it) and

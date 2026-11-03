@@ -16,6 +16,7 @@ import {
 } from "@agent/lib/proactive/quiet-hours";
 import {
   gmailProbeQuery,
+  isBulkOnly,
   mailSearchStart,
   maxRunsPerDay,
   proactiveRunPrompt,
@@ -44,6 +45,7 @@ import {
   deferProactiveWatch,
   filterUnseenProactiveSignals,
   listProactiveRunSignals,
+  markProactiveSignalsHandled,
   type ProactiveSignal,
   pruneProactiveSignals,
   queueProactiveRun,
@@ -64,6 +66,7 @@ import {
 import type { FlightStage } from "@shared/subscriptions/flight";
 import { readUserProfile } from "@db/services/user-profile";
 import type { AccessScope } from "@shared/identity/access-scope";
+import { env } from "@shared/environment";
 import { localRunLabel } from "@shared/schedules/timing";
 import { resolveTimeZone } from "@shared/user-profile/schema";
 
@@ -449,10 +452,29 @@ async function checkByDay(
   const parcels = pilot
     ? await pilotParcels(watch, unseen, mailAfter, now)
     : noParcels;
+  const ranks = await bulkRanks(watch, unseen);
+  if (ranks && isBulkOnly(unseen, ranks)) {
+    // Newsletters only: no run. They are marked handled, and the mail
+    // watermark moves as it does when a check finds nothing to hand over.
+    await markProactiveSignalsHandled(watch.workspaceId, unseen, now);
+    await flights.record({ carried: [], queued: false, unseen });
+    await parcels.record({ carried: [], queued: false });
+    await advanceProactiveWatermark(watch.workspaceId, now);
+    if (mail) {
+      await advanceAgentMailWatermark(watch.workspaceId, mail.checkedAt);
+    }
+    return {
+      outcome: "skipped",
+      signalCount: unseen.length,
+      skipped: "bulk_only",
+      ...flights.logged,
+      ...parcels.logged,
+    };
+  }
   // After a pause (a reconnect, the end of quiet hours, turning proactive
   // messages back on) the backlog becomes one catch-up run; the watermark
   // moves past the rest instead of queuing batch after batch of old mail.
-  const { droppedMail, signals } = await catchUpSignals(watch, unseen);
+  const { droppedMail, signals } = await catchUpSignals(watch, unseen, ranks);
   await flights.prepare(signals);
   const queued = await queueProactiveRun({
     ...(mail && { agentMailCheckedAt: mail.checkedAt }),
@@ -488,18 +510,46 @@ async function checkByDay(
  */
 async function catchUpSignals(
   watch: ClaimedWatch,
-  unseen: readonly ProactiveSignal[]
+  unseen: readonly ProactiveSignal[],
+  known: ReadonlyMap<string, number> | undefined
 ) {
   const mail = unseen.filter((signal) => signal.source === "gmail");
   const newest = selectRunSignals(unseen);
   const droppedMail =
     mail.length - newest.filter((signal) => signal.source === "gmail").length;
   if (droppedMail === 0) return { droppedMail, signals: newest };
-  const ranks = await rankMail(
-    { userId: watch.createdByUserId, workspaceId: watch.workspaceId },
-    mail
-  );
+  const ranks =
+    known ??
+    (await rankMail(
+      { userId: watch.createdByUserId, workspaceId: watch.workspaceId },
+      mail
+    ));
   return { droppedMail, signals: selectRunSignals(unseen, ranks) };
+}
+
+/** Whether the workspace is in PROACTIVE_BULK_SKIP_WORKSPACES: its id, or `*`. */
+function bulkSkipPilot(workspaceId: string) {
+  const list = env.PROACTIVE_BULK_SKIP_WORKSPACES ?? [];
+  return list.includes("*") || list.includes(workspaceId);
+}
+
+/**
+ * The mail ranks a check needs to tell whether its new signals are bulk mail
+ * only (`isBulkOnly`), or `undefined` when that cannot be the case: outside
+ * the pilot, or with anything but Gmail mail among them.
+ */
+async function bulkRanks(
+  watch: ClaimedWatch,
+  unseen: readonly ProactiveSignal[]
+) {
+  if (unseen.length === 0 || !bulkSkipPilot(watch.workspaceId)) {
+    return undefined;
+  }
+  if (unseen.some((signal) => signal.source !== "gmail")) return undefined;
+  return rankMail(
+    { userId: watch.createdByUserId, workspaceId: watch.workspaceId },
+    unseen
+  );
 }
 
 /**
@@ -548,7 +598,12 @@ async function checkAtNight(
     ...flights.signals,
     ...probe.signals,
   ]);
-  const signals = selectRunSignals(unseen);
+  const ranks = await bulkRanks(watch, unseen);
+  const bulkOnly = ranks !== undefined && isBulkOnly(unseen, ranks);
+  if (bulkOnly) {
+    await markProactiveSignalsHandled(watch.workspaceId, unseen, now);
+  }
+  const signals = bulkOnly ? [] : selectRunSignals(unseen);
   if (signals.length > 0) await flights.prepare(signals);
   // A carrier's letter handed over tonight is seen by no morning check: its
   // watch starts now.
@@ -584,8 +639,9 @@ async function checkAtNight(
     await deferProactiveWatch(watch, quietUntil);
   }
   return {
-    outcome: `night_${queued?.status ?? "quiet"}`,
+    outcome: bulkOnly ? "skipped" : `night_${queued?.status ?? "quiet"}`,
     signalCount: unseen.length,
+    ...(bulkOnly && { skipped: "bulk_only" }),
     ...flights.logged,
     ...parcels.logged,
   };

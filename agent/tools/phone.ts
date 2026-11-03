@@ -11,7 +11,11 @@ import {
 import { agencyApproval, type AgencyDetails } from "@agent/lib/agency/approval";
 import { journaledAgencyCall } from "@agent/lib/agency/journal";
 import { domesticPhoneSchema } from "@shared/phone/policy";
-import { activatePhone, releasePhone } from "@db/services/phone/lifecycle";
+import {
+  activatePhone,
+  provisionClaimedRequest,
+  releasePhone,
+} from "@db/services/phone/lifecycle";
 import { quoteNumber } from "@shared/phone/exolve";
 import {
   CallNotSubmittedError,
@@ -21,8 +25,10 @@ import {
 import {
   changePhoneState,
   claimCallStart,
+  claimPhoneNumberRequestOf,
   hasEarlierConnectedCall,
   listPhoneCalls,
+  numbersOnDemand,
   planOutboundCall,
   phonePilot,
   readHeldPhoneNumbers,
@@ -31,7 +37,9 @@ import {
   recordCallAccepted,
   recordCallNotSubmitted,
   recordCallUncertain,
+  requestPhoneNumberNow,
   savePhoneQuote,
+  type PhoneReportRoute,
 } from "@db/services/phone";
 import { env } from "@shared/environment";
 import { LiveCallUnavailableError } from "@agent/lib/phone/live/call";
@@ -255,14 +263,102 @@ const call = defineTool({
           )
       );
     const serialized = JSON.stringify(input);
+    const scope = phoneScope(context, serialized);
+    const preparing = await numberForCall(context, scope);
+    if (preparing) return preparing;
     return placeCall(
       context,
       input,
-      phoneScope(context, serialized),
+      scope,
       phoneActionTurn(context, serialized)
     );
   },
 });
+
+const numberWaitMs = 90_000;
+const numberPollMs = 3_000;
+
+/**
+ * `on-demand`: a workspace with no line, or with a quote nobody activated, gets its number when the person first asks
+ * to call. The request is worked here, so the call goes through in this same turn if the line comes up in time; the
+ * person's request for the call is their consent for it. Null means dial now.
+ */
+async function numberForCall(
+  context: ToolContext,
+  scope: ReturnType<typeof pilotScope>
+) {
+  if (!numbersOnDemand()) return null;
+  const number = await readPhoneNumber(scope);
+  if (number?.state === "active") return null;
+  // A purchase or activation already under way: the tick finishes it.
+  if (number?.state === "provisioning" || number?.state === "uncertain")
+    return numberPreparing;
+  // Released, disabled or held for the operator: nothing comes up by itself.
+  if (number && number.state !== "quoted") return numberUnavailable;
+  if (await provisionNumberNow(scope, phoneReportRoute(context))) return null;
+  // A request being worked comes up within minutes. One left pending after this claim was refused (the cap on
+  // active numbers, or not due yet), in backoff after a failure, or held for the operator may take hours, and
+  // «a couple of minutes» would be a promise nobody keeps.
+  const request = await readPhoneNumberRequest(scope);
+  const soon = Date.now() + 10 * 60_000;
+  return request?.state === "working" ||
+    (request?.state === "retry" && request.nextAttemptAt.getTime() <= soon)
+    ? numberPreparing
+    : numberUnavailable;
+}
+
+const numberPreparing = {
+  state: "number_preparing",
+  note: "Bro's own number for calls is being connected; it takes a few minutes. No call was placed. Tell the person the number is being set up and ask them to repeat the request in a couple of minutes. Do not retry in this turn.",
+};
+
+const numberUnavailable = {
+  state: "number_unavailable",
+  note: "Bro's own number for calls could not be connected right now. No call was placed. Tell the person calls are temporarily unavailable and that you will be able to call later; do not promise a time. Do not retry in this turn.",
+};
+
+/** Whether the line is active when the request has been worked here, or, if the tick holds it, when that attempt ends or the wait runs out. */
+async function provisionNumberNow(
+  scope: ReturnType<typeof pilotScope>,
+  route: PhoneReportRoute
+) {
+  await requestPhoneNumberNow(scope, route);
+  const claimed = await claimPhoneNumberRequestOf(scope);
+  if (claimed)
+    await boundedBy(
+      provisionClaimedRequest(claimed).catch(() => undefined),
+      numberWaitMs
+    );
+  else await waitForTick(scope, Date.now() + numberWaitMs);
+  return (await readPhoneNumber(scope))?.state === "active";
+}
+
+/** The tick holds the request: poll the line while that attempt runs. A request not being worked (due later, in backoff) has nothing to wait for. */
+async function waitForTick(
+  scope: ReturnType<typeof pilotScope>,
+  deadline: number
+): Promise<void> {
+  if ((await readPhoneNumber(scope))?.state === "active") return;
+  if ((await readPhoneNumberRequest(scope))?.state !== "working") return;
+  if (Date.now() >= deadline) return;
+  await new Promise((resolve) => setTimeout(resolve, numberPollMs));
+  return waitForTick(scope, deadline);
+}
+
+/** Waits for `work` up to `ms`; the work itself is not cancelled, and its lease expires if the process ends first. */
+async function boundedBy<T>(work: Promise<T>, ms: number) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      work,
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 async function placeCall(
   context: ToolContext,

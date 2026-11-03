@@ -31,8 +31,8 @@ vi.mock("@web/auth/request-scope", async (importOriginal) => ({
 
 const scope = { userId: "alice", workspaceId: "workspace:alice" };
 
-function payRequest() {
-  return new Request("https://bro.example/api/pay");
+function payRequest(query = "") {
+  return new Request(`https://bro.example/api/pay${query}`);
 }
 
 beforeEach(() => {
@@ -56,6 +56,7 @@ describe("checkout redirect", () => {
     expect(mocks.createYooKassaPayment).toHaveBeenCalledExactlyOnceWith(
       scope.workspaceId,
       "https://example.com/workspace?paid=1",
+      "sbp",
       expect.anything()
     );
     // Only the webhook's own re-fetch may move a payment to `succeeded`.
@@ -64,6 +65,29 @@ describe("checkout redirect", () => {
       id: "2f0a-pending",
       status: "pending",
     });
+  });
+
+  it("starts a card checkout when asked for the card method", async () => {
+    const response = await GET(payRequest("?method=card"));
+
+    expect(response.status).toBe(303);
+    expect(mocks.createYooKassaPayment).toHaveBeenCalledExactlyOnceWith(
+      scope.workspaceId,
+      "https://example.com/workspace?paid=1",
+      "card",
+      expect.anything()
+    );
+  });
+
+  it("refuses an unknown payment method before touching the account", async () => {
+    const response = await GET(payRequest("?method=cash"));
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      message: "Выбери способ оплаты: СБП или банковская карта.",
+    });
+    expect(mocks.requireRequestScope).not.toHaveBeenCalled();
+    expect(mocks.createYooKassaPayment).not.toHaveBeenCalled();
   });
 
   it("refuses in free mode before touching the account", async () => {

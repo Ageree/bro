@@ -37,8 +37,14 @@ if ! ensure_swap; then
 fi
 # swap:end
 
-for unit in bro-web.service bro-eve.service deployd.service bro-watchdog.service bro-watchdog.timer \
-  bro-backup.service bro-backup.timer bro-backup-alert.service caddy.service bro-egress.service; do
+UNITS=(bro-web.service bro-eve.service deployd.service bro-watchdog.service bro-watchdog.timer
+  bro-backup.service bro-backup.timer bro-backup-alert.service bro-egress.service)
+# A server shared with the browser host (boot.py --shared-caddy) runs the browser host's Caddy unit: never ours.
+if ! python3 -c 'import json, sys
+sys.exit(0 if json.load(open("/etc/bro/app-host-boot.json")).get("sharedCaddy") is True else 1)' 2>/dev/null; then
+  UNITS+=(caddy.service)
+fi
+for unit in "${UNITS[@]}"; do
   install -m 644 "$HOST/$unit" "/etc/systemd/system/$unit"
 done
 # This code's egress rules now, not at the next boot: bro-egress is a oneshot that stays active, so a live VM

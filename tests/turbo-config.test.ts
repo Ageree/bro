@@ -48,6 +48,7 @@ const applicationEnvironment = [
   "OWNER_*",
   "PAID_*",
   "PHONE_*",
+  "PRICE_CARD_RUB",
   "PRICE_RUB",
   "ROUTERAI_*",
   "S3_*",

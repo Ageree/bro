@@ -11,14 +11,28 @@ Caddy, Node and the PostgreSQL client travel there from the session, pinned by s
                      the root ops wrapper and Caddy as a reproducible tarball
   cloud_init(...)    the user data for one VM: the boot settings, deployd's identity and the boot script
 
+  python3 boot.py cloud-init --host-id bro-app-1 --bundle-url … --bundle-sha256 … --objects objects.json
+      [--domain ops.1-2-3-4.sslip.io] [--shared-caddy] [--local-postgres] [--console-password-hash $6$…]
+      the user data of one host, the same as cloud_init below. The key is HMAC-SHA256(DEPLOY_SIGNING_KEY,
+      "bro-app-host:" + host id), as host.py derives it. objects.json maps each vendor file to its presigned
+      {url, sha256}. --shared-caddy: a dedicated server with the browser host (browser-vm/host) and the code
+      host (sandbox/host): the browser host's Caddy serves the ops domain as a file in sites/, and this host
+      installs no Caddy of its own. --local-postgres: PostgreSQL 18 on this host, for the app and the world.
+  The user data of a colocated server goes through scripts/selectel/user_data.py, which takes write_files and
+  runcmd only, so the runcmd is bare words and the boot script logs by itself.
+
 On the VM, /usr/local/sbin/bro-app-host-boot fetches the bundle, checks its SHA-256 and runs provision.sh.
 """
 
+import argparse
 import gzip
 import hashlib
+import hmac
 import io
 import json
+import os
 import re
+import sys
 import tarfile
 import urllib.request
 from pathlib import Path
@@ -38,6 +52,8 @@ SHA256 = re.compile(r"[0-9a-f]{64}")
 APT_MIRROR = "http://mirror.yandex.ru/ubuntu"
 BOOT_SCRIPT = r"""#!/bin/bash
 set -euo pipefail
+# The log is written here, not by runcmd: the merged user data of a dedicated server takes bare words only.
+exec >>/var/log/bro-provision.log 2>&1
 field() { python3 -c 'import json, sys
 value = json.load(open("/etc/bro/app-host-boot.json"))
 for key in sys.argv[1].split("."):
@@ -61,6 +77,11 @@ exec bash /opt/bro/app-host/provision.sh
 
 def sha256(data):
     return hashlib.sha256(data).hexdigest()
+
+
+def host_key(signing_key_hex, host_id):
+    """The key deployd checks tokens with: host.py derives it the same way from DEPLOY_SIGNING_KEY."""
+    return hmac.new(bytes.fromhex(signing_key_hex), f"bro-app-host:{host_id}".encode(), hashlib.sha256).digest()
 
 
 def vendor_objects():
@@ -124,10 +145,13 @@ def quoted(text):
 
 
 def cloud_init(*, host_id, key, bundle_url, bundle_sha256, objects, apt_mirror=APT_MIRROR, domain=None,
-               console_password_hash=None):
+               console_password_hash=None, shared_caddy=False, local_postgres=False):
     """`objects`: {file name: {url, sha256}} of every vendor_objects() file, presigned GET links."""
     if not HOST_ID.fullmatch(host_id):
         raise ValueError("host id must match [a-z0-9-]{1,63}")
+    if shared_caddy and not domain:
+        # The server's own <ip>.sslip.io belongs to the browser host's Caddy: this host needs a name of its own.
+        raise ValueError("a host sharing its server's Caddy needs --domain")
     if len(key) != 32:
         raise ValueError("the host key is 32 bytes")
     for name, pin in [("bundle", bundle_sha256)] + [(n, (objects.get(n) or {}).get("sha256", ""))
@@ -152,6 +176,9 @@ def cloud_init(*, host_id, key, bundle_url, bundle_sha256, objects, apt_mirror=A
         "node": {"version": node["version"], **objects[Path(node["url"]).name]},
         "postgresqlClient": [{"name": Path(p["url"]).name, **objects[Path(p["url"]).name]}
                              for p in VENDOR["postgresqlClient"]["packages"]],
+        # Read by provision.sh, egress.sh and deployd.py; absent unless set, so the boot file of a VM stays as it was.
+        **({"sharedCaddy": True} if shared_caddy else {}),
+        **({"localPostgres": True} if local_postgres else {}),
     })
     script = "".join(f"      {line}\n" if line else "\n" for line in BOOT_SCRIPT.splitlines())
     lines = [
@@ -176,7 +203,35 @@ def cloud_init(*, host_id, key, bundle_url, bundle_sha256, objects, apt_mirror=A
                   "  list:", f"    - {quoted('root:' + console_password_hash)}"]
     lines += [
         "runcmd:",
-        "  - [bash, -c, \"/usr/local/sbin/bro-app-host-boot > /var/log/bro-provision.log 2>&1\"]",
+        # Bare words (scripts/selectel/user_data.py): the boot script logs to /var/log/bro-provision.log itself.
+        "  - [/usr/local/sbin/bro-app-host-boot]",
         "",
     ]
     return "\n".join(lines)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    commands = parser.add_subparsers(dest="command", required=True)
+    init = commands.add_parser("cloud-init")
+    for name in ("host-id", "bundle-url", "bundle-sha256", "objects"):
+        init.add_argument(f"--{name}", required=True)
+    init.add_argument("--domain")
+    init.add_argument("--console-password-hash")
+    init.add_argument("--apt-mirror", default=APT_MIRROR)
+    init.add_argument("--shared-caddy", action="store_true")
+    init.add_argument("--local-postgres", action="store_true")
+    args = parser.parse_args(argv)
+    signing = "".join(os.environ.get("DEPLOY_SIGNING_KEY", "").split()).strip("‘’“”'\"")
+    if not re.fullmatch(r"(?:[0-9a-fA-F]{2}){32,}", signing):
+        sys.exit("DEPLOY_SIGNING_KEY (at least 32 bytes in hex) is required")
+    objects = json.loads(Path(args.objects).read_text())
+    sys.stdout.write(cloud_init(
+        host_id=args.host_id, key=host_key(signing, args.host_id), bundle_url=args.bundle_url,
+        bundle_sha256=args.bundle_sha256, objects=objects, apt_mirror=args.apt_mirror, domain=args.domain,
+        console_password_hash=args.console_password_hash, shared_caddy=args.shared_caddy,
+        local_postgres=args.local_postgres))
+
+
+if __name__ == "__main__":
+    main()

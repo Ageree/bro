@@ -503,6 +503,29 @@ export async function queueProactiveRun(input: {
 }
 
 /**
+ * Marks signals a check handled without a run (bulk-only mail, see
+ * `isBulkOnly`), so no later check hands them over as new.
+ */
+export async function markProactiveSignalsHandled(
+  workspaceId: string,
+  signals: readonly ProactiveSignal[],
+  now: Date
+) {
+  if (signals.length === 0) return;
+  await db
+    .insert(proactiveSignals)
+    .values(
+      signals.map((signal) => ({
+        ...signal,
+        createdAt: now,
+        runId: null,
+        workspaceId,
+      }))
+    )
+    .onConflictDoNothing();
+}
+
+/**
  * Queues a run for one finished item (a phone call, a browser run) on the
  * workspace's proactive watch. `no-watch` when the workspace has no active
  * watch or its person turned proactive messages off; `seen` when the item

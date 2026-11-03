@@ -2,7 +2,10 @@ import { defineHook } from "eve/hooks";
 import { startedByPerson } from "@agent/lib/mode";
 import { scopeFromPrincipal } from "@agent/lib/principal-scope";
 import { phoneReportRoute } from "@agent/lib/phone/route";
-import { bindPhoneReportRoute } from "@db/services/phone";
+import {
+  bindPhoneReportRoute,
+  platformAllocatesNumbers,
+} from "@db/services/phone";
 import { waitForSessionOwnership } from "@db/services/sessions";
 import { isBackgroundTurnText } from "@shared/chat/background-turn";
 import { env } from "@shared/environment";
@@ -15,7 +18,7 @@ export default defineHook({
         !startedByPerson(context) ||
         event.data.kind !== undefined ||
         isBackgroundTurnText(event.data.message) ||
-        (!env.PHONE_AGENT_ID && env.PHONE_AUTO_PROVISION !== "on")
+        (!env.PHONE_AGENT_ID && !platformAllocatesNumbers())
       )
         return;
       const caller = context.session.auth.current;

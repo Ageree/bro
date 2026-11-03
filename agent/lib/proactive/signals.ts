@@ -507,6 +507,26 @@ export function mailRank(mail: {
 
 /** Where mail that was not ranked stands: after known senders, before bulk. */
 const unrankedMail = 2;
+const bulkMail = 3;
+
+/**
+ * Whether a check's new signals are all Gmail mail that ranks as bulk
+ * (`mailRank` 3): newsletters, nothing a model run is for. Unranked mail
+ * counts as known mail, so it keeps the run.
+ */
+export function isBulkOnly(
+  signals: readonly ProactiveSignal[],
+  rank: ReadonlyMap<string, number>
+) {
+  return (
+    signals.length > 0 &&
+    signals.every(
+      (signal) =>
+        signal.source === "gmail" &&
+        (rank.get(signal.itemId) ?? unrankedMail) === bulkMail
+    )
+  );
+}
 
 /**
  * Keeps a run small: calendar events first, since they are few and

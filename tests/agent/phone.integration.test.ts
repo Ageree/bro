@@ -34,7 +34,7 @@ function resource() {
   };
 }
 
-async function registrationServices(flag: "on" | "off") {
+async function registrationServices(flag: "on" | "off" | "on-demand") {
   vi.stubEnv("PHONE_AUTO_PROVISION", flag);
   vi.stubEnv("PHONE_WORKSPACES", "*");
   vi.resetModules();
@@ -231,6 +231,44 @@ integration("phone persistence against isolated real Postgres", () => {
       expect(await on.phone.readPhoneNumberRequest(existing)).toBeNull();
     } finally {
       await closeRegistrationServices(on);
+    }
+  });
+
+  it("does not queue a number at registration in on-demand mode", async () => {
+    const current = await registrationServices("on-demand");
+    const newcomer = registrationScope();
+    try {
+      await current.scope.ensureScope(newcomer);
+      expect(await current.phone.readPhoneNumberRequest(newcomer)).toBeNull();
+    } finally {
+      await closeRegistrationServices(current);
+    }
+  });
+
+  it("requests a number at the first call in on-demand mode, once, and claims only that workspace's request", async () => {
+    const current = await registrationServices("on-demand");
+    try {
+      await current.phone.requestPhoneNumberNow(alice, route);
+      await current.phone.requestPhoneNumberNow(alice, route);
+      expect(
+        (
+          await testPool().query(
+            "select count(*)::int as count from phone_number_requests where workspace_id=$1",
+            [alice.workspaceId]
+          )
+        ).rows
+      ).toMatchObject([{ count: 1 }]);
+      const claimed = await current.phone.claimPhoneNumberRequestOf(alice);
+      expect(claimed).toMatchObject({
+        attempts: 1,
+        sessionId: route.sessionId,
+        state: "working",
+        workspaceId: alice.workspaceId,
+      });
+      expect(await current.phone.claimPhoneNumberRequestOf(alice)).toBeNull();
+      expect(await current.phone.claimPhoneNumberRequests()).toEqual([]);
+    } finally {
+      await closeRegistrationServices(current);
     }
   });
 

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import * as z from "zod";
 import { env } from "@shared/environment";
+import { cardPriceRub } from "@shared/billing/price";
 
 const yooKassaBaseUrl = "https://api.yookassa.ru/v3/payments";
 const requestTimeoutMs = 20_000;
@@ -48,18 +49,28 @@ export function paymentAmountRub(payment: YooKassaPayment) {
   return Number.isFinite(parsed) ? Math.round(parsed) : env.PRICE_RUB;
 }
 
+/** How the person pays: SBP at the base price, or a bank card at its own price. */
+export type PaymentMethod = "sbp" | "card";
+
 export async function createYooKassaPayment(
   workspaceId: string,
   returnUrl: string,
+  method: PaymentMethod,
   signal?: AbortSignal
 ) {
+  const amountRub = method === "card" ? cardPriceRub() : env.PRICE_RUB;
   const response = await fetch(yooKassaBaseUrl, {
     body: JSON.stringify({
-      amount: { currency: "RUB", value: `${String(env.PRICE_RUB)}.00` },
+      amount: { currency: "RUB", value: `${String(amountRub)}.00` },
       capture: true,
       confirmation: { return_url: returnUrl, type: "redirect" },
       description: "Бро — месяц доступа",
-      metadata: { workspaceId },
+      // Opens the chosen method only, so the card price cannot be paid by SBP
+      // and the other way round.
+      payment_method_data: {
+        type: method === "card" ? "bank_card" : "sbp",
+      },
+      metadata: { method, workspaceId },
     }),
     headers: {
       Authorization: credentials(),

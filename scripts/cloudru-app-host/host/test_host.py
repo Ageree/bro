@@ -8,8 +8,10 @@ host.py's parser and env profiles.
 """
 
 import base64
+import contextlib
 import hashlib
 import http.server
+import hmac
 import io
 import json
 import re
@@ -1063,7 +1065,9 @@ class BootTest(unittest.TestCase):
         self.assertEqual(settings["node"]["version"], boot.VENDOR["node"]["version"])
         self.assertEqual(len(settings["postgresqlClient"]), 3)
         self.assertNotIn(KEY.hex(), json.dumps(settings))
-        self.assertIn("bro-app-host-boot > /var/log/bro-provision.log", text)
+        # Bare words, so scripts/selectel/user_data.py takes the runcmd; the boot script logs by itself.
+        self.assertIn("runcmd:\n  - [/usr/local/sbin/bro-app-host-boot]\n", text)
+        self.assertIn("exec >>/var/log/bro-provision.log 2>&1", text)
 
     def test_user_data_sets_the_console_password_for_old_and_new_cloud_init(self):
         hashed = "$6$" + "s" * 16 + "$" + "h" * 86
@@ -1218,8 +1222,8 @@ class BootTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, root)
         script = root / "egress.sh"
         script.write_text((HERE / "egress.sh").read_text()
-                          .replace("for owner in bro:BRO_EGRESS caddy:CADDY_EGRESS",
-                                   "for owner in root:BRO_EGRESS nobody:CADDY_EGRESS"))
+                          .replace("OWNERS=(bro:BRO_EGRESS caddy:CADDY_EGRESS)",
+                                   "OWNERS=(root:BRO_EGRESS nobody:CADDY_EGRESS)"))
         (root / "run.sh").write_text(f"""set -e
 iptables -w -N BRO_EGRESS
 iptables -w -A BRO_EGRESS -d 169.254.0.0/16 -j REJECT
@@ -1227,7 +1231,7 @@ iptables -w -I OUTPUT -m owner --uid-owner root -j BRO_EGRESS
 bash {script}
 ( for i in $(seq 20); do bash {script}; done ) & runs=$!
 while kill -0 $runs 2>/dev/null; do
-  [ "$(iptables -w -S BRO_EGRESS | grep -c REJECT || true)" = 2 ] || echo gap
+  [ "$(iptables -w -S BRO_EGRESS | grep -c REJECT || true)" = 4 ] || echo gap
 done
 wait $runs
 iptables -w -S
@@ -1243,7 +1247,7 @@ iptables -w -S
         self.assertEqual([line for line in lines if "OUTPUT" in line and "EGRESS" in line],
                          ["-A OUTPUT -m owner --uid-owner 65534 -j CADDY_EGRESS",
                           "-A OUTPUT -m owner --uid-owner 0 -j BRO_EGRESS"])
-        self.assertEqual(len([line for line in lines if line.startswith("-A BRO_EGRESS")]), 2)
+        self.assertEqual(len([line for line in lines if line.startswith("-A BRO_EGRESS")]), 4)
         self.assertEqual(len([line for line in lines if line.startswith("-A CADDY_EGRESS")]), 1)
 
     def test_world_unlock_ends_the_old_sessions_and_releases_their_jobs(self):
@@ -1283,7 +1287,10 @@ iptables -w -S
         rules = (HERE / "egress.sh").read_text()
         self.assertIn("-d 169.254.0.0/16 -j REJECT", rules)
         self.assertIn(f"--dport {deployd.LISTEN[1]} -j REJECT", rules)
-        self.assertIn("for owner in bro:BRO_EGRESS caddy:CADDY_EGRESS", rules)
+        # The local admin daemons of a browser host and a code host on the same server (8090, 8091) too.
+        self.assertIn("-d 127.0.0.0/8 -p tcp --dport 8090 -j REJECT", rules)
+        self.assertIn("-d 127.0.0.0/8 -p tcp --dport 8091 -j REJECT", rules)
+        self.assertIn("OWNERS=(bro:BRO_EGRESS caddy:CADDY_EGRESS)", rules)
         # Caddy faces the internet: no metadata service for it either, and it starts only after the rules.
         caddy_chain = [line for line in rules.splitlines() if "-A CADDY_EGRESS" in line]
         self.assertEqual(caddy_chain, ["-A CADDY_EGRESS -d 169.254.0.0/16 -j REJECT"])
@@ -1297,8 +1304,194 @@ iptables -w -S
         provision = (HERE / "provision.sh").read_text()
         self.assertLess(provision.index("enable --now bro-egress"), provision.index("systemctl restart caddy"))
         self.assertIn("--uid-owner caddy -j CADDY_EGRESS || fail", provision)
+        # A shared server's caddy user is the browser host's Caddy: it keeps the metadata rule too.
+        self.assertIn('OWNERS=(bro:BRO_EGRESS caddy:CADDY_EGRESS)', rules)
         self.assertIn("chown root:root /srv/bro /srv/bro/releases /srv/bro/downloads", provision)
         self.assertNotRegex(provision, r"chown bro:bro [^\n]*/srv/bro")
+
+
+class ColocatedBootTest(unittest.TestCase):
+    """The colocated server (docs/colocated-host.md): boot flags, the CLI, and what provision.sh does with them."""
+
+    def objects(self):
+        return {name: {"url": f"https://s3.cloud.ru/b/app/vendor/{name}?sig", "sha256": pin}
+                for name, pin in boot.vendor_objects()}
+
+    def settings(self, text):
+        return json.loads(text.split("path: /etc/bro/app-host-boot.json", 1)[1].split("content: '", 1)[1]
+                          .split("'\n", 1)[0])
+
+    def test_the_flags_are_boot_settings_and_absent_when_off(self):
+        on = boot.cloud_init(host_id="bro-app-2", key=KEY, bundle_url="https://s3.cloud.ru/b/x.tgz?sig",
+                             bundle_sha256="a" * 64, objects=self.objects(), domain="ops.1-2-3-4.sslip.io",
+                             shared_caddy=True, local_postgres=True)
+        settings = self.settings(on)
+        self.assertIs(settings["sharedCaddy"], True)
+        self.assertIs(settings["localPostgres"], True)
+        self.assertEqual(settings["domain"], "ops.1-2-3-4.sslip.io")
+        off = self.settings(boot.cloud_init(host_id="bro-app-1", key=KEY, bundle_url="https://s3.cloud.ru/b/x.tgz",
+                                            bundle_sha256="a" * 64, objects=self.objects()))
+        self.assertNotIn("sharedCaddy", off)
+        self.assertNotIn("localPostgres", off)
+
+    def test_a_shared_caddy_needs_its_own_domain(self):
+        with self.assertRaises(ValueError):
+            boot.cloud_init(host_id="bro-app-2", key=KEY, bundle_url="https://s3.cloud.ru/b/x.tgz",
+                            bundle_sha256="a" * 64, objects=self.objects(), shared_caddy=True)
+
+    def test_the_user_data_merges_with_selectel_user_data_as_bare_words(self):
+        text = boot.cloud_init(host_id="bro-app-2", key=KEY, bundle_url="https://s3.cloud.ru/b/x.tgz",
+                               bundle_sha256="a" * 64, objects=self.objects(), domain="ops.1-2-3-4.sslip.io",
+                               shared_caddy=True, local_postgres=True)
+        runcmd = text.split("runcmd:\n", 1)[1]
+        self.assertEqual(runcmd, "  - [/usr/local/sbin/bro-app-host-boot]\n")
+        self.assertNotIn("content: |", runcmd)
+
+    def test_the_cli_derives_the_host_key_from_the_signing_key(self):
+        signing = "11" * 32
+        with tempfile.TemporaryDirectory() as tree:
+            objects = Path(tree) / "objects.json"
+            objects.write_text(json.dumps(self.objects()))
+            out = io.StringIO()
+            with mock.patch.dict(os.environ, {"DEPLOY_SIGNING_KEY": signing}), contextlib.redirect_stdout(out):
+                boot.main(["cloud-init", "--host-id", "bro-app-2", "--bundle-url", "https://s3.cloud.ru/b/x.tgz",
+                           "--bundle-sha256", "a" * 64, "--objects", str(objects), "--domain", "ops.1-2-3-4.sslip.io",
+                           "--shared-caddy", "--local-postgres"])
+        identity = json.loads(out.getvalue().split("path: /etc/bro/deployd.json", 1)[1].split("content: '", 1)[1]
+                              .split("'\n", 1)[0])
+        self.assertEqual(identity["key"], hmac.new(bytes.fromhex(signing), b"bro-app-host:bro-app-2", hashlib.sha256).hexdigest())
+        self.assertIs(self.settings(out.getvalue())["localPostgres"], True)
+
+    def test_provision_colocated_parts_are_behind_their_flags(self):
+        subprocess.run(["bash", "-n", str(HERE / "provision.sh")], check=True)
+        provision = (HERE / "provision.sh").read_text()
+        # Caddy: the browser host's own is waited for, and no caddy of this host is installed or started.
+        self.assertIn('SHARED=$(field "$BOOT" sharedCaddy)', provision)
+        self.assertIn("[ -S /run/caddy/admin.sock ] && [ -d /etc/caddy/sites ] && break", provision)
+        self.assertIn('if [ "$SHARED" != True ]; then\n  install -m 644 "$HOST/caddy.service"', provision)
+        self.assertIn('retry /usr/bin/caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile '
+                      '--address unix//run/caddy/admin.sock', provision)
+        # PostgreSQL 18: the server from PGDG behind its flag, its key pinned by the full fingerprint.
+        self.assertIn('if [ "$LOCAL_POSTGRES" = True ]; then\n  stage postgresql-server', provision)
+        self.assertIn("B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8", provision)
+        self.assertIn("https://apt.postgresql.org/pub/repos/apt jammy-pgdg main", provision)
+        self.assertIn("install -y postgresql-18", provision)
+        self.assertIn("listen_addresses = 'localhost'", provision)
+        self.assertIn("shared_buffers = 512MB", provision)
+        self.assertIn("work_mem = 8MB", provision)
+        self.assertIn("max_connections = 100", provision)
+        self.assertIn("CREATE DATABASE bro_workflow OWNER bro", provision)
+        self.assertIn('install -m 600 /dev/null "$PGJSON.tmp"', provision)
+        self.assertIn('chmod 600 "$PGJSON"', provision)
+        # The passwords go to postgres.json, never to the env file (the operator puts env through deployd).
+        self.assertNotRegex(provision, r"(>|tee)\s*/etc/bro/env\b")
+        # The holds cover the server packages only when they are installed.
+        self.assertIn("apt-mark hold postgresql-18 postgresql-common", provision)
+
+    def test_the_shared_site_file_is_the_app_sites_only(self):
+        with tempfile.TemporaryDirectory() as tree:
+            root = Path(tree)
+            paths = deployd.Paths(root)
+            paths.boot.parent.mkdir(parents=True)
+            paths.boot.write_text(json.dumps({"sharedCaddy": True}))
+            self.assertTrue(deployd.shared_caddy(paths))
+            text = deployd.render_sites("ops.1-2-3-4.sslip.io", ["brobro.tech"])
+            self.assertNotIn("admin unix", text)
+            self.assertIn("ops.1-2-3-4.sslip.io {", text)
+            self.assertIn("brobro.tech {\n\timport bro_app", text)
+            self.assertEqual(deployd.render_caddyfile("ops.1-2-3-4.sslip.io", ["brobro.tech"]),
+                             deployd.CADDY_GLOBAL + "\n" + text)
+
+
+class SharedCaddyTest(unittest.TestCase):
+    """deployd on a server shared with the browser host: site file and reload over the browser host's admin socket."""
+
+    class Reloads(deployd.Runner):
+        def __init__(self, code=0):
+            self.code = code
+            self.calls = []
+
+        def run(self, argv, *, env=None, cwd=None, user=None, timeout=600):
+            self.calls.append(argv)
+            return (self.code, "reload refused\n") if self.code else (0, "")
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root)
+        self.paths = deployd.Paths(self.root)
+        self.paths.domain.parent.mkdir(parents=True)
+        self.paths.domain.write_text("ops.1-2-3-4.sslip.io\n")
+        self.paths.boot.parent.mkdir(parents=True)
+        self.paths.boot.write_text(json.dumps({"sharedCaddy": True}))
+        self.runner = self.Reloads()
+        self.deployd = deployd.Deployd(self.paths, self.runner, IDENTITY)
+
+    def test_sites_go_to_the_site_file_and_reload_the_browser_hosts_caddy(self):
+        self.deployd.put_sites({"sites": ["brobro.tech", "www.brobro.tech"]})
+        self.assertEqual(self.runner.calls, [["/usr/bin/caddy", "reload", "--config", str(self.paths.caddyfile),
+                                              "--adapter", "caddyfile", "--address", "unix//run/caddy/admin.sock"]])
+        text = self.paths.site_file.read_text()
+        self.assertIn("brobro.tech {\n\timport bro_app", text)
+        self.assertIn("www.brobro.tech {\n\tredir https://brobro.tech{uri} 308", text)
+        self.assertNotIn("admin unix", text)
+        # The browser host's Caddyfile is hostd's: this host does not write it.
+        self.assertFalse(self.paths.caddyfile.exists())
+        self.assertEqual(json.loads((self.root / "etc/bro/sites.json").read_text()),
+                         {"sites": ["brobro.tech", "www.brobro.tech"]})
+
+    def test_a_refused_reload_puts_the_site_file_back_as_it_was(self):
+        self.deployd.put_sites({"sites": ["a.example"]})
+        before = self.paths.site_file.read_text()
+        self.runner.code = 1
+        with self.assertRaises(deployd.Refused):
+            self.deployd.put_sites({"sites": ["b.example"]})
+        self.assertEqual(self.paths.site_file.read_text(), before)
+
+    def test_a_refused_first_reload_leaves_no_site_file_behind(self):
+        # A broken file left in sites/ would break the browser host's next reload too.
+        self.runner.code = 1
+        with self.assertRaises(deployd.Refused):
+            self.deployd.put_sites({"sites": ["a.example"]})
+        self.assertFalse(self.paths.site_file.exists())
+
+    def test_the_browser_host_caddy_is_not_restarted_from_here(self):
+        with self.assertRaises(deployd.Refused):
+            self.deployd.do_restart({"units": ["caddy"]}, lambda line: None)
+        self.assertEqual(self.runner.calls, [])
+
+    def test_the_caddyfile_command_writes_the_site_file_in_shared_mode(self):
+        with mock.patch.dict(os.environ, {"DEPLOYD_ROOT": str(self.root)}):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                deployd.main(["caddyfile"])
+        self.assertIn("bro-app.caddy", out.getvalue())
+        self.assertIn("ops.1-2-3-4.sslip.io {", self.paths.site_file.read_text())
+        self.assertFalse(self.paths.caddyfile.exists())
+
+    def test_the_caddyfile_command_reloads_the_browser_hosts_caddy_in_shared_mode(self):
+        calls = []
+
+        def run(_self, argv, timeout):
+            calls.append(argv)
+            return 0, ""
+        with mock.patch.dict(os.environ, {"DEPLOYD_ROOT": str(self.root)}), \
+                mock.patch.object(deployd.Runner, "run", run), contextlib.redirect_stdout(io.StringIO()):
+            deployd.main(["caddyfile", "--reload"])
+        self.assertEqual(calls, [["/usr/bin/caddy", "reload", "--config", str(self.paths.caddyfile),
+                                  "--adapter", "caddyfile", "--address", "unix//run/caddy/admin.sock"]])
+
+
+class NotSharedCaddyTest(unittest.TestCase):
+    def test_without_the_boot_flag_the_caddyfile_and_systemd_reload_stay(self):
+        with tempfile.TemporaryDirectory() as tree:
+            paths = deployd.Paths(tree)
+            paths.domain.parent.mkdir(parents=True)
+            paths.domain.write_text("ops.1-2-3-4.sslip.io\n")
+            runner = SharedCaddyTest.Reloads()
+            deployd.Deployd(paths, runner, IDENTITY).put_sites({"sites": ["a.example"]})
+            self.assertEqual(runner.calls, [["systemctl", "reload", "caddy"]])
+            self.assertTrue(paths.caddyfile.read_text().startswith(deployd.CADDY_GLOBAL + "\n" + deployd.APP_SNIPPET))
+            self.assertFalse(paths.site_file.exists())
 
 
 class BackupTest(unittest.TestCase):

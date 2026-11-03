@@ -14,6 +14,7 @@ import type {
   deferProactiveWatch,
   filterUnseenProactiveSignals,
   listProactiveRunSignals,
+  markProactiveSignalsHandled,
   pruneProactiveSignals,
   queueProactiveRun,
 } from "@db/services/proactive";
@@ -42,6 +43,7 @@ const proactive = vi.hoisted(() => ({
   claimWatches: vi.fn<typeof claimDueProactiveWatches>(),
   defer: vi.fn<typeof deferProactiveWatch>(),
   filterUnseen: vi.fn<typeof filterUnseenProactiveSignals>(),
+  handled: vi.fn<typeof markProactiveSignalsHandled>(),
   listSignals: vi.fn<typeof listProactiveRunSignals>(),
   prune: vi.fn<typeof pruneProactiveSignals>(),
   queue: vi.fn<typeof queueProactiveRun>(),
@@ -89,6 +91,7 @@ vi.mock("@db/services/proactive", () => ({
   filterUnseenProactiveSignals: proactive.filterUnseen,
   listProactiveRunSignals: proactive.listSignals,
   pruneProactiveSignals: proactive.prune,
+  markProactiveSignalsHandled: proactive.handled,
   queueProactiveRun: proactive.queue,
 }));
 vi.mock("@db/services/scheduled-agent-jobs", () => ({
@@ -139,6 +142,13 @@ const flight = {
   threadId: null,
 };
 
+const news = (id: string) => ({
+  dedupeKey: id,
+  itemId: id,
+  source: "gmail" as const,
+  threadId: id,
+});
+
 describe("proactive schedule", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -147,6 +157,7 @@ describe("proactive schedule", () => {
     proactive.filterUnseen.mockImplementation((_workspaceId, candidates) =>
       Promise.resolve([...candidates])
     );
+    proactive.handled.mockResolvedValue(undefined);
     proactive.queue.mockResolvedValue({
       runId: "00000000-0000-4000-8000-000000000002",
       status: "queued",
@@ -300,6 +311,120 @@ describe("proactive schedule", () => {
     expect(proactive.queue).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({ now: evening, signals: [reminder] })
     );
+  });
+
+  describe("bulk-only skip (PROACTIVE_BULK_SKIP_WORKSPACES)", () => {
+    afterEach(() => {
+      vi.stubEnv("PROACTIVE_BULK_SKIP_WORKSPACES", "");
+    });
+
+    it("starts no run when every new signal is newsletter mail, and marks them handled", async () => {
+      const mail = [news("shop"), news("digest")];
+      probe.mockResolvedValue({
+        calendarSeenUntil: seenUntil,
+        flights: [],
+        signals: mail,
+        state: "connected",
+      });
+      rank.mockResolvedValue(
+        new Map([
+          ["shop", 3],
+          ["digest", 3],
+        ])
+      );
+
+      await runWithBulkSkip("workspace:alice", vi.fn<ScheduleToFn>());
+
+      expect(proactive.queue).not.toHaveBeenCalled();
+      expect(proactive.handled).toHaveBeenCalledExactlyOnceWith(
+        "workspace:alice",
+        mail,
+        afternoon
+      );
+      expect(proactive.advance).toHaveBeenCalledExactlyOnceWith(
+        "workspace:alice",
+        afternoon
+      );
+      expect(console.info).toHaveBeenCalledWith("[proactive] check", {
+        night: false,
+        outcome: "skipped",
+        signalCount: 2,
+        skipped: "bulk_only",
+        workspaceId: "workspace:alice",
+      });
+    });
+
+    it("still runs when one new mail is not bulk", async () => {
+      probe.mockResolvedValue({
+        calendarSeenUntil: seenUntil,
+        flights: [],
+        signals: [news("shop"), news("colleague")],
+        state: "connected",
+      });
+      rank.mockResolvedValue(
+        new Map([
+          ["shop", 3],
+          ["colleague", 2],
+        ])
+      );
+
+      await runWithBulkSkip("*", vi.fn<ScheduleToFn>());
+
+      expect(proactive.handled).not.toHaveBeenCalled();
+      expect(proactive.queue).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ signals: [news("shop"), news("colleague")] })
+      );
+    });
+
+    it("still runs when unranked mail is among bulk mail", async () => {
+      probe.mockResolvedValue({
+        calendarSeenUntil: seenUntil,
+        flights: [],
+        signals: [news("shop"), news("unknown")],
+        state: "connected",
+      });
+      rank.mockResolvedValue(new Map([["shop", 3]]));
+
+      await runWithBulkSkip("*", vi.fn<ScheduleToFn>());
+
+      expect(proactive.handled).not.toHaveBeenCalled();
+      expect(proactive.queue).toHaveBeenCalledTimes(1);
+    });
+
+    it("still runs when a calendar event comes with the bulk mail", async () => {
+      probe.mockResolvedValue({
+        calendarSeenUntil: seenUntil,
+        flights: [],
+        signals: [news("shop"), flight],
+        state: "connected",
+      });
+      rank.mockResolvedValue(new Map([["shop", 3]]));
+
+      await runWithBulkSkip("*", vi.fn<ScheduleToFn>());
+
+      expect(proactive.handled).not.toHaveBeenCalled();
+      expect(proactive.queue).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ signals: [flight, news("shop")] })
+      );
+    });
+
+    it("runs as before when the flag is off, without ranking the mail", async () => {
+      probe.mockResolvedValue({
+        calendarSeenUntil: seenUntil,
+        flights: [],
+        signals: [news("shop")],
+        state: "connected",
+      });
+      rank.mockResolvedValue(new Map([["shop", 3]]));
+
+      await runWithBulkSkip(undefined, vi.fn<ScheduleToFn>());
+
+      expect(rank).not.toHaveBeenCalled();
+      expect(proactive.handled).not.toHaveBeenCalled();
+      expect(proactive.queue).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ signals: [news("shop")] })
+      );
+    });
   });
 
   it("starts no model run when every signal was already handled", async () => {
@@ -1080,7 +1205,10 @@ describe("proactive schedule", () => {
   });
 });
 
-async function runSchedule(to: ScheduleToFn) {
+async function runSchedule(
+  to: ScheduleToFn,
+  schedule: typeof proactiveSchedule = proactiveSchedule
+) {
   let task: Promise<unknown> | undefined;
   const args: ScheduleHandlerArgs = {
     appAuth: {
@@ -1095,8 +1223,19 @@ async function runSchedule(to: ScheduleToFn) {
       task = backgroundTask;
     },
   };
-  proactiveSchedule.run(args);
+  schedule.run(args);
   await task;
+}
+
+/**
+ * Runs a check with PROACTIVE_BULK_SKIP_WORKSPACES set to `flag`: the env is
+ * read when a module loads, so the schedule is loaded again for it.
+ */
+async function runWithBulkSkip(flag: string | undefined, to: ScheduleToFn) {
+  vi.resetModules();
+  vi.stubEnv("PROACTIVE_BULK_SKIP_WORKSPACES", flag ?? "");
+  const { default: schedule } = await import("@agent/schedules/proactive");
+  await runSchedule(to, schedule);
 }
 
 function watch(): Awaited<ReturnType<typeof claimDueProactiveWatches>>[number] {

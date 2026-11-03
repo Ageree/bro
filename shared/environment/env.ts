@@ -196,7 +196,7 @@ function browserVmProxySchema(name: string) {
 
 export const env = createEnv({
   server: {
-    PHONE_AUTO_PROVISION: z.enum(["on", "off"]).default("off"),
+    PHONE_AUTO_PROVISION: z.enum(["on", "off", "on-demand"]).default("off"),
     PHONE_WORKSPACES: workspaceListSchema.optional(),
     // Bro's own address book (`agent/tools/phone-contacts.ts`): workspace ids or *.
     CONTACTS_WORKSPACES: workspaceListSchema.optional(),
@@ -1063,6 +1063,8 @@ export const env = createEnv({
     PAID_MESSAGES_PER_DAY: z.coerce.number().int().positive().default(500),
     // One month of paid access, in whole roubles.
     PRICE_RUB: z.coerce.number().int().positive().default(2000),
+    // Card price of one month; unset, shared/billing/price.ts derives it.
+    PRICE_CARD_RUB: z.coerce.number().int().positive().optional(),
     // RouterAI (routerai.ru), the OpenRouter-compatible reseller that
     // answers from Russia, selected by MODEL_PROVIDER=routerai. Its prices
     // and `usage.cost` are in roubles. The key and every knob below are its
@@ -1308,6 +1310,15 @@ export const env = createEnv({
     // price or parcel watch that code checks without the model
     // (`watch-create`, `parcel-watch`).
     SUBSCRIPTIONS_WORKSPACES: workspaceListSchema.optional(),
+    // The pilot that skips a check's bulk-only mail (`agent/lib/proactive/bulk.ts`):
+    // workspace ids, or `*`. A check whose new signals are all newsletters
+    // and other bulk mail starts no model run. Unset, nobody.
+    PROACTIVE_BULK_SKIP_WORKSPACES: workspaceListSchema
+      .refine(
+        (entries) => entries.every((entry) => !entry.includes("@")),
+        "PROACTIVE_BULK_SKIP_WORKSPACES takes workspace ids or *, not emails"
+      )
+      .optional(),
     // The pilot of the agentic worker (`agent/lib/agency/pilot.ts`): workspace
     // ids, or `*` for every workspace, whose proactive checks run as the
     // agentic worker when the run is marked `agentic`
@@ -1427,6 +1438,12 @@ export const env = createEnv({
     // cache (kept per mode) holds (`agent/lib/delivery/fast.ts`). Only with
     // the direct model. Unset, every step reasons as before.
     FAST_REPLY_WORKSPACES: workspaceListSchema.optional(),
+    // The pilot that ends a person's turn after its answer, without the
+    // model's closing step: a step whose tool calls were all delivered
+    // send_message or react_to_message ends the turn with no model call
+    // (`agent/lib/delivery/closing-step.ts`). Same list format. Unset, every
+    // turn keeps its closing step.
+    CLOSING_STEP_SKIP_WORKSPACES: workspaceListSchema.optional(),
     // Workspace ids or `*` whose conversations RunInfra's prompt cache is
     // kept warm for: a person's last call goes again for one token after a
     // pause (`agent/lib/model/routerai/warm.ts`). Unset, nobody's.
