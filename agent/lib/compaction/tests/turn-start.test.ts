@@ -96,7 +96,8 @@ describe("whether a step may compact the conversation", () => {
   });
 
   it("looks past a few short context lines after the opener, not past many", () => {
-    const line = (n: number) => tagged(`Геопозиция ${n}`, "context.location");
+    const line = (n: number) =>
+      tagged(`Геопозиция ${String(n)}`, "context.location");
     expect(compactsAtTurnStart([...earlier, opener, line(1), line(2)])).toBe(
       true
     );
