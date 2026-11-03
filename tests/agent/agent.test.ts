@@ -1467,7 +1467,7 @@ describe("interactive delivery enforcement", () => {
     };
     expect(await compaction(firstStep, [...earlier, opener])).toEqual({
       cost,
-      inputTokens: 150_000,
+      inputTokens: 100_000,
     });
     // The turn's later steps keep the model's whole window: eve would put
     // the opener again after their results.

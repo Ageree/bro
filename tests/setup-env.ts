@@ -4,6 +4,8 @@ const testEnvironment = {
   BETTER_AUTH_SECRET: "test-auth-secret-0123456789abcdefghijklmnop",
   BETTER_AUTH_URL: "https://example.com",
   BLOB_READ_WRITE_TOKEN: "vercel_blob_rw_test",
+  // Cards are off by default in production; tests exercise them with this.
+  CARDS_MODE: "pilot",
   // A fake project: tests reach Composio only through a stubbed fetch, and a
   // real key in the host shell must never be the one they send.
   COMPOSIO_API_KEY: "test-composio-key",
@@ -32,6 +34,7 @@ const unsetEnvironment = [
   "BROWSER_CODE_ENGINE_WORKSPACES",
   "BROWSER_FAST_DELIVERY_WORKSPACES",
   "BROWSER_FAST_WORKSPACES",
+  "BROWSER_FAST_MODE",
   "BROWSER_HELIUM_WORKSPACES",
   "BROWSER_REPORT_FAST_WORKSPACES",
   "BROWSER_ROOTFS_CANARY_WORKSPACES",
@@ -116,6 +119,7 @@ const unsetEnvironment = [
   "STABLE_MEMORY_WORKSPACES",
   "FLASH_SEARCH_WORKSPACES",
   "HISTORY_TRIM_WORKSPACES",
+  "HISTORY_TRIM_MODE",
   "MODEL_PROVIDER",
   "MTS_EXOLVE_API_KEY",
   "PHONE_AGENT_ID",

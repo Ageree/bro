@@ -8,7 +8,8 @@ import { env } from "@shared/environment";
  * it stuck past `fastLlmTimeoutSeconds` (`runs.ts`), and run in flash mode
  * when they only search. The list names a workspace by its id or its
  * owner's email, as BROWSER_VM_WORKSPACES does, or everyone with `*`; unset,
- * nobody is, and nothing is looked up. A verdict by the email is remembered for ten
+ * nobody is, and nothing is looked up. It runs only with BROWSER_FAST_MODE=pilot
+ * (off by default since 02.11: cheaper errands, slower). A verdict by the email is remembered for ten
  * minutes: it is asked at every start, follow-up and retry of a queued
  * errand. A failed lookup runs the errand as before rather than failing its
  * start.
@@ -17,6 +18,7 @@ export async function fastBrowserPilot(scope: {
   readonly userId?: string;
   readonly workspaceId: string;
 }) {
+  if (env.BROWSER_FAST_MODE !== "pilot") return false;
   return inPilot("browser-fast", env.BROWSER_FAST_WORKSPACES, scope);
 }
 

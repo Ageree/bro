@@ -24,8 +24,9 @@ const openRouter = { OPENROUTER_API_KEY: "openrouter-test-key" };
 const gateway = { OPENROUTER_API_KEY: "" };
 
 describe("the pilot list of compaction", () => {
-  it("names nobody while unset, and nobody on the Gateway", async () => {
-    expect(await pilot("", openRouter)).toBe(false);
+  it("names everybody while unset, nobody when off, and nobody on the Gateway", async () => {
+    expect(await pilot("", openRouter)).toBe(true);
+    expect(await pilot("off", openRouter)).toBe(false);
     expect(await pilot("*", gateway)).toBe(false);
     expect(await pilot(workspaceId, gateway)).toBe(false);
   });
@@ -38,10 +39,10 @@ describe("the pilot list of compaction", () => {
 });
 
 describe("the input a pilot step compacts at", () => {
-  it("is 150k unless set, and never below 100k", async () => {
+  it("is 100k unless set, and never below 100k", async () => {
     vi.resetModules();
     const { env } = await import("@shared/environment");
-    expect(env.COMPACTION_INPUT_TOKENS).toBe(150_000);
+    expect(env.COMPACTION_INPUT_TOKENS).toBe(100_000);
 
     vi.resetModules();
     vi.stubEnv("COMPACTION_INPUT_TOKENS", "99999");

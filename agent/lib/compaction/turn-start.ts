@@ -43,10 +43,24 @@ function userMessageKind(message: ModelMessage) {
  * the opener do not count.
  */
 export function compactsAtTurnStart(messages: readonly ModelMessage[]) {
-  const last = messages.findLast(
-    (message) =>
-      message.role !== "user" || !userMessageKind(message).startsWith("memory.")
-  );
+  // Up to a few short `context.*` lines (location, tips, a recap) may follow
+  // the opener on a channel such as Telegram: eve keeps its last ten messages
+  // whole, so the opener stays beside them after the summary.
+  let contextLines = 0;
+  const last = messages.findLast((message) => {
+    if (message.role !== "user") return true;
+    const kind = userMessageKind(message);
+    if (kind.startsWith("memory.")) return false;
+    if (
+      kind.startsWith("context.") &&
+      kind !== "context.compaction" &&
+      contextLines < 4
+    ) {
+      contextLines += 1;
+      return false;
+    }
+    return true;
+  });
   return (
     last?.role === "user" &&
     userMessageKind(last) === "user" &&

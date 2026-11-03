@@ -16,6 +16,7 @@ vi.mock("@db/services/scope", () => ({
 
 afterEach(() => {
   vi.stubEnv("BROWSER_FAST_WORKSPACES", "");
+  vi.stubEnv("BROWSER_FAST_MODE", "");
   vi.clearAllMocks();
   vi.resetModules();
 });
@@ -25,6 +26,7 @@ const workspaceId = "personal:0123456789abcdef0123456789abcdef";
 async function loadPilot(list: string) {
   vi.resetModules();
   vi.stubEnv("BROWSER_FAST_WORKSPACES", list);
+  vi.stubEnv("BROWSER_FAST_MODE", "pilot");
   return import("@agent/lib/browser-vm/pilot");
 }
 

@@ -26,6 +26,7 @@ export async function historyTrimPilot(
   turn?: Parameters<typeof pilotVerdictOfTurn>[1]
 ) {
   const list = env.HISTORY_TRIM_WORKSPACES ?? [];
+  if (env.HISTORY_TRIM_MODE !== "pilot") return false;
   if (!directModelActive() || list.length === 0) return false;
   if (list.includes("*")) return true;
   return pilotVerdictOfTurn("history-trim", turn, async () => {

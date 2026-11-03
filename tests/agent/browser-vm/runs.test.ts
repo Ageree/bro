@@ -617,7 +617,11 @@ describe("starting a run on a workspace's browser VM", () => {
       worker.startBrowserVmWorkerRun.mockClear();
       worker.sendBrowserVmWorkerMessage.mockClear();
       const client = await importWithSettings(
-        { ...browserVmTestEnvironment, ...settings },
+        {
+          ...browserVmTestEnvironment,
+          BROWSER_FAST_MODE: "pilot",
+          ...settings,
+        },
         async () => import("@agent/lib/browser-use/client")
       );
       await client.createBrowserUseRun({
@@ -674,6 +678,10 @@ describe("starting a run on a workspace's browser VM", () => {
     // Another workspace's pilot changes nothing here.
     expect(
       await tunings({ BROWSER_FAST_WORKSPACES: "personal:another" })
+    ).toEqual([{ flashMode: true, ...vmTuning }, vmTuning, vmTuning]);
+    // The list alone does nothing: the fast browser is off by default.
+    expect(
+      await tunings({ BROWSER_FAST_MODE: "off", BROWSER_FAST_WORKSPACES: "*" })
     ).toEqual([{ flashMode: true, ...vmTuning }, vmTuning, vmTuning]);
     // Another model keeps its own hosts and browser-use's own timeout:
     // nothing measured how long GPT Luna's reasoning calls take.

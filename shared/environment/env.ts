@@ -204,6 +204,9 @@ export const env = createEnv({
     // Telegram chat as a button to a Mini App (`agent/tools/send_card.ts`,
     // `docs/cards.md`): workspace ids or *. Unset, nobody.
     CARDS_WORKSPACES: workspaceListSchema.optional(),
+    // Master switch: the list above does nothing unless this is `pilot`
+    // (02.11: cards are off, `send_card` fails with a non-serializable capture).
+    CARDS_MODE: z.enum(["pilot", "off"]).default("off"),
     // Bro ↔ Bro (docs/bro-to-bro.md): workspace ids or *. Unset, off for
     // everyone, links included; set, also on for every workspace with an
     // active link, so the person who accepted an invite gets it with the link.
@@ -370,6 +373,11 @@ export const env = createEnv({
     // flash mode when they only search (`agent/lib/browser-vm/pilot.ts`,
     // docs/browser-speed.md). Unset, every errand runs as before.
     BROWSER_FAST_WORKSPACES: workspaceListSchema.optional(),
+    // Whether that pilot runs at all. Off by default (02.11, owner: a slower
+    // errand is fine when it costs less; Together is twice DeepInfra's price
+    // per step, ≈ 3.7 ₽ an errand): production's list stays `*`, and only
+    // `pilot` here turns it back on.
+    BROWSER_FAST_MODE: z.enum(["pilot", "off"]).default("off"),
     // Whose errand reports wait at most two seconds for the picture of the
     // run's last page when the run saved no item photos, rather than for the
     // download and store of it (1.3–19.1 s on 19.10): workspace ids or
@@ -1288,6 +1296,13 @@ export const env = createEnv({
     // trace (`agent/lib/history/`). Only with the direct model. Unset, every
     // step sends the whole history as before.
     HISTORY_TRIM_WORKSPACES: workspaceListSchema.optional(),
+    // Whether that pilot runs at all. Off by default (02.11): with a cached
+    // read at $0.003 per million, the ~5k tokens a trace saves cost nothing,
+    // while each shift of its boundary (every 8 turns) rewrites old results
+    // and the prompt cache breaks there: one Telegram step read 72k of 82k
+    // tokens cold (≈ 0.9 ₽). Compaction at 100k covers growth. Production's
+    // list stays `*`; only `pilot` here turns the trimming back on.
+    HISTORY_TRIM_MODE: z.enum(["pilot", "off"]).default("off"),
     // The pilot of event subscriptions (docs/roadmap.md, 27): workspace ids
     // or owners' emails, or `*` for every workspace, whose Bro may set up a
     // price or parcel watch that code checks without the model
@@ -1381,12 +1396,13 @@ export const env = createEnv({
     COMPACTION_WORKSPACES: workspaceListSchema.optional(),
     // The whole input of a step, instructions and tools included, past which
     // a pilot turn compacts. Compaction is a model call and a miss of the
-    // prompt cache, so never below 100k.
+    // prompt cache, so never below 100k. 100k by default: a step at 360k
+    // tokens with a cold cache costs ~4,6 ₽ against ~0,2 ₽ at 100k.
     COMPACTION_INPUT_TOKENS: z.coerce
       .number()
       .int()
       .min(100_000)
-      .default(150_000),
+      .default(100_000),
     // The pilot of one history across channels (docs/roadmap.md, item 28):
     // workspace ids or owners' emails, or `*` for every workspace, whose
     // chats log what the person said (`conversation_log`) and whose

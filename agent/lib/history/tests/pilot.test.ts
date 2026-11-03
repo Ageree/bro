@@ -29,12 +29,14 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   vi.stubEnv("HISTORY_TRIM_WORKSPACES", "");
+  vi.stubEnv("HISTORY_TRIM_MODE", "");
   vi.stubEnv("OPENROUTER_API_KEY", "");
 });
 
 async function loadPilot(list: string, settings: Record<string, string>) {
   vi.resetModules();
   vi.stubEnv("HISTORY_TRIM_WORKSPACES", list);
+  vi.stubEnv("HISTORY_TRIM_MODE", "pilot");
   for (const [name, value] of Object.entries(settings)) {
     vi.stubEnv(name, value);
   }
@@ -50,6 +52,15 @@ const openRouter = { OPENROUTER_API_KEY: "openrouter-test-key" };
 const gateway = { OPENROUTER_API_KEY: "" };
 
 describe("the pilot list of trimming old history", () => {
+  it("does nothing unless the mode is `pilot`: the list alone is off", async () => {
+    vi.resetModules();
+    vi.stubEnv("HISTORY_TRIM_WORKSPACES", "*");
+    vi.stubEnv("HISTORY_TRIM_MODE", "off");
+    vi.stubEnv("OPENROUTER_API_KEY", "openrouter-test-key");
+    const { historyTrimPilot } = await import("@agent/lib/history/pilot");
+    expect(await historyTrimPilot({ workspaceId })).toBe(false);
+  });
+
   it("names nobody while unset, and nobody on the Gateway", async () => {
     expect(await pilot("", openRouter)).toBe(false);
     expect(await pilot("*", gateway)).toBe(false);

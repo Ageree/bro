@@ -23,8 +23,13 @@ export async function compactionPilot(
   },
   turn?: Parameters<typeof pilotVerdictOfTurn>[1]
 ) {
-  const list = env.COMPACTION_WORKSPACES ?? [];
-  if (!directModelActive() || list.length === 0) return false;
+  // Unset means everyone: a long chat otherwise grows to hundreds of
+  // thousands of tokens a step (a Telegram session reached 388k, 05.11
+  // costs); `off` is the way back.
+  const list = env.COMPACTION_WORKSPACES ?? ["*"];
+  if (!directModelActive() || list.length === 0 || list.includes("off")) {
+    return false;
+  }
   if (list.includes("*")) return true;
   return pilotVerdictOfTurn("compaction", turn, async () => {
     try {
