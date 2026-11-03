@@ -492,7 +492,7 @@ UPDATE_HOST = " && ".join((
     "tar -xzf /root/app-host.tgz -C /opt/bro/app-host.new", "rm -f /root/app-host.tgz", ROTATE_HOST_CODE,
     "mv /opt/bro/app-host.new /opt/bro/app-host", "bash /opt/bro/app-host/install-code.sh",
     "systemctl daemon-reload", "systemctl restart deployd",
-    "python3 /opt/bro/app-host/deployd.py caddyfile", "systemctl reload caddy",
+    "python3 /opt/bro/app-host/deployd.py caddyfile --reload",
     "sleep 2", "curl -fsS -m 10 http://127.0.0.1:8095/ops/v1/health"))
 
 

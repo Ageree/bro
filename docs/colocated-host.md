@@ -87,7 +87,7 @@ python3 scripts/selectel/user_data.py browser.yaml code.yaml app.yaml > server.y
    прочие ops-скрипты берутся из текущего релиза, до выката их на сервере нет. Выкат накатит миграции на пустую базу и
    запустит eve и web.
 9. Сразу остановите их (`host.py stop NAME bro-eve bro-web`): `db-restore.sh` требует, чтобы Бро на базе не работал.
-   Восстановите `app`: `host.py ops NAME db-restore.sh latest app`; мир — вручную, как шаг 6, с `pg_restore` в
+   Восстановите `app`: `host.py ops NAME db-restore.sh latest app --replace` (выкат уже создал таблицы); мир — вручную, как шаг 6, с `pg_restore` в
    пустой `bro_workflow` (перед ним `DROP`/`CREATE` базы мира, раз выкат её уже наполнил). Затем
    `host.py restart NAME bro-eve bro-web` (команды `start` у `host.py` нет).
 10. Сайты: `host.py sites NAME --set <список с VM>`.

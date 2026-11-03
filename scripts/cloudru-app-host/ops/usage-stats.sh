@@ -241,9 +241,11 @@ WITH background AS (
     AND u.idempotency_key LIKE 'step:%'
     AND u.occurred_at < :'until'::timestamptz
     -- The runs with a step in the window, each whole: a run crossing SINCE keeps its earlier steps.
-    AND u.run_id IN (SELECT w.run_id FROM usage_costs w
-                     WHERE w.source = 'background' AND w.idempotency_key LIKE 'step:%'
-                       AND w.occurred_at >= :'since'::timestamptz AND w.occurred_at < :'until'::timestamptz)
+    -- A step without a run is counted by its own time.
+    AND (u.run_id IS NULL AND u.occurred_at >= :'since'::timestamptz
+         OR u.run_id IN (SELECT w.run_id FROM usage_costs w
+                         WHERE w.source = 'background' AND w.idempotency_key LIKE 'step:%'
+                           AND w.occurred_at >= :'since'::timestamptz AND w.occurred_at < :'until'::timestamptz))
 )
 SELECT CASE WHEN grouping(COALESCE(j.kind, 'no job')) = 1 THEN 'all'
             ELSE COALESCE(j.kind, 'no job') END AS job_kind,

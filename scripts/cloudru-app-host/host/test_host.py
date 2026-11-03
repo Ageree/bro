@@ -1468,6 +1468,18 @@ class SharedCaddyTest(unittest.TestCase):
         self.assertIn("ops.1-2-3-4.sslip.io {", self.paths.site_file.read_text())
         self.assertFalse(self.paths.caddyfile.exists())
 
+    def test_the_caddyfile_command_reloads_the_browser_hosts_caddy_in_shared_mode(self):
+        calls = []
+
+        def run(_self, argv, timeout):
+            calls.append(argv)
+            return 0, ""
+        with mock.patch.dict(os.environ, {"DEPLOYD_ROOT": str(self.root)}), \
+                mock.patch.object(deployd.Runner, "run", run), contextlib.redirect_stdout(io.StringIO()):
+            deployd.main(["caddyfile", "--reload"])
+        self.assertEqual(calls, [["/usr/bin/caddy", "reload", "--config", str(self.paths.caddyfile),
+                                  "--adapter", "caddyfile", "--address", "unix//run/caddy/admin.sock"]])
+
 
 class NotSharedCaddyTest(unittest.TestCase):
     def test_without_the_boot_flag_the_caddyfile_and_systemd_reload_stay(self):

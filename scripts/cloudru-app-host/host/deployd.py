@@ -1079,6 +1079,11 @@ def main(argv=None):
         deployd = Deployd(paths, Runner(), {"host": "", "key": b""})
         deployd.write_caddy(read_sites(paths))
         print(f"wrote {deployd.caddy_file()}")
+        if argv[1:] == ["--reload"]:
+            # The right Caddy for the mode: the browser host's over its admin socket, or the app's own unit.
+            code, output = deployd.runner.run(deployd.reload_command(), timeout=60)
+            if code != 0:
+                raise SystemExit(f"caddy reload failed: {output}")
         return
     if argv[:1] != ["serve"]:
         raise SystemExit(__doc__)
