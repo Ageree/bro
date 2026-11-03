@@ -63,6 +63,24 @@ describe("capability tips", () => {
     expect(bullets(lines[0])).toBe(3);
   });
 
+  it("offers Yandex search and the address book once they are on, and not once tried", async () => {
+    vi.stubEnv("YANDEX_API_WORKSPACES", "*");
+    vi.stubEnv("CONTACTS_WORKSPACES", "*");
+    mocks.use.mockResolvedValue({
+      googleConnected: true,
+      lastTipAt: null,
+      personTurns: 12,
+      tools: ["schedules-create", "phone-call", "yandex"],
+    });
+    try {
+      await tipContext("найди бар в центре на шестерых", "web");
+      expect(candidates()).toEqual(["contacts"]);
+    } finally {
+      vi.stubEnv("YANDEX_API_WORKSPACES", undefined);
+      vi.stubEnv("CONTACTS_WORKSPACES", undefined);
+    }
+  });
+
   it("counts Google connected by the mail check as tried, and the place only in Telegram", async () => {
     mocks.use.mockResolvedValue({
       googleConnected: true,

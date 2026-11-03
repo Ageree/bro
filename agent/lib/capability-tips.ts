@@ -1,8 +1,10 @@
+import { usesBrowserVm } from "@agent/lib/browser-vm/backend";
 import { modelEndpoint } from "@agent/lib/model/endpoint";
 import { schedulesEnabled } from "@agent/lib/schedules/enabled";
 import { stems } from "@agent/lib/skills/triggers";
 import { subscriptionsPilot } from "@agent/lib/subscriptions/pilot";
-import { yandexPurchasePilot } from "@agent/lib/yandex/pilot";
+import { yandexPilot, yandexPurchasePilot } from "@agent/lib/yandex/pilot";
+import { contactsPilot } from "@db/services/contacts";
 import {
   claimCapabilityTip,
   readCapabilityHistory,
@@ -79,6 +81,30 @@ const capabilities: readonly Capability[] = [
     label: "почта и календарь",
     setup: true,
     tried: (tool) => /^(?:gmail|calendar|drive)-|^connect_google$/u.test(tool),
+  },
+  {
+    available: (scope) => usesBrowserVm(scope),
+    hint: "сходить на любой сайт вместо него: найти и сравнить варианты (билеты, отели, товары, вакансии), а потом, если он скажет, забронировать, записать или оформить — бесплатное сразу, платное только после его «да»",
+    id: "errands",
+    label: "поручения на сайтах",
+    setup: false,
+    tried: (tool) => tool === "browser_task",
+  },
+  {
+    available: (scope) => yandexPilot(scope),
+    hint: "найти место на Картах, события в Афише или товар на Маркете и сразу сказать, что выбрать",
+    id: "yandex-search",
+    label: "поиск по Яндексу",
+    setup: false,
+    tried: (tool) => tool === "yandex",
+  },
+  {
+    available: (scope) => contactsPilot(scope),
+    hint: "запомнить близких и нужных людей с номерами, чтобы дальше просто говорить «позвони маме» или «закажи такси брату»",
+    id: "contacts",
+    label: "записная книжка",
+    setup: false,
+    tried: (tool) => tool.startsWith("contact-"),
   },
   {
     available: (scope) => yandexPurchasePilot(scope),
