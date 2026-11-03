@@ -305,6 +305,10 @@ describe("phone-call on the first request in on-demand mode", () => {
       services.readNumber.mockResolvedValue(null);
       services.claimOf.mockResolvedValue(request);
       services.provisionClaimed.mockResolvedValue("retry");
+      services.readRequest.mockResolvedValue({
+        state: "retry",
+        nextAttemptAt: new Date(Date.now() + 60_000),
+      });
       const phone = await setUp([
         person("Позвони в салон и узнай про субботу"),
       ]);
@@ -322,14 +326,17 @@ describe("phone-call on the first request in on-demand mode", () => {
     inContext(async () => {
       services.onDemand.mockReturnValue(true);
       services.readNumber.mockResolvedValue(null);
-      services.readRequest.mockResolvedValue({ state: "retry" });
+      services.readRequest.mockResolvedValue({
+        state: "retry",
+        nextAttemptAt: new Date(Date.now() + 3_600_000),
+      });
       const phone = await setUp([
         person("Позвони в салон и узнай про субботу"),
       ]);
       const target = "+74951234567";
       await phone.decide("call-1", { target, task });
       expect(await phone.dial("call-1", { target, task })).toMatchObject({
-        state: "number_preparing",
+        state: "number_unavailable",
       });
       expect(services.provisionClaimed).not.toHaveBeenCalled();
       expect(services.startCall).not.toHaveBeenCalled();
