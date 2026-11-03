@@ -52,7 +52,9 @@ A bridge that does not stop is started again and eve is not restarted: the job f
 A job's log never holds a request's URL or an env value.
 
   python3 deployd.py serve        the daemon (deployd.service)
-  python3 deployd.py caddyfile    renders /etc/caddy/Caddyfile from the ops domain and sites.json (provision.sh)
+  python3 deployd.py caddyfile    renders /etc/caddy/Caddyfile from the ops domain and sites.json (provision.sh);
+                                  in shared mode (sharedCaddy in app-host-boot.json) the site blocks alone go to
+                                  /etc/caddy/sites/bro-app.caddy, which the browser host's Caddy imports
 """
 
 import base64
@@ -121,6 +123,9 @@ class Paths:
         self.ops_env = root / "etc/bro/ops-env"
         self.sites = root / "etc/bro/sites.json"
         self.caddyfile = root / "etc/caddy/Caddyfile"
+        # Shared mode (boot.py --shared-caddy): the browser host's Caddy imports this file from sites/.
+        self.site_file = root / "etc/caddy/sites/bro-app.caddy"
+        self.boot = root / "etc/bro/app-host-boot.json"
         self.domain = root / "var/lib/bro/domain"
         self.srv = root / "srv/bro"
         self.releases = self.srv / "releases"
@@ -287,10 +292,23 @@ APP_SNIPPET = """(bro_app) {
 """
 
 
+# The global block: this VM's own Caddy. A shared Caddy (the browser host's) has its own and imports only the sites.
+CADDY_GLOBAL = "{\n\tadmin unix//run/caddy/admin.sock\n}\n"
+
+
 def render_caddyfile(ops_domain, sites):
+    return "\n".join([CADDY_GLOBAL, *site_blocks(ops_domain, sites)])
+
+
+def render_sites(ops_domain, sites):
+    """The site blocks alone: what a shared Caddy imports from its sites/ (the same text as in the Caddyfile)."""
+    return "\n".join(site_blocks(ops_domain, sites))
+
+
+def site_blocks(ops_domain, sites):
     if not DOMAIN.fullmatch(ops_domain or ""):
         raise Refused("no ops domain")
-    parts = ["{\n\tadmin unix//run/caddy/admin.sock\n}\n", APP_SNIPPET,
+    parts = [APP_SNIPPET,
              f"{ops_domain} {{\n\thandle /ops/v1/* {{\n\t\treverse_proxy {LISTEN[0]}:{LISTEN[1]}\n\t}}\n"
              "\timport bro_app\n}\n"]
     for site in sites:
@@ -300,7 +318,23 @@ def render_caddyfile(ops_domain, sites):
             parts.append(f"{site} {{\n\tredir https://{apex}{{uri}} 308\n}}\n")
         else:
             parts.append(f"{site} {{\n\timport bro_app\n}}\n")
-    return "\n".join(parts)
+    return parts
+
+
+def shared_caddy(paths):
+    """A server shared with the browser host (boot.py --shared-caddy): its Caddy is the browser host's."""
+    try:
+        return json.loads(paths.boot.read_text()).get("sharedCaddy") is True
+    except FileNotFoundError:
+        return False
+
+
+def put_back(path, text):
+    """The file as it was before a change the reload refused; no text before means there was no file."""
+    if text is None:
+        path.unlink(missing_ok=True)
+    else:
+        write_private(path, text, mode=0o644)
 
 
 def read_sites(paths):
@@ -714,18 +748,34 @@ class Deployd:
         except FileNotFoundError:
             return ""
 
-    def write_caddyfile(self, sites):
-        write_private(self.paths.caddyfile, render_caddyfile(self.ops_domain(), sites), mode=0o644)
+    def caddy_file(self):
+        """The file this host's Caddy reads: the Caddyfile, or in shared mode the site file the browser host imports."""
+        return self.paths.site_file if shared_caddy(self.paths) else self.paths.caddyfile
+
+    def write_caddy(self, sites):
+        if shared_caddy(self.paths):
+            text = render_sites(self.ops_domain(), sites)
+        else:
+            text = render_caddyfile(self.ops_domain(), sites)
+        write_private(self.caddy_file(), text, mode=0o644)
+
+    def reload_command(self):
+        if shared_caddy(self.paths):
+            # The browser host's Caddy runs its own Caddyfile: reloaded over its admin socket, as caddy.py does.
+            return ["/usr/bin/caddy", "reload", "--config", str(self.paths.caddyfile), "--adapter", "caddyfile",
+                    "--address", "unix//run/caddy/admin.sock"]
+        return ["systemctl", "reload", "caddy"]
 
     def put_sites(self, body):
         sites = checked_sites(body.get("sites"))
-        before = self.paths.caddyfile.read_text() if self.paths.caddyfile.exists() else None
-        self.write_caddyfile(sites)
-        code, output = self.runner.run(["systemctl", "reload", "caddy"], timeout=60)
+        target = self.caddy_file()
+        before = target.read_text() if target.exists() else None
+        self.write_caddy(sites)
+        code, output = self.runner.run(self.reload_command(), timeout=60)
         if code != 0:
-            # Caddy keeps its running config when a reload fails; the file goes back to match it.
-            if before is not None:
-                write_private(self.paths.caddyfile, before, mode=0o644)
+            # Caddy keeps its running config when a reload fails; the file goes back to match it. In shared mode a
+            # broken site file left in sites/ would also break the browser host's next reload.
+            put_back(target, before)
             raise Refused(f"caddy reload failed: {output[-400:]}")
         write_private(self.paths.sites, json.dumps({"sites": sites}) + "\n", mode=0o644)
         return {"sites": sites}
@@ -777,6 +827,9 @@ class Deployd:
         units = body.get("units") or ["bro-eve", "bro-web"]
         if not isinstance(units, list) or not all(u in RESTARTABLE for u in units):
             raise Refused(f"units: some of {', '.join(RESTARTABLE)}")
+        if "caddy" in units and shared_caddy(self.paths):
+            # On a shared server that unit is the browser host's Caddy: restarting it drops the browser host's sites.
+            raise Refused("caddy: on a shared server it is the browser host's Caddy, not this host's to restart")
         if "bro-eve" not in units:
             self.restart(log, units)
             if "bro-web" in units and self.current_version():
@@ -1024,8 +1077,8 @@ def main(argv=None):
     paths = Paths(os.environ.get("DEPLOYD_ROOT", "/"))
     if argv[:1] == ["caddyfile"]:
         deployd = Deployd(paths, Runner(), {"host": "", "key": b""})
-        deployd.write_caddyfile(read_sites(paths))
-        print(f"wrote {paths.caddyfile}")
+        deployd.write_caddy(read_sites(paths))
+        print(f"wrote {deployd.caddy_file()}")
         return
     if argv[:1] != ["serve"]:
         raise SystemExit(__doc__)

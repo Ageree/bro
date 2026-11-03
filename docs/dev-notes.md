@@ -765,6 +765,11 @@ postgres:17-alpine`, Docker в облачной сессии есть; Google �
 
 ## Прод на VM
 
+- Совместный сервер (план переезда приложения, `docs/colocated-host.md`): `scripts/selectel/user_data.py`
+  пропускает только `write_files` и `runcmd`, поэтому `runcmd` загрузки приложения — слова без кавычек, а лог
+  пишет сам скрипт; `chpasswd` через склейку не проходит. Браузерный хост без `--memory-limit-mb` отдаёт
+  песочницам `MemTotal − reserve_mb` и место приложения не видит (`browser-vm/host/hostd.py`).
+
 - С 10.10 прод — Selectel (`docs/selectel-migration.md`, «Переключение»):
   VM `bro-app-sel-2` (`SL1.2-4096-32`), база `bro-pg`, S3 `bro-bucket`;
   браузеры и песочницы кода (`sbx-dedicated-3`, `code.<ip>.sslip.io`) — на
