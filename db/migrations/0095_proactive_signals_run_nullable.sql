@@ -1,0 +1,1 @@
+ALTER TABLE "proactive_signals" ALTER COLUMN "run_id" DROP NOT NULL;

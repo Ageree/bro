@@ -350,6 +350,24 @@ describe("proactive watches", { timeout: 30_000 }, () => {
     ).toEqual([bossMail]);
   });
 
+  it("marks signals a check handled without a run, so they do not come back", async () => {
+    const { proactive } = await openDatabase();
+    await proactive.recordProactiveTarget(alice, telegram, now);
+
+    await proactive.markProactiveSignalsHandled(
+      alice.workspaceId,
+      [bossMail],
+      now
+    );
+
+    expect(
+      await proactive.filterUnseenProactiveSignals(alice.workspaceId, [
+        bossMail,
+        flight,
+      ])
+    ).toEqual([flight]);
+  });
+
   it("fails quietly and holds a finished report back until it may be sent", async () => {
     const { jobs, proactive } = await openDatabase();
     await proactive.recordProactiveTarget(alice, telegram, now);

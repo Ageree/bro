@@ -8,6 +8,7 @@ import {
   gmailProbeQuery,
   gmailSignals,
   isNightFlight,
+  isBulkOnly,
   isNightSubject,
   mailRank,
   mailSearchStart,
@@ -812,5 +813,29 @@ describe("prompts of the proactive run", () => {
         },
       ]).map(({ itemId }) => itemId)
     ).toEqual(["c1", "p1", "g1", "a1"]);
+  });
+});
+
+const mail = (itemId: string, source: "gmail" | "calendar" = "gmail") => ({
+  dedupeKey: itemId,
+  itemId,
+  source,
+  threadId: null,
+});
+
+describe("isBulkOnly", () => {
+  it("holds only when every new signal is Gmail mail ranked as bulk", () => {
+    const ranks = new Map([
+      ["news", 3],
+      ["digest", 3],
+    ]);
+    expect(isBulkOnly([mail("news"), mail("digest")], ranks)).toBe(true);
+    expect(isBulkOnly([], ranks)).toBe(false);
+    expect(isBulkOnly([mail("news"), mail("boss")], ranks)).toBe(false);
+    expect(isBulkOnly([mail("news"), mail("news", "calendar")], ranks)).toBe(
+      false
+    );
+    // Unranked mail counts as known mail, so it keeps the run.
+    expect(isBulkOnly([mail("news"), mail("unranked")], ranks)).toBe(false);
   });
 });

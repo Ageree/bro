@@ -1310,6 +1310,15 @@ export const env = createEnv({
     // price or parcel watch that code checks without the model
     // (`watch-create`, `parcel-watch`).
     SUBSCRIPTIONS_WORKSPACES: workspaceListSchema.optional(),
+    // The pilot that skips a check's bulk-only mail (`agent/lib/proactive/bulk.ts`):
+    // workspace ids, or `*`. A check whose new signals are all newsletters
+    // and other bulk mail starts no model run. Unset, nobody.
+    PROACTIVE_BULK_SKIP_WORKSPACES: workspaceListSchema
+      .refine(
+        (entries) => entries.every((entry) => !entry.includes("@")),
+        "PROACTIVE_BULK_SKIP_WORKSPACES takes workspace ids or *, not emails"
+      )
+      .optional(),
     // The pilot of the agentic worker (`agent/lib/agency/pilot.ts`): workspace
     // ids, or `*` for every workspace, whose proactive checks run as the
     // agentic worker when the run is marked `agentic`

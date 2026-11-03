@@ -119,9 +119,11 @@ export const proactiveSignals = pgTable(
     dedupeKey: text("dedupe_key").notNull(),
     itemId: text("item_id").notNull(),
     threadId: text("thread_id"),
-    runId: uuid("run_id")
-      .notNull()
-      .references(() => scheduledAgentRuns.id, { onDelete: "cascade" }),
+    // Null for a signal a check handled without a run (bulk-only skips in
+    // `agent/schedules/proactive.ts`): kept only so the signal does not come back.
+    runId: uuid("run_id").references(() => scheduledAgentRuns.id, {
+      onDelete: "cascade",
+    }),
     createdAt: timestamp("created_at", {
       mode: "date",
       precision: 3,
