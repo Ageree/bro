@@ -251,10 +251,13 @@ SELECT CASE WHEN grouping(COALESCE(j.kind, 'no job')) = 1 THEN 'all'
             ELSE COALESCE(j.kind, 'no job') END AS job_kind,
        count(DISTINCT b.run_id) AS runs,
        count(*) AS steps,
-       round(count(*)::numeric / NULLIF(count(DISTINCT b.run_id), 0), 1) AS steps_per_run,
+       count(*) FILTER (WHERE b.run_id IS NULL) AS steps_without_run,
+       -- Per-run figures over the steps of a run only: a step without one would inflate them.
+       round(count(*) FILTER (WHERE b.run_id IS NOT NULL)::numeric / NULLIF(count(DISTINCT b.run_id), 0), 1)
+         AS steps_per_run,
        round(percentile_cont(0.5) WITHIN GROUP (ORDER BY b.input)::numeric / 1000, 1) AS input_p50,
        round(100.0 * sum(b.cached) / NULLIF(sum(b.input), 0), 1) AS cache_pct,
-       round(sum(b.cost_rub) FILTER (WHERE NOT b.unpriced)
+       round(sum(b.cost_rub) FILTER (WHERE NOT b.unpriced AND b.run_id IS NOT NULL)
              / NULLIF(count(DISTINCT b.run_id) FILTER (WHERE NOT b.unpriced), 0), 2) AS rub_per_run,
        round(sum(b.cost_rub), 2) AS rub_sum,
        count(*) FILTER (WHERE b.unpriced) AS unpriced
