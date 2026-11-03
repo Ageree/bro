@@ -36,7 +36,7 @@ const deliveryToolNames = new Set([
  * heads-up, after which they still wait for the answer. A card is a reply
  * once its message and button are in the chat (`send_card`, `update_card`).
  */
-function repliedWith(part: Pick<ToolResultPart, "output" | "toolName">) {
+export function repliedWith(part: Pick<ToolResultPart, "output" | "toolName">) {
   if (cardToolNames.has(part.toolName)) return cardSentInHistory(part.output);
   return sendReachedPerson(part.output) && !headsUpDelivered(part.output);
 }

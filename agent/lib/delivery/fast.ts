@@ -49,6 +49,21 @@ export function fastReplyPilot(scope: Scope, turn?: Turn) {
 }
 
 /**
+ * Whether a person's turn whose answer went out ends after that step, with
+ * no closing model step (CLOSING_STEP_SKIP_WORKSPACES, same format). Only
+ * with the direct model: the ending is the empty-turn model's, and the
+ * Gateway has none.
+ */
+export function closingStepSkipPilot(scope: Scope, turn?: Turn) {
+  return listed(
+    "closing-step-skip",
+    env.CLOSING_STEP_SKIP_WORKSPACES,
+    scope,
+    turn
+  );
+}
+
+/**
  * Whether the early-reply pilot's heads-up goes in a step of its own
  * (EARLY_REPLY_SPLIT_WORKSPACES, same format).
  */

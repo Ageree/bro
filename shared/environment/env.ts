@@ -1429,6 +1429,12 @@ export const env = createEnv({
     // cache (kept per mode) holds (`agent/lib/delivery/fast.ts`). Only with
     // the direct model. Unset, every step reasons as before.
     FAST_REPLY_WORKSPACES: workspaceListSchema.optional(),
+    // The pilot that ends a person's turn after its answer, without the
+    // model's closing step: a step whose tool calls were all delivered
+    // send_message or react_to_message ends the turn with no model call
+    // (`agent/lib/delivery/closing-step.ts`). Same list format. Unset, every
+    // turn keeps its closing step.
+    CLOSING_STEP_SKIP_WORKSPACES: workspaceListSchema.optional(),
     // Workspace ids or `*` whose conversations RunInfra's prompt cache is
     // kept warm for: a person's last call goes again for one token after a
     // pause (`agent/lib/model/routerai/warm.ts`). Unset, nobody's.

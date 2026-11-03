@@ -25,6 +25,7 @@ const services = vi.hoisted(() => ({
   directModelActive: vi.fn<() => boolean>(),
   earlyReplyPilot: vi.fn<() => Promise<boolean>>(),
   fastReplyPilot: vi.fn<() => Promise<boolean>>(),
+  closingStepSkipPilot: vi.fn<() => Promise<boolean>>(),
   promptWarmWorkspace: vi.fn<(workspaceId: string) => boolean>(),
   earlyReplySplitPilot: vi.fn<() => Promise<boolean>>(),
   skillsLayout: vi.fn<() => "core" | "full">(),
@@ -77,6 +78,7 @@ vi.mock("@agent/lib/model/routerai/warm", async (importOriginal) => ({
   promptWarmWorkspace: services.promptWarmWorkspace,
 }));
 vi.mock("@agent/lib/delivery/fast", () => ({
+  closingStepSkipPilot: services.closingStepSkipPilot,
   earlyReplySplitPilot: services.earlyReplySplitPilot,
   fastReplyPilot: services.fastReplyPilot,
 }));
@@ -150,6 +152,7 @@ beforeEach(() => {
   services.compactionHeld.mockReturnValue(false);
   services.earlyReplyPilot.mockResolvedValue(false);
   services.fastReplyPilot.mockResolvedValue(false);
+  services.closingStepSkipPilot.mockResolvedValue(false);
   services.promptWarmWorkspace.mockReturnValue(false);
   services.earlyReplySplitPilot.mockResolvedValue(false);
   services.skillsLayout.mockReturnValue("full");
@@ -371,6 +374,62 @@ describe("interactive delivery enforcement", () => {
     expect(options?.replyNote).toContain(
       "Your last send_message call failed and reached no one"
     );
+  });
+
+  describe("in the pilot that skips the closing step", () => {
+    it("ends a turn whose answer is out with no model call", async () => {
+      services.closingStepSkipPilot.mockResolvedValue(true);
+      const info = vi.spyOn(console, "info");
+
+      const model = await agent.model.events["step.started"]?.(
+        {},
+        interactiveContext(delivered)
+      );
+
+      expect(model).toBe(emptyTurnSelection);
+      expect(services.modelSelection).not.toHaveBeenCalled();
+      expect(info).toHaveBeenCalledWith("[delivery] closing step skipped", {
+        sessionId: "interactive-session",
+      });
+      info.mockRestore();
+    });
+
+    it("keeps the closing step outside the pilot", async () => {
+      await agent.model.events["step.started"]?.(
+        {},
+        interactiveContext(delivered)
+      );
+
+      expect(services.modelSelection).toHaveBeenCalled();
+    });
+
+    it("keeps the closing step while only a heads-up went out", async () => {
+      services.closingStepSkipPilot.mockResolvedValue(true);
+
+      const model = await agent.model.events["step.started"]?.(
+        {},
+        interactiveContext([
+          ...pending,
+          toolCallStep("send_message", "call-1", { kind: "message" }),
+          {
+            content: [
+              {
+                output: {
+                  type: "text" as const,
+                  value: headsUpDeliveredNotice,
+                },
+                toolCallId: "call-1",
+                toolName: "send_message",
+                type: "tool-result" as const,
+              },
+            ],
+            role: "tool" as const,
+          },
+        ])
+      );
+
+      expect(model).not.toBe(emptyTurnSelection);
+    });
   });
 
   it("makes a turn whose send was dropped end in text", async () => {
