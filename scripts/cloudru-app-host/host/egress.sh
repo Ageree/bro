@@ -21,13 +21,9 @@ rules=$(
 -A CADDY_EGRESS -d 169.254.0.0/16 -j REJECT
 RULES
 )
-# A server shared with the browser host (boot.py --shared-caddy) has no caddy user: its Caddy is the browser host's,
-# which must reach its sandboxes, so no CADDY_EGRESS jump there.
+# On a server shared with the browser host (boot.py --shared-caddy) the caddy user is the browser host's Caddy:
+# its chain rejects only the metadata service, and its sandboxes sit on 172.31/16 (hostd's transit pool).
 OWNERS=(bro:BRO_EGRESS caddy:CADDY_EGRESS)
-if python3 -c 'import json, sys
-sys.exit(0 if json.load(open("/etc/bro/app-host-boot.json")).get("sharedCaddy") is True else 1)' 2>/dev/null; then
-  OWNERS=(bro:BRO_EGRESS)
-fi
 # The jumps from OUTPUT, once each: the commit adds those not there yet.
 for owner in "${OWNERS[@]}"; do
   jump="OUTPUT -m owner --uid-owner ${owner%%:*} -j ${owner#*:}"

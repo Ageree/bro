@@ -667,9 +667,7 @@ function PaymentsSection({
       {paidUntil ? (
         <Rows>
           <Row side={paid ? "Оплачен" : "Истёк"}>
-            <p>
-              Полный доступ до {when.format(paidUntil)} · {price}
-            </p>
+            <p>Полный доступ до {when.format(paidUntil)}</p>
           </Row>
         </Rows>
       ) : (
@@ -701,7 +699,7 @@ function PaymentsSection({
       </Actions>
       <StatusLine className="mt-2">
         {billingOn
-          ? `Полный доступ на ${String(paidPeriodDays)} календарных дней. Через СБП дешевле. Тариф не продлевается автоматически.`
+          ? `Полный доступ на ${String(paidPeriodDays)} календарных дней. ${cardPriceRub() > env.PRICE_RUB ? "Через СБП дешевле. " : ""}Тариф не продлевается автоматически.`
           : "Оплата скоро"}
       </StatusLine>
     </Section>

@@ -83,9 +83,13 @@ python3 scripts/selectel/user_data.py browser.yaml code.yaml app.yaml > server.y
    `DATABASE_URL_UNPOOLED` и `WORKFLOW_POSTGRES_URL` на локальные (`postgres://bro:…@localhost:5432/bro` и
    `…/bro_workflow`, пароли — из `/etc/bro/postgres.json` нового сервера), затем на новом сервере
    `PUT /ops/v1/env` с `{"env": {…}}` (deployd заменяет файл целиком; проверьте, что нет лишних имён).
-8. Восстановите `app` на новом сервере: `host.py ops NAME db-restore.sh latest app` (до запуска eve — `db-restore.sh`
-   требует, чтобы Бро на базе не работал). Мир — вручную, как шаг 6, с `pg_restore` в пустой `bro_workflow`.
-9. Выкатите тот же релиз: `host.py deploy NAME --version <версия с VM>` (`status` покажет её на VM).
+8. Выкатите тот же релиз: `host.py deploy NAME --version <версия с VM>` (`status` покажет её на VM): `db-restore.sh` и
+   прочие ops-скрипты берутся из текущего релиза, до выката их на сервере нет. Выкат накатит миграции на пустую базу и
+   запустит eve и web.
+9. Сразу остановите их (`host.py stop NAME bro-eve bro-web`): `db-restore.sh` требует, чтобы Бро на базе не работал.
+   Восстановите `app`: `host.py ops NAME db-restore.sh latest app`; мир — вручную, как шаг 6, с `pg_restore` в
+   пустой `bro_workflow` (перед ним `DROP`/`CREATE` базы мира, раз выкат её уже наполнил). Затем
+   `host.py restart NAME bro-eve bro-web` (команды `start` у `host.py` нет).
 10. Сайты: `host.py sites NAME --set <список с VM>`.
 11. Проверки на новом сервере: `GET https://ops.<ip>.sslip.io/ops/v1/health`, `host.py status NAME`, `host.py logs NAME bro-eve`
     (строки `[eve] turn start`, без ошибок миграции), ход в тестовом аккаунте.

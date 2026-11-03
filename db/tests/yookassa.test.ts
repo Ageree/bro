@@ -15,6 +15,9 @@ async function yooKassaClient(
 ) {
   vi.stubEnv("YOOKASSA_SHOP_ID", credentials.shopId);
   vi.stubEnv("YOOKASSA_SECRET_KEY", credentials.secretKey);
+  // The amounts below are the defaults: 2000 by SBP, 2080 by card.
+  vi.stubEnv("PRICE_RUB", undefined);
+  vi.stubEnv("PRICE_CARD_RUB", undefined);
   vi.resetModules();
   return await import("@db/services/yookassa");
 }

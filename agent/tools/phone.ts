@@ -289,27 +289,33 @@ async function numberForCall(
 ) {
   if (!numbersOnDemand()) return null;
   const number = await readPhoneNumber(scope);
-  // Any other state is left to placeCall, which refuses a line that is not active.
-  if (number && number.state !== "quoted") return null;
+  if (number?.state === "active") return null;
+  // A purchase or activation already under way: the tick finishes it.
+  if (number?.state === "provisioning" || number?.state === "uncertain")
+    return numberPreparing;
+  // Released, disabled or held for the operator: nothing comes up by itself.
+  if (number && number.state !== "quoted") return numberUnavailable;
   if (await provisionNumberNow(scope, phoneReportRoute(context))) return null;
-  // A request still being worked comes up within minutes; one in backoff after a failure, or held for the
-  // operator, may take hours, and «a couple of minutes» would be a promise nobody keeps.
+  // A request being worked comes up within minutes. One left pending after this claim was refused (the cap on
+  // active numbers, or not due yet), in backoff after a failure, or held for the operator may take hours, and
+  // «a couple of minutes» would be a promise nobody keeps.
   const request = await readPhoneNumberRequest(scope);
   const soon = Date.now() + 10 * 60_000;
-  if (
-    request?.state === "working" ||
-    request?.state === "pending" ||
+  return request?.state === "working" ||
     (request?.state === "retry" && request.nextAttemptAt.getTime() <= soon)
-  )
-    return {
-      state: "number_preparing",
-      note: "Bro's own number for calls is being connected; it takes a few minutes. No call was placed. Tell the person the number is being set up and ask them to repeat the request in a couple of minutes. Do not retry in this turn.",
-    };
-  return {
-    state: "number_unavailable",
-    note: "Bro's own number for calls could not be connected right now. No call was placed. Tell the person calls are temporarily unavailable and that you will be able to call later; do not promise a time. Do not retry in this turn.",
-  };
+    ? numberPreparing
+    : numberUnavailable;
 }
+
+const numberPreparing = {
+  state: "number_preparing",
+  note: "Bro's own number for calls is being connected; it takes a few minutes. No call was placed. Tell the person the number is being set up and ask them to repeat the request in a couple of minutes. Do not retry in this turn.",
+};
+
+const numberUnavailable = {
+  state: "number_unavailable",
+  note: "Bro's own number for calls could not be connected right now. No call was placed. Tell the person calls are temporarily unavailable and that you will be able to call later; do not promise a time. Do not retry in this turn.",
+};
 
 /** Whether the line is active when the request has been worked here, or, if the tick holds it, when that attempt ends or the wait runs out. */
 async function provisionNumberNow(

@@ -8,6 +8,9 @@ afterEach(() => {
 
 async function loadCardPrice(environment: Record<string, string> = {}) {
   vi.resetModules();
+  // Whatever the session sets, a case sees only its own prices.
+  vi.stubEnv("PRICE_RUB", undefined);
+  vi.stubEnv("PRICE_CARD_RUB", undefined);
   for (const [name, value] of Object.entries(environment)) {
     vi.stubEnv(name, value);
   }

@@ -11,6 +11,7 @@ import base64
 import contextlib
 import hashlib
 import http.server
+import hmac
 import io
 import json
 import re
@@ -1303,8 +1304,8 @@ iptables -w -S
         provision = (HERE / "provision.sh").read_text()
         self.assertLess(provision.index("enable --now bro-egress"), provision.index("systemctl restart caddy"))
         self.assertIn("--uid-owner caddy -j CADDY_EGRESS || fail", provision)
-        # A shared server has no caddy user: its egress owners are bro alone (egress.sh reads the boot settings).
-        self.assertIn('OWNERS=(bro:BRO_EGRESS)', rules)
+        # A shared server's caddy user is the browser host's Caddy: it keeps the metadata rule too.
+        self.assertIn('OWNERS=(bro:BRO_EGRESS caddy:CADDY_EGRESS)', rules)
         self.assertIn("chown root:root /srv/bro /srv/bro/releases /srv/bro/downloads", provision)
         self.assertNotRegex(provision, r"chown bro:bro [^\n]*/srv/bro")
 
@@ -1358,7 +1359,7 @@ class ColocatedBootTest(unittest.TestCase):
                            "--shared-caddy", "--local-postgres"])
         identity = json.loads(out.getvalue().split("path: /etc/bro/deployd.json", 1)[1].split("content: '", 1)[1]
                               .split("'\n", 1)[0])
-        self.assertEqual(identity["key"], boot.host_key(signing, "bro-app-2").hex())
+        self.assertEqual(identity["key"], hmac.new(bytes.fromhex(signing), b"bro-app-host:bro-app-2", hashlib.sha256).hexdigest())
         self.assertIs(self.settings(out.getvalue())["localPostgres"], True)
 
     def test_provision_colocated_parts_are_behind_their_flags(self):

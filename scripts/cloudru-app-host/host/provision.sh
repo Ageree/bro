@@ -13,7 +13,7 @@
 # Two options of the colocated server (boot.py --shared-caddy --local-postgres, docs/colocated-host.md), both off
 # in the VM's boot settings, which then does exactly what it did before them:
 #   sharedCaddy:  the browser host's Caddy (browser-vm/host) serves the ops domain as a file in sites/; no Caddy
-#                 is installed here, no caddy user, no CADDY_EGRESS
+#                 is installed here and no caddy user made (the browser host's caddy user gets CADDY_EGRESS)
 #   localPostgres: PostgreSQL 18 server on localhost for the app and the world, its passwords in postgres.json
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
@@ -140,16 +140,17 @@ print(json.dumps({"app": base + "/bro", "world": base + "/bro_workflow"}, indent
   PASS=$(python3 -c 'import json, urllib.parse as u
 print(u.urlsplit(json.load(open("/etc/bro/postgres.json"))["app"]).password)')
   # Databases named as the managed cluster had them (host.py PG_DATABASES): a dump restores under the same names.
-  # No -c: psql takes the variable only from its input.
-  (cd / && runuser -u postgres -- /usr/lib/postgresql/18/bin/psql -X -q -v ON_ERROR_STOP=1 -v "pw=$PASS") <<'SQL'
+  # The password goes in on psql's input (hex, so safe inside the quotes), never in an argument `ps` shows.
+  { printf "\\set pw '%s'\n" "$PASS"; cat <<'SQL'
 SELECT 'CREATE ROLE bro LOGIN' WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'bro') \gexec
 ALTER ROLE bro WITH LOGIN PASSWORD :'pw';
 SELECT 'CREATE DATABASE bro OWNER bro' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'bro') \gexec
 SELECT 'CREATE DATABASE bro_workflow OWNER bro' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'bro_workflow') \gexec
 SQL
-  for name in app world; do
-    URL=$(python3 -c 'import json, sys; print(json.load(open("/etc/bro/postgres.json"))[sys.argv[1]])' "$name")
-    [ "$(/usr/lib/postgresql/18/bin/psql "$URL" -tAc 'select 1' 2>/dev/null)" = 1 ] || fail "the $name database does not answer"
+  } | (cd / && runuser -u postgres -- /usr/lib/postgresql/18/bin/psql -X -q -v ON_ERROR_STOP=1)
+  for db in bro bro_workflow; do
+    [ "$(PGPASSWORD="$PASS" /usr/lib/postgresql/18/bin/psql -X -h localhost -U bro -d "$db" -tAc 'select 1' 2>/dev/null)" = 1 ] \
+      || fail "the $db database does not answer"
   done
 fi
 apt-mark hold libpq5 postgresql-client-18 postgresql-client-common >/dev/null
@@ -222,9 +223,7 @@ systemctl daemon-reload
 # deployd's host key), and bro does not reach deployd: the rules come before Caddy starts.
 systemctl enable --now bro-egress >/dev/null
 iptables -w -C OUTPUT -m owner --uid-owner bro -j BRO_EGRESS || fail "no egress rules for bro"
-if [ "$SHARED" != True ]; then
-  iptables -w -C OUTPUT -m owner --uid-owner caddy -j CADDY_EGRESS || fail "no egress rules for caddy"
-fi
+iptables -w -C OUTPUT -m owner --uid-owner caddy -j CADDY_EGRESS || fail "no egress rules for caddy"
 # The ops host and the sites of /etc/bro/sites.json (none yet): deployd renders the Caddy text, where this host's
 # Caddy reads it (the Caddyfile, or the site file in shared mode).
 python3 "$HOST/deployd.py" caddyfile

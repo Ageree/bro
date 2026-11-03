@@ -22,7 +22,8 @@
 #     of a run, and a run's costs land within minutes of each other;
 #   - background steps by the kind of their schedule's job (proactive checks, schedules, subscriptions): runs,
 #     steps and steps per run, median input tokens, cache share, roubles per run (mean, over the runs with a
-#     step in the window) and in all; a run's steps may start before SINCE, as errands below;
+#     step in the window, priced runs only) and in all, with an `all` row; a run with a step in the window counts whole,
+#     its steps before SINCE too;
 #   - compactions: eve's summary calls in the compaction pilot (agent/lib/compaction/call.ts), by channel.
 #     They are no step and stay out of the step sections above; a report turn's call counts in its errand.
 #
@@ -238,22 +239,28 @@ WITH background AS (
   WHERE u.source = 'background'
     AND u.units ? 'inputTokens'
     AND u.idempotency_key LIKE 'step:%'
-    AND u.occurred_at >= :'since'::timestamptz AND u.occurred_at < :'until'::timestamptz
+    AND u.occurred_at < :'until'::timestamptz
+    -- The runs with a step in the window, each whole: a run crossing SINCE keeps its earlier steps.
+    AND u.run_id IN (SELECT w.run_id FROM usage_costs w
+                     WHERE w.source = 'background' AND w.idempotency_key LIKE 'step:%'
+                       AND w.occurred_at >= :'since'::timestamptz AND w.occurred_at < :'until'::timestamptz)
 )
-SELECT COALESCE(j.kind, 'no job') AS job_kind,
+SELECT CASE WHEN grouping(COALESCE(j.kind, 'no job')) = 1 THEN 'all'
+            ELSE COALESCE(j.kind, 'no job') END AS job_kind,
        count(DISTINCT b.run_id) AS runs,
        count(*) AS steps,
        round(count(*)::numeric / NULLIF(count(DISTINCT b.run_id), 0), 1) AS steps_per_run,
        round(percentile_cont(0.5) WITHIN GROUP (ORDER BY b.input)::numeric / 1000, 1) AS input_p50,
        round(100.0 * sum(b.cached) / NULLIF(sum(b.input), 0), 1) AS cache_pct,
-       round(sum(b.cost_rub) / NULLIF(count(DISTINCT b.run_id), 0), 2) AS rub_per_run,
+       round(sum(b.cost_rub) FILTER (WHERE NOT b.unpriced)
+             / NULLIF(count(DISTINCT b.run_id) FILTER (WHERE NOT b.unpriced), 0), 2) AS rub_per_run,
        round(sum(b.cost_rub), 2) AS rub_sum,
        count(*) FILTER (WHERE b.unpriced) AS unpriced
 FROM background b
 LEFT JOIN scheduled_agent_runs r ON r.id::text = b.run_id
 LEFT JOIN scheduled_agent_jobs j ON j.id = r.job_id
-GROUP BY COALESCE(j.kind, 'no job')
-ORDER BY 1;
+GROUP BY ROLLUP (COALESCE(j.kind, 'no job'))
+ORDER BY grouping(COALESCE(j.kind, 'no job')), 1;
 
 \echo
 \echo Compactions: summary calls of eve in the compaction pilot, by channel (tokens in thousands)
