@@ -12,11 +12,11 @@
 Три хоста, каждый своим загрузочным скриптом, в одном user data (`scripts/selectel/user_data.py` склеивает
 `write_files` и `runcmd` в порядке аргументов):
 
-| Хост | Скрипт | Флаги совместного сервера |
-| --- | --- | --- |
-| браузерный хост (hostd, Firecracker) | `browser-vm/host/boot.py cloud-init` | `--runtime firecracker --domain <имя> --memory-limit-mb N` |
-| хост песочниц кода (sandboxd) | `scripts/cloudru-code-host/host.py user-data NAME --domain code.<ip>.sslip.io --memory-limit-mb N` | `--shared-caddy` задаёт сам скрипт (в user data) |
-| приложение (eve, web, deployd, PostgreSQL) | `scripts/cloudru-app-host/host/boot.py cloud-init` | `--shared-caddy --local-postgres --domain ops.<ip>.sslip.io` |
+| Хост                                       | Скрипт                                                                                             | Флаги совместного сервера                                    |
+| ------------------------------------------ | -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| браузерный хост (hostd, Firecracker)       | `browser-vm/host/boot.py cloud-init`                                                               | `--runtime firecracker --domain <имя> --memory-limit-mb N`   |
+| хост песочниц кода (sandboxd)              | `scripts/cloudru-code-host/host.py user-data NAME --domain code.<ip>.sslip.io --memory-limit-mb N` | `--shared-caddy` задаёт сам скрипт (в user data)             |
+| приложение (eve, web, deployd, PostgreSQL) | `scripts/cloudru-app-host/host/boot.py cloud-init`                                                 | `--shared-caddy --local-postgres --domain ops.<ip>.sslip.io` |
 
 Порядок в `user_data.py` — порядок `runcmd`: сначала браузерный хост (он ставит Caddy и создаёт
 `/run/caddy/admin.sock`), затем песочницы, затем приложение. Песочницы и приложение ждут Caddy браузерного хоста
@@ -57,9 +57,9 @@ python3 scripts/selectel/user_data.py browser.yaml code.yaml app.yaml > server.y
 около 4,5 ГБ. Caddy и deployd — сотни МБ.
 
 | Память сервера | reserve (ОС, Caddy, tg-egress, deployd) | приложение + PostgreSQL | браузерный хост `--memory-limit-mb` | песочницы кода `--memory-limit-mb` | запас |
-| --- | --- | --- | --- | --- | --- |
-| 16 ГБ | 1536 | ~4608 | 5120 | 3072 | ~2 ГБ |
-| 32 ГБ | 2048 | ~6144 | 16384 | 6144 | ~2 ГБ |
+| -------------- | --------------------------------------- | ----------------------- | ----------------------------------- | ---------------------------------- | ----- |
+| 16 ГБ          | 1536                                    | ~4608                   | 5120                                | 3072                               | ~2 ГБ |
+| 32 ГБ          | 2048                                    | ~6144                   | 16384                               | 6144                               | ~2 ГБ |
 
 Это расчёт, а не замер. Проверьте после загрузки `free -m` и `systemctl status bro-eve bro-web`: ни один юнит не должен
 сидеть в OOM, а `hostd` не должен отвечать 507 раньше своего потолка.

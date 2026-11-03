@@ -15,7 +15,8 @@ const services = vi.hoisted(() => ({
   onDemand: vi.fn<() => boolean>(() => false),
   provisionClaimed: vi.fn<() => Promise<string>>(),
   readNumber: vi.fn<() => Promise<{ state: string } | null>>(),
-  readRequest: vi.fn<() => Promise<{ state: string } | null>>(),
+  readRequest:
+    vi.fn<() => Promise<{ state: string; nextAttemptAt?: Date } | null>>(),
   requestNow: vi.fn<() => Promise<void>>(),
   placeLiveCall:
     vi.fn<
