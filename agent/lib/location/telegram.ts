@@ -112,6 +112,15 @@ export function rememberLocationAsked(chatId: string, now = Date.now()) {
   remember(keyboardChats, chatId, { arrived: false, shownAt: now });
 }
 
+/**
+ * A reply-keyboard button other than the location one was shown to the chat
+ * (the contact button): the keyboard goes with Bro's next message once the
+ * answer came or the window closed, the same as the location button's.
+ */
+export function rememberKeyboardShown(chatId: string, now = Date.now()) {
+  remember(keyboardChats, chatId, { arrived: false, shownAt: now });
+}
+
 /** A location came from the chat: its button has served. */
 export function locationArrived(chatId: string) {
   const shown = keyboardChats.get(chatId);
